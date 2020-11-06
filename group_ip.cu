@@ -12,6 +12,7 @@
 #include <thrust/iterator/permutation_iterator.h>
 #include <thrust/sequence.h>
 #include <thrust/transform.h>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <omp.h>
@@ -47,12 +48,14 @@ namespace Test {
     struct CPU {};
     struct GPU {};
 
+    template <typename V>
+    using xPU = typename std::conditional<
+        std::is_same<V, thrust::device_vector<typename V::value_type>>::value, GPU, CPU>::type;
+
     template <typename T, typename CPUGPU>
-    void xgemm_batch_strided(const char transa, const char transb, const int m, const int n,
-                             const int k, const T alpha, const T *a, const int lda,
-                             const int stridea, const T *b, const int ldb, const int strideb,
-                             const T beta, T *c, const int ldc, const int stridec,
-                             const int batch_size);
+    void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
+                             int lda, int stridea, const T *b, int ldb, int strideb, T beta, T *c,
+                             int ldc, int stridec, int batch_size);
 
 #ifdef USE_MKL
     CBLAS_TRANSPOSE toCblasTrans(char trans) {
@@ -68,10 +71,11 @@ namespace Test {
     }
 
     template <>
-    void xgemm_batch_strided<std::complex<double>, CPU>(
-        const char transa, const char transb, const int m, const int n, const int k, const T alpha,
-        const T *a, const int lda, const int stridea, const T *b, const int ldb, const int strideb,
-        const T beta, T *c, const int ldc, const int stridec, const int batch_size) {
+    void xgemm_batch_strided<std::complex<double>, CPU>(char transa, char transb, int m, int n,
+                                                        int k, T alpha, const T *a, int lda,
+                                                        int stridea, const T *b, int ldb,
+                                                        int strideb, T beta, T *c, int ldc,
+                                                        int stridec, int batch_size) {
 
         cblas_zgemm_batch_strided(CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m, n,
                                   k, &alpha, a, lda, stridea, b, ldb, strideb, &beta, c, ldc,
@@ -86,11 +90,10 @@ namespace Test {
 
     template <>
     void xgemm_batch_strided<std::complex<double>, CPU>(
-        const char transa, const char transb, const int m, const int n, const int k,
-        const std::complex<double> alpha, const std::complex<double> *a, const int lda,
-        const int stridea, const std::complex<double> *b, const int ldb, const int strideb,
-        const std::complex<double> beta, std::complex<double> *c, const int ldc, const int stridec,
-        const int batch_size) {
+        char transa, char transb, int m, int n, int k, std::complex<double> alpha,
+        const std::complex<double> *a, int lda, int stridea, const std::complex<double> *b, int ldb,
+        int strideb, std::complex<double> beta, std::complex<double> *c, int ldc, int stridec,
+        int batch_size) {
 
 #    ifdef _OPENMP
 #        pragma omp for
@@ -441,6 +444,23 @@ namespace Test {
         }
     }
 
+    template <typename Vector> const typename Vector::value_type *get_const_pointer(const Vector &v) {
+        return v.data();
+    }
+
+    template <typename T> const T *get_const_pointer(const thrust::device_vector<T> &v) {
+        return v.data().get();
+    }
+
+    template <typename Vector> typename Vector::value_type *get_pointer(Vector &v) {
+        return v.data();
+    }
+
+    template <typename T> T *get_pointer(thrust::device_vector<T> &v) {
+        return v.data().get();
+    }
+
+
     // Contract two tensors
     // \param o0: dimension labels for the first operator
     // \param dim0: dimension size for the first operator
@@ -534,16 +554,18 @@ namespace Test {
         thrust::fill(vr.begin(), vr.end(), 0.0);
 
         // Let's do (A, B) x (C, A) -> (C, B)
-        const char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
-        const char transca = o1_trans ? (conj1 ? 'C' : 'T') : 'N';
+        char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
+        char transca = o1_trans ? (conj1 ? 'C' : 'T') : 'N';
         int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volA);
         int strideab = (o0_starts_with_T ? volume<Nd0>(dim0) / volT : (!o0_trans ? volB : volA));
         int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volA : volC);
         int strideca = (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
         int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volC);
         int stridecb = (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volB : volC));
-        xgemm_batch_strided(transab, transca, nB, nC, nA, 1.0, &v0[0], ldab, strideab, &v1[0], ldca,
-                            strideca, 0.0, &vr[0], ldcb, stridecb);
+        typename Vector::value_type one = 1.0, zero = 0.0;
+        xgemm_batch_strided<typename Vector::value_type, xPU<Vector>>(
+            transab, transca, (int)nB, (int)nC, (int)nA, one, get_const_pointer(v0), ldab, strideab,
+            get_const_pointer(v1), ldca, strideca, zero, get_pointer(vr), ldcb, stridecb, volT);
     }
 
     // Copy the content of tensor o0 into o1
@@ -587,7 +609,33 @@ namespace Test {
         thrust::copy_n(it0, indices0.size(), it1);
      }
 
-    template <unsigned int Nd> struct AbstractTensor {
+    // Copy the content of tensor o0 into o1
+    // \param o0: dimension labels for the origin tensor
+    // \param dim0: dimension size for the origin tensor
+    // \param from0: first coordinate to copy from the origin tensor
+    // \param to0: first coordinate not to copy from the origin tensor
+    // \param v0: data for the origin tensor
+    // \param o1: dimension labels for the destination tensor
+    // \param dim1: dimension size for the destination tensor
+    // \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    // \param v1: data for the destination tensor
+
+    template <unsigned int Nd0, unsigned int Nd1, typename T>
+    void local_shift(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
+                    const Coor<Nd0> &to0, const thrust::host_vector<T> &v0, const Order<Nd1> &o1,
+                    const Coor<Nd1> &dim1, const Coor<Nd1> &from1, thrust::host_vector<T> &v1) {
+
+        // Get the permutation vectors
+        thrust::host_vector<IndexType> indices0(0), indices1(0);
+        get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0, indices1);
+
+        // Do the copy
+        auto it0 = thrust::make_permutation_iterator(v0.begin(), indices0.begin());
+        auto it1 = thrust::make_permutation_iterator(v1.begin(), indices1.begin());
+        thrust::copy_n(it0, indices0.size(), it1);
+     }
+
+     template <unsigned int Nd> struct AbstractTensor {
         AbstractTensor(const Order<Nd> &order, const Coor<Nd> &dim) : _order(order), _dim(dim) {}
         AbstractTensor(const Order<Nd> &order) : _order(order), _dim(fill_coor<Nd>(0)) {}
 
@@ -618,7 +666,7 @@ int main(void) {
     using LatticeCoor = Test::Coor<Nd>;
     using LatticeOrder = Test::Order<Nd>;
     //using TensorCPU = thrust::host_vector<int>;
-    using TensorCPU = thrust::device_vector<int>;
+    using TensorCPU = thrust::host_vector<std::complex<double>>;
     const LatticeCoor dim = {5};
     TensorCPU t0(Test::volume<Nd>(dim));
     TensorCPU t1(Test::volume<Nd>(dim));
@@ -642,7 +690,7 @@ int main(void) {
     {
         double t = omp_get_wtime();
         for (unsigned int rep = 0; rep < 10; ++rep) {
-            Test::local_contraction<Nd, Nd, 1>({'x'}, dim, false, t0, {'x'}, dim1, false, t1, {},
+            Test::local_contraction<Nd, Nd, 0>({'x'}, dim, false, t0, {'x'}, dim1, false, t1, {},
                                                {}, tc);
         }
         t = omp_get_wtime() - t;
