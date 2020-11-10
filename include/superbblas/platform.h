@@ -1,7 +1,11 @@
 #ifndef __SUPERBBLAS_PLATFORM__
 #define __SUPERBBLAS_PLATFORM__
 
-#ifdef __CUDA_ARCH__
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+
+#ifdef __CUDACC__
 #    define __HOST__ __host__
 #    define __DEVICE__ __device__
 #    ifndef SUPERBBLAS_USE_CUDA
@@ -15,6 +19,11 @@
 #if !defined(SUPERBBLAS_USE_CPU) && defined(SUPERBBLAS_USE_MKL)
 #    undef SUPERBBLAS_USE_MKL
 #endif
+
+#ifdef SUPERBBLAS_USE_CUDA
+#    include <cublas_v2.h>
+#endif
+
 
 namespace superbblas {
 
@@ -34,8 +43,30 @@ namespace superbblas {
 
     namespace detail {
         struct Cpu {};
-        struct Cuda { int device; };
-        struct Gpuamd {int device; };
+
+#ifdef SUPERBBLAS_USE_CUDA
+        inline void cublasCheck(cublasStatus_t status) {
+            if (status != CUBLAS_STATUS_SUCCESS) {
+                std::stringstream s;
+                s << "CUBLAS error " << status;
+                throw std::runtime_error(s.str());
+            }
+        }
+
+        struct Cuda {
+            int device;
+            std::shared_ptr<cublasHandle_t> cublasHandle;
+            Cuda(int device)
+                : device(device), cublasHandle(new cublasHandle_t, [](cublasHandle_t *p) {
+                      cublasCheck(cublasDestroy(*p));
+                      delete p;
+                  }) {
+                cublasCheck(cublasCreate(cublasHandle.get()));
+            }
+        };
+#endif
+
+//        struct Gpuamd {int device; };
     }
 
     struct Context {
@@ -46,8 +77,12 @@ namespace superbblas {
         int device;             
  
         detail::Cpu toCpu() const { return detail::Cpu(); }
+#ifdef SUPERBBLAS_USE_CUDA
         detail::Cuda toCuda() const { return detail::Cuda{device}; }
-        detail::Gpuamd toGpuamd() const { return detail::Gpuamd{device}; }
+#else
+        void toCuda() const { throw std::runtime_error("Cuda: unsupported platform"); }
+#endif
+        void toGpuamd() const { throw std::runtime_error("Gpuamd: unsupported platform"); }
     };
 
     Context createCpuContext() { return Context{CPU, 0}; }

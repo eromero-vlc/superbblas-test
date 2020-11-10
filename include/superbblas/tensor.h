@@ -15,7 +15,6 @@
 #    include <thrust/execution_policy.h>
 #    include <thrust/host_vector.h>
 #    include <thrust/iterator/permutation_iterator.h>
-#    include <thrust/sequence.h>
 #    include <thrust/transform.h>
 #endif // SUPERBBLAS_USE_CUDA
 
@@ -73,18 +72,18 @@ namespace superbblas {
             return r;
         }
 
-#ifdef SUPERBBLAS_USE_CUDA
-        template <typename XPU, typename T>
-        using XVector =
-            typename std::conditional<std::is_same<XPU, Cuda>::value, thrust::device_vector<T>,
-                                      thrust::host_vector<T>>::type;
-        using thrust::fill;
-#else
-        template <typename XPU, typename T>
-        using XVector =
-            typename std::conditional<std::is_same<XPU, Cuda>::value, void, std::vector<T>>::type;
-        using std::fill;
-#endif
+// #ifdef SUPERBBLAS_USE_CUDA
+//         template <typename XPU, typename T>
+//         using XVector =
+//             typename std::conditional<std::is_same<XPU, Cuda>::value, thrust::device_vector<T>,
+//                                       thrust::host_vector<T>>::type;
+//         using thrust::fill;
+// #else
+//         template <typename XPU, typename T>
+//         using XVector =
+//             typename std::conditional<std::is_same<XPU, Cuda>::value, void, std::vector<T>>::type;
+//         using std::fill;
+// #endif
 
         /// Return the jumps to the next consecutive element in that dimension
         /// \param dim: lattice dimension
@@ -276,8 +275,8 @@ namespace superbblas {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, new_dim1, new_stride1) + from1;
                 indices0[i] = coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm), dim0, stride0);
                 indices1[i] = coor2index<Nd1>(c1, dim1, stride1);
-                assert(0 <= indices0[i] && indices0[i] < vol0);
-                assert(0 <= indices1[i] && indices1[i] < vol1);
+                assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
+                assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
             }
 
             //print(indices0, "indices0");
@@ -300,7 +299,7 @@ namespace superbblas {
                              const Coor<Nd1> &from1, thrust::device_vector<IndexType> &indices0,
                              thrust::device_vector<IndexType> &indices1, Cuda cuda) {
             (void)cuda;
-            thrust::host_vector<IndexType> indices0_host, indices1_host;
+            thrust::host_vector<IndexType> indices0_host(0), indices1_host(0);
             get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0_host,
                                       indices1_host);
             indices0 = indices0_host;
@@ -450,27 +449,30 @@ namespace superbblas {
             int volA = volume<Nd0>(o0, dim0, sA, nA);
             int volB = volume<Nd0>(o0, dim0, sB, nB);
             int volC = volume<Nd1>(o1, dim1, sC, nC);
+            if (nT == 0 && volB == 0) volB = 1;
+            if (nT == 0 && volC == 0) volC = 1;
 
             // Avoid issues with uninitialized memory by zeroing out
-            fill(vr, vr + volume<Ndo>(dimr), 0.0);
+            fill_n(vr, volume<Ndo>(dimr), 0.0, xpu);
 
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
             char transca = o1_trans ? (conj1 ? 'C' : 'T') : 'N';
-            int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volA);
+            int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volA : volB);
             int strideab =
-                (o0_starts_with_T ? volume<Nd0>(dim0) / volT : (!o0_trans ? volB : volA));
-            int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volA : volC);
+                (o0_starts_with_T ? volume<Nd0>(dim0) / volT : (!o0_trans ? volA : volB));
+            int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volC : volA);
             int strideca =
-                (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
-            int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volC);
+                (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volC : volA));
+            int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volC : volB);
             int stridecb =
-                (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volB : volC));
+                (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volC : volB));
             using value_type = typename std::iterator_traits<ConstIterator>::value_type;
             value_type one = 1.0, zero = 0.0;
-            xgemm_batch_strided<value_type>(transab, transca, (int)nB, (int)nC, (int)nA, one, &*v0,
-                                            ldab, strideab, &*v1, ldca, strideca, zero, &*vr, ldcb,
-                                            stridecb, volT, xpu);
+            xgemm_batch_strided<value_type>(transab, transca, (int)nB, (int)nC, (int)nA, one,
+                                            const_raw_pointer(v0), ldab, strideab,
+                                            const_raw_pointer(v1), ldca, strideca, zero,
+                                            raw_pointer(vr), ldcb, stridecb, volT, xpu);
         }
 
         /// Copy the content of tensor o0 into o1
@@ -513,7 +515,7 @@ namespace superbblas {
             // Get the permutation vectors
             thrust::device_vector<IndexType> indices0(0), indices1(0);
             get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0, indices1,
-                                      cuda);
+                                      Cpu{});
 
             // Do the copy
             auto it0 = thrust::make_permutation_iterator(v0, indices0.begin());
@@ -594,11 +596,12 @@ namespace superbblas {
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
-            detail::local_copy<Nd0, Nd1>(o0, dim0, from0, to0, thrust::device_ptr<T>(v0), o1, dim1,
-                                         from1, thrust::device_ptr<T>(v1), ctx.toCuda());
+            detail::local_copy<Nd0, Nd1>(o0, dim0, from0, to0, thrust::device_pointer_cast(v0), o1,
+                                         dim1, from1, thrust::device_pointer_cast(v1),
+                                         ctx.toCuda());
             break;
 #endif
-        default: throw std::runtime_error("Unsupported platform"); break;
+        default: throw std::runtime_error("Unsupported platform");
         }
     }
 
@@ -648,12 +651,13 @@ namespace superbblas {
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
-            detail::local_contraction<Nd0, Nd1, Ndo>(o0, dim0, conj0, thrust::device_ptr<T>(v0), o1,
-                                                     dim1, conj1, thrust::device_ptr<T>(v1), o_r,
-                                                     dimr, vr, ctx.toCuda());
+            detail::local_contraction<Nd0, Nd1, Ndo>(
+                o0, dim0, conj0, thrust::device_pointer_cast(v0), o1, dim1, conj1,
+                thrust::device_pointer_cast(v1), o_r, dimr, thrust::device_pointer_cast(vr),
+                ctx.toCuda());
             break;
 #endif
-        default: throw std::runtime_error("Unsupported platform"); break;
+        default: throw std::runtime_error("Unsupported platform");
         }
     }
 }

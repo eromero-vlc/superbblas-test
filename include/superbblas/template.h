@@ -64,10 +64,10 @@
 #    define MACHINE_MAX                                                                            \
         ARITH(65504.0, 65504.0, FLT_MAX, FLT_MAX, DBL_MAX, DBL_MAX, FLT128_MAX, FLT128_MAX)
 
-#    ifdef F77UNDERSCORE
-#        define FORTRAN_FUNCTION(X) CONCAT(X, _)
-#    else
+#    ifdef F77NOUNDERSCORE
 #        define FORTRAN_FUNCTION(X) X
+#    else
+#        define FORTRAN_FUNCTION(X) CONCAT(X, _)
 #    endif
 
 #endif //  __SUPERBBLAS_TEMPLATE_PRIVATE__
