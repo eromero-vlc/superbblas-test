@@ -34,20 +34,19 @@ int main(void) {
  
     {
         constexpr unsigned int Nd = 2;
-        using LatticeCoor = Coor<Nd>;
         using Tensor = std::vector<double>;
-        const LatticeCoor dim0 = {nprocs * 5, nprocs * 2};
+        const Coor<Nd> dim0 = {nprocs * 5, nprocs * 2};
         From_size<Nd> p0 = disp_tensor<Nd>(dim0, {nprocs, nprocs});
-        const LatticeCoor local_dim0 = p0[rank][1];
-        const LatticeCoor dim1 = {nprocs * 2, nprocs * 2};
+        const Coor<Nd> local_dim0 = p0[rank][1];
+        const Coor<Nd> dim1 = {nprocs * 2, nprocs * 2};
         From_size<Nd> p1 = disp_tensor<Nd>(dim1, {nprocs, 1});
-        const LatticeCoor local_dim1 = p1[rank][1];
+        const Coor<Nd> local_dim1 = p1[rank][1];
         
         unsigned int vol0 = detail::volume<Nd>(local_dim0);;
         unsigned int vol1 = detail::volume<Nd>(local_dim1);;
         Tensor t0(vol0), t1(vol1);
         for (unsigned int i = 0; i < vol0; i++) t0[i] = i;
-        const LatticeCoor zero_coor = {0};
+        const Coor<Nd> zero_coor = {0};
         Context ctx = createCpuContext();
         {
             double t = omp_get_wtime();
@@ -61,20 +60,65 @@ int main(void) {
             std::cout << "Time in permuting " << t / 10 << std::endl;
         }
 
-        const LatticeCoor local_dimr = {2, 1};
-        unsigned int volr = detail::volume<Nd>(local_dimr);
+        constexpr unsigned int No = 1;
+        const Coor<No> local_dimr = {2};
+        unsigned int volr = detail::volume<No>(local_dimr);
         Tensor tc(volr);
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < 10; ++rep) {
-                local_contraction<Nd, Nd, Nd>("tx", local_dim1, false, t1.data(), "tx", local_dim1,
+                local_contraction<Nd, Nd, No>("tx", local_dim1, false, t1.data(), "tx", local_dim1,
                                               false, t1.data(), "t", local_dimr, tc.data(), ctx);
+            }
+            t = omp_get_wtime() - t;
+            std::cout << "Time in contracting " << t / 10 << std::endl;
+        }
+    }
+
+#ifdef SUPERBBLAS_USE_CUDA
+    {
+        constexpr unsigned int Nd = 2;
+        using Tensor = thrust::device_vector<double>;
+        const Coor<Nd> dim0 = {nprocs * 5, nprocs * 2};
+        From_size<Nd> p0 = disp_tensor<Nd>(dim0, {nprocs, nprocs});
+        const Coor<Nd> local_dim0 = p0[rank][1];
+        const Coor<Nd> dim1 = {nprocs * 2, nprocs * 2};
+        From_size<Nd> p1 = disp_tensor<Nd>(dim1, {nprocs, 1});
+        const Coor<Nd> local_dim1 = p1[rank][1];
+        
+        unsigned int vol0 = detail::volume<Nd>(local_dim0);;
+        unsigned int vol1 = detail::volume<Nd>(local_dim1);;
+        Tensor t0(vol0), t1(vol1);
+        for (unsigned int i = 0; i < vol0; i++) t0[i] = i;
+        const Coor<Nd> zero_coor = {0};
+        Context ctx = createCudaContext();
+        {
+            double t = omp_get_wtime();
+            for (unsigned int rep = 0; rep < 10; ++rep) {
+				double *ptr0 = t0.data().get(), *ptr1 = t1.data().get();
+                copy<Nd, Nd>(p0, 1, {'t', 'x'}, zero_coor, {nprocs * 2, nprocs * 2},
+                             (const double **)&ptr0, &ctx, p1, 1, {'t', 'x'}, zero_coor, &ptr1,
+                             &ctx);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in permuting " << t / 10 << std::endl;
         }
+
+        constexpr unsigned int No = 1;
+        const Coor<No> local_dimr = {2};
+        unsigned int volr = detail::volume<No>(local_dimr);
+        Tensor tc(volr);
+        {
+            double t = omp_get_wtime();
+            for (unsigned int rep = 0; rep < 10; ++rep) {
+                local_contraction<Nd, Nd, No>("tx", local_dim1, false, t1.data().get(), "tx",
+                                              local_dim1, false, t1.data().get(), "t", local_dimr,
+                                              tc.data().get(), ctx);
+            }
+            t = omp_get_wtime() - t;
+            std::cout << "Time in contracting " << t / 10 << std::endl;
+        }
     }
-#ifdef SUPERBBLAS_USE_CUDA
 #endif
 
     return 0;
