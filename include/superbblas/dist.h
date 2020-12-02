@@ -145,7 +145,8 @@ namespace superbblas {
                     r.second.push_back(Component<Nd, T, Cpu>{v[i], dim[i][1], ctx[i].toCpu(), i});
                     break;
                 case CUDA:
-                    r.first.push_back(Component<Nd, T, Cuda>{v[i], dim[i][1], ctx[i].toCuda(), i});
+                    r.first.push_back(Component<Nd, T, Cuda>{encapsulate_pointer(v[i]), dim[i][1],
+                                                             ctx[i].toCuda(), i});
                     break;
 #else // SUPERBBLAS_USE_CUDA
                 case CPU:
@@ -218,11 +219,10 @@ namespace superbblas {
         /// \param v1: data for the destination tensor
         /// \param xpu1: device context for v1
 
-        template <unsigned int Nd0, unsigned int Nd1, typename ConstIterator, typename Iterator,
-                  typename XPU0, typename XPU1>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1>
         void pack(const Order<Nd0> &o0, From_size_const_iterator<Nd0> fs0, std::size_t nfs0,
-                  const Coor<Nd0> &dim0, const ConstIterator v0, XPU0 xpu0, const Order<Nd1> &o1,
-                  typename Indices<Cpu>::iterator disp1, Iterator v1, XPU1 xpu1) {
+                  const Coor<Nd0> &dim0, data<const T, XPU0> v0, XPU0 xpu0, const Order<Nd1> &o1,
+                  typename Indices<Cpu>::iterator disp1, data<T, XPU1> v1, XPU1 xpu1) {
 
             std::size_t vol = volume<Nd0>(get_dim<Nd0>(fs0, nfs0));
 
@@ -244,10 +244,12 @@ namespace superbblas {
                 n += indices.size();
                 assert(n <= vol);
             }
-            Indices<XPU0> indices0_xpu0 = indices0;
+            Indices<XPU0> indices0_xpu = indices0;
+            Indices<XPU1> indices1_xpu = indices1;
 
             // Do the copy
-            copy_n(v0, indices0.begin(), xpu0, vol, v1, indices1.begin(), xpu1);
+            copy_n<IndexType, T>(v0, indices0_xpu.begin(), xpu0, vol, v1, indices1_xpu.begin(),
+                                 xpu1);
         }
 
         /// Pack a list of ranges to be used in a MPI communication
@@ -290,11 +292,11 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first) {
                     if (c.componentId == componentId0) {
-                        pack<Nd0, Nd1>(o0, toSend[componentId0].begin(), avoid_rank, c.dim, c.it,
-                                       c.xpu, o1, buf_disp.begin(), r.buf.data(), Cpu{});
-                        pack<Nd0, Nd1>(o0, toSend[componentId0].begin() + avoid_rank + 1,
-                                       nprocs - avoid_rank - 1, c.dim, c.it, c.xpu, o1,
-                                       buf_disp.begin() + avoid_rank + 1, r.buf.data(), Cpu{});
+                        pack<Nd0, Nd1, T>(o0, toSend[componentId0].begin(), avoid_rank, c.dim, c.it,
+                                          c.xpu, o1, buf_disp.begin(), r.buf.data(), Cpu{});
+                        pack<Nd0, Nd1, T>(o0, toSend[componentId0].begin() + avoid_rank + 1,
+                                          nprocs - avoid_rank - 1, c.dim, c.it, c.xpu, o1,
+                                          buf_disp.begin() + avoid_rank + 1, r.buf.data(), Cpu{});
                         for (unsigned int rank = 0; rank < nprocs; ++rank) {
                             if (rank != avoid_rank)
                                 buf_disp[rank] += volume<Nd0>(toSend[componentId0][rank][1]);
@@ -303,11 +305,11 @@ namespace superbblas {
                 }
                 for (const Component<Nd0, const T, XPU1> &c : v.second) {
                     if (c.componentId == componentId0) {
-                        pack<Nd0, Nd1>(o0, toSend[componentId0].begin(), avoid_rank, c.dim, c.it,
-                                       c.xpu, o1, buf_disp.begin(), r.buf.data(), Cpu{});
-                        pack<Nd0, Nd1>(o0, toSend[componentId0].begin() + avoid_rank + 1,
-                                       nprocs - avoid_rank - 1, c.dim, c.it, c.xpu, o1,
-                                       buf_disp.begin() + avoid_rank + 1, r.buf.data(), Cpu{});
+                        pack<Nd0, Nd1, T>(o0, toSend[componentId0].begin(), avoid_rank, c.dim, c.it,
+                                          c.xpu, o1, buf_disp.begin(), r.buf.data(), Cpu{});
+                        pack<Nd0, Nd1, T>(o0, toSend[componentId0].begin() + avoid_rank + 1,
+                                          nprocs - avoid_rank - 1, c.dim, c.it, c.xpu, o1,
+                                          buf_disp.begin() + avoid_rank + 1, r.buf.data(), Cpu{});
                         for (unsigned int rank = 0; rank < nprocs; ++rank) {
                             if (rank != avoid_rank)
                                 buf_disp[rank] += volume<Nd0>(toSend[componentId0][rank][1]);
@@ -563,7 +565,7 @@ namespace superbblas {
                         reqs.push_back(copy<Nd0, Nd1>(p0, from0, size0, o0, v0, p1, ncomponents1,
                                                       from1, o1, c, comm));
                 }
-                for (const Component<Nd1, T, XPU0> &c : v1.second) {
+                for (const Component<Nd1, T, XPU1> &c : v1.second) {
                     if (c.componentId == i)
                         reqs.push_back(copy<Nd0, Nd1>(p0, from0, size0, o0, v0, p1, ncomponents1,
                                                       from1, o1, c, comm));
@@ -625,7 +627,7 @@ namespace superbblas {
              Request local_req = [=] {
                  unsigned int ncomponents0 = v0.first.size() + v0.second.size();
                  for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
-                     local_copy<Nd0, Nd1>(
+                     local_copy<Nd0, Nd1, T>(
                          o0,
                          (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
                          (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
@@ -634,7 +636,7 @@ namespace superbblas {
                          v1.xpu);
                  }
                  for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
-                     local_copy<Nd0, Nd1>(
+                     local_copy<Nd0, Nd1, T>(
                          o0,
                          (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
                          (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],

@@ -452,16 +452,20 @@ namespace superbblas {
         /// Return the largest common substring in o0 and o1 assuming that each
         /// dimension has different labels on each vector
 
-        template <typename Vector0, typename Vector1,
+        template <typename Vector0, typename Vector1, typename ConstIterator,
                   typename value_type = typename Vector0::value_type>
         void largest_common_substring_order(const Vector0 &o0, const Vector1 &o1,
+                                            ConstIterator avoid, unsigned int nAvoid,
                                             value_type &starts_with, unsigned int &size) {
             size = 0;
             for (unsigned int i = 0; i < o0.size(); ++i) {
+                if (nAvoid > 0 && std::find(avoid, avoid + nAvoid, o0[i]) != avoid + nAvoid)
+                    continue;
                 auto j = std::find(o1.begin(), o1.end(), o0[i]);
                 if (j == o1.end()) continue;
                 starts_with = o0[i];
-                for (unsigned int i0 = i; i0 < o0.size() && j != o1.end() && o0[i0] == *j;
+                for (unsigned int i0 = i; i0 < o0.size() && j != o1.end() && o0[i0] == *j &&
+                                          (nAvoid == 0 || *j != *avoid);
                      ++i0, ++j, ++size)
                     ;
                 break;
@@ -538,22 +542,26 @@ namespace superbblas {
             char sT = 0;         // starting letter of the piece T
             char eT = 0;         // ending letter of the piece T
             largest_common_substring_order(o0, o1, o_r, sT, nT);
-            if (nT > 0) eT = *(std::find(o0.begin(), o0.end(), sT) + nT - 1);
+            auto strT = o0.begin();
+            if (nT > 0) {
+                strT = std::find(o0.begin(), o0.end(), sT);
+                eT = strT[nT - 1];
+            }
 
             // Find A, the common labels between o0 and o1
             unsigned int nA = 0; // size of the piece A
             char sA = 0;         // starting letter of the piece A
-            largest_common_substring_order(o0, o1, sA, nA);
+            largest_common_substring_order(o0, o1, strT, nT, sA, nA);
 
             // Find B, the common labels between o0 and o_r
             unsigned int nB = 0; // size of the piece B
             char sB = 0;         // starting letter of the piece B
-            largest_common_substring_order(o0, o_r, sB, nB);
+            largest_common_substring_order(o0, o_r, strT, nT, sB, nB);
 
             // Find C, the common labels between o1 and o_r
             unsigned int nC = 0; // size of the piece C
             char sC = 0;         // starting letter of the piece C
-            largest_common_substring_order(o1, o_r, sC, nC);
+            largest_common_substring_order(o1, o_r, strT, nT, sC, nC);
 
             // Check that o0 is made of the pieces T, A and B
             assert(o0.size() == nT + nA + nB);
@@ -565,7 +573,7 @@ namespace superbblas {
             // Check that no order ends with T
             assert(nT == 0 || o0.size() == 0 || o0.back() != eT);
             assert(nT == 0 || o1.size() == 0 || o1.back() != eT);
-            assert(nT == 0 || o_r.size() == 0 || o_r.back() != eT);
+            assert(nT == 0 || nB + nC == 0 || o_r.size() == 0 || o_r.back() != eT);
 
             // Check whether each order starts with T
             bool o0_starts_with_T = (nT == 0 || o0.size() == 0 || o0[0] == sT);
@@ -624,12 +632,11 @@ namespace superbblas {
         /// \param v1: data for the destination tensor
         /// \param xpu1: device context for v1
 
-        template <unsigned int Nd0, unsigned int Nd1, typename ConstIterator, typename Iterator,
-                  typename XPU0, typename XPU1>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1>
         void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                        const Coor<Nd0> &dim0, const ConstIterator v0, XPU0 xpu0,
+                        const Coor<Nd0> &dim0, data<const T, XPU0> v0, XPU0 xpu0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        Iterator v1, XPU1 xpu1) {
+                        data<T, XPU1> v1, XPU1 xpu1) {
 
             // Get the permutation vectors
             Indices<XPU0> indices0 =
@@ -638,7 +645,8 @@ namespace superbblas {
                                                                            o1, from1, dim1, xpu1);
 
             // Do the copy
-            copy_n(v0, indices0.begin(), xpu0, indices0.size(), v1, indices1.begin(), xpu1);
+            copy_n<IndexType, T>(v0, indices0.begin(), xpu0, indices0.size(), v1, indices1.begin(),
+                                 xpu1);
         }
     }
 
@@ -693,20 +701,20 @@ namespace superbblas {
 
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1, dim1,
-                                         v1, ctx1.toCpu());
+            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1,
+                                            dim1, v1, ctx1.toCpu());
         }
 #ifdef SUPERBBLAS_USE_CUDA
         else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
-            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1, dim1,
-                                         detail::encapsulate_pointer(v1), ctx1.toCuda());
+            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1,
+                                            dim1, detail::encapsulate_pointer(v1), ctx1.toCuda());
         } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
-                                         ctx0.toCuda(), o1, from1, dim1, v1, ctx1.toCpu());
+            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
+                                            ctx0.toCuda(), o1, from1, dim1, v1, ctx1.toCpu());
         } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
-            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
-                                         ctx0.toCuda(), o1, from1, dim1,
-                                         detail::encapsulate_pointer(v1), ctx1.toCuda());
+            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
+                                            ctx0.toCuda(), o1, from1, dim1,
+                                            detail::encapsulate_pointer(v1), ctx1.toCuda());
         }
 #endif
         else {

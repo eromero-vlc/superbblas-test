@@ -45,6 +45,13 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_CUDA
             >::type;
 
+        /// Constant iterator vector type
+        /// \param T: type of the vector's elements
+        /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
+
+        template <typename T, typename XPU>
+        using vector_const_iterator = typename vector<T, XPU>::const_iterator;
+
         /// Pointer to data type
         /// \param T: type of the vector's elements
         /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
@@ -70,9 +77,9 @@ namespace superbblas {
 
         /// Copy n values, w[i] = v[indices[i]]
 
-        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
-        void copy_n(ConstIteratorV v, ConstIteratorIndices indices, Cpu cpuv, std::size_t n,
-                    IteratorW w, Cpu cpuw) {
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indices, Cpu cpuv,
+                    std::size_t n, data<T, Cpu> w, Cpu cpuw) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
@@ -83,9 +90,9 @@ namespace superbblas {
 
         /// Copy n values, w[indices[i]] = v[i]
 
-        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
-        void copy_n(ConstIteratorV v, Cpu cpuv, std::size_t n, IteratorW w,
-                    ConstIteratorIndices indices, Cpu cpuw) {
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, Cpu cpuv, std::size_t n, data<T, Cpu> w,
+                    vector_const_iterator<IndexType, Cpu> indices, Cpu cpuw) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
@@ -95,9 +102,10 @@ namespace superbblas {
         }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
-        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
-        void copy_n(ConstIteratorV v, ConstIteratorIndices indicesv, Cpu cpuv, std::size_t n,
-                    IteratorW w, ConstIteratorIndices indicesw, Cpu cpuw) {
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu cpuv,
+                    std::size_t n, data<T, Cpu> w, vector_const_iterator<IndexType, Cpu> indicesw,
+                    Cpu cpuw) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
@@ -109,9 +117,9 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_CUDA
         /// Copy n values, w[i] = v[indices[i]]
 
-        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
-        void copy_n(ConstIteratorV v, ConstIteratorIndices indices, Cuda cudav, std::size_t n,
-                    IteratorW w, Cpu cpuw) {
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indices,
+                    Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu cpuw) {
             (void)cudav;
             (void)cpuw;
             thrust::copy_n(thrust::make_permutation_iterator(v, indices), n, w);
@@ -119,9 +127,9 @@ namespace superbblas {
 
         /// Copy n values, w[indices[i]] = v[i]
 
-        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
-        void copy_n(ConstIteratorV v, Cpu cpuv, std::size_t n, IteratorW w,
-                    ConstIteratorIndices indices, Cuda cudaw) {
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, Cpu cpuv, std::size_t n, data<T, Cuda> w,
+                    vector_const_iterator<IndexType, Cuda> indices, Cuda cudaw) {
             (void)cpuv;
             (void)cudaw;
             thrust::copy_n(v, n, thrust::make_permutation_iterator(w, indices));
@@ -129,10 +137,34 @@ namespace superbblas {
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
-        template <typename ConstIteratorIndicesV, typename ConstIteratorIndicesW,
-                  typename ConstIteratorV, typename IteratorW, typename XPUv, typename XPUw>
-        void copy_n(ConstIteratorV v, ConstIteratorIndicesV indicesv, XPUv xpuv, std::size_t n,
-                    IteratorW w, ConstIteratorIndicesW indicesw, XPUw xpuw) {
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu xpuv,
+                    std::size_t n, data<T, Cuda> w, vector_const_iterator<IndexType, Cuda> indicesw,
+                    Cuda xpuw) {
+            (void)xpuv;
+            (void)xpuw;
+            thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
+                           thrust::make_permutation_iterator(w, indicesw));
+        }
+
+        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
+                    Cuda xpuv, std::size_t n, data<T, Cpu> w,
+                    vector_const_iterator<IndexType, Cpu> indicesw, Cpu xpuw) {
+            (void)xpuv;
+            (void)xpuw;
+            thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
+                           thrust::make_permutation_iterator(w, indicesw));
+        }
+
+        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
+                    Cuda xpuv, std::size_t n, data<T, Cuda> w,
+                    vector_const_iterator<IndexType, Cuda> indicesw, Cuda xpuw) {
             (void)xpuv;
             (void)xpuw;
             thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
