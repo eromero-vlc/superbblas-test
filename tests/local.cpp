@@ -25,7 +25,7 @@ int main(void) {
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < 10; ++rep) {
-                local_copy<Nd, Nd>("x", dim, zero_coor, dim, t0.data(), "x", dim1, zero_coor,
+                local_copy<Nd, Nd>("x", zero_coor, dim, dim, t0.data(), ctx, "x", zero_coor, dim1,
                                    t1.data(), ctx);
             }
             t = omp_get_wtime() - t;
@@ -60,8 +60,8 @@ int main(void) {
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < 10; ++rep) {
-                local_copy<Nd, Nd>("x", dim, zero_coor, dim, t0.data().get(), "x", dim1, zero_coor,
-                                   t1.data().get(), ctx);
+                local_copy<Nd, Nd>("x", zero_coor, dim, dim, t0.data().get(), ctx, "x", zero_coor,
+                                   dim1, t1.data().get(), ctx);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in permuting " << t / 10 << std::endl;
