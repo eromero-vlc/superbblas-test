@@ -2,6 +2,8 @@
 #define __SUPERBBLAS_BLAS__
 
 #include "platform.h"
+#include <type_traits>
+#include <vector>
 
 #ifdef SUPERBBLAS_USE_MKL
 #    include "mkl.h"
@@ -19,12 +21,131 @@
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
 #    include <thrust/device_ptr.h>
+#    include <thrust/device_vector.h>
 #    include <thrust/fill.h>
+#    include <thrust/iterator/permutation_iterator.h>
 #endif
 
 namespace superbblas {
 
     namespace detail {
+
+        /// Vector type
+        /// \param T: type of the vector's elements
+        /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
+
+        template <typename T, typename XPU>
+        using vector = typename std::conditional<
+            std::is_same<XPU, Cpu>::value, std::vector<T>,
+#ifdef SUPERBBLAS_USE_CUDA
+            typename std::conditional<std::is_same<XPU, Cuda>::value, thrust::device_vector<T>,
+                                      void>::type
+#else
+            void
+#endif // SUPERBBLAS_USE_CUDA
+            >::type;
+
+        /// Pointer to data type
+        /// \param T: type of the vector's elements
+        /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
+
+        template <typename T, typename XPU>
+        using data =
+            typename std::conditional<std::is_same<XPU, Cpu>::value, T *,
+#ifdef SUPERBBLAS_USE_CUDA
+                                      typename std::conditional<std::is_same<XPU, Cuda>::value,
+                                                                thrust::device_ptr<T>, void>::type
+#else
+                                      void
+#endif // SUPERBBLAS_USE_CUDA
+                                      >::type;
+
+#ifdef SUPERBBLAS_USE_CUDA
+        /// Return a device pointer suitable for making iterators
+
+        template <typename T> thrust::device_ptr<T> encapsulate_pointer(T *ptr) {
+            return thrust::device_pointer_cast(ptr);
+        }
+#endif
+
+        /// Copy n values, w[i] = v[indices[i]]
+
+        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
+        void copy_n(ConstIteratorV v, ConstIteratorIndices indices, Cpu cpuv, std::size_t n,
+                    IteratorW w, Cpu cpuw) {
+            (void)cpuv;
+            (void)cpuw;
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+        }
+
+        /// Copy n values, w[indices[i]] = v[i]
+
+        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
+        void copy_n(ConstIteratorV v, Cpu cpuv, std::size_t n, IteratorW w,
+                    ConstIteratorIndices indices, Cpu cpuw) {
+            (void)cpuv;
+            (void)cpuw;
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+        }
+
+        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
+        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
+        void copy_n(ConstIteratorV v, ConstIteratorIndices indicesv, Cpu cpuv, std::size_t n,
+                    IteratorW w, ConstIteratorIndices indicesw, Cpu cpuw) {
+            (void)cpuv;
+            (void)cpuw;
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+        }
+
+#ifdef SUPERBBLAS_USE_CUDA
+        /// Copy n values, w[i] = v[indices[i]]
+
+        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
+        void copy_n(ConstIteratorV v, ConstIteratorIndices indices, Cuda cudav, std::size_t n,
+                    IteratorW w, Cpu cpuw) {
+            (void)cudav;
+            (void)cpuw;
+            thrust::copy_n(thrust::make_permutation_iterator(v, indices), n, w);
+        }
+
+        /// Copy n values, w[indices[i]] = v[i]
+
+        template <typename ConstIteratorIndices, typename ConstIteratorV, typename IteratorW>
+        void copy_n(ConstIteratorV v, Cpu cpuv, std::size_t n, IteratorW w,
+                    ConstIteratorIndices indices, Cuda cudaw) {
+            (void)cpuv;
+            (void)cudaw;
+            thrust::copy_n(v, n, thrust::make_permutation_iterator(w, indices));
+        }
+
+        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
+
+        template <typename ConstIteratorIndicesV, typename ConstIteratorIndicesW,
+                  typename ConstIteratorV, typename IteratorW, typename XPUv, typename XPUw>
+        void copy_n(ConstIteratorV v, ConstIteratorIndicesV indicesv, XPUv xpuv, std::size_t n,
+                    IteratorW w, ConstIteratorIndicesW indicesw, XPUw xpuw) {
+            (void)xpuv;
+            (void)xpuw;
+            thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
+                           thrust::make_permutation_iterator(w, indicesw));
+        }
+
+#endif // SUPERBBLAS_USE_CUDA
+
+        /// Set the first `n` elements with a value
+        /// \param it: first element to set
+        /// \param n: number of elements to set
+        /// \param v: value to set
+        /// \param cpu: device context
 
         template <typename Iterator>
         void fill_n(Iterator it, std::size_t n,
@@ -37,6 +158,12 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
+        /// Set the first `n` elements with a value
+        /// \param it: first element to set
+        /// \param n: number of elements to set
+        /// \param v: value to set
+        /// \param cpu: device context
+
         template <typename Iterator>
         void fill_n(Iterator it, std::size_t n,
                     typename std::iterator_traits<Iterator>::value_type v, Cuda cuda) {
@@ -45,10 +172,16 @@ namespace superbblas {
         }
 #endif
 
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
+
         template <typename Iterator>
         typename std::iterator_traits<Iterator>::value_type *raw_pointer(Iterator it) {
             return &*it;
         }
+
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
 
         template <typename Iterator>
         const typename std::iterator_traits<Iterator>::value_type *const_raw_pointer(Iterator it) {
@@ -56,7 +189,13 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
+
         template <typename T> T *raw_pointer(thrust::device_ptr<T> it) { return it.get(); }
+
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
 
         template <typename T> const T *const_raw_pointer(thrust::device_ptr<T> it) {
             return it.get();
