@@ -10,13 +10,6 @@
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
-#ifdef SUPERBBLAS_USE_CUDA
-#    include <thrust/device_vector.h>
-#    include <thrust/execution_policy.h>
-#    include <thrust/host_vector.h>
-#    include <thrust/iterator/permutation_iterator.h>
-#    include <thrust/transform.h>
-#endif // SUPERBBLAS_USE_CUDA
 
 namespace superbblas {
 
@@ -28,6 +21,9 @@ namespace superbblas {
     template <unsigned int Nd> using Order = std::array<char, Nd>;
 
     namespace detail {
+
+        /// Vector of `IndexType`
+        template <typename XPU> using Indices = vector<IndexType, XPU>;
 
         //
         // Auxiliary functions
@@ -54,6 +50,20 @@ namespace superbblas {
             return true;
         }
 
+        template <typename T, unsigned long N>
+        std::array<T, N> min_each(const std::array<T, N> &a, const std::array<T, N> &b) {
+            std::array<T, N> r;
+            for (unsigned int i = 0; i < N; i++) r[i] = std::min(a[i], b[i]);
+            return r;
+        }
+
+        template <typename T, unsigned long N>
+        std::array<T, N> max_each(const std::array<T, N> &a, const std::array<T, N> &b) {
+            std::array<T, N> r;
+            for (unsigned int i = 0; i < N; i++) r[i] = std::max(a[i], b[i]);
+            return r;
+        }
+
         /// Return an array with all elements set to a given value
         /// \param v: input value
 
@@ -72,18 +82,73 @@ namespace superbblas {
             return r;
         }
 
-// #ifdef SUPERBBLAS_USE_CUDA
-//         template <typename XPU, typename T>
-//         using XVector =
-//             typename std::conditional<std::is_same<XPU, Cuda>::value, thrust::device_vector<T>,
-//                                       thrust::host_vector<T>>::type;
-//         using thrust::fill;
-// #else
-//         template <typename XPU, typename T>
-//         using XVector =
-//             typename std::conditional<std::is_same<XPU, Cuda>::value, void, std::vector<T>>::type;
-//         using std::fill;
-// #endif
+        /// Return an order with values 0, 1, 2, ..., N-1
+
+        template <unsigned long N>
+        Order<N> trivial_order() {
+            Order<N> r;
+            for (unsigned int i = 0; i < N; i++) r[i] = (char)i;
+            return r;
+        }
+
+        /// Return coor[i] % dim[i]
+        /// \param coors: input coordinate
+        /// \param dim: lattice dimensions
+
+        template <unsigned int Nd>
+        Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
+            Coor<Nd> r;
+            for (unsigned int j = 0; j < Nd; j++) r[j] = coor[j] % dim[j];
+            return r;
+        }
+
+        /// Return whether a coordinate is in a range
+        /// \param from: first coordinate of the range
+        /// \param size: size of the range
+        /// \param dim: lattice dimensions
+        /// \param coor: coordinate to prove
+
+        template <unsigned int Nd>
+        bool coor_in_range(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
+                           const Coor<Nd> &coor) {
+            for (unsigned int j = 0; j < Nd; j++) {
+                if ((coor[j] < from[j] || from[j] + size[j] <= coor[j]) &&
+                    (coor[j] + dim[j] < from[j] || from[j] + size[j] <= coor[j] + dim[j]))
+                    return false;
+            }
+            return true;
+        }
+
+        /// Return the closest coordinate to a given one in a range
+        /// NOTE: the lattice is NOT considered toroidal
+        /// \param from: first coordinate of the range
+        /// \param size: size of the range
+        /// \param coor: coordinate to prove
+
+        template <unsigned int Nd>
+        Coor<Nd> closest(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &coor) {
+            Coor<Nd> r;
+            for (unsigned int j = 0; j < Nd; j++) {
+                r[j] = from[j] + std::min(std::max(coor[j] - from[j], 0), size[j]);
+            }
+            return r;
+        }
+
+
+        /// Return the intersection between two ranges
+        /// \param from0: first coordinate of the first range
+        /// \param size0: size of the first range
+        /// \param from1: first coordinate of the second range
+        /// \param size1: size of the second range
+        /// \param fromr: first coordinate of the resulting range
+        /// \param sizer: size of the resulting range
+
+        template <unsigned int Nd>
+        void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
+                          const Coor<Nd> &size1, Coor<Nd> &fromr, Coor<Nd> &sizer) {
+            fromr = closest<Nd>(from0, size0, from1);
+            sizer = closest<Nd>(from0, size0, from1 + size1) - fromr;
+        }
 
         /// Return the jumps to the next consecutive element in that dimension
         /// \param dim: lattice dimension
@@ -233,77 +298,148 @@ namespace superbblas {
             return r;
         }
 
-        /// Return a permutation that transform an o0 coordinate into an o1 coordinate
+        /// Check that the copy operation is possible
         /// \param o0: dimension labels for the origin tensor
-        /// \param dim0: dimension size for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
-        /// \param to0: first coordinate not to copy from the origin tensor
+        /// \param size0: first coordinate not to copy from the origin tensor
+        /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
 
-        template <unsigned int Nd0, unsigned int Nd1, typename Vector>
-        void get_permutation(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-                             const Coor<Nd0> &to0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
-                             const Coor<Nd1> &from1, Vector &indices0, Vector &indices1, Cpu cpu) {
+        template <unsigned int Nd0, unsigned int Nd1>
+        bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0,
+                             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> dim1) {
+
+            return check_order(o0) && check_order(o1) && all_less_or_equal(size0, dim0) &&
+                   isomorphic_tensor<Nd0, Nd1>(o0, size0, o1, dim1);
+        }
+
+        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+
+        template <unsigned int Nd0, unsigned int Nd1>
+        Indices<Cpu> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                            const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                            const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                            const Coor<Nd1> &dim1, Cpu cpu) {
+            (void)from1;
+            (void)dim1;
             (void)cpu;
 
-            // Check orders
-            assert(check_order(o0));
-            assert(check_order(o1));
-            assert(all_less_or_equal(from0, to0) && all_less_or_equal(to0, dim0));
-
             // Check the compatibility of the tensors
-            assert((isomorphic_tensor<Nd0, Nd1>(o0, to0 - from0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Compute the indices
             Coor<Nd0> perm = find_permutation<Nd1, Nd0>(o1, o0);
-            Coor<Nd0> new_dim0 = to0 - from0;
-            Coor<Nd1> new_dim1 = reorder_coor<Nd0, Nd1>(new_dim0, perm);
-            assert(all_less_or_equal(new_dim1 + from1, dim1));
-            assert((reorder_coor<Nd1, Nd0>(new_dim1, perm) == new_dim0));
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm);
+            assert((reorder_coor<Nd1, Nd0>(size1, perm) == size0));
             std::size_t vol0 = volume<Nd0>(dim0);
-            std::size_t vol1 = volume<Nd1>(dim1);
-            std::size_t vol = volume<Nd0>(new_dim0);
-            indices0.resize(vol);
-            indices1.resize(vol);
+            std::size_t vol = volume<Nd0>(size0);
 
+            Indices<Cpu> indices0(vol);
             Coor<Nd0> stride0 = get_strides<Nd0>(dim0);
-            Coor<Nd1> stride1 = get_strides<Nd1>(dim1);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(new_dim1);
+            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
             for (std::size_t i = 0; i < vol; ++i) {
-                Coor<Nd1> c1 = index2coor<Nd1>(i, new_dim1, new_stride1) + from1;
-                indices0[i] = coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm), dim0, stride0);
-                indices1[i] = coor2index<Nd1>(c1, dim1, stride1);
+                Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
+                indices0[i] =
+                    coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm) + from0, dim0, stride0);
                 assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
+            }
+
+            return indices0;
+        }
+
+        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+
+        template <unsigned int Nd0, unsigned int Nd1>
+        Indices<Cpu> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                                 const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                                 const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                                 const Coor<Nd1> &dim1, Cpu cpu) {
+            (void)from0;
+            (void)cpu;
+
+            // Check the compatibility of the tensors
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Compute the indices
+            Coor<Nd0> perm = find_permutation<Nd1, Nd0>(o1, o0);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm);
+            assert((reorder_coor<Nd1, Nd0>(size1, perm) == size0));
+            std::size_t vol1 = volume<Nd1>(dim1);
+            std::size_t vol = volume<Nd0>(size0);
+
+            Indices<Cpu> indices1(vol);
+            Coor<Nd1> stride1 = get_strides<Nd1>(dim1);
+            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
+            for (std::size_t i = 0; i < vol; ++i) {
+                Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
+                indices1[i] = coor2index<Nd1>(c1 + from1, dim1, stride1);
                 assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
             }
 
-            //print(indices0, "indices0");
-            //print(indices1, "indices1");
+            return indices1;
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
-        /// Return a permutation that transform an o0 coordinate into an o1 coordinate
+        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
-        /// \param dim0: dimension size for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
-        /// \param to0: first coordinate not to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
-        /// \param dim1: dimension size for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
 
         template <unsigned int Nd0, unsigned int Nd1>
-        void get_permutation(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-                             const Coor<Nd0> &to0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
-                             const Coor<Nd1> &from1, thrust::device_vector<IndexType> &indices0,
-                             thrust::device_vector<IndexType> &indices1, Cuda cuda) {
+        Indices<Cuda> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                            const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                            const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                            const Coor<Nd1> &dim1, Cuda cuda) {
+
             (void)cuda;
-            thrust::host_vector<IndexType> indices0_host(0), indices1_host(0);
-            get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0_host,
-                                      indices1_host);
-            indices0 = indices0_host;
-            indices1 = indices1_host;
+            Indices<Cpu> indices_host =
+                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
+            Indices<Cuda> indices = indices_host;
+            return indices;
+        }
+
+        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+
+        template <unsigned int Nd0, unsigned int Nd1>
+        Indices<Cuda> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                                  const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                                  const Coor<Nd1> &dim1, Cuda cuda) {
+            (void)cuda;
+            Indices<Cpu> indices_host = get_permutation_destination<Nd0, Nd1>(
+                o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
+            Indices<Cuda> indices = indices_host;
+            return indices;
         }
 #endif // SUPERBBLAS_USE_CUDA
 
@@ -477,131 +613,104 @@ namespace superbblas {
 
         /// Copy the content of tensor o0 into o1
         /// \param o0: dimension labels for the origin tensor
-        /// \param dim0: dimension size for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
-        /// \param to0: first coordinate not to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
+        /// \param xpu0: device context for v0
         /// \param o1: dimension labels for the destination tensor
-        /// \param dim1: dimension size for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
+        /// \param xpu1: device context for v1
 
-        template <unsigned int Nd0, unsigned int Nd1, typename ConstIterator, typename Iterator>
-        void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &to0, ConstIterator v0, const Order<Nd1> &o1,
-                        const Coor<Nd1> &dim1, const Coor<Nd1> &from1, Iterator v1, Cpu cpu) {
-            (void)cpu;
-
-            // Get the permutation vectors
-            std::vector<IndexType> indices0(0), indices1(0);
-            get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0, indices1,
-                                      cpu);
-
-            // Do the copy
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-            for (unsigned int i = 0; i < indices0.size(); ++i)
-                v1[indices1[i]] = v0[indices0[i]];
-        }
-
-#ifdef SUPERBBLAS_USE_CUDA
-        template <unsigned int Nd0, unsigned int Nd1, typename ConstIterator, typename Iterator>
-        void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &to0, const ConstIterator v0, const Order<Nd1> &o1,
-                        const Coor<Nd1> &dim1, const Coor<Nd1> &from1, Iterator v1, Cuda cuda) {
-            (void)cuda;
+        template <unsigned int Nd0, unsigned int Nd1, typename ConstIterator, typename Iterator,
+                  typename XPU0, typename XPU1>
+        void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                        const Coor<Nd0> &dim0, const ConstIterator v0, XPU0 xpu0,
+                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                        Iterator v1, XPU1 xpu1) {
 
             // Get the permutation vectors
-            thrust::device_vector<IndexType> indices0(0), indices1(0);
-            get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0, indices1,
-                                      Cpu{});
+            Indices<XPU0> indices0 =
+                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu0);
+            Indices<XPU1> indices1 = get_permutation_destination<Nd0, Nd1>(o0, from0, size0, dim0,
+                                                                           o1, from1, dim1, xpu1);
 
             // Do the copy
-            auto it0 = thrust::make_permutation_iterator(v0, indices0.begin());
-            auto it1 = thrust::make_permutation_iterator(v1, indices1.begin());
-            thrust::copy_n(it0, indices0.size(), it1);
+            copy_n(v0, indices0.begin(), xpu0, indices0.size(), v1, indices1.begin(), xpu1);
         }
-#endif
-
-        // Copy the content of tensor o0 into o1
-        // \param o0: dimension labels for the origin tensor
-        // \param dim0: dimension size for the origin tensor
-        // \param from0: first coordinate to copy from the origin tensor
-        // \param to0: first coordinate not to copy from the origin tensor
-        // \param v0: data for the origin tensor
-        // \param o1: dimension labels for the destination tensor
-        // \param dim1: dimension size for the destination tensor
-        // \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        // \param v1: data for the destination tensor
-
-        // template <unsigned int Nd0, unsigned int Nd1, typename T>
-        // void local_shift(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-        //                  const Coor<Nd0> &to0, const thrust::host_vector<T> &v0,
-        //                  const Order<Nd1> &o1, const Coor<Nd1> &dim1, const Coor<Nd1> &from1,
-        //                  thrust::host_vector<T> &v1) {
-
-        //     // Get the permutation vectors
-        //     thrust::host_vector<IndexType> indices0(0), indices1(0);
-        //     get_permutation<Nd0, Nd1>(o0, dim0, from0, to0, o1, dim1, from1, indices0, indices1);
-
-        //     // Do the copy
-        //     auto it0 = thrust::make_permutation_iterator(v0.begin(), indices0.begin());
-        //     auto it1 = thrust::make_permutation_iterator(v1.begin(), indices1.begin());
-        //     thrust::copy_n(it0, indices0.size(), it1);
-        // }
     }
 
     /// Copy the content of tensor o0 into o1
     /// \param o0: dimension labels for the origin tensor
-    /// \param dim0: dimension size for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
-    /// \param to0: first coordinate not to copy from the origin tensor
+    /// \param size0: number of coordinates to copy in each direction
+    /// \param dim0: dimension size for the origin tensor
     /// \param v0: data for the origin tensor
+    /// \param ctx0: device context for v0
     /// \param o1: dimension labels for the destination tensor
-    /// \param dim1: dimension size for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    /// \param dim1: dimension size for the destination tensor
     /// \param v1: data for the destination tensor
+    /// \param ctx1: device context for v1
 
     template <unsigned int Nd0, unsigned int Nd1, typename T>
-    void local_copy(const char *o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-                    const Coor<Nd0> &to0, const T *v0, const char *o1, const Coor<Nd1> &dim1,
-                    const Coor<Nd1> &from1, T *v1, Context ctx) {
-        assert(std::strlen(o0) == Nd0);
-        assert(std::strlen(o1) == Nd1);
+    void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                    const Coor<Nd0> &dim0, const T *v0, Context ctx0, const char *o1,
+                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, T *v1, Context ctx1) {
+        if (std::strlen(o0) != Nd0)
+            throw std::runtime_error("The length of `o0` does not match the template argument");
+        if (std::strlen(o1) != Nd1)
+            throw std::runtime_error("The length of `o1` does not match the template argument");
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
         const Order<Nd1> o1_ = detail::toArray<Nd1>(o1);
-        local_copy<Nd0, Nd1>(o0_, dim0, from0, to0, v0, o1_, dim1, from1, v1, ctx);
+        local_copy<Nd0, Nd1>(o0_, from0, size0, dim0, v0, ctx0, o1_, from1, dim1, v1, ctx1);
     }
 
     /// Copy the content of tensor o0 into o1
     /// \param o0: dimension labels for the origin tensor
-    /// \param dim0: dimension size for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
-    /// \param to0: first coordinate not to copy from the origin tensor
+    /// \param size0: number of coordinates to copy in each direction
+    /// \param dim0: dimension size for the origin tensor
     /// \param v0: data for the origin tensor
+    /// \param ctx0: device context for v0
     /// \param o1: dimension labels for the destination tensor
-    /// \param dim1: dimension size for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    /// \param dim1: dimension size for the destination tensor
     /// \param v1: data for the destination tensor
+    /// \param ctx1: device context for v1
 
     template <unsigned int Nd0, unsigned int Nd1, typename T>
-    void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Coor<Nd0> &from0,
-                    const Coor<Nd0> &to0, const T *v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
-                    const Coor<Nd1> &from1, T *v1, Context ctx) {
-        switch (ctx.plat) {
-        case CPU:
-            detail::local_copy<Nd0, Nd1>(o0, dim0, from0, to0, v0, o1, dim1, from1, v1,
-                                         ctx.toCpu());
-            break;
+    void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                    const Coor<Nd0> &dim0, const T *v0, Context ctx0, const Order<Nd1> &o1,
+                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, T *v1, Context ctx1) {
+
+        // Check the validity of the operation
+        if (!detail::check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
+            throw std::runtime_error("The orders and dimensions of the origin tensor are not "
+                                     "compatible with the destination tensor");
+
+        // Do the operation
+        if (ctx0.plat == CPU && ctx1.plat == CPU) {
+            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1, dim1,
+                                         v1, ctx1.toCpu());
+        }
 #ifdef SUPERBBLAS_USE_CUDA
-        case CUDA:
-            detail::local_copy<Nd0, Nd1>(o0, dim0, from0, to0, thrust::device_pointer_cast(v0), o1,
-                                         dim1, from1, thrust::device_pointer_cast(v1),
-                                         ctx.toCuda());
-            break;
+        else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
+            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1, dim1,
+                                         detail::encapsulate_pointer(v1), ctx1.toCuda());
+        } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
+            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
+                                         ctx0.toCuda(), o1, from1, dim1, v1, ctx1.toCpu());
+        } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
+            detail::local_copy<Nd0, Nd1>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
+                                         ctx0.toCuda(), o1, from1, dim1,
+                                         detail::encapsulate_pointer(v1), ctx1.toCuda());
+        }
 #endif
-        default: throw std::runtime_error("Unsupported platform");
+        else {
+            throw std::runtime_error("Unsupported platform");
         }
     }
 
@@ -652,8 +761,8 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
             detail::local_contraction<Nd0, Nd1, Ndo>(
-                o0, dim0, conj0, thrust::device_pointer_cast(v0), o1, dim1, conj1,
-                thrust::device_pointer_cast(v1), o_r, dimr, thrust::device_pointer_cast(vr),
+                o0, dim0, conj0, detail::encapsulate_pointer(v0), o1, dim1, conj1,
+                detail::encapsulate_pointer(v1), o_r, dimr, detail::encapsulate_pointer(vr),
                 ctx.toCuda());
             break;
 #endif
