@@ -1,13 +1,12 @@
 
-#include "platform.h"
-#include "template.h"
-#include <complex>
-
 #ifndef THIS_FILE
 #    define THIS_FILE "blas_cblas_tmpl.hpp"
 #endif
 
 #include "cblas.h"
+#include "platform.h"
+#include "template.h"
+#include <complex>
 
 namespace superbblas {
 
@@ -118,7 +117,7 @@ namespace superbblas {
             return XDOT(n, x, incx, y, incy);
 #else
             SCALAR r = (SCALAR)0.0;
-            return XDOT(n, x, incx, y, incy, &r);
+            XDOT(n, x, incx, y, incy, &r);
             return r;
 #endif // __SUPERBBLAS_USE_COMPLEX
         }
