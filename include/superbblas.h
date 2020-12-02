@@ -5,6 +5,7 @@
 #include "superbblas/platform.h"
 #include "superbblas/blas.h"
 #include "superbblas/tensor.h"
+#include "superbblas/dist.h"
 // clang-format on
 
 #endif // __SUPERBBLAS_H__

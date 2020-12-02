@@ -85,9 +85,16 @@ namespace superbblas {
         void toGpuamd() const { throw std::runtime_error("Gpuamd: unsupported platform"); }
     };
 
-    Context createCpuContext() { return Context{CPU, 0}; }
-    Context createCudaContext(int device = 0) { return Context{CUDA, device}; }
-    Context createGpuamdContext(int device = 0) { return Context{GPUAMD, device}; }
+    /// Return a CPU context
+    inline Context createCpuContext() { return Context{CPU, 0}; }
+
+    /// Return a CUDA context
+    /// \param device: device ID
+    inline Context createCudaContext(int device = 0) { return Context{CUDA, device}; }
+
+    /// Return a GPUAMD context
+    /// \param device: device ID
+    inline Context createGpuamdContext(int device = 0) { return Context{GPUAMD, device}; }
 }
 
 #endif // __SUPERBBLAS_PLATFORM__
