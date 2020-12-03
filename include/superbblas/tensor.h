@@ -236,48 +236,30 @@ namespace superbblas {
         /// Return a new array {coor[perm[0]], coor[perm[1]], ...}
         /// \param coor: input array
         /// \param perm: permutation
+        /// \param black: value to set when perm[i] < 0
         ///
         /// NOTE: the output array will have zero on negative elements of `perm`.
 
         template <unsigned int Nd0, unsigned int Nd1>
-        Coor<Nd1> reorder_coor(const Coor<Nd0> &coor, const Coor<Nd1> &perm) {
+        Coor<Nd1> reorder_coor(const Coor<Nd0> &coor, const Coor<Nd1> &perm, IndexType blanck = 0) {
             Coor<Nd1> r;
-            for (unsigned int i = 0; i < Nd1; ++i) r[i] = perm[i] >= 0 ? coor[perm[i]] : 0;
+            for (unsigned int i = 0; i < Nd1; ++i) r[i] = perm[i] >= 0 ? coor[perm[i]] : blanck;
             return r;
         }
 
-        /// Check that there exists a permutation from one labels order to the other
-        /// \param o0: dimension labels
-        /// \param o1: dimension labels
-        ///
-        /// Return whether all labels in o0 are also in o1
-
-        template <unsigned int Nd0, unsigned int Nd1>
-        bool isomorphic_tensor(const Order<Nd0> &o0, const Order<Nd1> &o1) {
-            for (const auto &i : o0)
-                if (std::find(o1.begin(), o1.end(), i) == o1.end()) return false;
-            for (const auto &i : o1)
-                if (std::find(o0.begin(), o0.end(), i) == o0.end()) return false;
-            return true;
-        }
-
-        /// Check that there exists a permutation from one labels order to the other for all dimensions
-        /// with size larger than one
+        /// Check that there exists a permutation from the first tensor to the second
         /// \param o0: dimension labels
         /// \param dim0: dimension size for o0
         /// \param o1: dimension labels
         /// \param dim1: dimension size for o0
         ///
         /// Return whether all labels with dimension size greater than one in o0 are also in o1 and
-        /// vice versa
+        /// and the dimension of the first is smaller or equal than the second
 
         template <unsigned int Nd0, unsigned int Nd1>
-        bool isomorphic_tensor(Order<Nd0> o0, Coor<Nd0> dim0, Order<Nd1> o1, Coor<Nd1> dim1) {
-
+        bool is_a_subset_of(Order<Nd0> o0, Coor<Nd0> dim0, Order<Nd1> o1) {
             for (unsigned int i = 0; i < o0.size(); ++i)
                 if (dim0[i] > 0 && std::find(o1.begin(), o1.end(), o0[i]) == o1.end()) return false;
-            for (unsigned int i = 0; i < o1.size(); ++i)
-                if (dim1[i] > 0 && std::find(o0.begin(), o0.end(), o1[i]) == o0.end()) return false;
             return true;
         }
 
@@ -289,13 +271,21 @@ namespace superbblas {
 
         template <unsigned int Nd0, unsigned int Nd1>
         Coor<Nd1> find_permutation(const Order<Nd0> &o0, const Order<Nd1> &o1) {
-            assert((isomorphic_tensor<Nd0, Nd1>(o0, o1)));
             Coor<Nd1> r;
             for (unsigned int i = 0; i < Nd1; ++i) {
                 const auto j = std::find(o0.begin(), o0.end(), o1[i]);
                 r[i] = (j != o0.end() ? j - o0.begin() : -1);
             }
             return r;
+        }
+
+        /// Check that all values are positive
+        /// \param from: coordinates to check
+
+        template <unsigned int Nd>
+        bool check_positive(const Coor<Nd> &from) {
+            Coor<Nd> zeros = {0};
+            return all_less_or_equal(zeros, from);
         }
 
         /// Check that the copy operation is possible
@@ -310,8 +300,13 @@ namespace superbblas {
         bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0,
                              const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> dim1) {
 
-            return check_order(o0) && check_order(o1) && all_less_or_equal(size0, dim0) &&
-                   isomorphic_tensor<Nd0, Nd1>(o0, size0, o1, dim1);
+            if (!(check_order(o0) && check_order(o1) && check_positive<Nd0>(size0) &&
+                  all_less_or_equal(size0, dim0) && is_a_subset_of<Nd0, Nd1>(o0, size0, o1)))
+                return false;
+
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+            return all_less_or_equal(size1, dim1);
         }
 
         /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
@@ -334,22 +329,23 @@ namespace superbblas {
             (void)cpu;
 
             // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Compute the indices
-            Coor<Nd0> perm = find_permutation<Nd1, Nd0>(o1, o0);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm);
-            assert((reorder_coor<Nd1, Nd0>(size1, perm) == size0));
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
             std::size_t vol0 = volume<Nd0>(dim0);
             std::size_t vol = volume<Nd0>(size0);
 
             Indices<Cpu> indices0(vol);
             Coor<Nd0> stride0 = get_strides<Nd0>(dim0);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
+            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             for (std::size_t i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
                 indices0[i] =
-                    coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm) + from0, dim0, stride0);
+                    coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm1) + from0, dim0, stride0);
                 assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
             }
 
@@ -375,12 +371,12 @@ namespace superbblas {
             (void)cpu;
 
             // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Compute the indices
-            Coor<Nd0> perm = find_permutation<Nd1, Nd0>(o1, o0);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm);
-            assert((reorder_coor<Nd1, Nd0>(size1, perm) == size0));
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
             std::size_t vol1 = volume<Nd1>(dim1);
             std::size_t vol = volume<Nd0>(size0);
 
@@ -601,18 +597,18 @@ namespace superbblas {
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
             char transca = o1_trans ? (conj1 ? 'C' : 'T') : 'N';
-            int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volA : volB);
+            int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volA);
             int strideab =
-                (o0_starts_with_T ? volume<Nd0>(dim0) / volT : (!o0_trans ? volA : volB));
-            int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volC : volA);
+                (o0_starts_with_T ? volume<Nd0>(dim0) / volT : (!o0_trans ? volB : volA));
+            int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volA : volC);
             int strideca =
-                (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volC : volA));
-            int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volC : volB);
+                (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
+            int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volC);
             int stridecb =
                 (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volC : volB));
             using value_type = typename std::iterator_traits<ConstIterator>::value_type;
             value_type one = 1.0, zero = 0.0;
-            xgemm_batch_strided<value_type>(transab, transca, (int)nB, (int)nC, (int)nA, one,
+            xgemm_batch_strided<value_type>(transab, transca, (int)volB, (int)volC, (int)volA, one,
                                             const_raw_pointer(v0), ldab, strideab,
                                             const_raw_pointer(v1), ldca, strideca, zero,
                                             raw_pointer(vr), ldcb, stridecb, volT, xpu);
@@ -694,6 +690,16 @@ namespace superbblas {
                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1, T *v1, Context ctx1) {
 
         // Check the validity of the operation
+
+        if (!detail::check_positive<Nd0>(from0))
+            throw std::runtime_error("All values in `from0` should be non-negative");
+
+        if (!detail::check_positive<Nd0>(size0))
+            throw std::runtime_error("All values in `size0` should be non-negative");
+
+        if (!detail::check_positive<Nd1>(from1))
+            throw std::runtime_error("All values in `from1` should be non-negative");
+
         if (!detail::check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
             throw std::runtime_error("The orders and dimensions of the origin tensor are not "
                                      "compatible with the destination tensor");
