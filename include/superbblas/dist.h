@@ -320,52 +320,30 @@ namespace superbblas {
             return r;
         }
 
-        /// Unpack packed tensors from a MPI communication
-        /// \param indicesToReceive: indices to send from vector v
-        /// \param v: vector to copy the received elements
-        /// \param xpu: device context
-
-        template <unsigned int Nd, typename T, typename XPU>
-        void unpack(const PackedValues<T> &r, const std::shared_ptr<From_size<Nd>> toReceive,
-                    Component<Nd, T, XPU> &v, unsigned int avoid_rank, unsigned int ncomponents0,
-                    unsigned int nprocs) {
-            Order<Nd> o = trivial_order<Nd>();
-            unpack<Nd, Nd>(o, r.buf.begin(), Cpu{}, o, toReceive.begin(), avoid_rank * ncomponents0,
-                           v.dim, v.it, v.xpu);
-            unpack<Nd, Nd>(o, r.buf.begin(), Cpu{}, o,
-                           toReceive.begin() + (avoid_rank + 1) * ncomponents0,
-                           (nprocs - avoid_rank - 1) * ncomponents0, v.dim, v.it, v.xpu);
-        }
-
-        /// unpack a list of subtensors contiguously in memory 
-        /// \param o0: dimension labels for the origin tensor
+        /// Unpack a list of subtensors contiguously in memory 
         /// \param v0: data for the origin tensor
         /// \param xpu0: device context for v0
-        /// \param o1: dimension labels for the destination tensor
         /// \param fs1: a From_size iterator
         /// \param nfs1: number of subtensors to unpack
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
         /// \param xpu1: device context for v1
 
-        template <unsigned int Nd0, unsigned int Nd1, typename ConstIterator, typename Iterator,
-                  typename XPU0, typename XPU1>
-        void unpack(const Order<Nd0> &o0, const ConstIterator v0, XPU0 xpu0, const Order<Nd1> &o1,
-                    From_size_iterator<Nd0> fs1, std::size_t nfs1, const Coor<Nd0> &dim1,
-                    Iterator v1, XPU1 xpu1) {
+        template <unsigned int Nd, typename T, typename XPU0, typename XPU1>
+        void unpack(data<const T, XPU0> v0, XPU0 xpu0, From_size_const_iterator<Nd> fs1,
+                    std::size_t nfs1, const Coor<Nd> &dim1, data<T, XPU1> v1, XPU1 xpu1) {
 
-            std::size_t vol = volume(get_dim(fs1, nfs1));
+            std::size_t vol = volume<Nd>(get_dim<Nd>(fs1, nfs1));
 
             // Get the permutation vectors
             Indices<Cpu> indices1(vol);
-            Coor<Nd0> zeros = fill_coor<Nd0>(0);
+            Coor<Nd> zeros = fill_coor<Nd>(0);
+            Order<Nd> o = trivial_order<Nd>();
             for (std::size_t i = 0, n = 0; i < nfs1; ++i) {
-                Coor<Nd0> perm = find_permutation<Nd0, Nd1>(o0, o1);
-                Coor<Nd0> fromi = (*(fs1 + i))[0], sizei = (*(fs1 + i))[1];
-                Coor<Nd1> dim0 = reorder_coor<Nd1, Nd0>(sizei, perm);
-                std::size_t voli = volume(sizei);
-                Indices<Cpu> indices = get_permutation_destination<Nd0, Nd1>(
-                    o0, zeros, dim0, dim0, o1, fromi, dim1, Cpu{});
+                Coor<Nd> fromi = fs1[i][0], sizei = fs1[i][1];
+                std::size_t voli = volume<Nd>(sizei);
+                Indices<Cpu> indices = get_permutation_destination<Nd, Nd>(
+                    o, zeros, sizei, sizei, o, fromi, dim1, Cpu{});
                 std::copy_n(indices.begin(), voli, indices1.begin() + n);
                 n += voli;
                 assert(n <= vol);
@@ -373,7 +351,22 @@ namespace superbblas {
             Indices<XPU1> indices1_xpu1 = indices1;
 
             // Do the copy
-            copy_n(v0, xpu0, vol, v1, indices1.begin(), xpu1);
+            copy_n<IndexType, T>(v0, xpu0, vol, v1, indices1.begin(), xpu1);
+        }
+
+        /// Unpack packed tensors from a MPI communication
+        /// \param indicesToReceive: indices to send from vector v
+        /// \param v: vector to copy the received elements
+        /// \param xpu: device context
+
+        template <unsigned int Nd, typename T, typename XPU>
+        void unpack(const PackedValues<T> &r, const From_size<Nd> toReceive,
+                    const Component<Nd, T, XPU> &v, unsigned int avoid_rank,
+                    unsigned int ncomponents0, unsigned int nprocs) {
+            unpack<Nd, T>(r.buf.data(), Cpu{}, toReceive.begin(), avoid_rank * ncomponents0, v.dim,
+                          v.it, v.xpu);
+            unpack<Nd, T>(r.buf.data(), Cpu{}, toReceive.begin() + (avoid_rank + 1) * ncomponents0,
+                          (nprocs - avoid_rank - 1) * ncomponents0, v.dim, v.it, v.xpu);
         }
 
         /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
@@ -448,10 +441,9 @@ namespace superbblas {
                 MPI_Request r0 = r;
                 MPI_Wait(&r0, MPI_STATUS_IGNORE);
 
-                // Release v0ToSend
-                // NOTE: the releasing is unnecessary, but v0ToSend needs to be captured to avoid
+                // Do this copy is unnecessary, but v0ToSend needs to be captured to avoid
                 // being released until this point
-                v0ToSend.reset();
+                std::shared_ptr<PackedValues<T>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
                 unpack<Nd1>(*v1ToReceive, *toReceive, v1, comm.rank, ncomponents0, comm.nprocs);
@@ -582,9 +574,25 @@ namespace superbblas {
                   const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, T, XPU0, XPU1> &v1, Comm comm) {
 
+            // Check the dimensions of p0 and p1
+            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
+            unsigned int ncomponents1 = v1.first.size() + v1.second.size();
+
+            if (p0.size() != ncomponents0 * comm.nprocs)
+                throw std::runtime_error("Invalid number of elements in the tensor distribution");
+
+            if (p1.size() != ncomponents1 * comm.nprocs)
+                throw std::runtime_error("Invalid number of elements in the tensor distribution");
+
+            // Check the compatibility of the tensors
+            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
+            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
+            if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
+                throw std::runtime_error("Invalid copy operation");
+
+
             // Split the work for each receiving component
             std::vector<Request> reqs;
-            unsigned int ncomponents1 = v1.first.size() + v1.second.size();
             for (unsigned int i = 0; i < ncomponents1; ++i) {
                 for (const Component<Nd1, T, XPU0> &c : v1.first) {
                     if (c.componentId == i)
@@ -677,6 +685,24 @@ namespace superbblas {
                  wait(mpi_req);
              };
          }
+
+         /// Copy the content of plural tensor v0 into v1
+         /// \param p0: partitioning of the origin tensor in consecutive ranges
+         /// \param mpicomm: MPI communicator context
+         /// \param ncomponents0: number of consecutive components in each MPI rank
+         /// \param o0: dimension labels for the origin tensor
+         /// \param from0: first coordinate to copy from the origin tensor
+         /// \param size0: number of elements to copy in each dimension
+         template <unsigned int Nd, typename Comm>
+         void check_from_size(const From_size<Nd> &p, int ncomponents, Comm comm,
+                              const char *var_name = "") {
+             if (p.size() != ncomponents * comm.nprocs) {
+                 std::stringstream s;
+                 s << "Invalid number of elements in tensor distribution " << var_name << "; it is "
+                   << p.size() << " and it should be " << ncomponents * comm.nprocs;
+                 throw std::runtime_error(s.str());
+             }
+         }
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -697,18 +723,23 @@ namespace superbblas {
     /// \param ctx1: context for each data pointer in v1
 
     template <unsigned int Nd0, unsigned int Nd1, typename T>
-    void copy(const From_size<Nd0> &p0, int ncomponents0, MPI_Comm mpicomm, const Coor<Nd0> &from0,
-              const Coor<Nd0> &size0, const Order<Nd0> &o0, const T **v0, Context *ctx0,
-              const From_size<Nd1> &p1, int ncomponents1, const Coor<Nd1> &from1,
-              const Order<Nd1> &o1, T **v1, Context *ctx1) {
+    void copy(const From_size<Nd0> &p0, int ncomponents0, MPI_Comm mpicomm, const Order<Nd0> &o0,
+              const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0, Context *ctx0,
+              const From_size<Nd1> &p1, int ncomponents1, const Order<Nd1> &o1,
+              const Coor<Nd1> &from1, T **v1, Context *ctx1) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
-        detail::copy<Nd0, Nd1>(
-            p0, from0, size0, o0,
-            detail::get_components(v0, ctx0, ncomponents0, p0.begin() + comm.rank * ncomponents0),
-            p1, from1, o1,
-            detail::get_components(v1, ctx1, ncomponents1, p1.begin() + comm.rank * ncomponents1),
-            comm);
+
+        detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");
+        detail::check_from_size<Nd1>(p1, ncomponents0, comm, "p1");
+
+        detail::copy<Nd0, Nd1>(p0, from0, size0, o0,
+                               detail::get_components<Nd0>(v0, ctx0, ncomponents0,
+                                                           p0.begin() + comm.rank * ncomponents0),
+                               p1, from1, o1,
+                               detail::get_components<Nd1>(v1, ctx1, ncomponents1,
+                                                           p1.begin() + comm.rank * ncomponents1),
+                               comm);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -733,10 +764,13 @@ namespace superbblas {
               const From_size<Nd1> &p1, int ncomponents1, const Order<Nd1> o1,
               const Coor<Nd1> from1, T **v1, Context *ctx1) {
 
+        detail::SelfComm comm = detail::get_comm();
+        detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");
+        detail::check_from_size<Nd1>(p1, ncomponents1, comm, "p1");
+
         detail::copy<Nd0, Nd1>(
             p0, from0, size0, o0, detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0.begin()),
-            p1, from1, o1, detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1.begin()),
-            detail::get_comm());
+            p1, from1, o1, detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1.begin()), comm);
     }
 }
 
