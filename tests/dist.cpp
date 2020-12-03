@@ -10,7 +10,7 @@
 
 using namespace superbblas;
 
-template<unsigned int Nd> From_size<Nd> disp_tensor(Coor<Nd> dim, Coor<Nd> procs) {
+template<unsigned int Nd> From_size<Nd> dist_tensor(Coor<Nd> dim, Coor<Nd> procs) {
     int vol_procs = (int)detail::volume<Nd>(procs);
     From_size<Nd> fs(vol_procs);
     for (int rank = 0; rank < vol_procs; ++rank) {
@@ -21,13 +21,16 @@ template<unsigned int Nd> From_size<Nd> disp_tensor(Coor<Nd> dim, Coor<Nd> procs
     }
     return fs;
 }
- 
-int main(void) {
+
+int main(int argc, char **argv) {
     int nprocs, rank;
 #ifdef SUPERBBLAS_USE_MPI
-    MPI_Comm_size(comm, &nprocs);
-    MPI_Comm_rank(comm, &rank);
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #else
+    (void)argc;
+    (void)argv;
     nprocs = 1;
     rank = 0;
 #endif
@@ -36,10 +39,10 @@ int main(void) {
         constexpr unsigned int Nd = 2;
         using Tensor = std::vector<double>;
         const Coor<Nd> dim0 = {nprocs * 5, nprocs * 2};
-        From_size<Nd> p0 = disp_tensor<Nd>(dim0, {nprocs, nprocs});
+        From_size<Nd> p0 = dist_tensor<Nd>(dim0, {nprocs, nprocs});
         const Coor<Nd> local_dim0 = p0[rank][1];
         const Coor<Nd> dim1 = {nprocs * 2, nprocs * 2};
-        From_size<Nd> p1 = disp_tensor<Nd>(dim1, {nprocs, 1});
+        From_size<Nd> p1 = dist_tensor<Nd>(dim1, {nprocs, 1});
         const Coor<Nd> local_dim1 = p1[rank][1];
         
         unsigned int vol0 = detail::volume<Nd>(local_dim0);;
@@ -80,10 +83,10 @@ int main(void) {
         constexpr unsigned int Nd = 2;
         using Tensor = thrust::device_vector<double>;
         const Coor<Nd> dim0 = {nprocs * 5, nprocs * 2};
-        From_size<Nd> p0 = disp_tensor<Nd>(dim0, {nprocs, nprocs});
+        From_size<Nd> p0 = dist_tensor<Nd>(dim0, {nprocs, nprocs});
         const Coor<Nd> local_dim0 = p0[rank][1];
         const Coor<Nd> dim1 = {nprocs * 2, nprocs * 2};
-        From_size<Nd> p1 = disp_tensor<Nd>(dim1, {nprocs, 1});
+        From_size<Nd> p1 = dist_tensor<Nd>(dim1, {nprocs, 1});
         const Coor<Nd> local_dim1 = p1[rank][1];
         
         unsigned int vol0 = detail::volume<Nd>(local_dim0);;
@@ -120,6 +123,9 @@ int main(void) {
         }
     }
 #endif
+#ifdef SUPERBBLAS_USE_MPI
+    MPI_Finalize();
+#endif // SUPERBBLAS_USE_MPI
 
     return 0;
 }
