@@ -110,7 +110,7 @@ namespace superbblas {
         template <typename T> MPI_Datatype get_mpi_datatype();
         template <> MPI_Datatype get_mpi_datatype<char>() { return MPI_CHAR; }
         template <> MPI_Datatype get_mpi_datatype<float>() { return MPI_FLOAT; }
-        template <> MPI_Datatype get_mpi_datatype<double>() { return MPI_DOBULE; }
+        template <> MPI_Datatype get_mpi_datatype<double>() { return MPI_DOUBLE; }
 #endif // SUPERBBLAS_USE_MPI
 
         /// Component of a tensor
@@ -376,6 +376,35 @@ namespace superbblas {
             copy_n(v0, xpu0, vol, v1, indices1.begin(), xpu1);
         }
 
+        /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
+        /// \param o0: dimension labels for the origin tensor
+        /// \param toSend: list of tensor ranges to be sent for each component
+        /// \param v0: origin data to send
+        /// \param o1: dimension labels for the destination tensor
+        /// \param toReceive: list of tensor ranges to receive
+        /// \param v1: destination data
+        /// \param ncomponents1: number of components on the destination tensor
+        /// \param comm: communication
+
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1,
+                  typename XPUr>
+        Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
+                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                             const Order<Nd1> &o1, const std::shared_ptr<From_size<Nd1>> toReceive,
+                             const Component<Nd1, T, XPUr> &v1, unsigned int ncomponents1,
+                             SelfComm comm) {
+            (void)o0;
+            (void)toSend;
+            (void)v0;
+            (void)o1;
+            (void)toReceive;
+            (void)v1;
+            (void)ncomponents1;
+            if (comm.nprocs <= 1) return [] {};
+            throw std::runtime_error("Unsupported SelfComm with nprocs > 1");
+        }
+
+#ifdef SUPERBBLAS_USE_MPI
         /// Asynchronous sending and receiving
         /// \param o0: dimension labels for the origin tensor
         /// \param toSend: list of tensor ranges to be sent for each component
@@ -387,19 +416,16 @@ namespace superbblas {
         /// \param comm: communication
 
         template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1,
-                  typename XPUr, typename Comm>
+                  typename XPUr>
         Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, const std::shared_ptr<From_size<Nd1>> toReceive,
                              const Component<Nd1, T, XPUr> &v1, unsigned int ncomponents1,
-                             Comm comm) {
+                             MpiComm comm) {
 
             if (comm.nprocs <= 1) return [] {};
 
-#ifndef SUPERBBLAS_USE_MPI
             (void)v1;
-            throw std::runtime_error("Compiled without MPI support");
-#endif // SUPERBBLAS_USE_MPI
 
             // Pack v0 and prepare for receiving data from other processes
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -410,7 +436,6 @@ namespace superbblas {
                 prepare_pack<Nd1, T>(&*toReceive, 1, comm.rank, ncomponents0, comm.nprocs));
 
             // Do the MPI communication
-#ifdef SUPERBBLAS_USE_MPI
             MPI_Datatype dtype = get_mpi_datatype<T>();
             MPI_Request r;
             MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(), v0ToSend->displ.data(),
@@ -420,7 +445,8 @@ namespace superbblas {
             // Do this later
             return [=] {
                 // Wait for the MPI communication to finish
-                MPI_Wait(&r, MPI_STATUS_IGNORE);
+                MPI_Request r0 = r;
+                MPI_Wait(&r0, MPI_STATUS_IGNORE);
 
                 // Release v0ToSend
                 // NOTE: the releasing is unnecessary, but v0ToSend needs to be captured to avoid
@@ -430,8 +456,8 @@ namespace superbblas {
                 // Copy back to v1
                 unpack<Nd1>(*v1ToReceive, *toReceive, v1, comm.rank, ncomponents0, comm.nprocs);
             };
-#endif // SUPERBBLAS_USE_MPI
         }
+#endif // SUPERBBLAS_USE_MPI
 
         /// Return a permutation that transform an o0 coordinate into an o1 coordinate
         /// \param o0: dimension labels for the origin tensor
@@ -656,7 +682,7 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_MPI
     /// Copy the content of plural tensor v0 into v1
     /// \param p0: partitioning of the origin tensor in consecutive ranges
-    /// \param comm: MPI communicator context
+    /// \param mpicomm: MPI communicator context
     /// \param ncomponents0: number of consecutive components in each MPI rank
     /// \param o0: dimension labels for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
@@ -671,12 +697,12 @@ namespace superbblas {
     /// \param ctx1: context for each data pointer in v1
 
     template <unsigned int Nd0, unsigned int Nd1, typename T>
-    void copy(const From_size<Nd0> &p0, int ncomponents0, MPI_Comm comm, const Coor<Nd0> &from0,
+    void copy(const From_size<Nd0> &p0, int ncomponents0, MPI_Comm mpicomm, const Coor<Nd0> &from0,
               const Coor<Nd0> &size0, const Order<Nd0> &o0, const T **v0, Context *ctx0,
               const From_size<Nd1> &p1, int ncomponents1, const Coor<Nd1> &from1,
               const Order<Nd1> &o1, T **v1, Context *ctx1) {
 
-        MpiComm comm = detail::get_comm(comm);
+        detail::MpiComm comm = detail::get_comm(mpicomm);
         detail::copy<Nd0, Nd1>(
             p0, from0, size0, o0,
             detail::get_components(v0, ctx0, ncomponents0, p0.begin() + comm.rank * ncomponents0),
