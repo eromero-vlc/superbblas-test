@@ -581,9 +581,9 @@ namespace superbblas {
             bool or_starts_with_T = (nT == 0 || o_r.size() == 0 || o_r[0] == sT);
 
             // Check if o0 and o1 need transpose
-            bool o0_trans = (o0.size() > 0 && o0[o0_starts_with_T ? nT : 0] == sB);
-            bool o1_trans = (o1.size() > 0 && o1[o1_starts_with_T ? nT : 0] == sA);
-            bool or_trans = (o_r.size() > 0 && o_r[o0_starts_with_T ? nT : 0] == sB);
+            bool o0_trans = (o0.size() > nT && o0[o0_starts_with_T ? nT : 0] == sB);
+            bool o1_trans = (o1.size() > nT && o1[o1_starts_with_T ? nT : 0] == sA);
+            bool or_trans = (o_r.size() > nT && o_r[o0_starts_with_T ? nT : 0] == sB);
             assert(!or_trans);          // Not supported this case for now
             assert(o0_trans || !conj0); // Not supported this case for now
             assert(o1_trans || !conj1); // Not supported this case for now
@@ -591,10 +591,9 @@ namespace superbblas {
             // Compute the volume for each piece
             int volT = nT == 0 ? 1 : volume<Nd0>(o0, dim0, sT, nT);
             int volA = volume<Nd0>(o0, dim0, sA, nA);
-            int volB = volume<Nd0>(o0, dim0, sB, nB);
-            int volC = volume<Nd1>(o1, dim1, sC, nC);
-            if (nT == 0 && volB == 0) volB = 1;
-            if (nT == 0 && volC == 0) volC = 1;
+            int volA_nonzero = volA > 0 ? 1 : 0;
+            int volB = nB == 0 ? volA_nonzero : volume<Nd0>(o0, dim0, sB, nB);
+            int volC = nC == 0 ? volA_nonzero : volume<Nd1>(o1, dim1, sC, nC);
 
             // Avoid issues with uninitialized memory by zeroing out
             fill_n(vr, volume<Ndo>(dimr), 0.0, xpu);
