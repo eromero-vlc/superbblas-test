@@ -322,6 +322,21 @@ namespace superbblas {
             return CUDA_C_64F;
         }
 
+        template <typename T> inline cublasComputeType_t toCudaComputeType(void);
+
+        template <> inline cublasComputeType_t toCudaComputeType<float>(void) {
+            return CUBLAS_COMPUTE_32F;
+        }
+        template <> inline cublasComputeType_t toCudaComputeType<std::complex<float>>(void) {
+            return CUBLAS_COMPUTE_32F;
+        }
+        template <> inline cublasComputeType_t toCudaComputeType<double>(void) {
+            return CUBLAS_COMPUTE_64F;
+        }
+        template <> inline cublasComputeType_t toCudaComputeType<std::complex<double>>(void) {
+            return CUBLAS_COMPUTE_64F;
+        }
+
         inline cublasOperation_t toCublasTrans(char trans) {
             switch (trans) {
             case 'n':
@@ -342,9 +357,9 @@ namespace superbblas {
 
             cudaDataType_t cT = toCudaDataType<T>();
             cublasCheck(cublasGemmStridedBatchedEx(
-                *cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha,
+                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha,
                 a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
-                cT, CUBLAS_GEMM_DEFAULT));
+                toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
         }
 #endif // SUPERBBLAS_USE_CUDA
     }
