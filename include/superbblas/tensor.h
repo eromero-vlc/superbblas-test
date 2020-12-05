@@ -7,8 +7,11 @@
 #include <assert.h>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace superbblas {
@@ -342,11 +345,15 @@ namespace superbblas {
             Coor<Nd0> stride0 = get_strides<Nd0>(dim0);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            for (std::size_t i = 0; i < vol; ++i) {
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
+             for (std::size_t i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
                 indices0[i] =
                     coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm1) + from0, dim0, stride0);
                 assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
+                (void)vol0;
             }
 
             return indices0;
@@ -368,6 +375,7 @@ namespace superbblas {
                                                  const Order<Nd1> &o1, const Coor<Nd1> &from1,
                                                  const Coor<Nd1> &dim1, Cpu cpu) {
             (void)from0;
+            (void)dim0;
             (void)cpu;
 
             // Check the compatibility of the tensors
@@ -383,10 +391,14 @@ namespace superbblas {
             Indices<Cpu> indices1(vol);
             Coor<Nd1> stride1 = get_strides<Nd1>(dim1);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
             for (std::size_t i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
                 indices1[i] = coor2index<Nd1>(c1 + from1, dim1, stride1);
                 assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
+                (void)vol1;
             }
 
             return indices1;
@@ -438,6 +450,161 @@ namespace superbblas {
             return indices;
         }
 #endif // SUPERBBLAS_USE_CUDA
+
+        template <typename T> struct TupleHash {
+            std::size_t operator()(T const &t) const noexcept {
+                // NOTE: almost sure that casting to char is legal; otherwise copy t with std::memcpy
+                //       before creating the std::string.
+                return std::hash<std::string>{}(std::string((char *)&t, sizeof(T)));
+            }
+        };
+
+        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+        /// \param indices_out: returned permutation
+        /// \param disp: returned displacement
+        ///
+        /// The ith element of the permutation is:
+        ///   indices_out[i] + disp
+
+        template <unsigned int Nd0, unsigned int Nd1, typename XPU>
+        void get_permutation_destination_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                               const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                               const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                               const Coor<Nd1> &dim1, XPU xpu,
+                                               std::shared_ptr<Indices<XPU>> &indices_out,
+                                               IndexType &disp) {
+            // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+
+            // Check in the storage
+            using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int>;
+            using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int>;
+            static std::unordered_map<size_dim, std::shared_ptr<Indices<XPU>>, TupleHash<size_dim>>
+                size_dim_map(16);
+            static std::unordered_map<from_size_dim, std::shared_ptr<Indices<XPU>>,
+                                      TupleHash<from_size_dim>>
+                from_size_dim_map(16);
+            {
+                auto it = from_size_dim_map.find({from1, size1, dim1, deviceId(xpu)});
+                if (it != from_size_dim_map.end()) {
+                    indices_out = it->second;
+                    disp = 0;
+                    return;
+                }
+            }
+            if (all_less_or_equal(from1 + size1, dim1)) {
+                auto it = size_dim_map.find({size1, dim1, deviceId(xpu)});
+                if (it != size_dim_map.end()) {
+                    indices_out = it->second;
+                    Coor<Nd1> stride1 = get_strides<Nd1>(dim1);
+                    disp = coor2index<Nd1>(from1, dim1, stride1);
+                    return;
+                 }
+            }
+
+            // Get the permutation and store it in cache
+            std::shared_ptr<Indices<XPU>> indices1 =
+                std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
+                    o0, from0, size0, dim0, o1, from1, dim1, xpu));
+            from_size_dim_map[from_size_dim({from1, size1, dim1, deviceId(xpu)})] = indices1;
+
+            // Get the permutation independent of 'from1' and store it in cache
+            if (all_less_or_equal(from1 + size1, dim1)) {
+                std::shared_ptr<Indices<XPU>> indices1_sd =
+                    std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
+                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu));
+                size_dim_map[size_dim({size1, dim1, deviceId(xpu)})] = indices1_sd;
+            } 
+
+            // Return the permutation
+            indices_out = indices1;
+            disp = 0;
+        }
+
+        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+        /// \param indices_out: returned permutation
+        /// \param disp: returned displacement
+        ///
+        /// The ith element of the permutation is:
+        ///   indices_out[i] + disp
+
+        template <unsigned int Nd0, unsigned int Nd1, typename XPU>
+        void get_permutation_origin_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                          const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                          const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                          const Coor<Nd1> &dim1, XPU xpu,
+                                          std::shared_ptr<Indices<XPU>> &indices_out,
+                                          IndexType &disp) {
+            // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Check in the storage
+            using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int>;
+            using perm_from_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int>;
+            static std::unordered_map<perm_size_dim, std::shared_ptr<Indices<XPU>>,
+                                      TupleHash<perm_size_dim>>
+                size_dim_map(16);
+            static std::unordered_map<perm_from_size_dim, std::shared_ptr<Indices<XPU>>,
+                                      TupleHash<perm_from_size_dim>>
+                from_size_dim_map(16);
+            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+            {
+                auto it = from_size_dim_map.find({perm1, from0, size0, dim0, deviceId(xpu)});
+                if (it != from_size_dim_map.end()) {
+                    indices_out = it->second;
+                    disp = 0;
+                    return;
+                }
+            }
+            if (all_less_or_equal(from0 + size0, dim0)) {
+                auto it = size_dim_map.find({perm1, size0, dim0, deviceId(xpu)});
+                if (it != size_dim_map.end()) {
+                    indices_out = it->second;
+                    Coor<Nd0> stride0 = get_strides<Nd0>(dim0);
+                    disp = coor2index<Nd0>(from0, dim0, stride0);
+                    return;
+                 }
+            }
+
+            // Get the permutation and store it in cache
+            std::shared_ptr<Indices<XPU>> indices0 = std::make_shared<Indices<XPU>>(
+                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu));
+            from_size_dim_map[perm_from_size_dim({perm1, from0, size0, dim0, deviceId(xpu)})] =
+                indices0;
+
+            // Get the permutation independent of 'from1' and store it in cache
+            if (all_less_or_equal(from0 + size0, dim0)) {
+                std::shared_ptr<Indices<XPU>> indices0_sd =
+                    std::make_shared<Indices<XPU>>(get_permutation_origin<Nd0, Nd1>(
+                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu));
+                size_dim_map[perm_size_dim({perm1, size0, dim0, deviceId(xpu)})] = indices0_sd;
+            } 
+
+            // Return the permutation
+            indices_out = indices0;
+            disp = 0;
+        }
 
         /// Find common largest substring
         /// \param o0: dimension labels
@@ -497,6 +664,31 @@ namespace superbblas {
             }
         }
 
+        /// Check that all dimensions with the same label has the same size
+        template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo>
+        bool check_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                              const Coor<Nd1> &dim1, const Order<Ndo> &o_r, const Coor<Ndo> &dimr) {
+            std::map<char, IndexType> m;
+            for (unsigned int i = 0; i < Nd0; ++i) m[o0[i]] = dim0[i];
+            for (unsigned int i = 0; i < Nd1; ++i) {
+                auto it = m.find(o1[i]);
+                if (it != m.end()) {
+                    if (it->second != dim1[i]) return false;
+                } else {
+                    m[o1[i]] = dim1[i];
+                }
+            }
+            for (unsigned int i = 0; i < Ndo; ++i) {
+                auto it = m.find(o_r[i]);
+                if (it != m.end()) {
+                    if (it->second != dimr[i]) return false;
+                } else {
+                    m[o_r[i]] = dimr[i];
+                }
+            }
+            return true;
+        }
+
         /// Contract two tensors
         /// \param o0: dimension labels for the first operator
         /// \param dim0: dimension size for the first operator
@@ -529,9 +721,13 @@ namespace superbblas {
                           "v0 and v1 should have the same type");
 
             // Check orders
-            assert(check_order(o0));
-            assert(check_order(o1));
-            assert(check_order(o_r));
+            if (!check_order(o0)) throw std::runtime_error("o0 has repeated labels");
+            if (!check_order(o1)) throw std::runtime_error("o1 has repeated labels");
+            if (!check_order(o_r)) throw std::runtime_error("o_r has repeated labels");
+
+            // Check dimensions
+            if (!check_dimensions<Nd0, Nd1, Ndo>(o0, dim0, o1, dim1, o_r, dimr))
+                throw std::runtime_error("some dimension does not match");
 
             // Find T, the common labels between o0, o1, and o_r
             unsigned int nT = 0; // size of the piece T
@@ -567,9 +763,18 @@ namespace superbblas {
             assert(o_r.size() == nT + nB + nC);
 
             // Check that no order ends with T
-            assert(nT == 0 || o0.size() == 0 || o0.back() != eT);
-            assert(nT == 0 || o1.size() == 0 || o1.back() != eT);
-            assert(nT == 0 || nB + nC == 0 || o_r.size() == 0 || o_r.back() != eT);
+            if (!(nT == 0 || o0.size() == 0 || o0.back() != eT))
+                throw std::runtime_error(
+                    "Unsupported contraction: the common dimensions to the input and "
+                    "output tensors cannot be packed at the end of the first tensor");
+            if (!(nT == 0 || o1.size() == 0 || o1.back() != eT))
+                throw std::runtime_error(
+                    "Unsupported contraction: the common dimensions to the input and "
+                    "output tensors cannot be packed at the end of the second tensor");
+            if (!(nT == 0 || nB + nC == 0 || o_r.size() == 0 || o_r.back() != eT))
+                throw std::runtime_error(
+                    "Unsupported contraction: the common dimensions to the input and "
+                    "output tensors cannot be packed at the end of the output tensor");
 
             // Check whether each order starts with T
             bool o0_starts_with_T = (nT == 0 || o0.size() == 0 || o0[0] == sT);
@@ -583,6 +788,7 @@ namespace superbblas {
             assert(!or_trans);          // Not supported this case for now
             assert(o0_trans || !conj0); // Not supported this case for now
             assert(o1_trans || !conj1); // Not supported this case for now
+            (void)or_trans;
 
             // Compute the volume for each piece
             int volT = nT == 0 ? 1 : volume<Nd0>(o0, dim0, sT, nT);
@@ -590,6 +796,9 @@ namespace superbblas {
             int volA_nonzero = volA > 0 ? 1 : 0;
             int volB = nB == 0 ? volA_nonzero : volume<Nd0>(o0, dim0, sB, nB);
             int volC = nC == 0 ? volA_nonzero : volume<Nd1>(o1, dim1, sC, nC);
+            assert(volT * volA * volB == (int)volume<Nd0>(dim0));
+            assert(volT * volA * volC == (int)volume<Nd1>(dim1));
+            assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Avoid issues with uninitialized memory by zeroing out
             fill_n(vr, volume<Ndo>(dimr), 0.0, xpu);
@@ -608,7 +817,7 @@ namespace superbblas {
                 (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volC : volB));
             using value_type = typename std::iterator_traits<ConstIterator>::value_type;
             value_type one = 1.0, zero = 0.0;
-            xgemm_batch_strided<value_type>(transab, transca, (int)volB, (int)volC, (int)volA, one,
+            xgemm_batch_strided<value_type>(transab, transca, volB, volC, volA, one,
                                             const_raw_pointer(v0), ldab, strideab,
                                             const_raw_pointer(v1), ldca, strideca, zero,
                                             raw_pointer(vr), ldcb, stridecb, volT, xpu);
@@ -634,16 +843,19 @@ namespace superbblas {
                         data<T, XPU1> v1, XPU1 xpu1) {
 
             // Get the permutation vectors
-            Indices<XPU0> indices0 =
-                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu0);
-            Indices<XPU1> indices1 = get_permutation_destination<Nd0, Nd1>(o0, from0, size0, dim0,
-                                                                           o1, from1, dim1, xpu1);
+            std::shared_ptr<Indices<XPU0>> indices0;
+            std::shared_ptr<Indices<XPU1>> indices1;
+            IndexType disp0, disp1;
+            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu0,
+                                                   indices0, disp0);
+            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
+                                                        xpu1, indices1, disp1);
 
             // Do the copy
-            copy_n<IndexType, T>(v0, indices0.begin(), xpu0, indices0.size(), v1, indices1.begin(),
-                                 xpu1);
+            copy_n<IndexType, T>(v0 + disp0, indices0->begin(), xpu0, indices0->size(), v1 + disp1,
+                                 indices1->begin(), xpu1);
         }
-    }
+        }
 
     /// Copy the content of tensor o0 into o1
     /// \param o0: dimension labels for the origin tensor
