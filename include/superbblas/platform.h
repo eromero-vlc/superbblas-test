@@ -104,10 +104,8 @@ namespace superbblas {
                 cublasHandle =
                     std::shared_ptr<cublasHandle_t>(new cublasHandle_t, [](cublasHandle_t *p) {
                         detail::cublasCheck(cublasDestroy(*p));
-                        std::cerr << "D!";
                         delete p;
                     });
-                std::cerr << "C!";
                 detail::cublasCheck(cublasCreate(cublasHandle.get()));
             }
 #endif

@@ -75,11 +75,19 @@ namespace superbblas {
         }
 #endif
 
+        namespace EWOp {
+            /// Copy the values of the origin vector into the destination vector
+            struct Copy {};
+
+            /// Add the values from the origin vector to the destination vector
+            struct Add {};
+        }
+
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indices, Cpu cpuv,
-                    std::size_t n, data<T, Cpu> w, Cpu cpuw) {
+                    std::size_t n, data<T, Cpu> w, Cpu cpuw, EWOp::Copy) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
@@ -92,7 +100,7 @@ namespace superbblas {
 
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cpu> v, Cpu cpuv, std::size_t n, data<T, Cpu> w,
-                    vector_const_iterator<IndexType, Cpu> indices, Cpu cpuw) {
+                    vector_const_iterator<IndexType, Cpu> indices, Cpu cpuw, EWOp::Copy) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
@@ -105,7 +113,7 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu cpuv,
                     std::size_t n, data<T, Cpu> w, vector_const_iterator<IndexType, Cpu> indicesw,
-                    Cpu cpuw) {
+                    Cpu cpuw, EWOp::Copy) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
@@ -114,12 +122,41 @@ namespace superbblas {
             for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
         }
 
+        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu cpuv,
+                    std::size_t n, data<T, Cpu> w, vector_const_iterator<IndexType, Cpu> indicesw,
+                    Cpu cpuw, EWOp::Add) {
+            (void)cpuv;
+            (void)cpuw;
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+        }
+
+        /// Copy and reduce n values, w[indicesw[i]] += sum(v[perm[perm_distinct[i]:perm_distinct[i+1]]])
+        template <typename IndexType, typename T>
+        void copy_reduce_n(data<const T, Cpu> v, Cpu, vector_const_iterator<IndexType, Cpu> perm,
+                           vector_const_iterator<IndexType, Cpu> perm_distinct,
+                           std::size_t ndistinct, Cpu cpuv, data<T, Cpu> w,
+                           vector_const_iterator<IndexType, Cpu> indicesw, Cpu cpuw, EWOp::Copy) {
+            (void)cpuv;
+            (void)cpuw;
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < ndistinct - 1; ++i)
+                for (std::size_t j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
+                    w[indicesw[i]] += v[perm[j]];
+        }
+
 #ifdef SUPERBBLAS_USE_CUDA
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indices,
-                    Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu cpuw) {
+                    Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu cpuw, EWOp::Copy) {
             (void)cudav;
             (void)cpuw;
             thrust::copy_n(thrust::make_permutation_iterator(v, indices), n, w);
@@ -128,8 +165,8 @@ namespace superbblas {
         /// Copy n values, w[indices[i]] = v[i]
 
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cuda> v, Cpu cpuv, std::size_t n, data<T, Cuda> w,
-                    vector_const_iterator<IndexType, Cuda> indices, Cuda cudaw) {
+        void copy_n(data<const T, Cpu> v, Cpu cpuv, std::size_t n, data<T, Cuda> w,
+                    vector_const_iterator<IndexType, Cuda> indices, Cuda cudaw, EWOp::Copy) {
             (void)cpuv;
             (void)cudaw;
             thrust::copy_n(v, n, thrust::make_permutation_iterator(w, indices));
@@ -140,11 +177,24 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu xpuv,
                     std::size_t n, data<T, Cuda> w, vector_const_iterator<IndexType, Cuda> indicesw,
-                    Cuda xpuw) {
+                    Cuda xpuw, EWOp::Copy) {
             (void)xpuv;
             (void)xpuw;
             thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
                            thrust::make_permutation_iterator(w, indicesw));
+        }
+
+        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu xpuv,
+                    std::size_t n, data<T, Cuda> w, vector_const_iterator<IndexType, Cuda> indicesw,
+                    Cuda xpuw, EWOp::Add) {
+            (void)xpuv;
+            (void)xpuw;
+            auto vit = thrust::make_permutation_iterator(v, indicesv);
+            thrust::transform(vit, vit + n, thrust::make_permutation_iterator(w, indicesw),
+                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
         }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
@@ -152,11 +202,24 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
                     Cuda xpuv, std::size_t n, data<T, Cpu> w,
-                    vector_const_iterator<IndexType, Cpu> indicesw, Cpu xpuw) {
+                    vector_const_iterator<IndexType, Cpu> indicesw, Cpu xpuw, EWOp::Copy) {
             (void)xpuv;
             (void)xpuw;
             thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
                            thrust::make_permutation_iterator(w, indicesw));
+        }
+
+        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
+                    Cuda xpuv, std::size_t n, data<T, Cpu> w,
+                    vector_const_iterator<IndexType, Cpu> indicesw, Cpu xpuw, EWOp::Add) {
+            (void)xpuv;
+            (void)xpuw;
+            auto vit = thrust::make_permutation_iterator(v, indicesv);
+            thrust::transform(vit, vit + n, thrust::make_permutation_iterator(w, indicesw),
+                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
         }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
@@ -164,11 +227,46 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
                     Cuda xpuv, std::size_t n, data<T, Cuda> w,
-                    vector_const_iterator<IndexType, Cuda> indicesw, Cuda xpuw) {
+                    vector_const_iterator<IndexType, Cuda> indicesw, Cuda xpuw, EWOp::Copy) {
             (void)xpuv;
             (void)xpuw;
             thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
                            thrust::make_permutation_iterator(w, indicesw));
+        }
+
+        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
+                    Cuda xpuv, std::size_t n, data<T, Cuda> w,
+                    vector_const_iterator<IndexType, Cuda> indicesw, Cuda xpuw, EWOp::Add) {
+            (void)xpuv;
+            (void)xpuw;
+            auto vit = thrust::make_permutation_iterator(v, indicesv);
+            thrust::transform(vit, vit + n, thrust::make_permutation_iterator(w, indicesw),
+                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
+        }
+
+        /// Copy and reduce n values, w[indicesw[i]] += sum(v[perm[perm_distinct[i]:perm_distinct[i+1]]])
+        template <typename IndexType, typename T>
+        void copy_reduce_n(data<const T, Cpu> v, Cpu, vector_const_iterator<IndexType, Cpu> perm,
+                           vector_const_iterator<IndexType, Cpu> perm_distinct,
+                           std::size_t ndistinct, Cpu cpuv, data<T, Cuda> w,
+                           vector_const_iterator<IndexType, Cuda> indicesw, Cuda cudaw) {
+            (void)cpuv;
+            (void)cudaw;
+            std::vector<T> w_host(ndistinct - 1);
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < ndistinct - 1; ++i)
+                for (std::size_t j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
+                    w_host[i] += v[perm[j]];
+            vector<T, Cuda> w_device = w_host;
+
+            thrust::transform(w_device.begin(), w_device.end(),
+                              thrust::make_permutation_iterator(w, indicesw),
+                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
         }
 
 #endif // SUPERBBLAS_USE_CUDA

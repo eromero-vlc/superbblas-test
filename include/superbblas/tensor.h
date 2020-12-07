@@ -836,11 +836,12 @@ namespace superbblas {
         /// \param v1: data for the destination tensor
         /// \param xpu1: device context for v1
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1,
+                  typename EWOp>
         void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                         const Coor<Nd0> &dim0, data<const T, XPU0> v0, XPU0 xpu0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        data<T, XPU1> v1, XPU1 xpu1) {
+                        data<T, XPU1> v1, XPU1 xpu1, EWOp ewop) {
 
             // Get the permutation vectors
             std::shared_ptr<Indices<XPU0>> indices0;
@@ -853,9 +854,9 @@ namespace superbblas {
 
             // Do the copy
             copy_n<IndexType, T>(v0 + disp0, indices0->begin(), xpu0, indices0->size(), v1 + disp1,
-                                 indices1->begin(), xpu1);
+                                 indices1->begin(), xpu1, ewop);
         }
-        }
+    }
 
     /// Copy the content of tensor o0 into o1
     /// \param o0: dimension labels for the origin tensor
