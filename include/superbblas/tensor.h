@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -78,79 +79,19 @@ namespace superbblas {
 
         /// Return an array from a string
         /// \param v: input string
+        /// \param name: name of the variable
 
-        template <unsigned int Nd, typename T> std::array<T, Nd> toArray(const T *v) {
+        template <unsigned int Nd, typename T>
+        std::array<T, Nd> toArray(const T *v, const char *name) {
+            if (std::strlen(v) != Nd) {
+                std::stringstream ss;
+                ss << "The length of the order should match the template argument; argument `"
+                   << name << "` should have length " << Nd;
+                throw std::runtime_error(ss.str());
+            }
             std::array<T, Nd> r;
             std::copy_n(v, Nd, r.begin());
             return r;
-        }
-
-        /// Return an order with values 0, 1, 2, ..., N-1
-
-        template <unsigned long N>
-        Order<N> trivial_order() {
-            Order<N> r;
-            for (unsigned int i = 0; i < N; i++) r[i] = (char)i;
-            return r;
-        }
-
-        /// Return coor[i] % dim[i]
-        /// \param coors: input coordinate
-        /// \param dim: lattice dimensions
-
-        template <unsigned int Nd>
-        Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
-            Coor<Nd> r;
-            for (unsigned int j = 0; j < Nd; j++) r[j] = coor[j] % dim[j];
-            return r;
-        }
-
-        /// Return whether a coordinate is in a range
-        /// \param from: first coordinate of the range
-        /// \param size: size of the range
-        /// \param dim: lattice dimensions
-        /// \param coor: coordinate to prove
-
-        template <unsigned int Nd>
-        bool coor_in_range(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
-                           const Coor<Nd> &coor) {
-            for (unsigned int j = 0; j < Nd; j++) {
-                if ((coor[j] < from[j] || from[j] + size[j] <= coor[j]) &&
-                    (coor[j] + dim[j] < from[j] || from[j] + size[j] <= coor[j] + dim[j]))
-                    return false;
-            }
-            return true;
-        }
-
-        /// Return the closest coordinate to a given one in a range
-        /// NOTE: the lattice is NOT considered toroidal
-        /// \param from: first coordinate of the range
-        /// \param size: size of the range
-        /// \param coor: coordinate to prove
-
-        template <unsigned int Nd>
-        Coor<Nd> closest(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &coor) {
-            Coor<Nd> r;
-            for (unsigned int j = 0; j < Nd; j++) {
-                r[j] = from[j] + std::min(std::max(coor[j] - from[j], 0), size[j]);
-            }
-            return r;
-        }
-
-
-        /// Return the intersection between two ranges
-        /// \param from0: first coordinate of the first range
-        /// \param size0: size of the first range
-        /// \param from1: first coordinate of the second range
-        /// \param size1: size of the second range
-        /// \param fromr: first coordinate of the resulting range
-        /// \param sizer: size of the resulting range
-
-        template <unsigned int Nd>
-        void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
-                          const Coor<Nd> &size1, Coor<Nd> &fromr, Coor<Nd> &sizer) {
-            fromr = closest<Nd>(from0, size0, from1);
-            sizer = closest<Nd>(from0, size0, from1 + size1) - fromr;
         }
 
         /// Return the jumps to the next consecutive element in that dimension
@@ -756,11 +697,12 @@ namespace superbblas {
             largest_common_substring_order(o1, o_r, strT, nT, sC, nC);
 
             // Check that o0 is made of the pieces T, A and B
-            assert(o0.size() == nT + nA + nB);
+            if (o0.size() != nT + nA + nB) throw std::runtime_error("o0 has unmatched dimensions");
             // Check that o1 is made of the pieces T, C and A
-            assert(o1.size() == nT + nA + nC);
+            if (o1.size() != nT + nA + nC) throw std::runtime_error("o1 has unmatched directions");
             // Check that o_r is made of the pieces T, C and B
-            assert(o_r.size() == nT + nB + nC);
+            if (o_r.size() != nT + nB + nC)
+                throw std::runtime_error("o_r has unmatched dimensions");
 
             // Check that no order ends with T
             if (!(nT == 0 || o0.size() == 0 || o0.back() != eT))
@@ -875,35 +817,11 @@ namespace superbblas {
     void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                     const Coor<Nd0> &dim0, const T *v0, Context ctx0, const char *o1,
                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1, T *v1, Context ctx1) {
-        if (std::strlen(o0) != Nd0)
-            throw std::runtime_error("The length of `o0` does not match the template argument");
-        if (std::strlen(o1) != Nd1)
-            throw std::runtime_error("The length of `o1` does not match the template argument");
-        const Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
-        const Order<Nd1> o1_ = detail::toArray<Nd1>(o1);
-        local_copy<Nd0, Nd1>(o0_, from0, size0, dim0, v0, ctx0, o1_, from1, dim1, v1, ctx1);
-    }
 
-    /// Copy the content of tensor o0 into o1
-    /// \param o0: dimension labels for the origin tensor
-    /// \param from0: first coordinate to copy from the origin tensor
-    /// \param size0: number of coordinates to copy in each direction
-    /// \param dim0: dimension size for the origin tensor
-    /// \param v0: data for the origin tensor
-    /// \param ctx0: device context for v0
-    /// \param o1: dimension labels for the destination tensor
-    /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-    /// \param dim1: dimension size for the destination tensor
-    /// \param v1: data for the destination tensor
-    /// \param ctx1: device context for v1
-
-    template <unsigned int Nd0, unsigned int Nd1, typename T>
-    void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                    const Coor<Nd0> &dim0, const T *v0, Context ctx0, const Order<Nd1> &o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, T *v1, Context ctx1) {
+        const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
+        const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
 
         // Check the validity of the operation
-
         if (!detail::check_positive<Nd0>(from0))
             throw std::runtime_error("All values in `from0` should be non-negative");
 
@@ -913,26 +831,28 @@ namespace superbblas {
         if (!detail::check_positive<Nd1>(from1))
             throw std::runtime_error("All values in `from1` should be non-negative");
 
-        if (!detail::check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
+        if (!detail::check_isomorphic<Nd0, Nd1>(o0_, size0, dim0, o1_, dim1))
             throw std::runtime_error("The orders and dimensions of the origin tensor are not "
                                      "compatible with the destination tensor");
 
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1,
-                                            dim1, v1, ctx1.toCpu());
+            detail::local_copy<Nd0, Nd1, T>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_, from1,
+                                            dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
         }
 #ifdef SUPERBBLAS_USE_CUDA
         else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
-            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, v0, ctx0.toCpu(), o1, from1,
-                                            dim1, detail::encapsulate_pointer(v1), ctx1.toCuda());
+            detail::local_copy<Nd0, Nd1, T>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_, from1,
+                                            dim1, detail::encapsulate_pointer(v1), ctx1.toCuda(),
+                                            detail::EWOp::Copy{});
         } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
-                                            ctx0.toCuda(), o1, from1, dim1, v1, ctx1.toCpu());
+            detail::local_copy<Nd0, Nd1, T>(o0_, from0, size0, dim0,
+                                            detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_,
+                                            from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
         } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
-            detail::local_copy<Nd0, Nd1, T>(o0, from0, size0, dim0, detail::encapsulate_pointer(v0),
-                                            ctx0.toCuda(), o1, from1, dim1,
-                                            detail::encapsulate_pointer(v1), ctx1.toCuda());
+            detail::local_copy<Nd0, Nd1, T>(
+                o0_, from0, size0, dim0, detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_, from1,
+                dim1, detail::encapsulate_pointer(v1), ctx1.toCuda(), detail::EWOp::Copy{});
         }
 #endif
         else {
@@ -964,31 +884,21 @@ namespace superbblas {
     void local_contraction(const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
                            const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1,
                            const char *o_r, const Coor<Ndo> &dimr, T *vr, Context ctx) {
-        assert(std::strlen(o0) == Nd0);
-        assert(std::strlen(o1) == Nd1);
-        assert(std::strlen(o_r) == Ndo);
-        Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
-        Order<Nd1> o1_ = detail::toArray<Nd1>(o1);
-        Order<Ndo> o_r_ = detail::toArray<Ndo>(o_r);
-        local_contraction<Nd0, Nd1, Ndo>(o0_, dim0, conj0, v0, o1_, dim1, conj1, v1, o_r_, dimr, vr,
-                                         ctx);
-    }
 
-    template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo, typename T>
-    void local_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
-                           const Order<Nd1> &o1, const Coor<Nd1> &dim1, bool conj1, const T *v1,
-                           const Order<Ndo> &o_r, const Coor<Ndo> &dimr, T *vr, Context ctx) {
+        Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
+        Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
+        Order<Ndo> o_r_ = detail::toArray<Ndo>(o_r, "o_r");
 
         switch (ctx.plat) {
         case CPU:
-            detail::local_contraction<Nd0, Nd1, Ndo>(o0, dim0, conj0, v0, o1, dim1, conj1, v1, o_r,
-                                                     dimr, vr, ctx.toCpu());
+            detail::local_contraction<Nd0, Nd1, Ndo>(o0_, dim0, conj0, v0, o1_, dim1, conj1, v1,
+                                                     o_r_, dimr, vr, ctx.toCpu());
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
             detail::local_contraction<Nd0, Nd1, Ndo>(
-                o0, dim0, conj0, detail::encapsulate_pointer(v0), o1, dim1, conj1,
-                detail::encapsulate_pointer(v1), o_r, dimr, detail::encapsulate_pointer(vr),
+                o0_, dim0, conj0, detail::encapsulate_pointer(v0), o1_, dim1, conj1,
+                detail::encapsulate_pointer(v1), o_r_, dimr, detail::encapsulate_pointer(vr),
                 ctx.toCuda());
             break;
 #endif

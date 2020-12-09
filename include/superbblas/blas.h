@@ -140,14 +140,14 @@ namespace superbblas {
         void copy_reduce_n(data<const T, Cpu> v, Cpu, vector_const_iterator<IndexType, Cpu> perm,
                            vector_const_iterator<IndexType, Cpu> perm_distinct,
                            std::size_t ndistinct, Cpu cpuv, data<T, Cpu> w,
-                           vector_const_iterator<IndexType, Cpu> indicesw, Cpu cpuw, EWOp::Copy) {
+                           vector_const_iterator<IndexType, Cpu> indicesw, Cpu cpuw) {
             (void)cpuv;
             (void)cpuw;
 #ifdef _OPENMP
 #    pragma omp for
 #endif
             for (std::size_t i = 0; i < ndistinct - 1; ++i)
-                for (std::size_t j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
+                for (IndexType j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
                     w[indicesw[i]] += v[perm[j]];
         }
 
