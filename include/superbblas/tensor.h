@@ -13,6 +13,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace superbblas {
@@ -276,6 +277,9 @@ namespace superbblas {
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
+            // Quick exit
+            if (volume<Nd0>(size0) == 0) { return Indices<Cpu>(); }
+
             // Compute the indices
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
@@ -322,6 +326,9 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit
+            if (volume<Nd0>(size0) == 0) { return Indices<Cpu>(); }
 
             // Compute the indices
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
@@ -392,11 +399,38 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_CUDA
 
-        template <typename T> struct TupleHash {
-            std::size_t operator()(T const &t) const noexcept {
-                // NOTE: almost sure that casting to char is legal; otherwise copy t with std::memcpy
-                //       before creating the std::string.
-                return std::hash<std::string>{}(std::string((char *)&t, sizeof(T)));
+        //
+        // Hash for tuples and arrays
+        //
+
+        template <typename T> struct Hash {
+            static std::size_t hash(T const &t) noexcept { return std::hash<T>{}(t); }
+        };
+
+        template <typename T, std::size_t N> struct Hash<std::array<T, N>> {
+            static std::size_t hash(std::array<T, N> const &t) noexcept {
+                std::size_t r = 12345;
+                for (std::size_t i=0; i<N; ++i) r = r ^ std::hash<T>{}(t[i]);
+                return r;
+            }
+        };
+
+        template <class Tuple, std::size_t N> struct TupleHashHelp {
+            static std::size_t hash(Tuple const &t) noexcept {
+                return Hash<typename std::tuple_element<N, Tuple>::type>::hash(std::get<N>(t)) ^
+                       TupleHashHelp<Tuple, N - 1>::hash(t);
+            }
+        };
+
+        template <class Tuple> struct TupleHashHelp<Tuple, 0> {
+            static std::size_t hash(Tuple const &t) noexcept {
+                return Hash<typename std::tuple_element<0, Tuple>::type>::hash(std::get<0>(t));
+            }
+        };
+
+        template <class Tuple> struct TupleHash {
+            std::size_t operator()(Tuple const &t) const noexcept {
+                return TupleHashHelp<Tuple, std::tuple_size<Tuple>::value - 1>::hash(t); 
             }
         };
 
@@ -425,6 +459,13 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit
+            if (volume<Nd0>(size0) == 0) {
+                indices_out = std::make_shared<Indices<XPU>>(0);
+                disp = 0;
+                return;
+            }
 
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
@@ -499,6 +540,13 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit
+            if (volume<Nd0>(size0) == 0) {
+                indices_out = std::make_shared<Indices<XPU>>(0);
+                disp = 0;
+                return;
+            }
 
             // Check in the storage
             using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int>;
