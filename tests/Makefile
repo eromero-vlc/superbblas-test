@@ -19,7 +19,8 @@ CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
 SB_INCLUDE := -I../include
 MPISBFLAG ?= $(if $(findstring mpi,${CXX}),-DSUPERBBLAS_USE_MPI,)
 
-CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp
+#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp
+CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp
 MPIINCFLAGS ?= $(if $(findstring mpi,${CXX}),$(shell ${CXX} -showme:compile),)
 comma := ,
 MPILDFLAGS ?= $(if $(findstring mpi,${CXX}),\
@@ -28,7 +29,8 @@ MPILDFLAGS ?= $(if $(findstring mpi,${CXX}),\
 LDFLAGS ?= -lopenblas
 NVCCLDFLAGS ?= -lcublas -lopenblas
 NVCC ?= nvcc
-NVCCFLAGS ?= -x cu -g -G -arch=sm_75
+#NVCCFLAGS ?= -x cu -g -G -arch=sm_75
+NVCCFLAGS ?= -x cu -O3 -arch=sm_75
 NVCCSTDLANG ?= -std c++14
 
 $(CPU_TARGETS): %_cpu: %.cpp
