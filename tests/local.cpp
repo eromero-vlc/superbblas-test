@@ -136,10 +136,10 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 local_contraction<Nd, Nd, 5>("tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1,
-                                             false, t2.data(), "tnsNS", dimc, tc.data(), ctx);
+                                             false, t2.data(), "tNSns", dimc, tc.data(), ctx);
             }
             t = omp_get_wtime() - t;
-            std::cout << "Time in contracting xyzc" << t / nrep << std::endl;
+            std::cout << "Time in contracting xyzc " << t / nrep << std::endl;
         }
     }
 #ifdef SUPERBBLAS_USE_CUDA
@@ -276,7 +276,7 @@ int main(int argc, char **argv) {
             for (unsigned int rep = 0; rep < nrep; ++rep) {
               local_contraction<Nd, Nd, 5>(
                   "tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc", dim1,
-                  false, t2.data().get(), "tnsNS", dimc, tc.data().get(), ctx);
+                  false, t2.data().get(), "tNSns", dimc, tc.data().get(), ctx);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in contracting " << t / nrep << std::endl;
