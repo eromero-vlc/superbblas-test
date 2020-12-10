@@ -176,6 +176,7 @@ namespace superbblas {
 
         template <typename Comm, typename Msg> void print(const Comm &comm, const Msg msg) {
             std::cerr << "[" << comm.rank << "] " << msg << std::endl;
+            std::cerr.flush();
         }
 
         /// Print a vector in the standard error
@@ -188,6 +189,7 @@ namespace superbblas {
             std::cerr << "[" << comm.rank << "] " << name << ":";
             for (const auto &i : v) std::cerr << " " << i;
             std::cerr << std::endl;
+            std::cerr.flush();
         }
 
         /// Vectors used in MPI communications
@@ -283,7 +285,7 @@ namespace superbblas {
                     // order on the destination; in other words, apply the permutation before
                     // doing the MPI call
                     Coor<Nd0> fromi = fs[i][0], sizei = fs[i][1];
-                    Coor<Nd1> dim1 = reorder_coor<Nd0, Nd1>(sizei, perm0);
+                    Coor<Nd1> dim1 = reorder_coor<Nd0, Nd1>(dim0, perm0, 1);
                     std::shared_ptr<Indices<Cpu>> indices;
                     IndexType disp;
                     get_permutation_origin_cache<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, zeros, dim1,
@@ -464,14 +466,14 @@ namespace superbblas {
                     n += voli;
                     assert(n <= vol);
                 }
-                Indices<Cpu> perm;
+                Indices<Cpu> perm(vol);
                 for (std::size_t i = 0; i < vol; ++i) perm[i] = i;
                 std::sort(perm.begin(), perm.end(), [&](const IndexType &a, const IndexType &b) {
                     return indices1[a] < indices1[b];
                 });
                 Indices<Cpu> perm_distinct;
                 perm_distinct.reserve(vol + 1);
-                perm_distinct.push_back(0);
+                if (vol > 0) perm_distinct.push_back(0);
                 for (std::size_t i = 1; i < vol; ++i) {
                     if (indices1[perm[i]] != indices1[perm[i - 1]]) perm_distinct.push_back(i);
                 }
@@ -637,23 +639,23 @@ namespace superbblas {
                     intersection(from0[i], size0[i], from1[i], size1[i], dim[i], fromr0, sizer0);
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
-                    From_size<Nd> q;
-                    for(const auto &fs : r) {
-                        if (sizer0 > 0) {
-                            Coor<Nd> fromi = fs[0], sizei = fs[1];
-                            fromi[i] = fromr0;
-                            sizei[i] = sizer0;
-                            q.push_back({fromi, sizei});
-                        }
-                        if (sizer1 > 0) {
-                            Coor<Nd> fromi = fs[0], sizei = fs[1];
-                            fromi[i] = fromr1;
-                            sizei[i] = sizer1;
-                            q.push_back({fromi, sizei});
-                        }
-                    }
-                    r = q;
                 }
+                From_size<Nd> q;
+                for (const auto &fs : r) {
+                    if (sizer0 > 0) {
+                        Coor<Nd> fromi = fs[0], sizei = fs[1];
+                        fromi[i] = fromr0;
+                        sizei[i] = sizer0;
+                        q.push_back({fromi, sizei});
+                    }
+                    if (sizer1 > 0) {
+                        Coor<Nd> fromi = fs[0], sizei = fs[1];
+                        fromi[i] = fromr1;
+                        sizei[i] = sizer1;
+                        q.push_back({fromi, sizei});
+                    }
+                }
+                r = q;
             }
 
             return r;
@@ -704,7 +706,7 @@ namespace superbblas {
                 reorder_coor<Nd0, Nd1>(normalize_coor<Nd0>(rfrom0 - from0 + dim0, dim0), perm) +
                     from1,
                 dim1);
-            sizer = reorder_coor<Nd0, Nd1>(rsize0, perm);
+            sizer = reorder_coor<Nd0, Nd1>(rsize0, perm, 1);
         }
 
         /// Return a permutation that transform an o0 coordinate into an o1 coordinate
@@ -790,7 +792,7 @@ namespace superbblas {
 
             // Restrict the local range in v1 to the range from1, size1
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0); // size in the destination
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
             Coor<Nd1> local_from1 = p1[to_rank][0];
             Coor<Nd1> local_size1 = p1[to_rank][1];
             Coor<Nd1> rlocal_from1, rlocal_size1;
