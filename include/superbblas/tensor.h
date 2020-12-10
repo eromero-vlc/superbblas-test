@@ -775,10 +775,16 @@ namespace superbblas {
             bool o0_trans = (o0.size() > nT && o0[o0_starts_with_T ? nT : 0] == sB);
             bool o1_trans = (o1.size() > nT && o1[o1_starts_with_T ? nT : 0] == sA);
             bool or_trans = (o_r.size() > nT && o_r[o0_starts_with_T ? nT : 0] == sB);
-            assert(!or_trans);          // Not supported this case for now
-            assert(o0_trans || !conj0); // Not supported this case for now
-            assert(o1_trans || !conj1); // Not supported this case for now
-            (void)or_trans;
+            if (or_trans)
+                throw std::runtime_error(
+                    "Unsupported contraction: on the output labels, put the labels from the second "
+                    "tensor before the labels from the first tensor.");
+            if (!o0_trans && conj0)
+                throw std::runtime_error("Unsupported contraction: reorder the labels on the first "
+                                         "tensor to use conjugation");
+            if (!o1_trans && conj1)
+                throw std::runtime_error("Unsupported contraction: reorder the labels on the "
+                                         "second tensor to use conjugation");
 
             // Compute the volume for each piece
             int volT = nT == 0 ? 1 : volume<Nd0>(o0, dim0, sT, nT);
