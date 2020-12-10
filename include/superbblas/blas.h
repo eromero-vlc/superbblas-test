@@ -280,7 +280,7 @@ namespace superbblas {
 #    pragma omp for
 #endif
             for (std::size_t i = 0; i < ndistinct - 1; ++i)
-                for (std::size_t j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
+                for (IndexType j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
                     w_host[i] += v[perm[j]];
             vector<T, Cuda> w_device = w_host;
 
@@ -472,6 +472,14 @@ namespace superbblas {
         void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
                                  T *c, int ldc, int stridec, int batch_size, Cuda cuda) {
+            // Quick exits
+            if (m == 0 || n == 0) return;
+
+            // Replace some invalid arguments when k is zero
+            if (k == 0) {
+                a = b = c;
+                lda = ldb = 1;
+            }
 
             cudaDataType_t cT = toCudaDataType<T>();
             cublasCheck(cublasGemmStridedBatchedEx(
