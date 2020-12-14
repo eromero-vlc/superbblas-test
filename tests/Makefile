@@ -11,7 +11,7 @@
 #  make dist_cuda CXX=mpicxx  # builds dist.cpp with ${NVCC} adding the flags
 #                             # and linking information for MPI
 
-SOURCES := local.cpp dist.cpp
+SOURCES := blas.cpp local.cpp dist.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
