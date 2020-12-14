@@ -698,16 +698,11 @@ namespace superbblas {
         /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
         /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
-        template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo, typename ConstIterator,
-                  typename Iterator, typename XPU>
+        template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo, typename T, typename XPU>
         void local_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
-                               ConstIterator v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
-                               bool conj1, ConstIterator v1, const Order<Ndo> &o_r,
-                               const Coor<Ndo> &dimr, Iterator vr, XPU xpu) {
-
-            static_assert(std::is_same<typename std::iterator_traits<ConstIterator>::value_type,
-                                       typename std::iterator_traits<Iterator>::value_type>::value,
-                          "v0 and v1 should have the same type");
+                               data<const T, XPU> v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
+                               bool conj1, data<const T, XPU> v1, const Order<Ndo> &o_r,
+                               const Coor<Ndo> &dimr, data<T, XPU> vr, XPU xpu) {
 
             // Check orders
             if (!check_order(o0)) throw std::runtime_error("o0 has repeated labels");
@@ -797,7 +792,7 @@ namespace superbblas {
             assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Avoid issues with uninitialized memory by zeroing out
-            fill_n(vr, volume<Ndo>(dimr), 0.0, xpu);
+            zero_n(vr, volume<Ndo>(dimr), xpu);
 
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
@@ -811,12 +806,11 @@ namespace superbblas {
             int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volC);
             int stridecb =
                 (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volC : volB));
-            using value_type = typename std::iterator_traits<ConstIterator>::value_type;
-            value_type one = 1.0, zero = 0.0;
-            xgemm_batch_strided<value_type>(transab, transca, volB, volC, volA, one,
-                                            const_raw_pointer(v0), ldab, strideab,
-                                            const_raw_pointer(v1), ldca, strideca, zero,
-                                            raw_pointer(vr), ldcb, stridecb, volT, xpu);
+            T one = 1.0, zero = 0.0;
+            xgemm_batch_strided<T>(transab, transca, volB, volC, volA, one,
+                                   const_raw_pointer<T>(v0), ldab, strideab,
+                                   const_raw_pointer<T>(v1), ldca, strideca, zero,
+                                   raw_pointer<T>(vr), ldcb, stridecb, volT, xpu);
         }
 
         /// Copy the content of tensor o0 into o1
@@ -945,12 +939,12 @@ namespace superbblas {
 
         switch (ctx.plat) {
         case CPU:
-            detail::local_contraction<Nd0, Nd1, Ndo>(o0_, dim0, conj0, v0, o1_, dim1, conj1, v1,
-                                                     o_r_, dimr, vr, ctx.toCpu());
+            detail::local_contraction<Nd0, Nd1, Ndo, T>(o0_, dim0, conj0, v0, o1_, dim1, conj1, v1,
+                                                        o_r_, dimr, vr, ctx.toCpu());
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
-            detail::local_contraction<Nd0, Nd1, Ndo>(
+            detail::local_contraction<Nd0, Nd1, Ndo, T>(
                 o0_, dim0, conj0, detail::encapsulate_pointer(v0), o1_, dim1, conj1,
                 detail::encapsulate_pointer(v1), o_r_, dimr, detail::encapsulate_pointer(vr),
                 ctx.toCuda());

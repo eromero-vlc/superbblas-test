@@ -107,7 +107,7 @@ namespace superbblas {
         template <typename T>
         using NativeMpiDatatype = typename std::conditional<
             sizeof(T) % sizeof(double) == 0, double,
-            std::conditional<sizeof(T) % sizeof(float) == 0, float, char>>::type;
+            typename std::conditional<sizeof(T) % sizeof(float) == 0, float, char>::type>::type;
 
 #ifdef SUPERBBLAS_USE_MPI
         /// Return the MPI_datatype for a type returned by `NativeMpiDatatype`
@@ -212,8 +212,10 @@ namespace superbblas {
 
             // Allocate PackedValues
             using MpiT = NativeMpiDatatype<T>;
-            PackedValues<T> r{std::vector<T>(), std::vector<int>(comm.nprocs),
-                              std::vector<int>(comm.nprocs)};
+            static_assert(sizeof(T) % sizeof(MpiT) == 0,
+                          "NativeMpiDatatype hasn't return a right type!");
+            PackedValues<T> r{std::vector<T>(), std::vector<MpiInt>(comm.nprocs),
+                              std::vector<MpiInt>(comm.nprocs)};
 
             // Prepare counts and displ
             std::size_t n = 0; // accumulate total number of T elements
@@ -223,6 +225,7 @@ namespace superbblas {
                 if (rank != comm.rank) { // Skip the communications of the local rank
                     // Compute the total number of T elements for rank i
                     for (unsigned int irange = 0; irange < nranges; ++irange) {
+                        assert(ranges[irange].size() == comm.nprocs * ncomponents);
                         for (unsigned int componentId = 0; componentId < ncomponents;
                              ++componentId) {
                             n_rank +=
@@ -235,6 +238,7 @@ namespace superbblas {
                 r.displ[rank] = d;
                 d += r.counts[rank];
             }
+            assert(d * sizeof(MpiT) == n * sizeof(T));
             r.buf.resize(n);
 
             return r;
@@ -529,6 +533,13 @@ namespace superbblas {
             assert(v0ToSend->displ.size() == comm.nprocs);
             assert(v1ToReceive->counts.size() == comm.nprocs);
             assert(v1ToReceive->displ.size() == comm.nprocs);
+            int dtype_size = 0;
+            MPI_Type_size(dtype, &dtype_size);
+            (void)dtype_size;
+            assert((v0ToSend->displ.back() + v0ToSend->counts.back()) * dtype_size <=
+                   v0ToSend->buf.size() * sizeof(T));
+            assert((v1ToReceive->displ.back() + v1ToReceive->counts.back()) * dtype_size <=
+                   v1ToReceive->buf.size() * sizeof(T));
             MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(), v0ToSend->displ.data(),
                            dtype, v1ToReceive->buf.data(), v1ToReceive->counts.data(),
                            v1ToReceive->displ.data(), dtype, comm.comm, &r);
@@ -1070,17 +1081,21 @@ namespace superbblas {
                 vr0[i].resize(volume<Ndo>(dimi));
                 vr_.first.push_back(
                     Component<Ndo, T, XPU0>{vr0[i].data(), dimi, v0.first[i].xpu, componentId});
-                local_contraction<Nd0, Nd1, Ndo>(o0, p0[pi][1], conj0, v0.first[i].it, o1,
-                                                 p1[pi][1], conj1, v1.first[i].it, o_r, dimi,
-                                                 vr0[i].data(), v0.first[i].xpu);
+                local_contraction<Nd0, Nd1, Ndo, T>(o0, p0[pi][1], conj0, v0.first[i].it, o1,
+                                                    p1[pi][1], conj1, v1.first[i].it, o_r, dimi,
+                                                    vr0[i].data(), v0.first[i].xpu);
             }
             std::vector<vector<T, XPU1>> vr1(v0.second.size());
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
                 const unsigned int componentId = v0.second[i].componentId;
-                const Coor<Ndo> &dimi = pr_[comm.rank * ncomponents + componentId][1];
+                const unsigned int pi = comm.rank * ncomponents + componentId;
+                const Coor<Ndo> &dimi = pr_[pi][1];
                 vr1[i].resize(volume<Ndo>(dimi));
                 vr_.second.push_back(
                     Component<Ndo, T, XPU1>{vr1[i].data(), dimi, v0.second[i].xpu, componentId});
+                local_contraction<Nd0, Nd1, Ndo, T>(o0, p0[pi][1], conj0, v0.second[i].it, o1,
+                                                    p1[pi][1], conj1, v1.second[i].it, o_r, dimi,
+                                                    vr1[i].data(), v0.second[i].xpu);
             }
 
             // Reduce all the subtensors to the final tensor

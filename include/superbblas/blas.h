@@ -20,6 +20,7 @@
 
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
+#    include <thrust/complex.h>
 #    include <thrust/device_ptr.h>
 #    include <thrust/device_vector.h>
 #    include <thrust/fill.h>
@@ -30,6 +31,32 @@ namespace superbblas {
 
     namespace detail {
 
+#ifdef SUPERBBLAS_USE_CUDA
+        /// Replace std::complex by thrust complex
+        /// \tparam T: one of float, double, std::complex<T>, std::array<T,N>
+        /// \return cuda_complex<T>::type has the new type
+
+        template <typename T> struct cuda_complex { using type = T; };
+        template <typename T> struct cuda_complex<std::complex<T>> {
+            using type = thrust::complex<T>;
+        };
+        template <typename T> struct cuda_complex<const T> {
+            using type = const typename cuda_complex<T>::type;
+        };
+        template <typename T, std::size_t N> struct cuda_complex<std::array<T, N>> {
+            using type = std::array<typename cuda_complex<T>::type, N>;
+        };
+
+        /// Replace const T by const thrust::device_ptr<T> and T by thrust::device_ptr<T>
+        /// \tparam T: one of float, double, std::complex<T>, std::array<T,N>
+        /// \return cuda_ptr<T>::type has the new type
+
+        template <typename T> struct cuda_ptr { using type = thrust::device_ptr<T>; };
+        template <typename T> struct cuda_ptr<const T> {
+            using type = const typename cuda_ptr<T>::type;
+        };
+#endif // SUPERBBLAS_USE_CUDA
+
         /// Vector type
         /// \param T: type of the vector's elements
         /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
@@ -38,12 +65,37 @@ namespace superbblas {
         using vector = typename std::conditional<
             std::is_same<XPU, Cpu>::value, std::vector<T>,
 #ifdef SUPERBBLAS_USE_CUDA
-            typename std::conditional<std::is_same<XPU, Cuda>::value, thrust::device_vector<T>,
+            typename std::conditional<std::is_same<XPU, Cuda>::value,
+                                      thrust::device_vector<typename cuda_complex<T>::type>,
                                       void>::type
 #else
             void
 #endif // SUPERBBLAS_USE_CUDA
             >::type;
+
+        /// Return a std::vector like for the given data type and platform
+        /// \tparam T: one of float, double, std::complex<T>, std::array<T,N>
+        /// \param size: length of the new vector
+        /// xpu: device context
+
+        template <typename T> vector<T, Cpu> new_vector(std::size_t size, Cpu) {
+            return vector<T, Cpu>(size);
+        }
+
+#ifdef SUPERBBLAS_USE_CUDA
+        /// Return a std::vector like for the given data type and platform
+        /// \tparam T: one of float, double, std::complex<T>, std::array<T,N>
+        /// \param size: length of the new vector
+        /// xpu: device context
+
+        template <typename T> vector<T, Cuda> new_vector(std::size_t size, Cuda cuda) {
+            static_assert(std::is_same<typename std::remove_const<T>::type, T>::value,
+                          "No const type supported!");
+            cudaCheck(cudaSetDevice(deviceId(cuda)));
+            vector<T, Cuda> t(size);
+            return t;
+        }
+#endif // SUPERBBLAS_USE_CUDA
 
         /// Constant iterator vector type
         /// \param T: type of the vector's elements
@@ -57,21 +109,59 @@ namespace superbblas {
         /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
 
         template <typename T, typename XPU>
-        using data =
-            typename std::conditional<std::is_same<XPU, Cpu>::value, T *,
+        using data = typename std::conditional<
+            std::is_same<XPU, Cpu>::value, T *,
 #ifdef SUPERBBLAS_USE_CUDA
-                                      typename std::conditional<std::is_same<XPU, Cuda>::value,
-                                                                thrust::device_ptr<T>, void>::type
+            typename std::conditional<std::is_same<XPU, Cuda>::value,
+                                      typename cuda_ptr<typename cuda_complex<T>::type>::type,
+                                      void>::type
 #else
                                       void
 #endif // SUPERBBLAS_USE_CUDA
-                                      >::type;
+            >::type;
 
 #ifdef SUPERBBLAS_USE_CUDA
         /// Return a device pointer suitable for making iterators
 
-        template <typename T> thrust::device_ptr<T> encapsulate_pointer(T *ptr) {
-            return thrust::device_pointer_cast(ptr);
+        template <typename T>
+        thrust::device_ptr<typename cuda_complex<T>::type> encapsulate_pointer(T *ptr) {
+            return thrust::device_pointer_cast(
+                reinterpret_cast<typename cuda_complex<T>::type *>(ptr));
+        }
+#endif
+
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
+
+        template <typename T> T *raw_pointer(data<T, Cpu> v) { return &*v; }
+
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
+
+        template <typename T> const T *const_raw_pointer(data<const T, Cpu> v) { return &*v; }
+
+#ifdef SUPERBBLAS_USE_CUDA
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
+
+        template <typename T> T *raw_pointer(data<T, Cuda> v) {
+            return reinterpret_cast<T *>(v.get());
+        }
+
+        /// Return the pointer associated to an iterator
+        /// \param it: iterator
+
+        template <typename T> const T *const_raw_pointer(data<const T, Cuda> v) {
+            return reinterpret_cast<const T *>(v.get());
+        }
+#endif
+
+        inline void sync(Cpu) {}
+
+#ifdef SUPERBBLAS_USE_CUDA
+        inline void sync(Cuda cuda) {
+            cudaCheck(cudaSetDevice(deviceId(cuda)));
+            cudaDeviceSynchronize();
         }
 #endif
 
@@ -83,13 +173,31 @@ namespace superbblas {
             struct Add {};
         }
 
+        /// Copy n values, w[i] = v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, Cpu, std::size_t n, data<T, Cpu> w, Cpu, EWOp::Copy) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+        }
+
+        /// Copy n values, w[i] = v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, Cpu, std::size_t n, data<T, Cpu> w, Cpu, EWOp::Add) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+        }
+
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indices, Cpu cpuv,
-                    std::size_t n, data<T, Cpu> w, Cpu cpuw, EWOp::Copy) {
-            (void)cpuv;
-            (void)cpuw;
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indices, Cpu,
+                    std::size_t n, data<T, Cpu> w, Cpu, EWOp::Copy) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
@@ -99,10 +207,8 @@ namespace superbblas {
         /// Copy n values, w[indices[i]] = v[i]
 
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, Cpu cpuv, std::size_t n, data<T, Cpu> w,
-                    vector_const_iterator<IndexType, Cpu> indices, Cpu cpuw, EWOp::Copy) {
-            (void)cpuv;
-            (void)cpuw;
+        void copy_n(data<const T, Cpu> v, Cpu, std::size_t n, data<T, Cpu> w,
+                    vector_const_iterator<IndexType, Cpu> indices, Cpu, EWOp::Copy) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
@@ -112,10 +218,8 @@ namespace superbblas {
         /// Copy n values, w[indices[i]] += v[i]
 
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, Cpu cpuv, std::size_t n, data<T, Cpu> w,
-                    vector_const_iterator<IndexType, Cpu> indices, Cpu cpuw, EWOp::Add) {
-            (void)cpuv;
-            (void)cpuw;
+        void copy_n(data<const T, Cpu> v, Cpu, std::size_t n, data<T, Cpu> w,
+                    vector_const_iterator<IndexType, Cpu> indices, Cpu, EWOp::Add) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
@@ -124,11 +228,9 @@ namespace superbblas {
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu cpuv,
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu,
                     std::size_t n, data<T, Cpu> w, vector_const_iterator<IndexType, Cpu> indicesw,
-                    Cpu cpuw, EWOp::Copy) {
-            (void)cpuv;
-            (void)cpuw;
+                    Cpu, EWOp::Copy) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
@@ -137,11 +239,9 @@ namespace superbblas {
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu cpuv,
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu,
                     std::size_t n, data<T, Cpu> w, vector_const_iterator<IndexType, Cpu> indicesw,
-                    Cpu cpuw, EWOp::Add) {
-            (void)cpuv;
-            (void)cpuw;
+                    Cpu, EWOp::Add) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
@@ -152,10 +252,8 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void copy_reduce_n(data<const T, Cpu> v, Cpu, vector_const_iterator<IndexType, Cpu> perm,
                            vector_const_iterator<IndexType, Cpu> perm_distinct,
-                           std::size_t ndistinct, Cpu cpuv, data<T, Cpu> w,
-                           vector_const_iterator<IndexType, Cpu> indicesw, Cpu cpuw) {
-            (void)cpuv;
-            (void)cpuw;
+                           std::size_t ndistinct, Cpu, data<T, Cpu> w,
+                           vector_const_iterator<IndexType, Cpu> indicesw, Cpu) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
@@ -165,44 +263,117 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
+        /// Copy n values, w[i] = v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu,
+                    EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            cudaCheck(cudaMemcpy(raw_pointer<T>(w), const_raw_pointer<T>(v), sizeof(T) * n,
+                                 cudaMemcpyDeviceToHost));
+        }
+
+        /// Copy n values, w[i] += v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu,
+                    EWOp::Add) {
+            vector<T, Cpu> t(n);
+            copy_n<IndexType, T>(v, cudav, n, t.data(), Cpu{}, EWOp::Copy{});
+            copy_n<IndexType, T>(t.data(), Cpu{}, n, w, Cpu{}, EWOp::Add{});
+        }
+
+        /// Copy n values, w[i] = v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, Cpu , std::size_t n, data<T, Cuda> w, Cuda cudaw,
+                    EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            cudaCheck(cudaMemcpy(raw_pointer<T>(w), const_raw_pointer<T>(v), sizeof(T) * n,
+                                 cudaMemcpyHostToDevice));
+        }
+
+        /// Copy n values, w[i] += v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cpu> v, Cpu , std::size_t n, data<T, Cuda> w, Cuda cudaw,
+                    EWOp::Add) {
+            vector<T, Cuda> t = new_vector<T>(n, cudaw);
+            copy_n<IndexType, T>(v, Cpu{}, n, t.data(), cudaw, EWOp::Copy{});
+            copy_n<IndexType, T>(t.data(), cudaw, n, w, cudaw, EWOp::Add{});
+        }
+
+        /// Copy n values, w[i] = v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, Cuda cudav, std::size_t n, data<T, Cuda> w, Cuda cudaw,
+                    EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            if (deviceId(cudav) == deviceId(cudaw)) {
+                cudaCheck(cudaMemcpy(raw_pointer<T>(w), const_raw_pointer<T>(v), sizeof(T) * n,
+                                     cudaMemcpyDeviceToDevice));
+            } else {
+                cudaCheck(cudaMemcpyPeer(raw_pointer<T>(w), deviceId(cudaw),
+                                         const_raw_pointer<T>(v), deviceId(cudav), sizeof(T) * n));
+            }
+        }
+
+        /// Copy n values, w[i] += v[i]
+
+        template <typename IndexType, typename T>
+        void copy_n(data<const T, Cuda> v, Cuda cudav, std::size_t n, data<T, Cuda> w, Cuda cudaw,
+                    EWOp::Add) {
+            if (deviceId(cudav) == deviceId(cudaw)) {
+                cudaCheck(cudaSetDevice(deviceId(cudaw)));
+                thrust::transform(v, v + n, w, w, thrust::plus<typename cuda_complex<T>::type>());
+            } else {
+                vector<T, Cuda> t = new_vector<T>(n, cudaw);
+                copy_n<IndexType, T>(v, cudav, n, t.data(), cudaw, EWOp::Copy{});
+                copy_n<IndexType, T>(t.data(), cudaw, n, w, cudaw, EWOp::Add{});
+            }
+        }
+
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indices,
-                    Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu cpuw, EWOp::Copy) {
-            (void)cudav;
-            (void)cpuw;
-            thrust::copy_n(thrust::make_permutation_iterator(v, indices), n, w);
+                    Cuda cudav, std::size_t n, data<T, Cpu> w, Cpu, EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            thrust::copy_n(thrust::make_permutation_iterator(v, indices), n,
+                           (typename cuda_complex<T>::type *)w);
         }
 
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indices, Cpu,
-                    std::size_t n, data<T, Cuda> w, Cuda, EWOp::Copy) {
-            thrust::copy_n(thrust::make_permutation_iterator(v, indices), n, w);
+                    std::size_t n, data<T, Cuda> w, Cuda cudaw, EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            thrust::copy_n(
+                thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indices), n,
+                w);
         }
 
         /// Copy n values, w[indices[i]] = v[i]
 
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, Cpu cpuv, std::size_t n, data<T, Cuda> w,
+        void copy_n(data<const T, Cpu> v, Cpu, std::size_t n, data<T, Cuda> w,
                     vector_const_iterator<IndexType, Cuda> indices, Cuda cudaw, EWOp::Copy) {
-            (void)cpuv;
-            (void)cudaw;
-            thrust::copy_n(v, n, thrust::make_permutation_iterator(w, indices));
+            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            thrust::copy_n((typename cuda_complex<T>::type *)v, n,
+                           thrust::make_permutation_iterator(w, indices));
         }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
         template <typename IndexType, typename T>
-        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu xpuv,
+        void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu,
                     std::size_t n, data<T, Cuda> w, vector_const_iterator<IndexType, Cuda> indicesw,
-                    Cuda xpuw, EWOp::Copy) {
-            (void)xpuv;
-            (void)xpuw;
-            thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
-                           thrust::make_permutation_iterator(w, indicesw));
+                    Cuda cudaw, EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            thrust::copy_n(
+                thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indicesv), n,
+                thrust::make_permutation_iterator(w, indicesw));
         }
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
@@ -210,25 +381,27 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cpu> v, vector_const_iterator<IndexType, Cpu> indicesv, Cpu,
                     std::size_t n, data<T, Cuda> w, vector_const_iterator<IndexType, Cuda> indicesw,
-                    Cuda, EWOp::Add) {
+                    Cuda cudaw, EWOp::Add) {
+            cudaCheck(cudaSetDevice(deviceId(cudaw)));
             std::vector<T> v_gather(n);
             copy_n<IndexType, T>(v, indicesv, Cpu{}, n, v_gather.data(), Cpu{}, EWOp::Copy{});
             vector<T, Cuda> v_dev = v_gather;
             thrust::transform(v_dev.begin(), v_dev.end(),
                               thrust::make_permutation_iterator(w, indicesw),
-                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
+                              thrust::make_permutation_iterator(w, indicesw),
+                              thrust::plus<typename cuda_complex<T>::type>());
         }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
         template <typename IndexType, typename T>
         void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
-                    Cuda xpuv, std::size_t n, data<T, Cpu> w,
-                    vector_const_iterator<IndexType, Cpu> indicesw, Cpu xpuw, EWOp::Copy) {
-            (void)xpuv;
-            (void)xpuw;
-            thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
-                           thrust::make_permutation_iterator(w, indicesw));
+                    Cuda cudav, std::size_t n, data<T, Cpu> w,
+                    vector_const_iterator<IndexType, Cpu> indicesw, Cpu, EWOp::Copy) {
+            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            thrust::copy_n(
+                thrust::make_permutation_iterator(v, indicesv), n,
+                thrust::make_permutation_iterator((typename cuda_complex<T>::type *)w, indicesw));
         }
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
@@ -264,7 +437,8 @@ namespace superbblas {
             (void)xpuw;
             auto vit = thrust::make_permutation_iterator(v, indicesv);
             thrust::transform(vit, vit + n, thrust::make_permutation_iterator(w, indicesw),
-                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
+                              thrust::make_permutation_iterator(w, indicesw),
+                              thrust::plus<typename cuda_complex<T>::type>());
         }
 
         /// Copy and reduce n values, w[indicesw[i]] += sum(v[perm[perm_distinct[i]:perm_distinct[i+1]]])
@@ -286,7 +460,8 @@ namespace superbblas {
 
             thrust::transform(w_device.begin(), w_device.end(),
                               thrust::make_permutation_iterator(w, indicesw),
-                              thrust::make_permutation_iterator(w, indicesw), thrust::plus<T>());
+                              thrust::make_permutation_iterator(w, indicesw),
+                              thrust::plus<typename cuda_complex<T>::type>());
         }
 
 #endif // SUPERBBLAS_USE_CUDA
@@ -297,58 +472,24 @@ namespace superbblas {
         /// \param v: value to set
         /// \param cpu: device context
 
-        template <typename Iterator>
-        void fill_n(Iterator it, std::size_t n,
-                    typename std::iterator_traits<Iterator>::value_type v, Cpu cpu) {
-            (void)cpu;
+        template <typename T>
+        void zero_n(data<T, Cpu> v, std::size_t n, Cpu) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) it[i] = v;
+            for (std::size_t i = 0; i < n; ++i) v[i] = T{0};
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
-        /// Set the first `n` elements with a value
+        /// Set the first `n` elements with a zero value
         /// \param it: first element to set
         /// \param n: number of elements to set
         /// \param v: value to set
-        /// \param cpu: device context
+        /// \param cuda: device context
 
-        template <typename Iterator>
-        void fill_n(Iterator it, std::size_t n,
-                    typename std::iterator_traits<Iterator>::value_type v, Cuda cuda) {
-            (void)cuda;
-            thrust::fill(it, it + n, v);
-        }
-#endif
-
-        /// Return the pointer associated to an iterator
-        /// \param it: iterator
-
-        template <typename Iterator>
-        typename std::iterator_traits<Iterator>::value_type *raw_pointer(Iterator it) {
-            return &*it;
-        }
-
-        /// Return the pointer associated to an iterator
-        /// \param it: iterator
-
-        template <typename Iterator>
-        const typename std::iterator_traits<Iterator>::value_type *const_raw_pointer(Iterator it) {
-            return &*it;
-        }
-
-#ifdef SUPERBBLAS_USE_CUDA
-        /// Return the pointer associated to an iterator
-        /// \param it: iterator
-
-        template <typename T> T *raw_pointer(thrust::device_ptr<T> it) { return it.get(); }
-
-        /// Return the pointer associated to an iterator
-        /// \param it: iterator
-
-        template <typename T> const T *const_raw_pointer(thrust::device_ptr<T> it) {
-            return it.get();
+        template <typename T> void zero_n(data<T, Cuda> v, std::size_t n, Cuda cuda) {
+            cudaCheck(cudaSetDevice(deviceId(cuda)));
+            cudaCheck(cudaMemset(raw_pointer<T>(v), 0, sizeof(T)*n));
         }
 #endif
 

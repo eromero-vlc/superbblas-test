@@ -48,6 +48,14 @@ namespace superbblas {
         int deviceId(Cpu) { return 0; }
 
 #ifdef SUPERBBLAS_USE_CUDA
+        inline void cudaCheck(cudaError_t err) {
+            if (err != cudaSuccess) {
+                std::stringstream s;
+                s << "CUDA error: " << err;
+                throw std::runtime_error(s.str());
+            }
+        }
+
         inline const char* cublasStatusToStr(cublasStatus_t status) {
             // clang-format off
             if (status == CUBLAS_STATUS_SUCCESS         ) return "CUBLAS_STATUS_SUCCESS";
