@@ -256,10 +256,10 @@ namespace superbblas {
         /// \param ncomponents1: comm.nprocs * ncomponents1 == fs.size()
         /// \param comm: communicator
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename XPU0>
         void pack(const Order<Nd0> &o0, const From_size<Nd0> &fs, const Coor<Nd0> &dim0,
                   data<const T, XPU0> v0, XPU0 xpu0, const Order<Nd1> &o1,
-                  typename Indices<Cpu>::iterator disp1, data<T, Cpu> v1, unsigned int ncomponents1,
+                  typename Indices<Cpu>::iterator disp1, data<Q, Cpu> v1, unsigned int ncomponents1,
                   MpiComm comm) {
 
             assert(fs.size() == comm.nprocs * ncomponents1);
@@ -307,14 +307,16 @@ namespace superbblas {
                     assert(n <= vol);
                     assert(i != fs.size() - 1 || n == vol);
                 }
-                Indices<XPU0> indices0_xpu = indices0;
+                Indices<XPU0> indices0_xpu = new_vector<IndexType>(indices0.size(), xpu0);
+                copy_n<IndexType, IndexType>(indices0.data(), Cpu{}, indices0.size(),
+                                             indices0_xpu.data(), xpu0, EWOp::Copy{});
                 cache[key] = PairIndices{indices0_xpu, indices1};
                 it = cache.find(key);
             }
 
             // Do the copy
-            copy_n<IndexType, T>(v0, it->second.first.begin(), xpu0, vol, v1,
-                                 it->second.second.begin(), Cpu{}, EWOp::Copy{});
+            copy_n<IndexType, T, Q>(v0, it->second.first.begin(), xpu0, vol, v1,
+                                    it->second.second.begin(), Cpu{}, EWOp::Copy{});
         }
 
         /// Pack a list of ranges to be used in a MPI communication
@@ -326,21 +328,21 @@ namespace superbblas {
         /// \param ncomponents1: number of components on the receiving tensor
         /// \param comm: communicator
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T,
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q,
                   typename From_size_iterator_or_ptr, typename XPU0, typename XPU1>
-        PackedValues<T> pack(From_size_iterator_or_ptr toSend, unsigned int ncomponents0,
+        PackedValues<Q> pack(From_size_iterator_or_ptr toSend, unsigned int ncomponents0,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm) {
 
-            PackedValues<T> r = prepare_pack<Nd0, T>(toSend, ncomponents0, ncomponents1, comm);
+            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend, ncomponents0, ncomponents1, comm);
 
             Indices<Cpu> buf_disp(comm.nprocs);
-            std::size_t n = 0; // accumulate total number of T elements
+            std::size_t n = 0; // accumulate total number of Q elements
             for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
-                std::size_t n_rank = 0;  // total number of T elements in rank
+                std::size_t n_rank = 0;  // total number of Q elements in rank
                 if (rank != comm.rank) { // Skip the local communications
-                    // Compute the total number of T elements for rank i
+                    // Compute the total number of Q elements for rank i
                     for (unsigned int irange = 0; irange < ncomponents0; ++irange) {
                         for (unsigned int componentId1 = 0; componentId1 < ncomponents1;
                              ++componentId1) {
@@ -357,8 +359,8 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first) {
                     if (c.componentId == componentId0) {
-                        pack<Nd0, Nd1, T>(o0, toSend[componentId0], c.dim, c.it, c.xpu, o1,
-                                          buf_disp.begin(), r.buf.data(), ncomponents1, comm);
+                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, c.xpu, o1,
+                                             buf_disp.begin(), r.buf.data(), ncomponents1, comm);
                         for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
                             if (rank != comm.rank)
                                 buf_disp[rank] += volume<Nd0>(toSend[componentId0][rank][1]);
@@ -367,8 +369,8 @@ namespace superbblas {
                 }
                 for (const Component<Nd0, const T, XPU1> &c : v.second) {
                     if (c.componentId == componentId0) {
-                        pack<Nd0, Nd1, T>(o0, toSend[componentId0], c.dim, c.it, c.xpu, o1,
-                                          buf_disp.begin(), r.buf.data(), ncomponents1, comm);
+                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, c.xpu, o1,
+                                             buf_disp.begin(), r.buf.data(), ncomponents1, comm);
                         for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
                             if (rank != comm.rank)
                                 buf_disp[rank] += volume<Nd0>(toSend[componentId0][rank][1]);
@@ -423,14 +425,16 @@ namespace superbblas {
                     n += voli;
                     assert(n <= vol);
                 }
-                Indices<XPU> indices1_xpu = indices1;
+                Indices<XPU> indices1_xpu = new_vector<IndexType>(indices1.size(), v.xpu);
+                copy_n<IndexType, IndexType>(indices1.data(), Cpu{}, indices1.size(),
+                                             indices1_xpu.data(), v.xpu, EWOp::Copy{});
                 cache[key] = indices1_xpu;
                 it = cache.find(key);
             }
 
             // Do the copy
-            copy_n<IndexType, T>(r.buf.data(), Cpu{}, vol, v.it, it->second.begin(), v.xpu,
-                                 EWOp::Copy{});
+            copy_n<IndexType, T, T>(r.buf.data(), Cpu{}, vol, v.it, it->second.begin(), v.xpu,
+                                    EWOp::Copy{});
         }
 
         /// Unpack and sum-reduce packed tensors from a MPI communication
@@ -482,10 +486,10 @@ namespace superbblas {
                     if (indices1[perm[i]] != indices1[perm[i - 1]]) perm_distinct.push_back(i);
                 }
                 perm_distinct.push_back(vol);
-                Indices<XPU> indices1_xpu(perm_distinct.size() - 1);
-                copy_n<IndexType, IndexType>(indices1.data(), perm_distinct.begin(), Cpu{},
-                                             perm_distinct.size() - 1, indices1_xpu.data(), v.xpu,
-                                             EWOp::Copy{});
+                Indices<XPU> indices1_xpu = new_vector<IndexType>(perm_distinct.size() - 1, v.xpu);
+                copy_n<IndexType, IndexType, IndexType>(indices1.data(), perm_distinct.begin(),
+                                                        Cpu{}, perm_distinct.size() - 1,
+                                                        indices1_xpu.data(), v.xpu, EWOp::Copy{});
                 cache[key] = std::make_tuple(perm, perm_distinct, indices1_xpu);
                 it = cache.find(key);
             }
@@ -507,27 +511,26 @@ namespace superbblas {
         /// \param ncomponents1: number of components on the destination tensor
         /// \param comm: communication
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1,
-                  typename XPUr, typename EWOp>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, const std::shared_ptr<From_size<Nd1>> toReceive,
-                             const Component<Nd1, T, XPUr> &v1, unsigned int ncomponents1,
+                             const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop) {
 
             if (comm.nprocs <= 1) return [] {};
 
-            (void)v1;
-
             // Pack v0 and prepare for receiving data from other processes
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            std::shared_ptr<PackedValues<T>> v0ToSend = std::make_shared<PackedValues<T>>(
-                pack<Nd0, Nd1, T>(toSend.begin(), toSend.size(), v0, o0, o1, ncomponents1, comm));
-            std::shared_ptr<PackedValues<T>> v1ToReceive = std::make_shared<PackedValues<T>>(
-                prepare_pack<Nd1, T>(&*toReceive, 1, ncomponents0, comm));
+            std::shared_ptr<PackedValues<Q>> v0ToSend =
+                std::make_shared<PackedValues<Q>>(pack<Nd0, Nd1, T, Q>(
+                    toSend.begin(), toSend.size(), v0, o0, o1, ncomponents1, comm));
+            std::shared_ptr<PackedValues<Q>> v1ToReceive = std::make_shared<PackedValues<Q>>(
+                prepare_pack<Nd1, Q>(&*toReceive, 1, ncomponents0, comm));
 
             // Do the MPI communication
-            MPI_Datatype dtype = get_mpi_datatype<T>();
+            MPI_Datatype dtype = get_mpi_datatype<Q>();
             MPI_Request r;
             assert(v0ToSend->counts.size() == comm.nprocs);
             assert(v0ToSend->displ.size() == comm.nprocs);
@@ -537,9 +540,9 @@ namespace superbblas {
             MPI_Type_size(dtype, &dtype_size);
             (void)dtype_size;
             assert((v0ToSend->displ.back() + v0ToSend->counts.back()) * dtype_size <=
-                   v0ToSend->buf.size() * sizeof(T));
+                   v0ToSend->buf.size() * sizeof(Q));
             assert((v1ToReceive->displ.back() + v1ToReceive->counts.back()) * dtype_size <=
-                   v1ToReceive->buf.size() * sizeof(T));
+                   v1ToReceive->buf.size() * sizeof(Q));
             MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(), v0ToSend->displ.data(),
                            dtype, v1ToReceive->buf.data(), v1ToReceive->counts.data(),
                            v1ToReceive->displ.data(), dtype, comm.comm, &r);
@@ -552,7 +555,7 @@ namespace superbblas {
 
                 // Do this copy is unnecessary, but v0ToSend needs to be captured to avoid
                 // being released until this point
-                std::shared_ptr<PackedValues<T>> v0ToSend_dummy = v0ToSend;
+                std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
                 unpack<Nd1>(*v1ToReceive, *toReceive, v1, ncomponents0, comm, ewop);
@@ -570,12 +573,12 @@ namespace superbblas {
         /// \param ncomponents1: number of components on the destination tensor
         /// \param comm: communication
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1,
-                  typename XPUr, typename EWOp>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, const std::shared_ptr<From_size<Nd1>> toReceive,
-                             const Component<Nd1, T, XPUr> &v1, unsigned int ncomponents1,
+                             const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              SelfComm comm, EWOp ewop) {
             (void)o0;
             (void)toSend;
@@ -843,12 +846,12 @@ namespace superbblas {
         /// \param v1: data for the destination tensor
         /// \param comm: communicator context
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Comm, typename XPU0,
-                  typename XPU1, typename EWOp>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1, typename EWOp>
         void copy(const From_size<Nd0> &p0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                   const Order<Nd0> &o0, const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                   const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, T, XPU0, XPU1> &v1, Comm comm, EWOp ewop) {
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop) {
 
             // Check the dimensions of p0 and p1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -869,15 +872,15 @@ namespace superbblas {
             // Split the work for each receiving component
             std::vector<Request> reqs;
             for (unsigned int i = 0; i < ncomponents1; ++i) {
-                for (const Component<Nd1, T, XPU0> &c : v1.first) {
+                for (const Component<Nd1, Q, XPU0> &c : v1.first) {
                     if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T>(p0, from0, size0, o0, v0, p1, ncomponents1,
-                                                         from1, o1, c, comm, ewop));
+                        reqs.push_back(copy<Nd0, Nd1, T, Q>(
+                            p0, from0, size0, o0, v0, p1, ncomponents1, from1, o1, c, comm, ewop));
                 }
-                for (const Component<Nd1, T, XPU1> &c : v1.second) {
+                for (const Component<Nd1, Q, XPU1> &c : v1.second) {
                     if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T>(p0, from0, size0, o0, v0, p1, ncomponents1,
-                                                         from1, o1, c, comm, ewop));
+                        reqs.push_back(copy<Nd0, Nd1, T, Q>(
+                            p0, from0, size0, o0, v0, p1, ncomponents1, from1, o1, c, comm, ewop));
                 }
             }
 
@@ -899,12 +902,12 @@ namespace superbblas {
         /// \param comm: communicator context
         /// \param xpu: device context
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Comm, typename XPU0,
-                  typename XPU1, typename XPU, typename EWOp>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1, typename XPU, typename EWOp>
         Request copy(const From_size<Nd0> &p0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                      const Order<Nd0> &o0, const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                      const From_size<Nd1> &p1, unsigned int ncomponents1, const Coor<Nd1> &from1,
-                     const Order<Nd1> &o1, const Component<Nd1, T, XPU> &v1, Comm comm, EWOp ewop) {
+                     const Order<Nd1> &o1, const Component<Nd1, Q, XPU> &v1, Comm comm, EWOp ewop) {
 
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -936,7 +939,7 @@ namespace superbblas {
             Request local_req = [=] {
                 unsigned int ncomponents0 = v0.first.size() + v0.second.size();
                 for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
-                    local_copy<Nd0, Nd1, T>(
+                    local_copy<Nd0, Nd1, T, Q>(
                         o0, (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
                         (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
                         c0.dim, c0.it, c0.xpu, o1,
@@ -944,7 +947,7 @@ namespace superbblas {
                         v1.xpu, ewop);
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
-                    local_copy<Nd0, Nd1, T, XPU1>(
+                    local_copy<Nd0, Nd1, T, Q>(
                         o0, (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
                         (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
                         c0.dim, c0.it, c0.xpu, o1,
@@ -1078,7 +1081,7 @@ namespace superbblas {
                 const unsigned int componentId = v0.first[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
-                vr0[i].resize(volume<Ndo>(dimi));
+                vr0[i] = new_vector<T>(volume<Ndo>(dimi), v0.first[i].xpu);
                 vr_.first.push_back(
                     Component<Ndo, T, XPU0>{vr0[i].data(), dimi, v0.first[i].xpu, componentId});
                 local_contraction<Nd0, Nd1, Ndo, T>(o0, p0[pi][1], conj0, v0.first[i].it, o1,
@@ -1090,7 +1093,7 @@ namespace superbblas {
                 const unsigned int componentId = v0.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
-                vr1[i].resize(volume<Ndo>(dimi));
+                vr1[i] = new_vector<T>(volume<Ndo>(dimi), v0.second[i].xpu);
                 vr_.second.push_back(
                     Component<Ndo, T, XPU1>{vr1[i].data(), dimi, v0.second[i].xpu, componentId});
                 local_contraction<Nd0, Nd1, Ndo, T>(o0, p0[pi][1], conj0, v0.second[i].it, o1,
@@ -1121,10 +1124,10 @@ namespace superbblas {
     /// \param v1: vector of data pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
 
-    template <unsigned int Nd0, unsigned int Nd1, typename T>
+    template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q>
     void copy(const From_size<Nd0> &p0, int ncomponents0, const char *o0, const Coor<Nd0> &from0,
               const Coor<Nd0> &size0, const T **v0, Context *ctx0, const From_size<Nd1> &p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> &from1, T **v1, Context *ctx1,
+              int ncomponents1, const char *o1, const Coor<Nd1> &from1, Q **v1, Context *ctx1,
               MPI_Comm mpicomm) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
@@ -1157,10 +1160,10 @@ namespace superbblas {
     /// \param v1: vector of data pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
 
-    template <unsigned int Nd0, unsigned int Nd1, typename T>
+    template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q>
     void copy(const From_size<Nd0> &p0, int ncomponents0, const char *o0, const Coor<Nd0> from0,
               const Coor<Nd0> size0, const T **v0, Context *ctx0, const From_size<Nd1> &p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> from1, T **v1, Context *ctx1) {
+              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, Context *ctx1) {
 
         detail::SelfComm comm = detail::get_comm();
         detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");

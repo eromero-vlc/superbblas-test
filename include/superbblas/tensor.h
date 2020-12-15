@@ -372,7 +372,9 @@ namespace superbblas {
             (void)cuda;
             Indices<Cpu> indices_host =
                 get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
-            Indices<Cuda> indices = indices_host;
+            Indices<Cuda> indices = new_vector<IndexType>(indices_host.size(), cuda);
+            copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
+                                         indices.data(), cuda, EWOp::Copy{});
             return indices;
         }
 
@@ -394,7 +396,9 @@ namespace superbblas {
             (void)cuda;
             Indices<Cpu> indices_host = get_permutation_destination<Nd0, Nd1>(
                 o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
-            Indices<Cuda> indices = indices_host;
+            Indices<Cuda> indices = new_vector<IndexType>(indices_host.size(), cuda);
+            copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
+                                         indices.data(), cuda, EWOp::Copy{});
             return indices;
         }
 #endif // SUPERBBLAS_USE_CUDA
@@ -826,12 +830,12 @@ namespace superbblas {
         /// \param v1: data for the destination tensor
         /// \param xpu1: device context for v1
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename XPU0, typename XPU1,
-                  typename EWOp>
+        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename EWOp>
         void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                         const Coor<Nd0> &dim0, data<const T, XPU0> v0, XPU0 xpu0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        data<T, XPU1> v1, XPU1 xpu1, EWOp ewop) {
+                        data<Q, XPU1> v1, XPU1 xpu1, EWOp ewop) {
 
             // Get the permutation vectors
             std::shared_ptr<Indices<XPU0>> indices0;
@@ -843,8 +847,8 @@ namespace superbblas {
                                                         xpu1, indices1, disp1);
 
             // Do the copy
-            copy_n<IndexType, T>(v0 + disp0, indices0->begin(), xpu0, indices0->size(), v1 + disp1,
-                                 indices1->begin(), xpu1, ewop);
+            copy_n<IndexType, T, Q>(v0 + disp0, indices0->begin(), xpu0, indices0->size(),
+                                    v1 + disp1, indices1->begin(), xpu1, ewop);
         }
     }
 
@@ -861,10 +865,10 @@ namespace superbblas {
     /// \param v1: data for the destination tensor
     /// \param ctx1: device context for v1
 
-    template <unsigned int Nd0, unsigned int Nd1, typename T>
+    template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q>
     void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                     const Coor<Nd0> &dim0, const T *v0, Context ctx0, const char *o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, T *v1, Context ctx1) {
+                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, Context ctx1) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -885,20 +889,20 @@ namespace superbblas {
 
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_, from1,
-                                            dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
+            detail::local_copy<Nd0, Nd1, T, Q>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_,
+                                               from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
         }
 #ifdef SUPERBBLAS_USE_CUDA
         else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
-            detail::local_copy<Nd0, Nd1, T>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_, from1,
-                                            dim1, detail::encapsulate_pointer(v1), ctx1.toCuda(),
-                                            detail::EWOp::Copy{});
+            detail::local_copy<Nd0, Nd1, T, Q>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_,
+                                               from1, dim1, detail::encapsulate_pointer(v1),
+                                               ctx1.toCuda(), detail::EWOp::Copy{});
         } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T>(o0_, from0, size0, dim0,
-                                            detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_,
-                                            from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
+            detail::local_copy<Nd0, Nd1, T, Q>(o0_, from0, size0, dim0,
+                                               detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_,
+                                               from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
         } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
-            detail::local_copy<Nd0, Nd1, T>(
+            detail::local_copy<Nd0, Nd1, T, Q>(
                 o0_, from0, size0, dim0, detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_, from1,
                 dim1, detail::encapsulate_pointer(v1), ctx1.toCuda(), detail::EWOp::Copy{});
         }
