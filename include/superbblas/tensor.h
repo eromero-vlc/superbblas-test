@@ -792,7 +792,7 @@ namespace superbblas {
             assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Avoid issues with uninitialized memory by zeroing out
-            zero_n(vr, volume<Ndo>(dimr), xpu);
+            zero_n<T>(vr, volume<Ndo>(dimr), xpu);
 
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';

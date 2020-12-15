@@ -46,15 +46,6 @@ namespace superbblas {
         template <typename T, std::size_t N> struct cuda_complex<std::array<T, N>> {
             using type = std::array<typename cuda_complex<T>::type, N>;
         };
-
-        /// Replace const T by const thrust::device_ptr<T> and T by thrust::device_ptr<T>
-        /// \tparam T: one of float, double, std::complex<T>, std::array<T,N>
-        /// \return cuda_ptr<T>::type has the new type
-
-        template <typename T> struct cuda_ptr { using type = thrust::device_ptr<T>; };
-        template <typename T> struct cuda_ptr<const T> {
-            using type = const typename cuda_ptr<T>::type;
-        };
 #endif // SUPERBBLAS_USE_CUDA
 
         /// Vector type
@@ -113,7 +104,7 @@ namespace superbblas {
             std::is_same<XPU, Cpu>::value, T *,
 #ifdef SUPERBBLAS_USE_CUDA
             typename std::conditional<std::is_same<XPU, Cuda>::value,
-                                      typename cuda_ptr<typename cuda_complex<T>::type>::type,
+                                      thrust::device_ptr<typename cuda_complex<T>::type>,
                                       void>::type
 #else
                                       void
