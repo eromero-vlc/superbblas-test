@@ -1,9 +1,11 @@
 #ifndef __SUPERBBLAS_PLATFORM__
 #define __SUPERBBLAS_PLATFORM__
 
+#include <complex>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 
 #ifdef __CUDACC__
 #    define __HOST__ __host__
@@ -45,7 +47,7 @@ namespace superbblas {
         struct Cpu {};
 
         /// Return a device identification
-        int deviceId(Cpu) { return 0; }
+        int deviceId(Cpu) { return -1; }
 
 #ifdef SUPERBBLAS_USE_CUDA
         inline void cudaCheck(cudaError_t err) {
@@ -89,7 +91,23 @@ namespace superbblas {
         int deviceId(Cuda cuda) { return cuda.device; }
 #endif
 
-//        struct Gpuamd {int device; };
+        // struct Gpuamd {int device; };
+
+        /// Return if `T` is a supported type
+        template <typename T> struct supported_type { static constexpr bool value = false; };
+        template <> struct supported_type<float> { static constexpr bool value = true; };
+        template <> struct supported_type<double> { static constexpr bool value = true; };
+        template <> struct supported_type<std::complex<float>> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<std::complex<double>> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<_Complex float> { static constexpr bool value = true; };
+        template <> struct supported_type<_Complex double> { static constexpr bool value = true; };
+        template <typename T> struct supported_type<const T> {
+            static constexpr bool value = supported_type<T>::value;
+        };
     }
 
     class Context {
@@ -130,7 +148,7 @@ namespace superbblas {
     };
 
     /// Return a CPU context
-    inline Context createCpuContext() { return Context{CPU, 0}; }
+    inline Context createCpuContext() { return Context{CPU, -1}; }
 
     /// Return a CUDA context
     /// \param device: device ID
@@ -139,6 +157,11 @@ namespace superbblas {
     /// Return a GPUAMD context
     /// \param device: device ID
     inline Context createGpuamdContext(int device = 0) { return Context{GPUAMD, device}; }
+
+    /// Return if `T` is a supported type
+    template <typename T> struct supported_type {
+        static constexpr bool value = detail::supported_type<T>::value;
+    };
 }
 
 #endif // __SUPERBBLAS_PLATFORM__
