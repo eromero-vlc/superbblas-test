@@ -2,6 +2,7 @@
 #define __SUPERBBLAS_BLAS__
 
 #include "platform.h"
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -657,7 +658,44 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_CUDA
     }
-}
 
+    /// Allocate memory on a device
+    /// \param n: number of element of type `T` to allocate
+    /// \param ctx: context
+ 
+    template <typename T> T *allocate(std::size_t n, Context ctx) {
+        T *r = nullptr;
+        switch (ctx.plat) {
+        case CPU: r = new T[n]; break;
+
+#ifdef SUPERBBLAS_USE_CUDA
+        case CUDA:
+            detail::cudaCheck(cudaSetDevice(ctx.device));
+            detail::cudaCheck(cudaMalloc(&r, sizeof(T) * n));
+            break;
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+        if (n > 0 && r == nullptr) std::runtime_error("Memory allocation failed!");
+    }
+
+    /// Deallocate memory on a device
+    /// \param ptr: pointer to the memory to deallocate
+    /// \param ctx: context
+
+    template <typename T> void deallocate(T *ptr, Context ctx) {
+        switch (ctx.plat) {
+        case CPU: delete[] ptr; break;
+
+#ifdef SUPERBBLAS_USE_CUDA
+        case CUDA:
+            detail::cudaCheck(cudaSetDevice(ctx.device));
+            detail::cudaCheck(cudaFree(ptr));
+            break;
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+    }
+}
 
 #endif // __SUPERBBLAS_BLAS__
