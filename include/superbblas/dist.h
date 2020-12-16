@@ -1107,6 +1107,28 @@ namespace superbblas {
         }
     }
 
+    /// Return a partitioning for a tensor of `dim` dimension onto a grid of processes
+    /// \param dim1: dimension size for the tensor
+    /// \param procs: number of processes on each dimension; the total number of processes is the
+    ///               product of all the elements.
+
+    template <unsigned int Nd> From_size<Nd> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs) {
+        int vol_procs = (int)detail::volume<Nd>(procs);
+        From_size<Nd> fs(vol_procs);
+        Coor<Nd> stride = detail::get_strides<Nd>(procs);
+        for (int rank = 0; rank < vol_procs; ++rank) {
+            Coor<Nd> cproc = detail::index2coor<Nd>(rank, procs, stride);
+            for (unsigned int i = 0; i < Nd; ++i) {
+                // First coordinate in process with rank 'rank' on dimension 'i'
+                fs[rank][0][i] =
+                    dim[i] / procs[i] * cproc[i] + std::min(cproc[i], dim[i] % procs[i]);
+                // Number of elements in process with rank 'cproc[i]' on dimension 'i'
+                fs[rank][1][i] = dim[i] / procs[i] + (dim[i] % procs[i] > cproc[i] ? 1 : 0);
+            }
+        }
+        return fs;
+    }
+
 #ifdef SUPERBBLAS_USE_MPI
     /// Copy the content of plural tensor v0 into v1
     /// \param p0: partitioning of the origin tensor in consecutive ranges
