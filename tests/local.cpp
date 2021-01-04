@@ -11,7 +11,6 @@ using namespace superbblas;
 
 int main(int argc, char **argv) {
     constexpr unsigned int Nd = 7; // xyztscn
-    //const Coor<Nd> dim = {2, 2, 2, 2, 2, 2};
     constexpr unsigned int nS = 4, nC = 3; // length of dimension spin and color dimensions
     constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
@@ -88,7 +87,7 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     local_copy<Nd - 1, Nd>("xyztsc", from0, dim0, dim0, t0.data(), ctx, "tnsxyzc",
-                                           from1, dim1, t1.data(), ctx);
+                                           from1, dim1, t1.data(), ctx, SlowToFast);
                 }
             }
             t = omp_get_wtime() - t;
@@ -109,7 +108,8 @@ int main(int argc, char **argv) {
                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
                     local_copy<Nd - 2, Nd - 1>(
                         "xyzts", from0, dim0a, dim0a, (const std::array<Scalar, nC> *)t0.data(),
-                        ctx, "tnsxyz", from1, dim1a, (std::array<Scalar, nC> *)t1.data(), ctx);
+                        ctx, "tnsxyz", from1, dim1a, (std::array<Scalar, nC> *)t1.data(), ctx,
+                        SlowToFast);
                 }
             }
             t = omp_get_wtime() - t;
@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc", from1,
-                                       dim1, t2.data(), ctx);
+                                       dim1, t2.data(), ctx, SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in shifting " << t / nrep << std::endl;
@@ -141,7 +141,7 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc", from1,
-                                       dim1, t2d.data(), ctx);
+                                       dim1, t2d.data(), ctx, SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in shifting and converting to double " << t / nrep << std::endl;
@@ -154,7 +154,8 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 local_contraction<Nd, Nd, 5>("tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1,
-                                             false, t2.data(), "tNSns", dimc, tc.data(), ctx);
+                                             false, t2.data(), "tNSns", dimc, tc.data(), ctx,
+                                             SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in contracting xyzc " << t / nrep << std::endl;
@@ -212,7 +213,7 @@ int main(int argc, char **argv) {
                     const Coor<Nd> from1 = {0, n, 0};
                     local_copy<Nd - 1, Nd>("xyztsc", from0, dim0, dim0,
                                            t0.data().get(), ctx, "tnsxyzc",
-                                           from1, dim1, t1.data().get(), ctx);
+                                           from1, dim1, t1.data().get(), ctx, SlowToFast);
                 }
             }
             cudaDeviceSynchronize();
@@ -239,7 +240,7 @@ int main(int argc, char **argv) {
                     const Coor<Nd> from1 = {0, n, 0};
                     local_copy<Nd - 1, Nd>("xyztsc", from0, dim0, dim0,
                                            t0_cpu.data(), cpuctx, "tnsxyzc",
-                                           from1, dim1, t1.data().get(), ctx);
+                                           from1, dim1, t1.data().get(), ctx, SlowToFast);
                 }
             }
             cudaDeviceSynchronize();
@@ -266,7 +267,7 @@ int main(int argc, char **argv) {
                         "xyzts", from0, dim0a, dim0a,
                         (const std::array<Scalar, nC> *)t0.data().get(), ctx,
                         "tnsxyz", from1, dim1a,
-                        (std::array<Scalar, nC> *)t1.data().get(), ctx);
+                        (std::array<Scalar, nC> *)t1.data().get(), ctx, SlowToFast);
                 }
             }
             cudaDeviceSynchronize();
@@ -285,7 +286,7 @@ int main(int argc, char **argv) {
                 from1[4] = 1; // Displace one on the z-direction
                 local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1,
                                    t1.data().get(), ctx, "tnsxyzc", from1, dim1,
-                                   t2.data().get(), ctx);
+                                   t2.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;
@@ -301,7 +302,7 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1, t1.data().get(), ctx, "tnsxyzc",
-                                   from1, dim1, t2d.data().get(), ctx);
+                                   from1, dim1, t2d.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;
@@ -316,7 +317,7 @@ int main(int argc, char **argv) {
             for (unsigned int rep = 0; rep < nrep; ++rep) {
               local_contraction<Nd, Nd, 5>(
                   "tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc", dim1,
-                  false, t2.data().get(), "tNSns", dimc, tc.data().get(), ctx);
+                  false, t2.data().get(), "tNSns", dimc, tc.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;
@@ -335,7 +336,7 @@ int main(int argc, char **argv) {
                     const Coor<5> from0 = {0};
                     local_copy<5, 5>("tnsNS", from0, dimc, dimc,
                                      tc.data().get(), ctx, "tnsNS", from0, dimc,
-                                     tc_cpu.data(), cpuctx);
+                                     tc_cpu.data(), cpuctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;

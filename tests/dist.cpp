@@ -12,7 +12,7 @@ using namespace superbblas;
 template<unsigned int Nd> From_size<Nd> dist_tensor(Coor<Nd> dim, Coor<Nd> procs) {
     int vol_procs = (int)detail::volume<Nd>(procs);
     From_size<Nd> fs(vol_procs);
-    Coor<Nd> stride = detail::get_strides<Nd>(procs);
+    Coor<Nd> stride = detail::get_strides<Nd>(procs, FastToSlow);
     for (int rank = 0; rank < vol_procs; ++rank) {
         Coor<Nd> cproc = detail::index2coor<Nd>(rank, procs, stride);
         for (unsigned int i = 0; i < Nd; ++i) {
@@ -155,12 +155,11 @@ int main(int argc, char **argv) {
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(), *ptr1 = t1.data();
                     copy<Nd - 1, Nd>(p0, 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx, p1,
-                                     1, "tnsxyzc", from1, &ptr1, &ctx
+                                     1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                     ,
-                                     MPI_COMM_WORLD
+                                     MPI_COMM_WORLD,
 #endif
-                    );
+                                     SlowToFast);
                 }
             }
             t = omp_get_wtime() - t;
@@ -201,12 +200,11 @@ int main(int argc, char **argv) {
                                       *ptr1 = (std::array<Scalar, nC> *)t1.data();
                     copy<Nd - 2, Nd - 1>(p0a, 1, "xyzts", from0a, dim0a,
                                          (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a, 1,
-                                         "tnsxyz", from1a, (std::array<Scalar, nC> **)&ptr1, &ctx
+                                         "tnsxyz", from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                         ,
-                                         MPI_COMM_WORLD
+                                         MPI_COMM_WORLD,
 #endif
-                    );
+                                         SlowToFast);
                  }
             }
             t = omp_get_wtime() - t;
@@ -225,12 +223,11 @@ int main(int argc, char **argv) {
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(); ScalarD *ptr1 = t1d.data();
                     copy<Nd - 1, Nd>(p0, 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx, p1,
-                                     1, "tnsxyzc", from1, &ptr1, &ctx
+                                     1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                     ,
-                                     MPI_COMM_WORLD
+                                     MPI_COMM_WORLD,
 #endif
-                    );
+                                     SlowToFast);
                 }
             }
             t = omp_get_wtime() - t;
@@ -251,12 +248,11 @@ int main(int argc, char **argv) {
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data();
                 copy<Nd, Nd>(p1, 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1, 1,
-                             "tnsxyzc", from1, &ptr1, &ctx
+                             "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                             ,
-                             MPI_COMM_WORLD
+                             MPI_COMM_WORLD,
 #endif
-                );
+                             SlowToFast);
             }
             t = omp_get_wtime() - t;
             if (rank == 0) std::cout << "Time in shifting " << t / nrep << std::endl;
@@ -274,13 +270,12 @@ int main(int argc, char **argv) {
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data(), *ptrc = tc.data();
                 contraction<Nd, Nd, 5>(p1, 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1, 1,
                                        "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, pc, 1,
-                                       "tNSns", &ptrc, &ctx
+                                       "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                       ,
-                                       MPI_COMM_WORLD
+                                       MPI_COMM_WORLD,
 #endif
-                );
-             }
+                                       SlowToFast);
+            }
             t = omp_get_wtime() - t;
             if (rank == 0) std::cout << "Time in contracting xyzs " << t / nrep << std::endl;
         }
@@ -342,14 +337,12 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data().get(), *ptr1 = t1.data().get();
-                    copy<Nd - 1, Nd>(p0, 1, "xyztsc", from0, dim0,
-                                     (const Scalar **)&ptr0, &ctx, p1, 1,
-                                     "tnsxyzc", from1, &ptr1, &ctx
+                    copy<Nd - 1, Nd>(p0, 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx, p1,
+                                     1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                     ,
-                                     MPI_COMM_WORLD
+                                     MPI_COMM_WORLD,
 #endif
-                    );
+                                     SlowToFast);
                 }
             }
             cudaDeviceSynchronize();
@@ -390,14 +383,12 @@ int main(int argc, char **argv) {
                     std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data().get(),
                                       *ptr1 = (std::array<Scalar, nC> *)t1.data().get();
                     copy<Nd - 2, Nd - 1>(p0a, 1, "xyzts", from0a, dim0a,
-                                         (const std::array<Scalar, nC> **)&ptr0,
-                                         &ctx, p1a, 1, "tnsxyz", from1a,
-                                         (std::array<Scalar, nC> **)&ptr1, &ctx
+                                         (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a, 1,
+                                         "tnsxyz", from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                         ,
-                                         MPI_COMM_WORLD
+                                         MPI_COMM_WORLD,
 #endif
-                    );
+                                         SlowToFast);
                  }
             }
             cudaDeviceSynchronize();
@@ -416,14 +407,12 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get();
-                copy<Nd, Nd>(p1, 1, "tnsxyzc", from0, dim1,
-                             (const Scalar **)&ptr0, &ctx, p1, 1, "tnsxyzc",
-                             from1, &ptr1, &ctx
+                copy<Nd, Nd>(p1, 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1, 1,
+                             "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                             ,
-                             MPI_COMM_WORLD
+                             MPI_COMM_WORLD,
 #endif
-                );
+                             SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;
@@ -442,12 +431,11 @@ int main(int argc, char **argv) {
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get(), *ptrc = tc.data().get();
                 contraction<Nd, Nd, 5>(p1, 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1, 1,
                                        "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, pc, 1,
-                                       "tNSns", &ptrc, &ctx
+                                       "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                       ,
-                                       MPI_COMM_WORLD
+                                       MPI_COMM_WORLD,
 #endif
-                );
+                                       SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;

@@ -25,6 +25,12 @@ namespace superbblas {
     /// Vector of dimension labels
     template <unsigned int Nd> using Order = std::array<char, Nd>;
 
+    /// How the coordinates are translates into positions in the tensor
+    enum CoorOrder {
+        SlowToFast, ///< The first coordinate runs the slowest and the last runs the fastest
+        FastToSlow  ///< The first coordinate runs the fastest and the first runs the slowest
+    };
+
     namespace detail {
 
         /// Vector of `IndexType`
@@ -69,6 +75,12 @@ namespace superbblas {
             return r;
         }
 
+        template <typename T, unsigned long N> std::array<T, N> reverse(const std::array<T, N> v) {
+            std::array<T, N> r = v;
+            std::reverse(r.begin(), r.end());
+            return r;
+        }
+
         /// Return an array with all elements set to a given value
         /// \param v: input value
 
@@ -95,16 +107,23 @@ namespace superbblas {
             return r;
         }
 
-        /// Return the jumps to the next consecutive element in that dimension
+        /// Return the jumps to the next consecutive element in each dimension
         /// \param dim: lattice dimension
-        ///
-        /// NOTE: we used anti-natural order, the last coordinate moves the fastest
+        /// \param co: coordinate linearization order
 
-        template <unsigned int Nd> Coor<Nd> get_strides(const Coor<Nd> dim) {
-            // p(i) = prod(dim(end:-1:i))
+        template <unsigned int Nd> Coor<Nd> get_strides(const Coor<Nd> dim, CoorOrder co) {
             Coor<Nd> p;
-            p.back() = 1;
-            for (int i = p.size() - 1; i >= 1; i--) p[i - 1] = p[i] * dim[i];
+            if (Nd > 0) {
+                if (co == SlowToFast) {
+                    // p(i) = prod(dim(end:-1:i))
+                    p.back() = 1;
+                    for (unsigned int i = p.size() - 1; i >= 1; i--) p[i - 1] = p[i] * dim[i];
+                } else {
+                    // p(i) = prod(dim(1:i))
+                    p[0] = 1;
+                    for (unsigned int i = 1; i < Nd; ++i) p[i] = p[i - 1] * dim[i - 1];
+                }
+            }
             return p;
         }
 
@@ -263,12 +282,13 @@ namespace superbblas {
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
+        /// \param co: coordinate linearization order
 
         template <unsigned int Nd0, unsigned int Nd1>
         Indices<Cpu> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                             const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                            const Coor<Nd1> &dim1, Cpu cpu) {
+                                            const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from1;
             (void)dim1;
             (void)cpu;
@@ -287,8 +307,8 @@ namespace superbblas {
             std::size_t vol = volume<Nd0>(size0);
 
             Indices<Cpu> indices0(vol);
-            Coor<Nd0> stride0 = get_strides<Nd0>(dim0);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
+            Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
 #ifdef _OPENMP
 #    pragma omp parallel for
@@ -313,12 +333,13 @@ namespace superbblas {
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
+        /// \param co: coordinate linearization order
 
         template <unsigned int Nd0, unsigned int Nd1>
         Indices<Cpu> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                                  const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                                 const Coor<Nd1> &dim1, Cpu cpu) {
+                                                 const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from0;
             (void)dim0;
             (void)cpu;
@@ -337,8 +358,8 @@ namespace superbblas {
             std::size_t vol = volume<Nd0>(size0);
 
             Indices<Cpu> indices1(vol);
-            Coor<Nd1> stride1 = get_strides<Nd1>(dim1);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1);
+            Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
+            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
 #ifdef _OPENMP
 #    pragma omp parallel for
 #endif
@@ -362,12 +383,13 @@ namespace superbblas {
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
+        /// \param co: coordinate linearization order
 
         template <unsigned int Nd0, unsigned int Nd1>
         Indices<Cuda> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                             const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                            const Coor<Nd1> &dim1, Cuda cuda) {
+                                            const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
 
             (void)cuda;
             Indices<Cpu> indices_host =
@@ -387,12 +409,13 @@ namespace superbblas {
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
+        /// \param co: coordinate linearization order
 
         template <unsigned int Nd0, unsigned int Nd1>
         Indices<Cuda> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                                   const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                                  const Coor<Nd1> &dim1, Cuda cuda) {
+                                                  const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
             (void)cuda;
             Indices<Cpu> indices_host = get_permutation_destination<Nd0, Nd1>(
                 o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
@@ -449,6 +472,7 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param indices_out: returned permutation
         /// \param disp: returned displacement
+        /// \param co: coordinate linearization order
         ///
         /// The ith element of the permutation is:
         ///   indices_out[i] + disp
@@ -459,7 +483,7 @@ namespace superbblas {
                                                const Order<Nd1> &o1, const Coor<Nd1> &from1,
                                                const Coor<Nd1> &dim1, XPU xpu,
                                                std::shared_ptr<Indices<XPU>> &indices_out,
-                                               IndexType &disp) {
+                                               IndexType &disp, CoorOrder co) {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
@@ -494,7 +518,7 @@ namespace superbblas {
                 auto it = size_dim_map.find({size1, dim1, deviceId(xpu)});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second;
-                    Coor<Nd1> stride1 = get_strides<Nd1>(dim1);
+                    Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                     disp = coor2index<Nd1>(from1, dim1, stride1);
                     return;
                  }
@@ -503,14 +527,14 @@ namespace superbblas {
             // Get the permutation and store it in cache
             std::shared_ptr<Indices<XPU>> indices1 =
                 std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
-                    o0, from0, size0, dim0, o1, from1, dim1, xpu));
+                    o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
             from_size_dim_map[from_size_dim({from1, size1, dim1, deviceId(xpu)})] = indices1;
 
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from1 + size1, dim1)) {
                 std::shared_ptr<Indices<XPU>> indices1_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
-                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu));
+                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
                 size_dim_map[size_dim({size1, dim1, deviceId(xpu)})] = indices1_sd;
             } 
 
@@ -530,6 +554,7 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param indices_out: returned permutation
         /// \param disp: returned displacement
+        /// \param co: coordinate linearization order
         ///
         /// The ith element of the permutation is:
         ///   indices_out[i] + disp
@@ -540,7 +565,7 @@ namespace superbblas {
                                           const Order<Nd1> &o1, const Coor<Nd1> &from1,
                                           const Coor<Nd1> &dim1, XPU xpu,
                                           std::shared_ptr<Indices<XPU>> &indices_out,
-                                          IndexType &disp) {
+                                          IndexType &disp, CoorOrder co) {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
@@ -574,7 +599,7 @@ namespace superbblas {
                 auto it = size_dim_map.find({perm1, size0, dim0, deviceId(xpu)});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second;
-                    Coor<Nd0> stride0 = get_strides<Nd0>(dim0);
+                    Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
                     disp = coor2index<Nd0>(from0, dim0, stride0);
                     return;
                  }
@@ -582,7 +607,7 @@ namespace superbblas {
 
             // Get the permutation and store it in cache
             std::shared_ptr<Indices<XPU>> indices0 = std::make_shared<Indices<XPU>>(
-                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu));
+                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
             from_size_dim_map[perm_from_size_dim({perm1, from0, size0, dim0, deviceId(xpu)})] =
                 indices0;
 
@@ -590,7 +615,7 @@ namespace superbblas {
             if (all_less_or_equal(from0 + size0, dim0)) {
                 std::shared_ptr<Indices<XPU>> indices0_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_origin<Nd0, Nd1>(
-                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu));
+                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
                 size_dim_map[perm_size_dim({perm1, size0, dim0, deviceId(xpu)})] = indices0_sd;
             } 
 
@@ -694,6 +719,7 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
         /// \param dimr: dimension size for the output operator
         /// \param vr: data for the second operator
+        /// \param co: coordinate linearization order
         ///
         /// The order of the labels should be as following:
         ///
@@ -706,7 +732,7 @@ namespace superbblas {
         void local_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
                                data<const T, XPU> v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
                                bool conj1, data<const T, XPU> v1, const Order<Ndo> &o_r,
-                               const Coor<Ndo> &dimr, data<T, XPU> vr, XPU xpu) {
+                               const Coor<Ndo> &dimr, data<T, XPU> vr, XPU xpu, CoorOrder co) {
 
             // Check orders
             if (!check_order(o0)) throw std::runtime_error("o0 has repeated labels");
@@ -716,6 +742,14 @@ namespace superbblas {
             // Check dimensions
             if (!check_dimensions<Nd0, Nd1, Ndo>(o0, dim0, o1, dim1, o_r, dimr))
                 throw std::runtime_error("some dimension does not match");
+
+            // The rest of the code is for SlowToFast; so reverse if that is the case
+            if (co == FastToSlow) {
+                local_contraction<Nd0, Nd1, Ndo, T, XPU>(
+                    reverse(o0), reverse(dim0), conj0, v0, reverse(o1), reverse(dim1), conj1, v1,
+                    reverse(o_r), reverse(dimr), vr, xpu, SlowToFast);
+                return;
+            }
 
             // Find T, the common labels between o0, o1, and o_r
             unsigned int nT = 0; // size of the piece T
@@ -829,22 +863,23 @@ namespace superbblas {
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
         /// \param xpu1: device context for v1
+        /// \param co: coordinate linearization order
 
         template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOp>
         void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                         const Coor<Nd0> &dim0, data<const T, XPU0> v0, XPU0 xpu0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        data<Q, XPU1> v1, XPU1 xpu1, EWOp ewop) {
+                        data<Q, XPU1> v1, XPU1 xpu1, EWOp ewop, CoorOrder co) {
 
             // Get the permutation vectors
             std::shared_ptr<Indices<XPU0>> indices0;
             std::shared_ptr<Indices<XPU1>> indices1;
             IndexType disp0, disp1;
             get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu0,
-                                                   indices0, disp0);
+                                                   indices0, disp0, co);
             get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        xpu1, indices1, disp1);
+                                                        xpu1, indices1, disp1, co);
 
             // Do the copy
             copy_n<IndexType, T, Q>(v0 + disp0, indices0->begin(), xpu0, indices0->size(),
@@ -864,11 +899,13 @@ namespace superbblas {
     /// \param dim1: dimension size for the destination tensor
     /// \param v1: data for the destination tensor
     /// \param ctx1: device context for v1
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q>
     void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                     const Coor<Nd0> &dim0, const T *v0, Context ctx0, const char *o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, Context ctx1) {
+                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, Context ctx1,
+                    CoorOrder co) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -890,21 +927,22 @@ namespace superbblas {
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_,
-                                               from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
+                                               from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{},
+                                               co);
         }
 #ifdef SUPERBBLAS_USE_CUDA
         else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
             detail::local_copy<Nd0, Nd1, T, Q>(o0_, from0, size0, dim0, v0, ctx0.toCpu(), o1_,
                                                from1, dim1, detail::encapsulate_pointer(v1),
-                                               ctx1.toCuda(), detail::EWOp::Copy{});
+                                               ctx1.toCuda(), detail::EWOp::Copy{}, co);
         } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T, Q>(o0_, from0, size0, dim0,
-                                               detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_,
-                                               from1, dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{});
+            detail::local_copy<Nd0, Nd1, T, Q>(
+                o0_, from0, size0, dim0, detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_, from1,
+                dim1, v1, ctx1.toCpu(), detail::EWOp::Copy{}, co);
         } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
             detail::local_copy<Nd0, Nd1, T, Q>(
                 o0_, from0, size0, dim0, detail::encapsulate_pointer(v0), ctx0.toCuda(), o1_, from1,
-                dim1, detail::encapsulate_pointer(v1), ctx1.toCuda(), detail::EWOp::Copy{});
+                dim1, detail::encapsulate_pointer(v1), ctx1.toCuda(), detail::EWOp::Copy{}, co);
         }
 #endif
         else {
@@ -924,6 +962,7 @@ namespace superbblas {
     /// \param o_r: dimension labels for the output operator
     /// \param dimr: dimension size for the output operator
     /// \param vr: data for the second operator
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     ///
     /// The order of the labels should be as following:
     ///
@@ -935,7 +974,8 @@ namespace superbblas {
     template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo, typename T>
     void local_contraction(const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
                            const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1,
-                           const char *o_r, const Coor<Ndo> &dimr, T *vr, Context ctx) {
+                           const char *o_r, const Coor<Ndo> &dimr, T *vr, Context ctx,
+                           CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -944,14 +984,14 @@ namespace superbblas {
         switch (ctx.plat) {
         case CPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(o0_, dim0, conj0, v0, o1_, dim1, conj1, v1,
-                                                        o_r_, dimr, vr, ctx.toCpu());
+                                                        o_r_, dimr, vr, ctx.toCpu(), co);
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
                 o0_, dim0, conj0, detail::encapsulate_pointer(v0), o1_, dim1, conj1,
                 detail::encapsulate_pointer(v1), o_r_, dimr, detail::encapsulate_pointer(vr),
-                ctx.toCuda());
+                ctx.toCuda(), co);
             break;
 #endif
         default: throw std::runtime_error("Unsupported platform");
