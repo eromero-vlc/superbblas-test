@@ -10,7 +10,7 @@
 using namespace superbblas;
 
 int main(int argc, char **argv) {
-    constexpr unsigned int Nd = 7; // xyztscn
+    constexpr std::size_t Nd = 7; // xyztscn
     constexpr unsigned int nS = 4, nC = 3; // length of dimension spin and color dimensions
     constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
@@ -44,12 +44,12 @@ int main(int argc, char **argv) {
 
         // Create tensor t0 of Nd-1 dims: a lattice color vector
         const Coor<Nd - 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
-        std::size_t vol0 = detail::volume<Nd - 1>(dim0);
+        std::size_t vol0 = detail::volume(dim0);
         Tensor t0(vol0);
 
         // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
         const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]}; // tnsxyzc
-        std::size_t vol1 = detail::volume<Nd>(dim1);
+        std::size_t vol1 = detail::volume(dim1);
         Tensor t1(vol1);
         for (unsigned int i = 0; i < vol0; i++) t0[i] = i;
 
@@ -86,8 +86,8 @@ int main(int argc, char **argv) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
-                    local_copy<Nd - 1, Nd>("xyztsc", from0, dim0, dim0, t0.data(), ctx, "tnsxyzc",
-                                           from1, dim1, t1.data(), ctx, SlowToFast);
+                    local_copy("xyztsc", from0, dim0, dim0, t0.data(), ctx, "tnsxyzc", from1, dim1,
+                               t1.data(), ctx, SlowToFast);
                 }
             }
             t = omp_get_wtime() - t;
@@ -106,10 +106,9 @@ int main(int argc, char **argv) {
                     std::copy_n(dim0.begin(), Nd - 2, dim0a.begin());
                     Coor<Nd - 1> dim1a;
                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
-                    local_copy<Nd - 2, Nd - 1>(
-                        "xyzts", from0, dim0a, dim0a, (const std::array<Scalar, nC> *)t0.data(),
-                        ctx, "tnsxyz", from1, dim1a, (std::array<Scalar, nC> *)t1.data(), ctx,
-                        SlowToFast);
+                    local_copy("xyzts", from0, dim0a, dim0a,
+                               (const std::array<Scalar, nC> *)t0.data(), ctx, "tnsxyz", from1,
+                               dim1a, (std::array<Scalar, nC> *)t1.data(), ctx, SlowToFast);
                 }
             }
             t = omp_get_wtime() - t;
@@ -125,8 +124,8 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc", from1,
-                                       dim1, t2.data(), ctx, SlowToFast);
+                local_copy("tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc", from1, dim1,
+                           t2.data(), ctx, SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in shifting " << t / nrep << std::endl;
@@ -140,22 +139,21 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc", from1,
-                                       dim1, t2d.data(), ctx, SlowToFast);
+                local_copy("tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc", from1, dim1,
+                           t2d.data(), ctx, SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in shifting and converting to double " << t / nrep << std::endl;
         }
 
         const Coor<5> dimc = {dim[T], dim[N], dim[S], dim[N], dim[S]}; // tnsns
-        std::size_t volc = detail::volume<5>(dimc); 
+        std::size_t volc = detail::volume(dimc); 
         Tensor tc(volc);
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
-                local_contraction<Nd, Nd, 5>("tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1,
-                                             false, t2.data(), "tNSns", dimc, tc.data(), ctx,
-                                             SlowToFast);
+                local_contraction("tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1, false,
+                                  t2.data(), "tNSns", dimc, tc.data(), ctx, SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in contracting xyzc " << t / nrep << std::endl;
@@ -168,12 +166,12 @@ int main(int argc, char **argv) {
 
         // Create tensor t0 of Nd-1 dims: a lattice color vector
         const Coor<Nd - 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
-        std::size_t vol0 = detail::volume<Nd - 1>(dim0);
+        std::size_t vol0 = detail::volume(dim0);
         Tensor t0(vol0);
 
         // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
         const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]}; // tnsxyzc
-        std::size_t vol1 = detail::volume<Nd>(dim1);
+        std::size_t vol1 = detail::volume(dim1);
         Tensor t1(vol1);
 
         // Dummy initialization of t0
@@ -211,9 +209,8 @@ int main(int argc, char **argv) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
-                    local_copy<Nd - 1, Nd>("xyztsc", from0, dim0, dim0,
-                                           t0.data().get(), ctx, "tnsxyzc",
-                                           from1, dim1, t1.data().get(), ctx, SlowToFast);
+                    local_copy("xyztsc", from0, dim0, dim0, t0.data().get(), ctx, "tnsxyzc", from1,
+                               dim1, t1.data().get(), ctx, SlowToFast);
                 }
             }
             cudaDeviceSynchronize();
@@ -227,7 +224,7 @@ int main(int argc, char **argv) {
             using Tensor_cpu = std::vector<Scalar>;
             const Coor<Nd - 1> dim0 = {dim[X], dim[Y], dim[Z],
                                        dim[T], dim[S], dim[C]}; // xyztsc
-            std::size_t vol0 = detail::volume<Nd - 1>(dim0);
+            std::size_t vol0 = detail::volume(dim0);
             Tensor_cpu t0_cpu(vol0);
             for (unsigned int i = 0; i < vol0; i++) t0_cpu[i] = i;
 
@@ -263,11 +260,10 @@ int main(int argc, char **argv) {
                     std::copy_n(dim0.begin(), Nd - 2, dim0a.begin());
                     Coor<Nd - 1> dim1a;
                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
-                    local_copy<Nd - 2, Nd - 1>(
-                        "xyzts", from0, dim0a, dim0a,
-                        (const std::array<Scalar, nC> *)t0.data().get(), ctx,
-                        "tnsxyz", from1, dim1a,
-                        (std::array<Scalar, nC> *)t1.data().get(), ctx, SlowToFast);
+                    local_copy("xyzts", from0, dim0a, dim0a,
+                               (const std::array<Scalar, nC> *)t0.data().get(), ctx, "tnsxyz",
+                               from1, dim1a, (std::array<Scalar, nC> *)t1.data().get(), ctx,
+                               SlowToFast);
                 }
             }
             cudaDeviceSynchronize();
@@ -284,9 +280,8 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1,
-                                   t1.data().get(), ctx, "tnsxyzc", from1, dim1,
-                                   t2.data().get(), ctx, SlowToFast);
+                local_copy("tnsxyzc", from0, dim1, dim1, t1.data().get(), ctx, "tnsxyzc", from1,
+                           dim1, t2.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;
@@ -301,7 +296,7 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy<Nd, Nd>("tnsxyzc", from0, dim1, dim1, t1.data().get(), ctx, "tnsxyzc",
+                local_copy("tnsxyzc", from0, dim1, dim1, t1.data().get(), ctx, "tnsxyzc",
                                    from1, dim1, t2d.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
@@ -310,14 +305,13 @@ int main(int argc, char **argv) {
         }
 
         const Coor<5> dimc = {dim[T], dim[N], dim[S], dim[N], dim[S]}; // tnsns
-        std::size_t volc = detail::volume<5>(dimc); 
+        std::size_t volc = detail::volume(dimc); 
         Tensor tc(volc);
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
-              local_contraction<Nd, Nd, 5>(
-                  "tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc", dim1,
-                  false, t2.data().get(), "tNSns", dimc, tc.data().get(), ctx, SlowToFast);
+                local_contraction("tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc", dim1, false,
+                                  t2.data().get(), "tNSns", dimc, tc.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;
@@ -334,9 +328,8 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                     const Coor<5> from0 = {0};
-                    local_copy<5, 5>("tnsNS", from0, dimc, dimc,
-                                     tc.data().get(), ctx, "tnsNS", from0, dimc,
-                                     tc_cpu.data(), cpuctx, SlowToFast);
+                    local_copy("tnsNS", from0, dimc, dimc, tc.data().get(), ctx, "tnsNS", from0,
+                               dimc, tc_cpu.data(), cpuctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;

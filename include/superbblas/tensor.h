@@ -21,9 +21,9 @@ namespace superbblas {
     /// Coordinate Index type
     using IndexType = int;
     /// Coordinate type
-    template <unsigned int Nd> using Coor = std::array<IndexType, Nd>;
+    template <std::size_t Nd> using Coor = std::array<IndexType, Nd>;
     /// Vector of dimension labels
-    template <unsigned int Nd> using Order = std::array<char, Nd>;
+    template <std::size_t Nd> using Order = std::array<char, Nd>;
 
     /// How the coordinates are translates into positions in the tensor
     enum CoorOrder {
@@ -40,42 +40,42 @@ namespace superbblas {
         // Auxiliary functions
         //
 
-        template <typename T, unsigned long N>
+        template <typename T, std::size_t N>
         std::array<T, N> operator+(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
-            for (unsigned int i = 0; i < N; i++) r[i] = a[i] + b[i];
+            for (std::size_t i = 0; i < N; i++) r[i] = a[i] + b[i];
             return r;
         }
 
-        template <typename T, unsigned long N>
+        template <typename T, std::size_t N>
         std::array<T, N> operator-(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
-            for (unsigned int i = 0; i < N; i++) r[i] = a[i] - b[i];
+            for (std::size_t i = 0; i < N; i++) r[i] = a[i] - b[i];
             return r;
         }
 
-        template <typename T, unsigned long N>
+        template <typename T, std::size_t N>
         bool all_less_or_equal(const std::array<T, N> &a, const std::array<T, N> &b) {
-            for (unsigned int i = 0; i < N; i++)
+            for (std::size_t i = 0; i < N; i++)
                 if (a[i] > b[i]) return false;
             return true;
         }
 
-        template <typename T, unsigned long N>
+        template <typename T, std::size_t N>
         std::array<T, N> min_each(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
-            for (unsigned int i = 0; i < N; i++) r[i] = std::min(a[i], b[i]);
+            for (std::size_t i = 0; i < N; i++) r[i] = std::min(a[i], b[i]);
             return r;
         }
 
-        template <typename T, unsigned long N>
+        template <typename T, std::size_t N>
         std::array<T, N> max_each(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
-            for (unsigned int i = 0; i < N; i++) r[i] = std::max(a[i], b[i]);
+            for (std::size_t i = 0; i < N; i++) r[i] = std::max(a[i], b[i]);
             return r;
         }
 
-        template <typename T, unsigned long N> std::array<T, N> reverse(const std::array<T, N> v) {
+        template <typename T, std::size_t N> std::array<T, N> reverse(const std::array<T, N> v) {
             std::array<T, N> r = v;
             std::reverse(r.begin(), r.end());
             return r;
@@ -84,7 +84,7 @@ namespace superbblas {
         /// Return an array with all elements set to a given value
         /// \param v: input value
 
-        template <unsigned int Nd, typename T> std::array<T, Nd> fill_coor(T v = 0) {
+        template <std::size_t Nd, typename T> std::array<T, Nd> fill_coor(T v = 0) {
             std::array<T, Nd> r;
             r.fill(v);
             return r;
@@ -94,7 +94,7 @@ namespace superbblas {
         /// \param v: input string
         /// \param name: name of the variable
 
-        template <unsigned int Nd, typename T>
+        template <std::size_t Nd, typename T>
         std::array<T, Nd> toArray(const T *v, const char *name) {
             if (std::strlen(v) != Nd) {
                 std::stringstream ss;
@@ -111,17 +111,17 @@ namespace superbblas {
         /// \param dim: lattice dimension
         /// \param co: coordinate linearization order
 
-        template <unsigned int Nd> Coor<Nd> get_strides(const Coor<Nd> dim, CoorOrder co) {
+        template <std::size_t Nd> Coor<Nd> get_strides(const Coor<Nd> dim, CoorOrder co) {
             Coor<Nd> p;
             if (Nd > 0) {
                 if (co == SlowToFast) {
                     // p(i) = prod(dim(end:-1:i))
                     p.back() = 1;
-                    for (unsigned int i = p.size() - 1; i >= 1; i--) p[i - 1] = p[i] * dim[i];
+                    for (std::size_t i = p.size() - 1; i >= 1; i--) p[i - 1] = p[i] * dim[i];
                 } else {
                     // p(i) = prod(dim(1:i))
                     p[0] = 1;
-                    for (unsigned int i = 1; i < Nd; ++i) p[i] = p[i - 1] * dim[i - 1];
+                    for (std::size_t i = 1; i < Nd; ++i) p[i] = p[i - 1] * dim[i - 1];
                 }
             }
             return p;
@@ -132,10 +132,10 @@ namespace superbblas {
         /// \param dim: lattice dimensions
         /// \param stride: jump to get to the next coordinate in each dimension
 
-        template <unsigned int Nd>
+        template <std::size_t Nd>
         IndexType coor2index(const Coor<Nd> &coor, const Coor<Nd> &dim, const Coor<Nd> &stride) {
             IndexType r = 0;
-            for (unsigned int j = 0; j < Nd; j++) r += (coor[j] % dim[j]) * stride[j];
+            for (std::size_t j = 0; j < Nd; j++) r += (coor[j] % dim[j]) * stride[j];
             return r;
         }
 
@@ -144,11 +144,11 @@ namespace superbblas {
         /// \param dim: lattice dimensions
         /// \param stride: jump to get to the next coordinate in each dimension
 
-        template <unsigned int Nd>
+        template <std::size_t Nd>
         inline Coor<Nd> index2coor(const IndexType &index, const Coor<Nd> &dim,
                                    const Coor<Nd> &stride) {
             Coor<Nd> r;
-            for (unsigned int j = 0; j < Nd; j++) r[j] = (index / stride[j]) % dim[j];
+            for (std::size_t j = 0; j < Nd; j++) r[j] = (index / stride[j]) % dim[j];
             return r;
         }
 
@@ -158,7 +158,7 @@ namespace superbblas {
         /// Return whether all label dimension are distinct
 
         template <typename Vector> bool check_order(const Vector &order) {
-            for (unsigned int i = 0; i < order.size(); ++i)
+            for (std::size_t i = 0; i < order.size(); ++i)
                 if (std::find(order.begin() + i + 1, order.end(), order[i]) != order.end())
                     return false;
             return true;
@@ -167,11 +167,11 @@ namespace superbblas {
         /// Return the number of vertices in a lattice
         /// \param dim: lattice dimensions
 
-        template <unsigned int Nd> std::size_t volume(const Coor<Nd> &dim) {
+        template <std::size_t Nd> std::size_t volume(const Coor<Nd> &dim) {
             if (dim.size() <= 0) return 0;
 
             std::size_t vol = dim[0];
-            for (unsigned int i = 1; i < dim.size(); ++i) vol *= dim[i];
+            for (std::size_t i = 1; i < dim.size(); ++i) vol *= dim[i];
             return vol;
         }
 
@@ -181,15 +181,15 @@ namespace superbblas {
         /// \param starts_with: the first label of the sublattice
         /// \param size: number of consecutive dimension of the sublattice
 
-        template <unsigned int Nd>
+        template <std::size_t Nd>
         std::size_t volume(const Order<Nd> &order, const Coor<Nd> &dim, char starts_with,
-                           unsigned int size) {
+                           std::size_t size) {
             assert(size <= order.size());
 
             if (size <= 0) return 0;
 
             std::size_t vol = 1;
-            for (unsigned int n = 0, i = std::find(order.begin(), order.end(), starts_with) -
+            for (std::size_t n = 0, i = std::find(order.begin(), order.end(), starts_with) -
                                          order.begin();
                  n < size; ++n, ++i)
                 vol *= dim[i];
@@ -204,10 +204,10 @@ namespace superbblas {
         ///
         /// NOTE: the output array will have zero on negative elements of `perm`.
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         Coor<Nd1> reorder_coor(const Coor<Nd0> &coor, const Coor<Nd1> &perm, IndexType blanck = 0) {
             Coor<Nd1> r;
-            for (unsigned int i = 0; i < Nd1; ++i) r[i] = perm[i] >= 0 ? coor[perm[i]] : blanck;
+            for (std::size_t i = 0; i < Nd1; ++i) r[i] = perm[i] >= 0 ? coor[perm[i]] : blanck;
             return r;
         }
 
@@ -220,9 +220,9 @@ namespace superbblas {
         /// Return whether all labels with dimension size greater than one in o0 are also in o1 and
         /// and the dimension of the first is smaller or equal than the second
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         bool is_a_subset_of(Order<Nd0> o0, Coor<Nd0> dim0, Order<Nd1> o1) {
-            for (unsigned int i = 0; i < o0.size(); ++i)
+            for (std::size_t i = 0; i < o0.size(); ++i)
                 if (dim0[i] > 0 && std::find(o1.begin(), o1.end(), o0[i]) == o1.end()) return false;
             return true;
         }
@@ -233,10 +233,10 @@ namespace superbblas {
         ///
         /// NOTE: the permutation can be used in function `reorder_coor`.
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         Coor<Nd1> find_permutation(const Order<Nd0> &o0, const Order<Nd1> &o1) {
             Coor<Nd1> r;
-            for (unsigned int i = 0; i < Nd1; ++i) {
+            for (std::size_t i = 0; i < Nd1; ++i) {
                 const auto j = std::find(o0.begin(), o0.end(), o1[i]);
                 r[i] = (j != o0.end() ? j - o0.begin() : -1);
             }
@@ -246,7 +246,7 @@ namespace superbblas {
         /// Check that all values are positive
         /// \param from: coordinates to check
 
-        template <unsigned int Nd>
+        template <std::size_t Nd>
         bool check_positive(const Coor<Nd> &from) {
             Coor<Nd> zeros = {0};
             return all_less_or_equal(zeros, from);
@@ -260,7 +260,7 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0,
                              const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> dim1) {
 
@@ -284,7 +284,7 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cpu> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                             const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -335,7 +335,7 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cpu> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                                  const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -385,7 +385,7 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cuda> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                             const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -411,7 +411,7 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <unsigned int Nd0, unsigned int Nd1>
+        template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cuda> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                                   const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -477,7 +477,7 @@ namespace superbblas {
         /// The ith element of the permutation is:
         ///   indices_out[i] + disp
 
-        template <unsigned int Nd0, unsigned int Nd1, typename XPU>
+        template <std::size_t Nd0, std::size_t Nd1, typename XPU>
         void get_permutation_destination_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                                const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                                const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -559,7 +559,7 @@ namespace superbblas {
         /// The ith element of the permutation is:
         ///   indices_out[i] + disp
 
-        template <unsigned int Nd0, unsigned int Nd1, typename XPU>
+        template <std::size_t Nd0, std::size_t Nd1, typename XPU>
         void get_permutation_origin_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                           const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                           const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -636,16 +636,16 @@ namespace superbblas {
         template <typename Vector0, typename Vector1, typename ConstIterator,
                   typename value_type = typename Vector0::value_type>
         void largest_common_substring_order(const Vector0 &o0, const Vector1 &o1,
-                                            ConstIterator avoid, unsigned int nAvoid,
-                                            value_type &starts_with, unsigned int &size) {
+                                            ConstIterator avoid, std::size_t nAvoid,
+                                            value_type &starts_with, std::size_t &size) {
             size = 0;
-            for (unsigned int i = 0; i < o0.size(); ++i) {
+            for (std::size_t i = 0; i < o0.size(); ++i) {
                 if (nAvoid > 0 && std::find(avoid, avoid + nAvoid, o0[i]) != avoid + nAvoid)
                     continue;
                 auto j = std::find(o1.begin(), o1.end(), o0[i]);
                 if (j == o1.end()) continue;
                 starts_with = o0[i];
-                for (unsigned int i0 = i; i0 < o0.size() && j != o1.end() && o0[i0] == *j &&
+                for (std::size_t i0 = i; i0 < o0.size() && j != o1.end() && o0[i0] == *j &&
                                           (nAvoid == 0 || *j != *avoid);
                      ++i0, ++j, ++size)
                     ;
@@ -666,15 +666,15 @@ namespace superbblas {
         template <typename Vector0, typename Vector1, typename Vector2,
                   typename value_type = typename Vector0::value_type>
         void largest_common_substring_order(const Vector0 &o0, const Vector1 &o1, const Vector2 &o2,
-                                            value_type &starts_with, unsigned int &size) {
+                                            value_type &starts_with, std::size_t &size) {
             size = 0;
-            for (unsigned int i = 0; i < o0.size(); ++i) {
+            for (std::size_t i = 0; i < o0.size(); ++i) {
                 auto j = std::find(o1.begin(), o1.end(), o0[i]);
                 if (j == o1.end()) continue;
                 auto k = std::find(o2.begin(), o2.end(), o0[i]);
                 if (k == o2.end()) continue;
                 starts_with = o0[i];
-                for (unsigned int i0 = i; i0 < o0.size() && j != o1.end() && k != o2.end() &&
+                for (std::size_t i0 = i; i0 < o0.size() && j != o1.end() && k != o2.end() &&
                                           o0[i0] == *j && o0[i0] == *k;
                      ++i0, ++j, ++k, ++size)
                     ;
@@ -683,12 +683,12 @@ namespace superbblas {
         }
 
         /// Check that all dimensions with the same label has the same size
-        template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo>
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
         bool check_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
                               const Coor<Nd1> &dim1, const Order<Ndo> &o_r, const Coor<Ndo> &dimr) {
             std::map<char, IndexType> m;
-            for (unsigned int i = 0; i < Nd0; ++i) m[o0[i]] = dim0[i];
-            for (unsigned int i = 0; i < Nd1; ++i) {
+            for (std::size_t i = 0; i < Nd0; ++i) m[o0[i]] = dim0[i];
+            for (std::size_t i = 0; i < Nd1; ++i) {
                 auto it = m.find(o1[i]);
                 if (it != m.end()) {
                     if (it->second != dim1[i]) return false;
@@ -696,7 +696,7 @@ namespace superbblas {
                     m[o1[i]] = dim1[i];
                 }
             }
-            for (unsigned int i = 0; i < Ndo; ++i) {
+            for (std::size_t i = 0; i < Ndo; ++i) {
                 auto it = m.find(o_r[i]);
                 if (it != m.end()) {
                     if (it->second != dimr[i]) return false;
@@ -728,7 +728,7 @@ namespace superbblas {
         /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
         /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
-        template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo, typename T, typename XPU>
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
         void local_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
                                data<const T, XPU> v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
                                bool conj1, data<const T, XPU> v1, const Order<Ndo> &o_r,
@@ -752,7 +752,7 @@ namespace superbblas {
             }
 
             // Find T, the common labels between o0, o1, and o_r
-            unsigned int nT = 0; // size of the piece T
+            std::size_t nT = 0; // size of the piece T
             char sT = 0;         // starting letter of the piece T
             char eT = 0;         // ending letter of the piece T
             largest_common_substring_order(o0, o1, o_r, sT, nT);
@@ -763,17 +763,17 @@ namespace superbblas {
             }
 
             // Find A, the common labels between o0 and o1
-            unsigned int nA = 0; // size of the piece A
+            std::size_t nA = 0; // size of the piece A
             char sA = 0;         // starting letter of the piece A
             largest_common_substring_order(o0, o1, strT, nT, sA, nA);
 
             // Find B, the common labels between o0 and o_r
-            unsigned int nB = 0; // size of the piece B
+            std::size_t nB = 0; // size of the piece B
             char sB = 0;         // starting letter of the piece B
             largest_common_substring_order(o0, o_r, strT, nT, sB, nB);
 
             // Find C, the common labels between o1 and o_r
-            unsigned int nC = 0; // size of the piece C
+            std::size_t nC = 0; // size of the piece C
             char sC = 0;         // starting letter of the piece C
             largest_common_substring_order(o1, o_r, strT, nT, sC, nC);
 
@@ -865,7 +865,7 @@ namespace superbblas {
         /// \param xpu1: device context for v1
         /// \param co: coordinate linearization order
 
-        template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q, typename XPU0,
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOp>
         void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                         const Coor<Nd0> &dim0, data<const T, XPU0> v0, XPU0 xpu0,
@@ -901,7 +901,7 @@ namespace superbblas {
     /// \param ctx1: device context for v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
-    template <unsigned int Nd0, unsigned int Nd1, typename T, typename Q>
+    template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                     const Coor<Nd0> &dim0, const T *v0, Context ctx0, const char *o1,
                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, Context ctx1,
@@ -971,7 +971,7 @@ namespace superbblas {
     /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
     /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
-    template <unsigned int Nd0, unsigned int Nd1, unsigned int Ndo, typename T>
+    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void local_contraction(const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
                            const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1,
                            const char *o_r, const Coor<Ndo> &dimr, T *vr, Context ctx,
