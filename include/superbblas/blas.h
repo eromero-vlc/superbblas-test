@@ -4,6 +4,7 @@
 #include "platform.h"
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #ifdef SUPERBBLAS_USE_MKL
@@ -423,15 +424,63 @@ namespace superbblas {
             thrust::copy_n(w_gather.data(), n, thrust::make_permutation_iterator(w, indicesw));
         }
 
+        /// Assign array to another array of the same type
+
+        template <typename IndexType, typename T, typename Q, std::size_t N> struct assign_array {
+            
+            const T * const v;
+            const IndexType * const indicesv;
+            Q * const w;
+            const IndexType * const indicesw;
+
+            assign_array(const T *v, const IndexType *indicesv, Q *w, const IndexType *indicesw)
+                : v(v), indicesv(indicesv), w(w), indicesw(indicesw) {}
+
+            typedef IndexType first_argument_type;
+
+            typedef void result_type;
+
+            __thrust_exec_check_disable__ __host__ __device__ result_type
+            operator()(const IndexType &i) const {
+                w[indicesw[i / N] * N + i % N] = v[indicesv[i / N] * N + i % N];
+            }
+        };
+
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
-        template <typename IndexType, typename T, typename Q>
+        template <typename T> struct is_std_array : std::false_type {};
+        template <typename T, std::size_t N>
+        struct is_std_array<std::array<T, N>> : std::true_type {};
+
+        template <typename IndexType, typename T, typename Q,
+                  typename std::enable_if<!is_std_array<T>::value, bool>::type = true>
         void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
                     Cuda cudav, std::size_t n, data<Q, Cuda> w,
                     vector_const_iterator<IndexType, Cuda> indicesw, Cuda cudaw, EWOp::Copy) {
             if (deviceId(cudav) == deviceId(cudaw)) {
                 thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
                                thrust::make_permutation_iterator(w, indicesw));
+            } else {
+                copy_n_gen<IndexType, T, Q>(v, indicesv, cudav, n, w, indicesw, cudaw,
+                                            EWOp::Copy{});
+            }
+        }
+
+        template <typename IndexType, typename T, typename Q,
+                  std::size_t N = std::tuple_size<T>::value>
+        void copy_n(data<const T, Cuda> v, vector_const_iterator<IndexType, Cuda> indicesv,
+                    Cuda cudav, std::size_t n, data<Q, Cuda> w,
+                    vector_const_iterator<IndexType, Cuda> indicesw, Cuda cudaw, EWOp::Copy) {
+            if (deviceId(cudav) == deviceId(cudaw)) {
+                // thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
+                //                thrust::make_permutation_iterator(w, indicesw));
+                thrust::for_each_n(
+                    thrust::counting_iterator<IndexType>(0), n * N,
+                    assign_array<IndexType, typename T::value_type, typename Q::value_type, N>(
+                        (typename T::const_pointer)const_raw_pointer<T>(v),
+                        const_raw_pointer<IndexType>(&*indicesv),
+                        (typename Q::pointer)const_raw_pointer<Q>(w),
+                        const_raw_pointer<IndexType>(&*indicesw)));
             } else {
                 copy_n_gen<IndexType, T, Q>(v, indicesv, cudav, n, w, indicesw, cudaw,
                                             EWOp::Copy{});
@@ -677,6 +726,7 @@ namespace superbblas {
         default: throw std::runtime_error("Unsupported platform");
         }
         if (n > 0 && r == nullptr) std::runtime_error("Memory allocation failed!");
+        return r;
     }
 
     /// Deallocate memory on a device
