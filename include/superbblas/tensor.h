@@ -392,8 +392,8 @@ namespace superbblas {
                                             const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
 
             (void)cuda;
-            Indices<Cpu> indices_host =
-                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
+            Indices<Cpu> indices_host = get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1,
+                                                                         from1, dim1, Cpu{}, co);
             Indices<Cuda> indices = new_vector<IndexType>(indices_host.size(), cuda);
             copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
                                          indices.data(), cuda, EWOp::Copy{});
@@ -418,7 +418,7 @@ namespace superbblas {
                                                   const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
             (void)cuda;
             Indices<Cpu> indices_host = get_permutation_destination<Nd0, Nd1>(
-                o0, from0, size0, dim0, o1, from1, dim1, Cpu{});
+                o0, from0, size0, dim0, o1, from1, dim1, Cpu{}, co);
             Indices<Cuda> indices = new_vector<IndexType>(indices_host.size(), cuda);
             copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
                                          indices.data(), cuda, EWOp::Copy{});
@@ -903,8 +903,8 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                    const Coor<Nd0> &dim0, const T *v0, Context ctx0, const char *o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, Context ctx1,
+                    const Coor<Nd0> &dim0, const T *v0, const Context ctx0, const char *o1,
+                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, const Context ctx1,
                     CoorOrder co) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
@@ -974,7 +974,7 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void local_contraction(const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
                            const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1,
-                           const char *o_r, const Coor<Ndo> &dimr, T *vr, Context ctx,
+                           const char *o_r, const Coor<Ndo> &dimr, T *vr, const Context ctx,
                            CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");

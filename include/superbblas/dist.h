@@ -146,7 +146,7 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_CUDA
 
         template <std::size_t Nd, typename T>
-        Components<Nd, T> get_components(T **v, Context *ctx, unsigned int ncomponents,
+        Components<Nd, T> get_components(T **v, const Context *ctx, unsigned int ncomponents,
                                          From_size_const_iterator<Nd> dim) {
             Components<Nd, T> r;
             for (unsigned int i = 0; i < ncomponents; ++i) {
@@ -1067,7 +1067,7 @@ namespace superbblas {
                   typename XPU0, typename XPU1>
         void contraction(const From_size<Nd0> &p0, const Order<Nd0> &o0, bool conj0,
                          const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                         const From_size<Nd0> &p1, const Order<Nd1> &o1, bool conj1,
+                         const From_size<Nd1> &p1, const Order<Nd1> &o1, bool conj1,
                          const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1,
                          const From_size<Ndo> &pr, const Order<Ndo> &o_r,
                          const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
@@ -1170,8 +1170,8 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(const From_size<Nd0> &p0, int ncomponents0, const char *o0, const Coor<Nd0> &from0,
-              const Coor<Nd0> &size0, const T **v0, Context *ctx0, const From_size<Nd1> &p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> &from1, Q **v1, Context *ctx1,
+              const Coor<Nd0> &size0, const T **v0, const Context *ctx0, const From_size<Nd1> &p1,
+              int ncomponents1, const char *o1, const Coor<Nd1> &from1, Q **v1, const Context *ctx1,
               MPI_Comm mpicomm, CoorOrder co) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
@@ -1207,8 +1207,8 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(const From_size<Nd0> &p0, int ncomponents0, const char *o0, const Coor<Nd0> from0,
-              const Coor<Nd0> size0, const T **v0, Context *ctx0, const From_size<Nd1> &p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, Context *ctx1,
+              const Coor<Nd0> size0, const T **v0, const Context *ctx0, const From_size<Nd1> &p1,
+              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, const Context *ctx1,
               CoorOrder co) {
 
         detail::SelfComm comm = detail::get_comm();
@@ -1252,10 +1252,10 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void contraction(const From_size<Nd0> &p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, Context *ctx0, const From_size<Nd1> &p1, int ncomponents1,
-                     const char *o1, bool conj1, const T **v1, Context *ctx1,
+                     const T **v0, const Context *ctx0, const From_size<Nd1> &p1, int ncomponents1,
+                     const char *o1, bool conj1, const T **v1, const Context *ctx1,
                      const From_size<Ndo> &pr, int ncomponentsr, const char *o_r, T **vr,
-                     Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
+                     const Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1303,10 +1303,10 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void contraction(const From_size<Nd0> &p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, Context *ctx0, const From_size<Nd1> &p1, int ncomponents1,
-                     const char *o1, bool conj1, const T **v1, Context *ctx1,
+                     const T **v0, const Context *ctx0, const From_size<Nd1> &p1, int ncomponents1,
+                     const char *o1, bool conj1, const T **v1, const Context *ctx1,
                      const From_size<Ndo> &pr, int ncomponentsr, const char *o_r, T **vr,
-                     Context *ctxr, CoorOrder co) {
+                     const Context *ctxr, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
