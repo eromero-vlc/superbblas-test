@@ -39,7 +39,7 @@ namespace superbblas {
 
     /// Default value in `Context`
 
-    constexpr int DEFAULT_DEVICE = -1;
+    constexpr int CPU_DEVICE_ID = -1;
 
     /// Platform and device information of data
 
@@ -47,7 +47,7 @@ namespace superbblas {
         struct Cpu {};
 
         /// Return a device identification
-        int deviceId(Cpu) { return -1; }
+        int deviceId(Cpu) { return CPU_DEVICE_ID; }
 
 #ifdef SUPERBBLAS_USE_CUDA
         inline void cudaCheck(cudaError_t err) {
@@ -148,7 +148,7 @@ namespace superbblas {
     };
 
     /// Return a CPU context
-    inline Context createCpuContext() { return Context{CPU, -1}; }
+    inline Context createCpuContext() { return Context{CPU, CPU_DEVICE_ID}; }
 
     /// Return a CUDA context
     /// \param device: device ID
