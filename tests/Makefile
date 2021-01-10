@@ -11,36 +11,42 @@
 #  make dist_cuda CXX=mpicxx  # builds dist.cpp with ${NVCC} adding the flags
 #                             # and linking information for MPI
 
+include ../make.inc
+
 SOURCES := blas.cpp local.cpp dist.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
+CUDA_LIB_TARGETS := $(patsubst %.cpp,%_cuda_lib,$(SOURCES))
 
-SB_INCLUDE := -I../include
+SB_INCLUDE ?= -I$(BUILDDIR)/include
 MPISBFLAG ?= $(if $(findstring mpi,${CXX}),-DSUPERBBLAS_USE_MPI,)
 
-#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp
-CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp
 MPIINCFLAGS ?= $(if $(findstring mpi,${CXX}),$(shell ${CXX} -showme:compile),)
 comma := ,
 MPILDFLAGS ?= $(if $(findstring mpi,${CXX}),\
         $(filter-out -pthread -fexceptions, \
             $(subst -Wl$(comma),-Xlinker ,$(shell ${CXX} -showme:link))),)
-LDFLAGS ?= -lopenblas
-NVCCLDFLAGS ?= -lcublas -lopenblas
-NVCC ?= nvcc
-#NVCCFLAGS ?= -x cu -g -G -arch=sm_75
-NVCCFLAGS ?= -x cu -O3 -arch=sm_75
+SB_LDFLAGS ?= -L$(BUILDDIR)/lib -lsuperbblas
+CUDAINCLUDE ?= -I$(CUDADIR)/include
+CUDALDFLAGS ?= -L$(CUDADIR)/lib64
 NVCCSTDLANG ?= -std c++14
 
+all_cpu: $(CPU_TARGETS)
+all_cuda: $(CUDA_TARGETS)
+all_cuda_lib: $(CUDA_LIB_TARGETS)
+
 $(CPU_TARGETS): %_cpu: %.cpp
-	${CXX} ${SB_INCLUDE} ${MPISBFLAG} ${CXXFLAGS} ${STDLANG} $< -o $@ ${LDFLAGS}
+	${CXX} ${SB_INCLUDE} ${MPISBFLAG} ${CXXFLAGS} $< -o $@ ${SB_LDFLAGS} ${LDFLAGS}
 
 $(CUDA_TARGETS): %_cuda: %.cpp
 	${NVCC} ${SB_INCLUDE} ${MPISBFLAG} ${NVCCFLAGS} ${NVCCSTDLANG} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' \
-	        ${NVCCLDFLAGS} ${MPILDFLAGS} $< -o $@
+	        ${SB_LDFLAGS} ${NVCCLDFLAGS} ${MPILDFLAGS} ${LDFLAGS} $< -o $@
+
+$(CUDA_LIB_TARGETS): %_cuda_lib: %.cpp
+	${CXX} ${SB_INCLUDE} ${CUDAINCLUDE} ${MPISBFLAG} ${CXXFLAGS} $< -o $@ ${SB_LDFLAGS} ${CUDALDFLAGS} ${NVCCLDFLAGS} ${LDFLAGS}
 
 clean:
-	rm -f ${CPU_TARGETS} ${CUDA_TARGETS}
+	rm -f ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS}
 
-.PHONY: ${CPU_TARGETS} ${CUDA_TARGETS}
+.PHONY: clean ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS}

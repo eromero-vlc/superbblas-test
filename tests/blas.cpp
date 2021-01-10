@@ -1,15 +1,10 @@
 #include "superbblas.h"
-#include "superbblas/blas.h"
+#include <array>
+#include <iostream>
 #include <limits>
+#include <omp.h>
 #include <stdexcept>
 #include <vector>
-#include <iostream>
-#include <omp.h>
-
-#ifdef SUPERBBLAS_USE_CUDA
-#    include <thrust/complex.h>
-#    include <thrust/device_vector.h>
-#endif
 
 using namespace superbblas;
 using namespace superbblas::detail;
@@ -39,7 +34,7 @@ struct gen_dummy_vector <std::array<T, N>, Cpu>{
 template <typename T> struct gen_dummy_vector<T, Cuda> {
     static vector<T, Cuda> get(std::size_t size, Cuda cuda) {
         vector<T, Cpu> v = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
-        vector<T, Cuda> r = new_vector<T>(size, cuda);
+        vector<T, Cuda> r(size, cuda);
         copy_n<IndexType, T>(v.data(), Cpu{}, size, r.data(), cuda, EWOp::Copy{});
         return r;
     }
@@ -55,7 +50,7 @@ Indices<Cpu> gen_dummy_perm(std::size_t size, std::size_t max_size, Cpu) {
 #ifdef SUPERBBLAS_USE_CUDA
 Indices<Cuda> gen_dummy_perm(std::size_t size, std::size_t max_size, Cuda cuda) {
     Indices<Cpu> v = gen_dummy_perm(size, max_size, Cpu{});
-    Indices<Cuda> r = new_vector<IndexType>(size, cuda);
+    Indices<Cuda> r(size, cuda);
     copy_n<IndexType, IndexType>(v.data(), Cpu{}, size, r.data(), cuda, EWOp::Copy{});
     return r;
 }
@@ -122,7 +117,7 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     vector<T, XPU> t1_xpu = gen_dummy_vector<T, XPU>::get(size, xpu);
     copy_n<IndexType, T>(t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
     copy_n<IndexType, T>(t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
-    vector<T, Cpu> t1 = new_vector<T>(size, Cpu{});
+    vector<T, Cpu> t1(size, Cpu{});
     copy_n<IndexType, T>(t0_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOp::Copy{});
 
     vector<T, Cpu> r = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
@@ -150,6 +145,7 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
 
     vector<T, Cpu> r0(size), r1(size);
     zero_n<T>(r.data(), size, Cpu{});
+    zero_n<T>(r1.data(), size, Cpu{});
     copy_n<IndexType, T, T>(t0.data(), i0.begin(), Cpu{}, size / 2, r0.data(), Cpu{}, EWOp::Copy{});
     copy_n<IndexType, T, T>(t0.data(), Cpu{}, size / 2, r0.data(), i0.begin(), Cpu{}, EWOp::Copy{});
     copy_n<IndexType, T, T>(r0.data(), i0.begin(), Cpu{}, size / 4, r1.data(),
@@ -258,7 +254,9 @@ int main(int argc, char **argv) {
         test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
         test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
         test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
+#    ifndef SUPERBBLAS_LIB
         test_copy<std::array<std::complex<float>, 12>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
+#    endif
      }
 #endif
     return 0;

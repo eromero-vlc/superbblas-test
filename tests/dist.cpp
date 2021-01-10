@@ -369,6 +369,7 @@ int main(int argc, char **argv) {
             assert(vol1 == detail::volume(local_size1a) * nC);
             (void)local_size1a;
 
+#    ifndef SUPERBBLAS_LIB
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
@@ -394,6 +395,7 @@ int main(int argc, char **argv) {
                 std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast) " << t / nrep
                           << " (overhead " << t / nrep / tref << " )" << std::endl;
         }
+#    endif // SUPERBBLAS_LIB
 
         // Shift tensor 1 on the z-direction and store it on tensor 2
         Tensor t2(vol1);

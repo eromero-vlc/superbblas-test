@@ -2,6 +2,8 @@
 #define __SUPERBBLAS_H__
 
 // clang-format off
+#include "superbblas/superbblas_flags.h"
+#include "superbblas/superbblas_lib.h"
 #include "superbblas/platform.h"
 #include "superbblas/blas.h"
 #include "superbblas/tensor.h"

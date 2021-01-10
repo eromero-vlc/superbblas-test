@@ -26,15 +26,24 @@
 #    include <cublas_v2.h>
 #endif
 
+#ifdef SUPERBBLAS_CREATING_FLAGS
+#    ifdef SUPERBBLAS_USE_CUDA
+EMIT_define(SUPERBBLAS_USE_CUDA)
+#    endif
+#    ifdef SUPERBBLAS_USE_MKL
+EMIT_define(SUPERBBLAS_USE_MKL)
+#    endif
+#endif
+;
 
 namespace superbblas {
 
     /// Where the data is
 
     enum platform {
-        CPU,     ///< tradicional CPUs
-        CUDA,    ///< NVIDIA CUDA
-        GPUAMD   ///< AMD GPU
+        CPU,   ///< tradicional CPUs
+        CUDA,  ///< NVIDIA CUDA
+        GPUAMD ///< AMD GPU
     };
 
     /// Default value in `Context`
@@ -47,7 +56,7 @@ namespace superbblas {
         struct Cpu {};
 
         /// Return a device identification
-        int deviceId(Cpu) { return CPU_DEVICE_ID; }
+        inline int deviceId(Cpu) { return CPU_DEVICE_ID; }
 
 #ifdef SUPERBBLAS_USE_CUDA
         inline void cudaCheck(cudaError_t err) {
@@ -88,7 +97,7 @@ namespace superbblas {
         };
 
         /// Return a device identification
-        int deviceId(Cuda cuda) { return cuda.device; }
+        inline int deviceId(Cuda cuda) { return cuda.device; }
 #endif
 
         // struct Gpuamd {int device; };

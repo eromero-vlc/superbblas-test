@@ -3,10 +3,6 @@
 #include <iostream>
 #include <omp.h>
 
-#ifdef SUPERBBLAS_USE_CUDA
-#    include <thrust/device_vector.h>
-#endif
-
 using namespace superbblas;
 
 int main(int argc, char **argv) {
@@ -249,6 +245,7 @@ int main(int argc, char **argv) {
         }
 
 
+#    ifndef SUPERBBLAS_LIB
         // Copy tensor t0 into each of the c components of tensor 1 (fast?)
         {
             double t = omp_get_wtime();
@@ -271,6 +268,7 @@ int main(int argc, char **argv) {
             std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast?) " << t / nrep
                       << " (overhead " << t / nrep / tref << " )" << std::endl;
         }
+#    endif // SUPERBBLAS_LIB
 
         // Shift tensor 1 on the z-direction and store it on tensor 2
         Tensor t2(vol1);
