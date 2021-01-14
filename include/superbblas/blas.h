@@ -85,7 +85,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         REPLACE(NNN, SUPERBBLAS_ARRAY_RANGES)
 // clang-format on
 #else
-#    define META_ARRAY_TYPES_T_Q
+#        define META_ARRAY_TYPES_T_Q REPLACE(T Q, IndexType IndexType, T Q)
 #endif
 
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
