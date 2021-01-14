@@ -223,7 +223,7 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1>
         bool is_a_subset_of(Order<Nd0> o0, Coor<Nd0> dim0, Order<Nd1> o1) {
             for (std::size_t i = 0; i < o0.size(); ++i)
-                if (dim0[i] > 0 && std::find(o1.begin(), o1.end(), o0[i]) == o1.end()) return false;
+                if (dim0[i] > 1 && std::find(o1.begin(), o1.end(), o0[i]) == o1.end()) return false;
             return true;
         }
 
@@ -846,9 +846,9 @@ namespace superbblas {
             int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volA : volC);
             int strideca =
                 (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
-            int ldcb = (or_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volC);
+            int ldcb = (or_starts_with_T ? 1 : volT) * volB;
             int stridecb =
-                (or_starts_with_T ? volume<Ndo>(dimr) / volT : (!o0_trans ? volC : volB));
+                (or_starts_with_T ? volume<Ndo>(dimr) / volT : volC);
             T one = 1.0, zero = 0.0;
             xgemm_batch_strided<T>(transab, transca, volB, volC, volA, one, v0.data(), ldab,
                                    strideab, v1.data(), ldca, strideca, zero, vr.data(), ldcb,
