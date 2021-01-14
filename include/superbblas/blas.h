@@ -199,7 +199,7 @@ namespace superbblas {
                 : n(n), ptr((T_no_const *)ptr, [&](const T_no_const *) {}), xpu(xpu) {}
 
             /// Low-level constructor
-            vector(std::size_t n, std::shared_ptr<T_no_const[]> ptr, XPU xpu)
+            vector(std::size_t n, std::shared_ptr<T_no_const> ptr, XPU xpu)
                 : n(n), ptr(ptr), xpu(xpu) {}
 
             /// Return the number of allocated elements
@@ -233,7 +233,7 @@ namespace superbblas {
 
         private:
             std::size_t n;                     ///< Number of allocated `T` elements
-            std::shared_ptr<T_no_const[]> ptr; ///< Pointer to the allocated memory
+            std::shared_ptr<T_no_const> ptr;   ///< Pointer to the allocated memory
             XPU xpu;                           ///< Context
         };
 
