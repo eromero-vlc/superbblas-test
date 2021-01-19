@@ -44,7 +44,6 @@
 #    ifdef SUPERBBLAS_USE_CBLAS
 EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    endif
-    ;
 #endif
 
 #ifdef SUPERBBLAS_CREATING_LIB
@@ -231,11 +230,22 @@ namespace superbblas {
                 return {n, ptr, xpu};
             }
 
+            /// Operator == compares size and pointer
+            bool operator==(const vector<T, XPU> &v) const {
+                return n == v.size() && ptr.get() == v.data();
+            }
+
         private:
             std::size_t n;                     ///< Number of allocated `T` elements
             std::shared_ptr<T_no_const> ptr;   ///< Pointer to the allocated memory
             XPU xpu;                           ///< Context
         };
+
+        /// Construct a `vector<T, Cpu>` with the given pointer and context
+
+        template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n = 0) {
+            return vector<T, Cpu>(n, ptr, Cpu{});
+        }
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
@@ -434,7 +444,7 @@ namespace superbblas {
                 copy_n<IndexType, T>(v, cudav, n, t.data(), cudaw, EWOp::Copy{});
                 copy_n<IndexType, T>(t.data(), cudaw, n, w, cudaw, EWOp::Add{});
             }
-        });
+        })
 
         /// Copy n values, w[i] = v[indices[i]]
 
@@ -446,7 +456,7 @@ namespace superbblas {
             thrust::copy_n(thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indices)),
                            n, (typename cuda_complex<Q>::type *)w);
-        });
+        })
 
         /// Copy n values, w[i] = v[indices[i]]
 
@@ -458,7 +468,7 @@ namespace superbblas {
             thrust::copy_n(
                 thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indices), n,
                 encapsulate_pointer(w));
-        });
+        })
 
         /// Copy n values, w[indices[i]] = v[i]
 
@@ -470,7 +480,7 @@ namespace superbblas {
             thrust::copy_n((typename cuda_complex<T>::type *)v, n,
                            thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                              encapsulate_pointer(indices)));
-        });
+        })
 
         /// Copy n values, w[indices[i]] = v[i]
 
@@ -482,7 +492,7 @@ namespace superbblas {
             thrust::copy_n(encapsulate_pointer(v), n,
                            thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                              encapsulate_pointer(indices)));
-        });
+        })
 
 #    ifdef SUPERBBLAS_USE_THRUST
         /// Addition of two values with different types
@@ -512,7 +522,7 @@ namespace superbblas {
             thrust::transform(
                 encapsulate_pointer(v), encapsulate_pointer(v) + n, itw, itw,
                 plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
-        });
+        })
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
@@ -525,7 +535,7 @@ namespace superbblas {
                 thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indicesv), n,
                 thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                   encapsulate_pointer(indicesw)));
-        });
+        })
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
 
@@ -542,7 +552,7 @@ namespace superbblas {
                                                          encapsulate_pointer(indicesw));
             thrust::transform(encapsulate_pointer(v_dev.begin()), encapsulate_pointer(v_dev.end()),
                               itw, itw, thrust::plus<typename cuda_complex<Q>::type>());
-        });
+        })
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
@@ -556,7 +566,7 @@ namespace superbblas {
                                                   encapsulate_pointer(indicesv)),
                 n,
                 thrust::make_permutation_iterator((typename cuda_complex<Q>::type *)w, indicesw));
-        });
+        })
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
 
@@ -631,7 +641,7 @@ namespace superbblas {
                 copy_n_gen<IndexType, T, Q>(v, indicesv, cudav, n, w, indicesw, cudaw,
                                             EWOp::Copy{});
             }
-        });
+        })
 
         template <typename IndexType, typename T, typename Q,
                   std::size_t N = std::tuple_size<T>::value>
@@ -648,7 +658,7 @@ namespace superbblas {
                 copy_n_gen<IndexType, T, Q>(v, indicesv, cudav, n, w, indicesw, cudaw,
                                             EWOp::Copy{});
             }
-        });
+        })
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
 
@@ -668,7 +678,7 @@ namespace superbblas {
                 copy_n_gen<IndexType, T, Q, EWOp::Add>(v, indicesv, cudav, n, w, indicesw, cudaw,
                                                        EWOp::Add{});
             }
-        });
+        })
 
         /// Copy and reduce n values, w[indicesw[i]] += sum(v[perm[perm_distinct[i]:perm_distinct[i+1]]])
         template <typename IndexType, typename T>
@@ -688,7 +698,7 @@ namespace superbblas {
             thrust::transform(encapsulate_pointer(w_device.begin()),
                               encapsulate_pointer(w_device.end()), itw, itw,
                               thrust::plus<typename cuda_complex<T>::type>());
-        });
+        })
 
 #endif // SUPERBBLAS_USE_CUDA
 
