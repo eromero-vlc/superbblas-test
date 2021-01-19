@@ -98,6 +98,7 @@ SpacesInCStyleCastParentheses: false
 SpacesInParentheses: false
 SpacesInSquareBrackets: false
 Standard:        Cpp11
+StatementMacros: ['IMPL', 'EMIT_define']
 TabWidth:        4
 UseTab:          Never
 ...
