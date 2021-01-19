@@ -34,7 +34,6 @@ EMIT_define(SUPERBBLAS_USE_CUDA)
 EMIT_define(SUPERBBLAS_USE_MKL)
 #    endif
 #endif
-;
 
 namespace superbblas {
 
