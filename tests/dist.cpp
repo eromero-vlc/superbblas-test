@@ -9,24 +9,10 @@
 
 using namespace superbblas;
 
-template<std::size_t Nd> From_size<Nd> dist_tensor(Coor<Nd> dim, Coor<Nd> procs) {
-    int vol_procs = (int)detail::volume(procs);
-    From_size<Nd> fs(vol_procs);
-    Coor<Nd> stride = detail::get_strides(procs, FastToSlow);
-    for (int rank = 0; rank < vol_procs; ++rank) {
-        Coor<Nd> cproc = detail::index2coor(rank, procs, stride);
-        for (std::size_t i = 0; i < Nd; ++i) {
-            // First coordinate in process with rank 'rank' on dimension 'i'
-            fs[rank][0][i] = dim[i] / procs[i] * cproc[i] + std::min(cproc[i], dim[i] % procs[i]);
-            // Number of elements in process with rank 'cproc[i]' on dimension 'i'
-            fs[rank][1][i] = dim[i] / procs[i] + (dim[i] % procs[i] > cproc[i] ? 1 : 0);
-        }
-    }
-    return fs;
-}
+template <std::size_t Nd> using PartitionStored = std::vector<PartitionItem<Nd>>;
 
-template<std::size_t Nd> From_size<Nd> dist_tensor_on_root(Coor<Nd> dim, int nprocs) {
-    From_size<Nd> fs(nprocs);
+template <std::size_t Nd> PartitionStored<Nd> dist_tensor_on_root(Coor<Nd> dim, int nprocs) {
+    PartitionStored<Nd> fs(nprocs);
     if (1 <= nprocs) fs[0][1] = dim;
     return fs;
 }
@@ -98,7 +84,7 @@ int main(int argc, char **argv) {
         // Create tensor t0 of Nd-1 dims: a lattice color vector
         const Coor<Nd - 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
         const Coor<Nd - 1> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // xyztsc
-        From_size<Nd - 1> p0 = dist_tensor(dim0, procs0);
+        PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
         const Coor<Nd - 1> local_size0 = p0[rank][1];
         std::size_t vol0 = detail::volume(local_size0);
         Tensor t0(vol0);
@@ -106,7 +92,7 @@ int main(int argc, char **argv) {
         // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
         const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]}; // tnsxyzc
         const Coor<Nd> procs1 = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z], 1}; // tnsxyzc
-        From_size<Nd> p1 = dist_tensor(dim1, procs1);
+        PartitionStored<Nd> p1 = basic_partitioning(dim1, procs1);
         const Coor<Nd> local_size1 = p1[rank][1];
         std::size_t vol1 = detail::volume(local_size1);
         Tensor t1(vol1);
@@ -153,8 +139,8 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(), *ptr1 = t1.data();
-                    copy(p0, 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx, p1, 1,
-                         "tnsxyzc", from1, &ptr1, &ctx,
+                    copy(p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
+                         p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
@@ -173,7 +159,7 @@ int main(int argc, char **argv) {
             // Create tensor t0 of Nd-1 dims: a lattice color vector
             const Coor<Nd - 2> dim0a = {dim[X], dim[Y], dim[Z], dim[T], dim[S]}; // xyzts
             const Coor<Nd - 2> procs0a = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzts
-            From_size<Nd - 2> p0a = dist_tensor(dim0a, procs0a);
+            PartitionStored<Nd - 2> p0a = basic_partitioning(dim0a, procs0a);
             const Coor<Nd - 2> local_size0a = p0a[rank][1];
             assert(vol0 == detail::volume(local_size0a) * nC);
             (void)local_size0a;
@@ -181,7 +167,7 @@ int main(int argc, char **argv) {
             // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
             const Coor<Nd - 1> dim1a = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z]}; // tnsxyz
             const Coor<Nd - 1> procs1a = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z]}; // tnsxyz
-            From_size<Nd - 1> p1a = dist_tensor(dim1a, procs1a);
+            PartitionStored<Nd - 1> p1a = basic_partitioning(dim1a, procs1a);
             const Coor<Nd - 1> local_size1a = p1a[rank][1];
             assert(vol1 == detail::volume(local_size1a) * nC);
             (void)local_size1a;
@@ -197,13 +183,13 @@ int main(int argc, char **argv) {
                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
                     std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data(),
                                       *ptr1 = (std::array<Scalar, nC> *)t1.data();
-                    copy(p0a, 1, "xyzts", from0a, dim0a,
-                                         (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a, 1,
-                                         "tnsxyz", from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
+                    copy(p0a.data(), 1, "xyzts", from0a, dim0a,
+                         (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a.data(), 1, "tnsxyz",
+                         from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                         MPI_COMM_WORLD,
+                         MPI_COMM_WORLD,
 #endif
-                                         SlowToFast);
+                         SlowToFast);
                  }
             }
             t = omp_get_wtime() - t;
@@ -221,8 +207,8 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(); ScalarD *ptr1 = t1d.data();
-                    copy(p0, 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx, p1, 1,
-                         "tnsxyzc", from1, &ptr1, &ctx,
+                    copy(p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
+                         p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
@@ -246,8 +232,8 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data();
-                copy(p1, 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1, 1, "tnsxyzc",
-                     from1, &ptr1, &ctx,
+                copy(p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1.data(),
+                     1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
@@ -259,7 +245,7 @@ int main(int argc, char **argv) {
 
         // Create tensor t3 of 5 dims
         const Coor<5> dimc = {dim[T], dim[N], dim[S], dim[N], dim[S]}; // tnsns
-        From_size<5> pc = dist_tensor_on_root<5>(dimc, nprocs);
+        PartitionStored<5> pc = dist_tensor_on_root<5>(dimc, nprocs);
         const Coor<5> local_sizec = pc[rank][1];
         std::size_t volc = detail::volume(local_sizec);
         Tensor tc(volc);
@@ -267,8 +253,9 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data(), *ptrc = tc.data();
-                contraction(p1, 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1, 1, "tNSxyzc",
-                            false, (const Scalar **)&ptr1, &ctx, pc, 1, "tNSns", &ptrc, &ctx,
+                contraction(p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1.data(),
+                            1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, pc.data(), 1,
+                            "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif
@@ -285,7 +272,7 @@ int main(int argc, char **argv) {
         // Create tensor t0 of Nd-1 dims: a lattice color vector
         const Coor<Nd - 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
         const Coor<Nd - 1> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // xyztsc
-        From_size<Nd - 1> p0 = dist_tensor(dim0, procs0);
+        PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
         const Coor<Nd - 1> local_size0 = p0[rank][1];
         std::size_t vol0 = detail::volume(local_size0);
         Tensor t0(vol0);
@@ -293,7 +280,7 @@ int main(int argc, char **argv) {
         // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
         const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]}; // tnsxyzc
         const Coor<Nd> procs1 = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z], 1}; // tnsxyzc
-        From_size<Nd> p1 = dist_tensor(dim1, procs1);
+        PartitionStored<Nd> p1 = basic_partitioning(dim1, procs1);
         const Coor<Nd> local_size1 = p1[rank][1];
         std::size_t vol1 = detail::volume(local_size1);
         Tensor t1(vol1);
@@ -335,8 +322,8 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data().get(), *ptr1 = t1.data().get();
-                    copy(p0, 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx, p1, 1,
-                         "tnsxyzc", from1, &ptr1, &ctx,
+                    copy(p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
+                         p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
@@ -356,7 +343,7 @@ int main(int argc, char **argv) {
             // Create tensor t0 of Nd-1 dims: a lattice color vector
             const Coor<Nd - 2> dim0a = {dim[X], dim[Y], dim[Z], dim[T], dim[S]}; // xyzts
             const Coor<Nd - 2> procs0a = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzts
-            From_size<Nd - 2> p0a = dist_tensor(dim0a, procs0a);
+            PartitionStored<Nd - 2> p0a = basic_partitioning(dim0a, procs0a);
             const Coor<Nd - 2> local_size0a = p0a[rank][1];
             assert(vol0 == detail::volume(local_size0a) * nC);
             (void)local_size0a;
@@ -364,7 +351,7 @@ int main(int argc, char **argv) {
             // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
             const Coor<Nd - 1> dim1a = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z]}; // tnsxyz
             const Coor<Nd - 1> procs1a = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z]}; // tnsxyz
-            From_size<Nd - 1> p1a = dist_tensor(dim1a, procs1a);
+            PartitionStored<Nd - 1> p1a = basic_partitioning(dim1a, procs1a);
             const Coor<Nd - 1> local_size1a = p1a[rank][1];
             assert(vol1 == detail::volume(local_size1a) * nC);
             (void)local_size1a;
@@ -381,8 +368,9 @@ int main(int argc, char **argv) {
                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
                     std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data().get(),
                                       *ptr1 = (std::array<Scalar, nC> *)t1.data().get();
-                    copy(p0a, 1, "xyzts", from0a, dim0a, (const std::array<Scalar, nC> **)&ptr0,
-                         &ctx, p1a, 1, "tnsxyz", from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
+                    copy(p0a.data(), 1, "xyzts", from0a, dim0a,
+                         (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a.data(), 1, "tnsxyz",
+                         from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
@@ -406,8 +394,8 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get();
-                copy(p1, 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1, 1, "tnsxyzc",
-                     from1, &ptr1, &ctx,
+                copy(p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1.data(),
+                     1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
@@ -420,7 +408,7 @@ int main(int argc, char **argv) {
 
         // Create tensor t3 of 5 dims
         const Coor<5> dimc = {dim[T], dim[N], dim[S], dim[N], dim[S]}; // tnsns
-        From_size<5> pc = dist_tensor_on_root(dimc, nprocs);
+        PartitionStored<5> pc = dist_tensor_on_root(dimc, nprocs);
         const Coor<5> local_sizec = pc[rank][1];
         std::size_t volc = detail::volume(local_sizec);
         Tensor tc(volc);
@@ -428,8 +416,9 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get(), *ptrc = tc.data().get();
-                contraction(p1, 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1, 1, "tNSxyzc",
-                            false, (const Scalar **)&ptr1, &ctx, pc, 1, "tNSns", &ptrc, &ctx,
+                contraction(p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1.data(),
+                            1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, pc.data(), 1,
+                            "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif

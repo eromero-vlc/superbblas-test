@@ -16,28 +16,57 @@
 
 namespace superbblas {
 
-    /// First coordinate and size of a range
-    template <std::size_t N> using From_size_item = std::array<Coor<N>, 2>;
-    /// List of ranges
-    template <std::size_t N> using From_size = std::vector<From_size_item<N>>;
-    /// From_size iterator
-    template <std::size_t N> using From_size_iterator = typename From_size<N>::iterator;
-    /// From_size iterator
-    template <std::size_t N> using From_size_const_iterator = typename From_size<N>::const_iterator;
+    /// First coordinate and size of a range of coordinates supported on a process/component.
+    /// See ConstPartition.
+
+    template <std::size_t N> using PartitionItem = std::array<Coor<N>, 2>;
+
+    /// Distribution of the elements of a N-dimension tensor among the processes/components
+    ///
+    /// This structure is a three-dimensional array with dimensions [P][2][N], where P is the number of
+    /// processes/components and the tensors have N dimensions. The values of the array indicates that
+    /// the i-th process/component stores all elements with coordinates c such that for all j dimensions:
+    ///    (*this)[i][0][j] <= c[j] <= (*this)[i][0][j] + (*this)[i][1][j],      (mod dim[j]),
+    /// where dim are tensor dimensions. In other words, each process/components stores a continuum range
+    /// of coordinates such that the first coordinate at the j-dimension is [i][0][j] and
+    /// stores up to [i][1][j] elements in that j dimension.
+
+    template <std::size_t N> using ConstPartition = const PartitionItem<N> *;
 
     namespace detail {
 
         /// Type use in MPI calls to indicate cardinality and displacements
         using MpiInt = int;
 
+        /// First coordinate and size of a range
+        template <std::size_t N> using From_size_item = PartitionItem<N>;
+        /// List of ranges
+        template <std::size_t N> using From_size = vector<const From_size_item<N>, Cpu>;
+        template <std::size_t N> using From_size_out = vector<From_size_item<N>, Cpu>;
+        template <std::size_t N> using From_size_vector = std::vector<From_size_item<N>>;
+        /// From_size iterator
+        template <std::size_t N> using From_size_iterator = const From_size_item<N> *;
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        using PairPerms = std::tuple<Coor<Nd0>, Coor<Nd1>>;
+
         //
         // Auxiliary functions
         //
 
+        /// Extend Hash for From_size<N>
+
+        template <std::size_t N> struct Hash<From_size<N>> {
+            static std::size_t hash(From_size<N> const &t) noexcept {
+                return std::hash<typename From_size<N>::iterator>{}(t.data());
+            }
+        };
+
+
         /// Return the global dimensions of a tensor from its partitioning
         /// \param p: partitioning of the tensor in consecutive ranges
 
-        template <std::size_t N> Coor<N> get_dim(From_size_const_iterator<N> p, std::size_t n) {
+        template <std::size_t N> Coor<N> get_dim(From_size_iterator<N> p, std::size_t n) {
             Coor<N> r = fill_coor<N>(0);
             for (std::size_t j = 0; j < n; j++) r = max_each(r, p[j][0] + p[j][1]);
             return r;
@@ -53,8 +82,7 @@ namespace superbblas {
         /// Return the total volume in a partition
         /// \param p: partitioning of the tensor in consecutive ranges
 
-        template <std::size_t N>
-        std::size_t get_volume(From_size_const_iterator<N> p, std::size_t n) {
+        template <std::size_t N> std::size_t get_volume(From_size_iterator<N> p, std::size_t n) {
             std::size_t r = 0;
             for (std::size_t j = 0; j < n; j++) r += volume<N>(p[j][1]);
             return r;
@@ -65,6 +93,13 @@ namespace superbblas {
 
         template <std::size_t N> std::size_t get_volume(const From_size<N> &p) {
             return get_volume<N>(p.begin(), p.size());
+        }
+
+        /// Return the permutations associated to two order
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        PairPerms<Nd0, Nd1> get_perms(const Order<Nd0> &o0, const Order<Nd1> &o1) {
+            return {find_permutation<Nd1, Nd0>(o1, o0), find_permutation<Nd0, Nd1>(o0, o1)};
         }
 
         /// Output of `send` and input of `wait`
@@ -145,7 +180,7 @@ namespace superbblas {
 
         template <std::size_t Nd, typename T>
         Components<Nd, T> get_components(T **v, const Context *ctx, unsigned int ncomponents,
-                                         From_size_const_iterator<Nd> dim) {
+                                         From_size_iterator<Nd> dim) {
             Components<Nd, T> r;
             for (unsigned int i = 0; i < ncomponents; ++i) {
                 switch (ctx[i].plat) {
@@ -206,8 +241,8 @@ namespace superbblas {
         /// \param ncomponents: comm.nprocs * ncomponents == the length of each element in `ranges`
         /// \param comm: communicator
 
-        template <std::size_t Nd, typename T, typename From_size_iterator_or_ptr>
-        PackedValues<T> prepare_pack(From_size_iterator_or_ptr ranges, unsigned int nranges,
+        template <std::size_t Nd, typename T>
+        PackedValues<T> prepare_pack(const From_size<Nd> *ranges, unsigned int nranges,
                                      unsigned int ncomponents, MpiComm comm) {
 
             // Allocate PackedValues
@@ -268,17 +303,15 @@ namespace superbblas {
                               get_volume<Nd0>(fs.begin() + comm.rank * ncomponents1, ncomponents1);
 
             // Find indices on cache
-            using pointer_perm =
-                std::tuple<const From_size_item<Nd0> *, Coor<Nd0>, Coor<Nd1>, int, CoorOrder>;
+            using pointer_perm = std::tuple<From_size<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
             using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
             static std::unordered_map<pointer_perm, PairIndices, TupleHash<pointer_perm>> cache(16);
-            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            pointer_perm key{fs.data(), perm1, perm0, deviceId(v0.ctx()), co};
+            pointer_perm key{fs, get_perms(o0, o1), deviceId(v0.ctx()), co};
             auto it = cache.find(key);
 
             // If they are not, compute the permutation vectors
             if (it == cache.end()) {
+                Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
                 Indices<Cpu> indices0(vol), indices1(vol);
                 Coor<Nd1> zeros = fill_coor<Nd1>(0);
                 for (std::size_t i = 0, n = 0; i < fs.size(); ++i) {
@@ -329,14 +362,15 @@ namespace superbblas {
         /// \param comm: communicator
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
-                  typename From_size_iterator_or_ptr, typename XPU0, typename XPU1>
-        PackedValues<Q> pack(From_size_iterator_or_ptr toSend, unsigned int ncomponents0,
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1>
+        PackedValues<Q> pack(const std::vector<From_size<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm, CoorOrder co) {
-
-            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend, ncomponents0, ncomponents1, comm);
+            unsigned int ncomponents0 = toSend.size();
+            PackedValues<Q> r =
+                prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, ncomponents1, comm);
 
             Indices<Cpu> buf_disp(comm.nprocs);
             std::size_t n = 0; // accumulate total number of Q elements
@@ -404,7 +438,7 @@ namespace superbblas {
                     EWOp::Copy, CoorOrder co) {
 
             // Find indices on cache
-            using pointer_dev = std::tuple<const From_size_item<Nd> *, int, CoorOrder>;
+            using pointer_dev = std::tuple<From_size_iterator<Nd>, int, CoorOrder>;
             static std::unordered_map<pointer_dev, Indices<XPU>, TupleHash<pointer_dev>> cache(16);
             pointer_dev key{toReceive.data(), deviceId(v.it.ctx()), co};
             auto it = cache.find(key);
@@ -451,7 +485,7 @@ namespace superbblas {
                     EWOp::Add, CoorOrder co) {
 
             // Find indices on cache
-            using pointer_dev = std::tuple<const From_size_item<Nd> *, int, CoorOrder>;
+            using pointer_dev = std::tuple<From_size_iterator<Nd>, int, CoorOrder>;
             using PermPermreduceIndices = std::tuple<Indices<Cpu>, Indices<Cpu>, Indices<XPU>>;
             static std::unordered_map<pointer_dev, PermPermreduceIndices, TupleHash<pointer_dev>>
                 cache(16);
@@ -523,7 +557,7 @@ namespace superbblas {
                   typename XPU1, typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                             const Order<Nd1> &o1, const std::shared_ptr<From_size<Nd1>> toReceive,
+                             const Order<Nd1> &o1, From_size<Nd1> toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop, CoorOrder co) {
 
@@ -531,11 +565,10 @@ namespace superbblas {
 
             // Pack v0 and prepare for receiving data from other processes
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            std::shared_ptr<PackedValues<Q>> v0ToSend =
-                std::make_shared<PackedValues<Q>>(pack<Nd0, Nd1, T, Q>(
-                    toSend.begin(), toSend.size(), v0, o0, o1, ncomponents1, comm, co));
+            std::shared_ptr<PackedValues<Q>> v0ToSend = std::make_shared<PackedValues<Q>>(
+                pack<Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co));
             std::shared_ptr<PackedValues<Q>> v1ToReceive = std::make_shared<PackedValues<Q>>(
-                prepare_pack<Nd1, Q>(&*toReceive, 1, ncomponents0, comm));
+                prepare_pack<Nd1, Q>(&toReceive, 1, ncomponents0, comm));
 
             // Do the MPI communication
             MPI_Datatype dtype = get_mpi_datatype<Q>();
@@ -567,7 +600,7 @@ namespace superbblas {
                 std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
-                unpack<Nd1>(*v1ToReceive, *toReceive, v1, ncomponents0, comm, ewop, co);
+                unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co);
             };
         }
 #endif // SUPERBBLAS_USE_MPI
@@ -641,11 +674,11 @@ namespace superbblas {
         /// \param sizer1: size of the second resulting range
 
         template <std::size_t Nd>
-        From_size<Nd> intersection(const Coor<Nd> &from0, const Coor<Nd> &size0,
-                                   const Coor<Nd> &from1, const Coor<Nd> &size1,
-                                   const Coor<Nd> &dim) {
+        From_size_vector<Nd> intersection(const Coor<Nd> &from0, const Coor<Nd> &size0,
+                                          const Coor<Nd> &from1, const Coor<Nd> &size1,
+                                          const Coor<Nd> &dim) {
 
-            From_size<Nd> r;
+            From_size_vector<Nd> r;
             r.push_back({fill_coor<Nd>(0), fill_coor<Nd>(0)});
             for (std::size_t i = 0; i < Nd; ++i) {
                 //
@@ -665,7 +698,7 @@ namespace superbblas {
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
                 }
-                From_size<Nd> q;
+                From_size_vector<Nd> q;
                 for (const auto &fs : r) {
                     if (sizer0 > 0) {
                         Coor<Nd> fromi = fs[0], sizei = fs[1];
@@ -699,7 +732,7 @@ namespace superbblas {
         void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
                           const Coor<Nd> &size1, const Coor<Nd> &dim, Coor<Nd> &fromr,
                           Coor<Nd> &sizer) {
-            From_size<Nd> fs = intersection<Nd>(from0, size0, from1, size1, dim);
+            From_size_vector<Nd> fs = intersection<Nd>(from0, size0, from1, size1, dim);
             if (fs.size() == 0) {
                 fromr = fill_coor<Nd>(0);
                 sizer = fill_coor<Nd>(0);
@@ -749,9 +782,9 @@ namespace superbblas {
         /// \param cpu: device context
 
         template <std::size_t Nd0, std::size_t Nd1>
-        From_size<Nd0> get_indices_to_send(const From_size<Nd0> &p0, unsigned int from_rank,
+        From_size<Nd0> get_indices_to_send(From_size<Nd0> p0, unsigned int from_rank,
                                            const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                           const Coor<Nd0> &size0, const From_size<Nd1> &p1,
+                                           const Coor<Nd0> &size0, From_size<Nd1> p1,
                                            unsigned int componentId1, unsigned int ncomponents1,
                                            const Order<Nd1> &o1, const Coor<Nd1> &from1) {
             // Get the global dimensions of the tensors
@@ -760,6 +793,14 @@ namespace superbblas {
 
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Find partition on cache
+            using Key = std::tuple<From_size<Nd0>, unsigned int, Coor<Nd0>, Coor<Nd0>,
+                                   From_size<Nd1>, unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
+            static std::unordered_map<Key, From_size<Nd0>, TupleHash<Key>> cache(16);
+            Key key{p0, from_rank, from0, size0, p1, componentId1, from1, get_perms(o0, o1)};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second;
 
             // Restrict the local range in v0 to the range from0, size0
             Coor<Nd0> local_from0 = p0[from_rank][0];
@@ -777,7 +818,7 @@ namespace superbblas {
             // Compute the indices
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             unsigned int nprocs = p1.size() / ncomponents1;
-            From_size<Nd0> r(nprocs);
+            From_size_out<Nd0> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd1> &local_from1 = p1[i * ncomponents1 + componentId1][0];
                 const Coor<Nd1> &local_size1 = p1[i * ncomponents1 + componentId1][1];
@@ -785,6 +826,7 @@ namespace superbblas {
                 intersection<Nd1>(rfrom1, rsize1, local_from1, local_size1, dim1, fromi, sizei);
                 translate_range(fromi, sizei, from1, dim1, from0, dim0, perm1, r[i][0], r[i][1]);
             }
+            cache[key] = r;
 
             return r;
         }
@@ -815,6 +857,14 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
+            // Find partition on cache
+            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
+                                   unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
+            static std::unordered_map<Key, From_size<Nd1>, TupleHash<Key>> cache(16);
+            Key key{p0, from0, size0, p1, to_rank, from1, get_perms(o0, o1)};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second;
+
             // Restrict the local range in v1 to the range from1, size1
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
@@ -832,7 +882,7 @@ namespace superbblas {
 
             // Compute the indices
             unsigned int nprocs = p0.size();
-            From_size<Nd1> r(nprocs);
+            From_size_out<Nd1> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd0> &local_from0 = p0[i][0];
                 const Coor<Nd0> &local_size0 = p0[i][1];
@@ -840,6 +890,7 @@ namespace superbblas {
                 intersection<Nd0>(rfrom0, rsize0, local_from0, local_size0, dim0, fromi, sizei);
                 translate_range(fromi, sizei, from0, dim0, from1, dim1, perm0, r[i][0], r[i][1]);
             }
+            cache[key] = r;
 
             return r;
         }
@@ -927,28 +978,25 @@ namespace superbblas {
 
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            std::shared_ptr<std::vector<From_size<Nd0>>> toSend =
-                std::make_shared<std::vector<From_size<Nd0>>>(ncomponents0);
+            std::vector<From_size<Nd0>> toSend(ncomponents0);
 
             for (unsigned int i = 0; i < v0.first.size(); ++i) {
-                (*toSend)[v0.first[i].componentId] = get_indices_to_send<Nd0, Nd1>(
+                toSend[v0.first[i].componentId] = get_indices_to_send<Nd0, Nd1>(
                     p0, comm.rank * ncomponents0 + v0.first[i].componentId, o0, from0, size0, p1,
                     v1.componentId, ncomponents1, o1, from1);
             }
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
-                (*toSend)[v0.second[i].componentId] = get_indices_to_send<Nd0, Nd1>(
+                toSend[v0.second[i].componentId] = get_indices_to_send<Nd0, Nd1>(
                     p0, comm.rank * ncomponents0 + v0.second[i].componentId, o0, from0, size0, p1,
                     v1.componentId, ncomponents1, o1, from1);
             }
 
             // Generate the list of subranges to receive from each component from v0 to v1
-            std::shared_ptr<From_size<Nd1>> toReceive =
-                std::make_shared<From_size<Nd1>>(get_indices_to_receive<Nd0, Nd1>(
-                    p0, o0, from0, size0, p1, v1.componentId + comm.rank * ncomponents1, o1,
-                    from1));
+            From_size<Nd1> toReceive = get_indices_to_receive<Nd0, Nd1>(
+                p0, o0, from0, size0, p1, v1.componentId + comm.rank * ncomponents1, o1, from1);
 
             // Do the sending and receiving
-            Request mpi_req = send_receive<Nd0, Nd1>(o0, *toSend, v0, o1, toReceive, v1,
+            Request mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1,
                                                      ncomponents1, comm, ewop, co);
 
             // Do the local copies
@@ -956,19 +1004,17 @@ namespace superbblas {
                 unsigned int ncomponents0 = v0.first.size() + v0.second.size();
                 for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
                     local_copy<Nd0, Nd1, T, Q>(
-                        o0, (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
-                        (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        c0.dim, c0.it, o1,
-                        (*toReceive)[c0.componentId + comm.rank * ncomponents0][0], v1.dim, v1.it,
-                        ewop, co);
+                        o0, toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
+                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
+                        c0.dim, c0.it, o1, toReceive[c0.componentId + comm.rank * ncomponents0][0],
+                        v1.dim, v1.it, ewop, co);
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
                     local_copy<Nd0, Nd1, T, Q>(
-                        o0, (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
-                        (*toSend)[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        c0.dim, c0.it, o1,
-                        (*toReceive)[c0.componentId + comm.rank * ncomponents0][0], v1.dim, v1.it,
-                        ewop, co);
+                        o0, toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
+                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
+                        c0.dim, c0.it, o1, toReceive[c0.componentId + comm.rank * ncomponents0][0],
+                        v1.dim, v1.it, ewop, co);
                 }
             };
 
@@ -976,25 +1022,6 @@ namespace superbblas {
                 wait(local_req);
                 wait(mpi_req);
             };
-        }
-
-        /// Copy the content of plural tensor v0 into v1
-        /// \param p0: partitioning of the origin tensor in consecutive ranges
-        /// \param mpicomm: MPI communicator context
-        /// \param ncomponents0: number of consecutive components in each MPI rank
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of elements to copy in each dimension
-
-        template <std::size_t Nd, typename Comm>
-        void check_from_size(const From_size<Nd> &p, int ncomponents, Comm comm,
-                             const char *var_name = "") {
-            if (p.size() != ncomponents * comm.nprocs) {
-                std::stringstream s;
-                s << "Invalid number of elements in tensor distribution " << var_name << "; it is "
-                  << p.size() << " and it should be " << ncomponents * comm.nprocs;
-                throw std::runtime_error(s.str());
-            }
         }
 
         /// Return value for the dimensions in o_r matching the given for o0 and o1
@@ -1018,16 +1045,26 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
-        From_size<Ndo> get_output_partition(const From_size<Nd0> &p0, const Order<Nd0> &o0,
-                                            const From_size<Nd1> &p1, const Order<Nd1> &o1,
+        From_size<Ndo> get_output_partition(From_size<Nd0> p0, const Order<Nd0> &o0,
+                                            From_size<Nd1> p1, const Order<Nd1> &o1,
                                             const Order<Ndo> &o_r) {
             assert(p0.size() == p1.size());
-            From_size<Ndo> pr(p0.size());
 
+            // Find partition on cache
+            using Key = std::tuple<From_size<Nd0>, From_size<Nd1>, PairPerms<Nd0, Nd1>,
+                                   PairPerms<Nd0, Ndo>, PairPerms<Nd1, Ndo>>;
+            static std::unordered_map<Key, From_size<Ndo>, TupleHash<Key>> cache(16);
+            Key key{p0, p1, get_perms(o0, o1), get_perms(o0, o_r), get_perms(o1, o_r)};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second;
+
+            // Create partition
+            From_size_out<Ndo> pr(p0.size());
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 pr[i][0] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][0], o1, p1[i][0], o_r);
                 pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r);
             }
+            cache[key] = pr;
 
             return pr;
         }
@@ -1132,10 +1169,11 @@ namespace superbblas {
     /// \param procs: number of processes on each dimension; the total number of processes is the
     ///               product of all the elements.
 
-    template <std::size_t Nd> From_size<Nd> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs) {
+    template <std::size_t Nd>
+    std::vector<PartitionItem<Nd>> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs) {
         int vol_procs = (int)detail::volume<Nd>(procs);
-        From_size<Nd> fs(vol_procs);
-        Coor<Nd> stride = detail::get_strides<Nd>(procs);
+        std::vector<PartitionItem<Nd>> fs(vol_procs);
+        Coor<Nd> stride = detail::get_strides<Nd>(procs, SlowToFast);
         for (int rank = 0; rank < vol_procs; ++rank) {
             Coor<Nd> cproc = detail::index2coor<Nd>(rank, procs, stride);
             for (std::size_t i = 0; i < Nd; ++i) {
@@ -1168,23 +1206,21 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void copy(const From_size<Nd0> &p0, int ncomponents0, const char *o0, const Coor<Nd0> &from0,
-              const Coor<Nd0> &size0, const T **v0, const Context *ctx0, const From_size<Nd1> &p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> &from1, Q **v1, const Context *ctx1,
-              MPI_Comm mpicomm, CoorOrder co) {
+    void copy(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
+              const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0, const Context *ctx0,
+              const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
+              const Coor<Nd1> &from1, Q **v1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");
-        detail::check_from_size<Nd1>(p1, ncomponents1, comm, "p1");
-
-        detail::copy<Nd0, Nd1>(p0, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                               detail::get_components<Nd0>(v0, ctx0, ncomponents0,
-                                                           p0.begin() + comm.rank * ncomponents0),
-                               p1, from1, detail::toArray<Nd1>(o1, "o1"),
-                               detail::get_components<Nd1>(v1, ctx1, ncomponents1,
-                                                           p1.begin() + comm.rank * ncomponents1),
-                               comm, detail::EWOp::Copy{}, co);
+        detail::copy<Nd0, Nd1>(
+            detail::to_vector(p0, ncomponents0 * comm.nprocs), from0, size0,
+            detail::toArray<Nd0>(o0, "o0"),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0 + comm.rank * ncomponents0),
+            detail::to_vector(p1, ncomponents1 * comm.nprocs), from1,
+            detail::toArray<Nd1>(o1, "o1"),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1 + comm.rank * ncomponents1),
+            comm, detail::EWOp::Copy{}, co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1205,20 +1241,19 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void copy(const From_size<Nd0> &p0, int ncomponents0, const char *o0, const Coor<Nd0> from0,
-              const Coor<Nd0> size0, const T **v0, const Context *ctx0, const From_size<Nd1> &p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, const Context *ctx1,
-              CoorOrder co) {
+    void copy(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0, const Coor<Nd0> from0,
+              const Coor<Nd0> size0, const T **v0, const Context *ctx0,
+              const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1, const Coor<Nd1> from1,
+              Q **v1, const Context *ctx1, CoorOrder co) {
 
         detail::SelfComm comm = detail::get_comm();
-        detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");
-        detail::check_from_size<Nd1>(p1, ncomponents1, comm, "p1");
 
-        detail::copy<Nd0, Nd1>(p0, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                               detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0.begin()), p1,
-                               from1, detail::toArray<Nd1>(o1, "o1"),
-                               detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1.begin()),
-                               comm, detail::EWOp::Copy{}, co);
+        detail::copy<Nd0, Nd1>(
+            detail::to_vector(p0, ncomponents0 * comm.nprocs), from0, size0,
+            detail::toArray<Nd0>(o0, "o0"), detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0),
+            detail::to_vector(p1, ncomponents1 * comm.nprocs), from1,
+            detail::toArray<Nd1>(o1, "o1"), detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1),
+            comm, detail::EWOp::Copy{}, co);
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -1250,11 +1285,11 @@ namespace superbblas {
     /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void contraction(const From_size<Nd0> &p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, const Context *ctx0, const From_size<Nd1> &p1, int ncomponents1,
-                     const char *o1, bool conj1, const T **v1, const Context *ctx1,
-                     const From_size<Ndo> &pr, int ncomponentsr, const char *o_r, T **vr,
-                     const Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
+    void contraction(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0, bool conj0,
+                     const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
+                     int ncomponents1, const char *o1, bool conj1, const T **v1,
+                     const Context *ctx1, const PartitionItem<Ndo> *pr, int ncomponentsr,
+                     const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1262,14 +1297,13 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");
-        detail::check_from_size<Nd1>(p1, ncomponents1, comm, "p1");
-        detail::check_from_size<Ndo>(pr, ncomponentsr, comm, "pr");
-
         detail::contraction<Nd0, Nd1, Ndo>(
-            p0, o0_, conj0, detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0.begin()), p1,
-            o1_, conj1, detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1.begin()), pr, o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr.begin()), comm, co);
+            detail::to_vector(p0, ncomponents0 * comm.nprocs), o0_, conj0,
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0),
+            detail::to_vector(p1, ncomponents1 * comm.nprocs), o1_, conj1,
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1),
+            detail::to_vector(pr, ncomponentsr * comm.nprocs), o_r_,
+            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr), comm, co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1301,10 +1335,10 @@ namespace superbblas {
     /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void contraction(const From_size<Nd0> &p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, const Context *ctx0, const From_size<Nd1> &p1, int ncomponents1,
+    void contraction(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0, bool conj0,
+                     const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1,
                      const char *o1, bool conj1, const T **v1, const Context *ctx1,
-                     const From_size<Ndo> &pr, int ncomponentsr, const char *o_r, T **vr,
+                     const PartitionItem<Ndo> *pr, int ncomponentsr, const char *o_r, T **vr,
                      const Context *ctxr, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
@@ -1313,14 +1347,13 @@ namespace superbblas {
 
         detail::SelfComm comm = detail::get_comm();
 
-        detail::check_from_size<Nd0>(p0, ncomponents0, comm, "p0");
-        detail::check_from_size<Nd1>(p1, ncomponents1, comm, "p1");
-        detail::check_from_size<Ndo>(pr, ncomponentsr, comm, "pr");
-
         detail::contraction<Nd0, Nd1, Ndo>(
-            p0, o0_, conj0, detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0.begin()), p1,
-            o1_, conj1, detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1.begin()), pr, o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr.begin()), comm, co);
+            detail::to_vector(p0, ncomponents0 * comm.nprocs), o0_, conj0,
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0),
+            detail::to_vector(p1, ncomponents1 * comm.nprocs), o1_, conj1,
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1),
+            detail::to_vector(pr, ncomponentsr * comm.nprocs), o_r_,
+            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr), comm, co);
     }
 }
 
