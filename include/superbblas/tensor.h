@@ -431,7 +431,16 @@ namespace superbblas {
         //
 
         template <typename T> struct Hash {
-            static std::size_t hash(T const &t) noexcept { return std::hash<T>{}(t); }
+            template <typename U = T,
+                      typename std::enable_if<!std::is_enum<U>::value, bool>::type = true>
+            static std::size_t hash(U const &t) noexcept {
+                return std::hash<T>{}(t);
+            }
+            template <typename U = T,
+                      typename std::enable_if<std::is_enum<U>::value, bool>::type = true>
+            static std::size_t hash(T const &t) noexcept {
+                return std::size_t(t);
+            }
         };
 
         template <typename T, std::size_t N> struct Hash<std::array<T, N>> {
@@ -439,6 +448,14 @@ namespace superbblas {
                 std::size_t r = 12345;
                 for (std::size_t i=0; i<N; ++i) r = r ^ std::hash<T>{}(t[i]);
                 return r;
+            }
+        };
+
+        template <class Tuple> struct TupleHash;
+
+        template <typename... Ts> struct Hash<std::tuple<Ts...>> {
+            static std::size_t hash(std::tuple<Ts...> const &t) noexcept {
+                return TupleHash<std::tuple<Ts...>>{}(t);
             }
         };
 
@@ -507,7 +524,7 @@ namespace superbblas {
                                       TupleHash<from_size_dim>>
                 from_size_dim_map(16);
             {
-                auto it = from_size_dim_map.find({from1, size1, dim1, deviceId(xpu), co});
+                auto it = from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
                     indices_out = it->second;
                     disp = 0;
@@ -515,7 +532,7 @@ namespace superbblas {
                 }
             }
             if (all_less_or_equal(from1 + size1, dim1)) {
-                auto it = size_dim_map.find({size1, dim1, deviceId(xpu), co});
+                auto it = size_dim_map.find(size_dim{size1, dim1, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second;
                     Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
@@ -528,14 +545,14 @@ namespace superbblas {
             std::shared_ptr<Indices<XPU>> indices1 =
                 std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
                     o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
-            from_size_dim_map[from_size_dim({from1, size1, dim1, deviceId(xpu), co})] = indices1;
+            from_size_dim_map[from_size_dim{from1, size1, dim1, deviceId(xpu), co}] = indices1;
 
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from1 + size1, dim1)) {
                 std::shared_ptr<Indices<XPU>> indices1_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
                         o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
-                size_dim_map[size_dim({size1, dim1, deviceId(xpu), co})] = indices1_sd;
+                size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
             } 
 
             // Return the permutation
@@ -578,9 +595,9 @@ namespace superbblas {
             }
 
             // Check in the storage
-            using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, int>;
+            using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
             using perm_from_size_dim =
-                std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, int>;
+                std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
             static std::unordered_map<perm_size_dim, std::shared_ptr<Indices<XPU>>,
                                       TupleHash<perm_size_dim>>
                 size_dim_map(16);
@@ -589,7 +606,8 @@ namespace superbblas {
                 from_size_dim_map(16);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             {
-                auto it = from_size_dim_map.find({perm1, from0, size0, dim0, deviceId(xpu), co});
+                auto it = from_size_dim_map.find(
+                    perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
                     indices_out = it->second;
                     disp = 0;
@@ -597,7 +615,7 @@ namespace superbblas {
                 }
             }
             if (all_less_or_equal(from0 + size0, dim0)) {
-                auto it = size_dim_map.find({perm1, size0, dim0, deviceId(xpu), co});
+                auto it = size_dim_map.find(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second;
                     Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
@@ -609,7 +627,7 @@ namespace superbblas {
             // Get the permutation and store it in cache
             std::shared_ptr<Indices<XPU>> indices0 = std::make_shared<Indices<XPU>>(
                 get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
-            from_size_dim_map[perm_from_size_dim({perm1, from0, size0, dim0, deviceId(xpu), co})] =
+            from_size_dim_map[perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}] =
                 indices0;
 
             // Get the permutation independent of 'from1' and store it in cache
@@ -617,7 +635,7 @@ namespace superbblas {
                 std::shared_ptr<Indices<XPU>> indices0_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_origin<Nd0, Nd1>(
                         o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
-                size_dim_map[perm_size_dim({perm1, size0, dim0, deviceId(xpu), co})] = indices0_sd;
+                size_dim_map[perm_size_dim{perm1, size0, dim0, deviceId(xpu), co}] = indices0_sd;
             } 
 
             // Return the permutation
