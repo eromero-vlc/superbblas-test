@@ -99,7 +99,8 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1>
         PairPerms<Nd0, Nd1> get_perms(const Order<Nd0> &o0, const Order<Nd1> &o1) {
-            return {find_permutation<Nd1, Nd0>(o1, o0), find_permutation<Nd0, Nd1>(o0, o1)};
+            return PairPerms<Nd0, Nd1>{find_permutation<Nd1, Nd0>(o1, o0),
+                                       find_permutation<Nd0, Nd1>(o0, o1)};
         }
 
         /// Output of `send` and input of `wait`
