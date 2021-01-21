@@ -52,14 +52,14 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    define SUPERBBLAS_TYPES SUPERBBLAS_REAL_TYPES, SUPERBBLAS_COMPLEX_TYPES
 // #    define SUPERBBLAS_ARRAY_RANGES 3, 4, 12
 
-#if SUPERBBLAS_ARRAY_RANGES
+#    if SUPERBBLAS_ARRAY_RANGES
 // clang-format off
 #    define META_ARRAY_TYPES_T                                                                     \
         REPLACE $(T $ T $ std::array<T,NNN>) REPLACE(NNN, SUPERBBLAS_ARRAY_RANGES)
 // clang-format on
-#else
-#    define META_ARRAY_TYPES_T
-#endif
+#    else
+#        define META_ARRAY_TYPES_T
+#    endif
 
 /// Generate template instantiations for copy_n functions with template parameters IndexType and T
 
@@ -74,18 +74,18 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    define META_TYPES TREAL QREAL, TREAL QCOMPLEX, TCOMPLEX QCOMPLEX
 #    define REPLACE_META_TYPES                                                                     \
         REPLACE(TREAL, SUPERBBLAS_REAL_TYPES)                                                      \
-        REPLACE(QREAL, SUPERBBLAS_REAL_TYPES) REPLACE(TCOMPLEX, SUPERBBLAS_COMPLEX_TYPES)          \
-            REPLACE(QCOMPLEX, SUPERBBLAS_COMPLEX_TYPES)
+        REPLACE(QREAL, SUPERBBLAS_REAL_TYPES)                                                      \
+        REPLACE(TCOMPLEX, SUPERBBLAS_COMPLEX_TYPES) REPLACE(QCOMPLEX, SUPERBBLAS_COMPLEX_TYPES)
 
-#if SUPERBBLAS_ARRAY_RANGES
+#    if SUPERBBLAS_ARRAY_RANGES
 // clang-format off
 #    define META_ARRAY_TYPES_T_Q                                                                   \
         REPLACE$(T Q $ T Q $ std::array<T,NNN> std::array<Q,NNN>)                                  \
         REPLACE(NNN, SUPERBBLAS_ARRAY_RANGES)
 // clang-format on
-#else
+#    else
 #        define META_ARRAY_TYPES_T_Q REPLACE(T Q, IndexType IndexType, T Q)
-#endif
+#    endif
 
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
 
@@ -122,9 +122,7 @@ namespace superbblas {
         /// \param ptr: pointer to the memory to deallocate
         /// \param cpu: context
 
-        template <typename T> void deallocate(T *ptr, Cpu) {
-            delete[] ptr;
-        }
+        template <typename T> void deallocate(T *ptr, Cpu) { delete[] ptr; }
 
 #ifdef SUPERBBLAS_USE_CUDA
         /// Allocate memory on a device
@@ -236,9 +234,9 @@ namespace superbblas {
             }
 
         private:
-            std::size_t n;                     ///< Number of allocated `T` elements
-            std::shared_ptr<T_no_const> ptr;   ///< Pointer to the allocated memory
-            XPU xpu;                           ///< Context
+            std::size_t n;                   ///< Number of allocated `T` elements
+            std::shared_ptr<T_no_const> ptr; ///< Pointer to the allocated memory
+            XPU xpu;                         ///< Context
         };
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
@@ -843,7 +841,6 @@ namespace superbblas {
             }
         }
 
-
         template <typename T>
         void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
@@ -859,8 +856,8 @@ namespace superbblas {
 
             cudaDataType_t cT = toCudaDataType<T>();
             cublasCheck(cublasGemmStridedBatchedEx(
-                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha,
-                a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
+                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha, a,
+                cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
                 toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
         }
 #endif // SUPERBBLAS_USE_CUDA
@@ -869,7 +866,7 @@ namespace superbblas {
     /// Allocate memory on a device
     /// \param n: number of element of type `T` to allocate
     /// \param ctx: context
- 
+
     template <typename T> T *allocate(std::size_t n, Context ctx) {
         switch (ctx.plat) {
         case CPU: return detail::allocate<T>(n, ctx.toCpu());

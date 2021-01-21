@@ -17,53 +17,53 @@
 
 // #define SHOW_TYPE
 
-#include "template_undef.h"
+#    include "template_undef.h"
 
-#ifdef SHOW_TYPE
-#warning compiling double
-#endif
-#define __SUPERBBLAS_USE_DOUBLE
-#include THIS_FILE
-#include "template_undef.h"
-#undef __SUPERBBLAS_USE_DOUBLE
+#    ifdef SHOW_TYPE
+#        warning compiling double
+#    endif
+#    define __SUPERBBLAS_USE_DOUBLE
+#    include THIS_FILE
+#    include "template_undef.h"
+#    undef __SUPERBBLAS_USE_DOUBLE
 
-#ifdef SHOW_TYPE
-#warning compiling half
-#endif
-#define __SUPERBBLAS_USE_HALF
-#include THIS_FILE
-#include "template_undef.h"
-#undef __SUPERBBLAS_USE_HALF
+#    ifdef SHOW_TYPE
+#        warning compiling half
+#    endif
+#    define __SUPERBBLAS_USE_HALF
+#    include THIS_FILE
+#    include "template_undef.h"
+#    undef __SUPERBBLAS_USE_HALF
 
-#ifdef SHOW_TYPE
-#warning compiling half complex
-#endif
-#define __SUPERBBLAS_USE_HALFCOMPLEX
-#include THIS_FILE
-#include "template_undef.h"
-#undef __SUPERBBLAS_USE_HALFCOMPLEX
+#    ifdef SHOW_TYPE
+#        warning compiling half complex
+#    endif
+#    define __SUPERBBLAS_USE_HALFCOMPLEX
+#    include THIS_FILE
+#    include "template_undef.h"
+#    undef __SUPERBBLAS_USE_HALFCOMPLEX
 
-#ifdef SHOW_TYPE
-#warning compiling float
-#endif
-#define __SUPERBBLAS_USE_FLOAT
-#include THIS_FILE
-#include "template_undef.h"
-#undef __SUPERBBLAS_USE_FLOAT
+#    ifdef SHOW_TYPE
+#        warning compiling float
+#    endif
+#    define __SUPERBBLAS_USE_FLOAT
+#    include THIS_FILE
+#    include "template_undef.h"
+#    undef __SUPERBBLAS_USE_FLOAT
 
-#ifdef SHOW_TYPE
-#warning compiling float complex
-#endif
-#define __SUPERBBLAS_USE_FLOATCOMPLEX
-#include THIS_FILE
-#include "template_undef.h"
-#undef __SUPERBBLAS_USE_FLOATCOMPLEX
+#    ifdef SHOW_TYPE
+#        warning compiling float complex
+#    endif
+#    define __SUPERBBLAS_USE_FLOATCOMPLEX
+#    include THIS_FILE
+#    include "template_undef.h"
+#    undef __SUPERBBLAS_USE_FLOATCOMPLEX
 
-#ifdef SHOW_TYPE
-#warning compiling double complex
-#endif
-#define __SUPERBBLAS_USE_DOUBLECOMPLEX
-#include "template.h"
+#    ifdef SHOW_TYPE
+#        warning compiling double complex
+#    endif
+#    define __SUPERBBLAS_USE_DOUBLECOMPLEX
+#    include "template.h"
 // #include THIS_FILE
 // #include "template_undef.h"
 // #undef __SUPERBBLAS_USE_DOUBLECOMPLEX

@@ -62,7 +62,6 @@ namespace superbblas {
             }
         };
 
-
         /// Return the global dimensions of a tensor from its partitioning
         /// \param p: partitioning of the tensor in consecutive ranges
 
@@ -1337,10 +1336,10 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void contraction(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1,
-                     const char *o1, bool conj1, const T **v1, const Context *ctx1,
-                     const PartitionItem<Ndo> *pr, int ncomponentsr, const char *o_r, T **vr,
-                     const Context *ctxr, CoorOrder co) {
+                     const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
+                     int ncomponents1, const char *o1, bool conj1, const T **v1,
+                     const Context *ctx1, const PartitionItem<Ndo> *pr, int ncomponentsr,
+                     const char *o_r, T **vr, const Context *ctxr, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");

@@ -1,3 +1,5 @@
+// File copied from http://www.netlib.org/blas/cblas.h
+// clang-format off
 #ifndef CBLAS_H
 #define CBLAS_H
 #include <stddef.h>
@@ -573,3 +575,4 @@ void cblas_xerbla(int p, const char *rout, const char *form, ...);
 }
 #endif
 #endif
+// clang-format on

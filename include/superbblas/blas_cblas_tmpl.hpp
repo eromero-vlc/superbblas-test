@@ -113,13 +113,13 @@ namespace superbblas {
 
         inline SCALAR xdot(BLASINT n, SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu cpu) {
             (void)cpu;
-#ifndef __SUPERBBLAS_USE_COMPLEX
+#    ifndef __SUPERBBLAS_USE_COMPLEX
             return XDOT(n, x, incx, y, incy);
-#else
+#    else
             SCALAR r = (SCALAR)0.0;
             XDOT(n, x, incx, y, incy, &r);
             return r;
-#endif // __SUPERBBLAS_USE_COMPLEX
+#    endif // __SUPERBBLAS_USE_COMPLEX
         }
 
         inline void xscal(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, Cpu cpu) {
@@ -145,4 +145,3 @@ namespace superbblas {
 #undef SCALAR
     }
 }
-

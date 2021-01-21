@@ -154,4 +154,3 @@ namespace superbblas {
 #undef SCALAR
     }
 }
-

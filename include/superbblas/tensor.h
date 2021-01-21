@@ -189,8 +189,8 @@ namespace superbblas {
             if (size <= 0) return 0;
 
             std::size_t vol = 1;
-            for (std::size_t n = 0, i = std::find(order.begin(), order.end(), starts_with) -
-                                         order.begin();
+            for (std::size_t n = 0,
+                             i = std::find(order.begin(), order.end(), starts_with) - order.begin();
                  n < size; ++n, ++i)
                 vol *= dim[i];
 
@@ -246,8 +246,7 @@ namespace superbblas {
         /// Check that all values are positive
         /// \param from: coordinates to check
 
-        template <std::size_t Nd>
-        bool check_positive(const Coor<Nd> &from) {
+        template <std::size_t Nd> bool check_positive(const Coor<Nd> &from) {
             Coor<Nd> zeros = {};
             return all_less_or_equal(zeros, from);
         }
@@ -261,8 +260,8 @@ namespace superbblas {
         /// \param dim1: dimension size for the destination tensor
 
         template <std::size_t Nd0, std::size_t Nd1>
-        bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0,
-                             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> dim1) {
+        bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                              const Order<Nd1> &o1, const Coor<Nd1> dim1) {
 
             if (!(check_order(o0) && check_order(o1) && check_positive<Nd0>(size0) &&
                   all_less_or_equal(size0, dim0) && is_a_subset_of<Nd0, Nd1>(o0, size0, o1)))
@@ -313,7 +312,7 @@ namespace superbblas {
 #ifdef _OPENMP
 #    pragma omp parallel for
 #endif
-             for (std::size_t i = 0; i < vol; ++i) {
+            for (std::size_t i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
                 indices0[i] =
                     coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm1) + from0, dim0, stride0);
@@ -387,9 +386,9 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cuda> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                            const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                            const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                            const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
+                                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                             const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                             const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
 
             (void)cuda;
             Indices<Cpu> indices_host = get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1,
@@ -446,7 +445,7 @@ namespace superbblas {
         template <typename T, std::size_t N> struct Hash<std::array<T, N>> {
             static std::size_t hash(std::array<T, N> const &t) noexcept {
                 std::size_t r = 12345;
-                for (std::size_t i=0; i<N; ++i) r = r ^ std::hash<T>{}(t[i]);
+                for (std::size_t i = 0; i < N; ++i) r = r ^ std::hash<T>{}(t[i]);
                 return r;
             }
         };
@@ -474,7 +473,7 @@ namespace superbblas {
 
         template <class Tuple> struct TupleHash {
             std::size_t operator()(Tuple const &t) const noexcept {
-                return TupleHashHelp<Tuple, std::tuple_size<Tuple>::value - 1>::hash(t); 
+                return TupleHashHelp<Tuple, std::tuple_size<Tuple>::value - 1>::hash(t);
             }
         };
 
@@ -524,7 +523,8 @@ namespace superbblas {
                                       TupleHash<from_size_dim>>
                 from_size_dim_map(16);
             {
-                auto it = from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
+                auto it =
+                    from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
                     indices_out = it->second;
                     disp = 0;
@@ -538,7 +538,7 @@ namespace superbblas {
                     Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                     disp = coor2index<Nd1>(from1, dim1, stride1);
                     return;
-                 }
+                }
             }
 
             // Get the permutation and store it in cache
@@ -553,7 +553,7 @@ namespace superbblas {
                     std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
                         o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
                 size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
-            } 
+            }
 
             // Return the permutation
             indices_out = indices1;
@@ -621,7 +621,7 @@ namespace superbblas {
                     Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
                     disp = coor2index<Nd0>(from0, dim0, stride0);
                     return;
-                 }
+                }
             }
 
             // Get the permutation and store it in cache
@@ -636,7 +636,7 @@ namespace superbblas {
                     std::make_shared<Indices<XPU>>(get_permutation_origin<Nd0, Nd1>(
                         o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
                 size_dim_map[perm_size_dim{perm1, size0, dim0, deviceId(xpu), co}] = indices0_sd;
-            } 
+            }
 
             // Return the permutation
             indices_out = indices0;
@@ -665,7 +665,7 @@ namespace superbblas {
                 if (j == o1.end()) continue;
                 starts_with = o0[i];
                 for (std::size_t i0 = i; i0 < o0.size() && j != o1.end() && o0[i0] == *j &&
-                                          (nAvoid == 0 || *j != *avoid);
+                                         (nAvoid == 0 || *j != *avoid);
                      ++i0, ++j, ++size)
                     ;
                 break;
@@ -694,7 +694,7 @@ namespace superbblas {
                 if (k == o2.end()) continue;
                 starts_with = o0[i];
                 for (std::size_t i0 = i; i0 < o0.size() && j != o1.end() && k != o2.end() &&
-                                          o0[i0] == *j && o0[i0] == *k;
+                                         o0[i0] == *j && o0[i0] == *k;
                      ++i0, ++j, ++k, ++size)
                     ;
                 break;
@@ -776,8 +776,8 @@ namespace superbblas {
 
             // Find T, the common labels between o0, o1, and o_r
             std::size_t nT = 0; // size of the piece T
-            char sT = 0;         // starting letter of the piece T
-            char eT = 0;         // ending letter of the piece T
+            char sT = 0;        // starting letter of the piece T
+            char eT = 0;        // ending letter of the piece T
             largest_common_substring_order(o0, o1, o_r, sT, nT);
             auto strT = o0.begin();
             if (nT > 0) {
@@ -787,17 +787,17 @@ namespace superbblas {
 
             // Find A, the common labels between o0 and o1
             std::size_t nA = 0; // size of the piece A
-            char sA = 0;         // starting letter of the piece A
+            char sA = 0;        // starting letter of the piece A
             largest_common_substring_order(o0, o1, strT, nT, sA, nA);
 
             // Find B, the common labels between o0 and o_r
             std::size_t nB = 0; // size of the piece B
-            char sB = 0;         // starting letter of the piece B
+            char sB = 0;        // starting letter of the piece B
             largest_common_substring_order(o0, o_r, strT, nT, sB, nB);
 
             // Find C, the common labels between o1 and o_r
             std::size_t nC = 0; // size of the piece C
-            char sC = 0;         // starting letter of the piece C
+            char sC = 0;        // starting letter of the piece C
             largest_common_substring_order(o1, o_r, strT, nT, sC, nC);
 
             // Check that o0 is made of the pieces T, A and B
@@ -865,8 +865,7 @@ namespace superbblas {
             int strideca =
                 (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
             int ldcb = (or_starts_with_T ? 1 : volT) * volB;
-            int stridecb =
-                (or_starts_with_T ? volume<Ndo>(dimr) / volT : volC);
+            int stridecb = (or_starts_with_T ? volume<Ndo>(dimr) / volT : volC);
             T one = 1.0, zero = 0.0;
             xgemm_batch_strided<T>(transab, transca, volB, volC, volA, one, v0.data(), ldab,
                                    strideab, v1.data(), ldca, strideca, zero, vr.data(), ldcb,

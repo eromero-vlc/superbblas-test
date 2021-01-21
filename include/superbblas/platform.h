@@ -66,7 +66,7 @@ namespace superbblas {
             }
         }
 
-        inline const char* cublasStatusToStr(cublasStatus_t status) {
+        inline const char *cublasStatusToStr(cublasStatus_t status) {
             // clang-format off
             if (status == CUBLAS_STATUS_SUCCESS         ) return "CUBLAS_STATUS_SUCCESS";
             if (status == CUBLAS_STATUS_NOT_INITIALIZED ) return "CUBLAS_STATUS_NOT_INITIALIZED";
@@ -120,7 +120,7 @@ namespace superbblas {
 
     class Context {
     public:
-        enum platform plat;     ///< platform where the data is
+        enum platform plat; ///< platform where the data is
 
         /// If `plat` is `CPU`, then `DEFAULT_DEVICE` means to use all the threads on an OpenMP
         /// fashion. If `plat` is `CUDA` and `GPUAMD`, the value is the device identification.
@@ -143,7 +143,7 @@ namespace superbblas {
                 detail::cublasCheck(cublasCreate(cublasHandle.get()));
             }
 #endif
-        } 
+        }
 
         detail::Cpu toCpu() const { return detail::Cpu(); }
 

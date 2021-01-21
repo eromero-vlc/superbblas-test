@@ -1,8 +1,8 @@
 #ifndef __SUPERBBLAS_TEMPLATE__
 #define __SUPERBBLAS_TEMPLATE__
 
-#include <climits>
 #include <cfloat>
+#include <climits>
 #include <cstdint>
 
 #include "template_types.h"
@@ -21,7 +21,7 @@
 #endif
 
 // Macro ARITH(H,K,S,C,D,Z,Q,W) - Return an argument depending on the __SUPERBBLAS_USE_* defined
- 
+
 #if defined(__SUPERBBLAS_USE_DOUBLE)
 #    define ARITH(H, K, S, C, D, Z, Q, W) D
 #    define REAL_ARITH(H, K, S, C, D, Z, Q, W) D
