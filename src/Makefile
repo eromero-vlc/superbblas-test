@@ -71,7 +71,10 @@ install_headers: $(BUILDDIR)/superbblas_flags.h
 	install -m 644 $(OTHER_HEADERS) $(includedir)/superbblas
 	install -m 644 $(BUILDDIR)/superbblas_flags.h $(includedir)/superbblas
 
+format:
+	clang-format -i ${MAIN_HEADER} ${OTHER_HEADERS}
+
 clean:
 	rm -f $(BUILDDIR)/superbblas_flags.h $(BUILDDIR)/superbblas_lib.cpp $(BUILDDIR)/superbblas_lib.o $(LIBRARY)
 
-.PHONY: clean
+.PHONY: install install_headers format clean
