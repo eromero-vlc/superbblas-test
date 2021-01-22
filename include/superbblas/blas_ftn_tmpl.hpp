@@ -133,6 +133,14 @@ namespace superbblas {
 
         inline void xscal(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, Cpu cpu) {
             (void)cpu;
+            if (std::fabs(alpha) == SCALAR{0.0}) {
+#    ifdef _OPENMP
+#        pragma omp for
+#    endif
+                for (BLASINT i = 0; i < n; ++i) x[i * incx] = SCALAR{0};
+                return;
+            }
+            if (alpha == SCALAR{1.0}) return;
             XSCAL(&n, &alpha, x, &incx);
         }
 

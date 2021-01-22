@@ -148,8 +148,9 @@ int main(int argc, char **argv) {
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
-                local_contraction("tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1, false,
-                                  t2.data(), "tNSns", dimc, tc.data(), ctx, SlowToFast);
+                local_contraction((Scalar)1.0, "tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1,
+                                  false, t2.data(), (Scalar)0.0, "tNSns", dimc, tc.data(), ctx,
+                                  SlowToFast);
             }
             t = omp_get_wtime() - t;
             std::cout << "Time in contracting xyzc " << t / nrep << std::endl;
@@ -308,8 +309,9 @@ int main(int argc, char **argv) {
         {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
-                local_contraction("tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc", dim1, false,
-                                  t2.data().get(), "tNSns", dimc, tc.data().get(), ctx, SlowToFast);
+                local_contraction((Scalar)1.0, "tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc",
+                                  dim1, false, t2.data().get(), (Scalar)0.0, "tNSns", dimc,
+                                  tc.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;

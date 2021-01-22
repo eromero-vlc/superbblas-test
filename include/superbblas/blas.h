@@ -646,8 +646,7 @@ namespace superbblas {
         void copy_n(const T *v, const IndexType *indicesv, Cuda cudav, std::size_t n, Q *w,
                     const IndexType *indicesw, Cuda cudaw, EWOp::Copy) IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
-                // thrust::copy_n(thrust::make_permutation_iterator(v, indicesv), n,
-                //                thrust::make_permutation_iterator(w, indicesw));
+                cudaCheck(cudaSetDevice(deviceId(cudav)));
                 thrust::for_each_n(
                     thrust::counting_iterator<IndexType>(0), n * N,
                     assign_array<IndexType, typename T::value_type, typename Q::value_type, N>(
@@ -665,6 +664,7 @@ namespace superbblas {
                                   Q *w, const IndexType *indicesw, Cuda cudaw, EWOp::Add))
         IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
+                cudaCheck(cudaSetDevice(deviceId(cudav)));
                 auto vit = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indicesv));
                 auto wit = thrust::make_permutation_iterator(encapsulate_pointer(w),
@@ -724,8 +724,31 @@ namespace superbblas {
             cudaCheck(cudaSetDevice(deviceId(cuda)));
             cudaCheck(cudaMemset(v, 0, sizeof(T) * n));
         }
-#endif
 
+        template <typename T> inline cudaDataType_t toCudaDataType(void);
+
+        template <> inline cudaDataType_t toCudaDataType<float>(void) { return CUDA_R_32F; }
+        template <> inline cudaDataType_t toCudaDataType<std::complex<float>>(void) {
+            return CUDA_C_32F;
+        }
+        template <> inline cudaDataType_t toCudaDataType<double>(void) { return CUDA_R_64F; }
+        template <> inline cudaDataType_t toCudaDataType<std::complex<double>>(void) {
+            return CUDA_C_64F;
+        }
+
+        /// Template scal for GPUs
+
+        template <typename T> inline void xscal(int n, T alpha, T *x, int incx, Cuda cuda) {
+            if (std::fabs(alpha) == 0.0) {
+                cudaCheck(cudaSetDevice(deviceId(cuda)));
+                cudaMemset2D(x, sizeof(T) * incx, 0, sizeof(T), n);
+                return;
+            }
+            if (alpha == T{1.0}) return;
+            cudaDataType_t cT = toCudaDataType<T>();
+            cublasCheck(cublasScalEx(cuda.cublasHandle, n, &alpha, cT, x, cT, incx, cT));
+        }
+#endif
         /// Template multiple GEMM
 
         template <typename T>
@@ -803,17 +826,6 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_MKL
 
 #ifdef SUPERBBLAS_USE_CUDA
-        template <typename T> inline cudaDataType_t toCudaDataType(void);
-
-        template <> inline cudaDataType_t toCudaDataType<float>(void) { return CUDA_R_32F; }
-        template <> inline cudaDataType_t toCudaDataType<std::complex<float>>(void) {
-            return CUDA_C_32F;
-        }
-        template <> inline cudaDataType_t toCudaDataType<double>(void) { return CUDA_R_64F; }
-        template <> inline cudaDataType_t toCudaDataType<std::complex<double>>(void) {
-            return CUDA_C_64F;
-        }
-
         template <typename T> inline cublasComputeType_t toCudaComputeType(void);
 
         template <> inline cublasComputeType_t toCudaComputeType<float>(void) {

@@ -253,9 +253,9 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data(), *ptrc = tc.data();
-                contraction(p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1.data(),
-                            1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, pc.data(), 1,
-                            "tNSns", &ptrc, &ctx,
+                contraction((Scalar)1.0, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
+                            &ctx, p1.data(), 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
+                            (Scalar)0.0, pc.data(), 1, "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif
@@ -416,9 +416,9 @@ int main(int argc, char **argv) {
             double t = omp_get_wtime();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get(), *ptrc = tc.data().get();
-                contraction(p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0, &ctx, p1.data(),
-                            1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, pc.data(), 1,
-                            "tNSns", &ptrc, &ctx,
+                contraction((Scalar)1.0, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
+                            &ctx, p1.data(), 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
+                            (Scalar)0.0, pc.data(), 1, "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif

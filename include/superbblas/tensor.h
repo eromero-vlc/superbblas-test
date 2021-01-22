@@ -726,7 +726,8 @@ namespace superbblas {
             return true;
         }
 
-        /// Contract two tensors
+        /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+        /// \param alpha: factor on the contraction
         /// \param o0: dimension labels for the first operator
         /// \param dim0: dimension size for the first operator
         /// \param conj0: whether element-wise conjugate the first operator
@@ -735,10 +736,11 @@ namespace superbblas {
         /// \param dim1: dimension size for the second operator
         /// \param conj1: whether element-wise conjugate the second operator
         /// \param v1: data for the second operator
+        /// \param beta: factor on the destination tensor
         /// \param o_r: dimension labels for the output operator
         /// \param dimr: dimension size for the output operator
         /// \param vr: data for the second operator
-        /// \param co: coordinate linearization order
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
         ///
         /// The order of the labels should be as following:
         ///
@@ -748,9 +750,9 @@ namespace superbblas {
         /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
-        void local_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
+        void local_contraction(T alpha, const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
                                vector<const T, XPU> v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
-                               bool conj1, vector<const T, XPU> v1, const Order<Ndo> &o_r,
+                               bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
@@ -769,8 +771,8 @@ namespace superbblas {
             // The rest of the code is for SlowToFast; so reverse if that is the case
             if (co == FastToSlow) {
                 local_contraction<Nd0, Nd1, Ndo, T, XPU>(
-                    reverse(o0), reverse(dim0), conj0, v0, reverse(o1), reverse(dim1), conj1, v1,
-                    reverse(o_r), reverse(dimr), vr, SlowToFast);
+                    alpha, reverse(o0), reverse(dim0), conj0, v0, reverse(o1), reverse(dim1), conj1,
+                    v1, beta, reverse(o_r), reverse(dimr), vr, SlowToFast);
                 return;
             }
 
@@ -853,7 +855,7 @@ namespace superbblas {
             assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Avoid issues with uninitialized memory by zeroing out
-            zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
+            if (std::fabs(beta) != 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
 
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
@@ -866,9 +868,8 @@ namespace superbblas {
                 (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
             int ldcb = (or_starts_with_T ? 1 : volT) * volB;
             int stridecb = (or_starts_with_T ? volume<Ndo>(dimr) / volT : volC);
-            T one = 1.0, zero = 0.0;
-            xgemm_batch_strided<T>(transab, transca, volB, volC, volA, one, v0.data(), ldab,
-                                   strideab, v1.data(), ldca, strideca, zero, vr.data(), ldcb,
+            xgemm_batch_strided<T>(transab, transca, volB, volC, volA, alpha, v0.data(), ldab,
+                                   strideab, v1.data(), ldca, strideca, beta, vr.data(), ldcb,
                                    stridecb, volT, vr.ctx());
         }
 
@@ -970,7 +971,8 @@ namespace superbblas {
         }
     }
 
-    /// Contract two tensors
+    /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+    /// \param alpha: factor on the contraction
     /// \param o0: dimension labels for the first operator
     /// \param dim0: dimension size for the first operator
     /// \param conj0: whether element-wise conjugate the first operator
@@ -979,6 +981,7 @@ namespace superbblas {
     /// \param dim1: dimension size for the second operator
     /// \param conj1: whether element-wise conjugate the second operator
     /// \param v1: data for the second operator
+    /// \param beta: factor on the destination tensor
     /// \param o_r: dimension labels for the output operator
     /// \param dimr: dimension size for the output operator
     /// \param vr: data for the second operator
@@ -992,8 +995,8 @@ namespace superbblas {
     /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void local_contraction(const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
-                           const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1,
+    void local_contraction(T alpha, const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
+                           const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1, T beta,
                            const char *o_r, const Coor<Ndo> &dimr, T *vr, const Context ctx,
                            CoorOrder co) {
 
@@ -1004,15 +1007,15 @@ namespace superbblas {
         switch (ctx.plat) {
         case CPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                o0_, dim0, conj0, detail::to_vector(v0, ctx.toCpu()), o1_, dim1, conj1,
-                detail::to_vector(v1, ctx.toCpu()), o_r_, dimr, detail::to_vector(vr, ctx.toCpu()),
-                co);
+                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCpu()), o1_, dim1, conj1,
+                detail::to_vector(v1, ctx.toCpu()), beta, o_r_, dimr,
+                detail::to_vector(vr, ctx.toCpu()), co);
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                o0_, dim0, conj0, detail::to_vector(v0, ctx.toCuda()), o1_, dim1, conj1,
-                detail::to_vector(v1, ctx.toCuda()), o_r_, dimr,
+                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCuda()), o1_, dim1, conj1,
+                detail::to_vector(v1, ctx.toCuda()), beta, o_r_, dimr,
                 detail::to_vector(vr, ctx.toCuda()), co);
             break;
 #endif

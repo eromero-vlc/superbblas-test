@@ -1069,28 +1069,27 @@ namespace superbblas {
             return pr;
         }
 
-        /// Contract two tensors
+        /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+        /// \param alpha: factor on the contraction
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
         /// \param ncomponents0: number of consecutive components in each MPI rank
         /// \param o0: dimension labels for the first operator
-        /// \param dim0: dimension size for the first operator
         /// \param conj0: whether element-wise conjugate the first operator
         /// \param v0: data for the first operator
         /// \param ctx0: context for each data pointer in v0
         /// \param p1: partitioning of the second origin tensor in consecutive ranges
         /// \param ncomponents1: number of consecutive components in each MPI rank
         /// \param o1: dimension labels for the second operator
-        /// \param dim1: dimension size for the second operator
         /// \param conj1: whether element-wise conjugate the second operator
         /// \param v1: data for the second operator
         /// \param ctx1: context for each data pointer in v1
+        /// \param beta: factor on the destination tensor
         /// \param pr: partitioning of the resulting tensor in consecutive ranges
         /// \param ncomponentsr: number of consecutive components in each MPI rank
         /// \param o_r: dimension labels for the output operator
-        /// \param dimr: dimension size for the output operator
         /// \param vr: data for the second operator
         /// \param ctxr: context for each data pointer in vr
-        /// \param co: coordinate linearization order
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
         ///
         /// The order of the labels should be as following:
         ///
@@ -1101,10 +1100,10 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void contraction(const From_size<Nd0> &p0, const Order<Nd0> &o0, bool conj0,
+        void contraction(T alpha, const From_size<Nd0> &p0, const Order<Nd0> &o0, bool conj0,
                          const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                          const From_size<Nd1> &p1, const Order<Nd1> &o1, bool conj1,
-                         const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1,
+                         const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1, T beta,
                          const From_size<Ndo> &pr, const Order<Ndo> &o_r,
                          const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
 
@@ -1141,9 +1140,10 @@ namespace superbblas {
                 const Coor<Ndo> &dimi = pr_[pi][1];
                 vr0[i] = vector<T, XPU0>(volume<Ndo>(dimi), v0.first[i].it.ctx());
                 vr_.first.push_back(Component<Ndo, T, XPU0>{vr0[i], dimi, componentId});
-                local_contraction<Nd0, Nd1, Ndo, T>(o0, p0[pi][1], conj0, v0.first[i].it, o1,
-                                                    p1[pi][1], conj1, v1.first[i].it, o_r, dimi,
-                                                    vr0[i], co);
+                local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.first[i].it, o1,
+                                                    p1[pi][1], conj1, v1.first[i].it, T{0.0}, o_r,
+                                                    dimi, vr0[i], co);
+                xscal(volume(pr[pi][1]), beta, vr.first[i].it.data(), 1, vr.first[i].it.ctx());
             }
             std::vector<vector<T, XPU1>> vr1(v0.second.size());
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
@@ -1152,9 +1152,10 @@ namespace superbblas {
                 const Coor<Ndo> &dimi = pr_[pi][1];
                 vr1[i] = vector<T, XPU1>(volume<Ndo>(dimi), v0.second[i].it.ctx());
                 vr_.second.push_back(Component<Ndo, T, XPU1>{vr1[i], dimi, componentId});
-                local_contraction<Nd0, Nd1, Ndo, T>(o0, p0[pi][1], conj0, v0.second[i].it, o1,
-                                                    p1[pi][1], conj1, v1.second[i].it, o_r, dimi,
-                                                    vr1[i], co);
+                local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.second[i].it,
+                                                    o1, p1[pi][1], conj1, v1.second[i].it, T{0.0},
+                                                    o_r, dimi, vr1[i], co);
+                xscal(volume(pr[pi][1]), beta, vr.second[i].it.data(), 1, vr.second[i].it.ctx());
             }
 
             // Reduce all the subtensors to the final tensor
@@ -1257,7 +1258,8 @@ namespace superbblas {
     }
 
 #ifdef SUPERBBLAS_USE_MPI
-    /// Contract two tensors
+    /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+    /// \param alpha: factor on the contraction
     /// \param p0: partitioning of the first origin tensor in consecutive ranges
     /// \param ncomponents0: number of consecutive components in each MPI rank
     /// \param o0: dimension labels for the first operator
@@ -1270,6 +1272,7 @@ namespace superbblas {
     /// \param conj1: whether element-wise conjugate the second operator
     /// \param v1: data for the second operator
     /// \param ctx1: context for each data pointer in v1
+    /// \param beta: factor on the destination tensor
     /// \param pr: partitioning of the resulting tensor in consecutive ranges
     /// \param ncomponentsr: number of consecutive components in each MPI rank
     /// \param o_r: dimension labels for the output operator
@@ -1285,10 +1288,10 @@ namespace superbblas {
     /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void contraction(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
+    void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
+                     bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
-                     const Context *ctx1, const PartitionItem<Ndo> *pr, int ncomponentsr,
+                     const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
                      const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
@@ -1298,16 +1301,17 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            detail::to_vector(p0, ncomponents0 * comm.nprocs), o0_, conj0,
+            alpha, detail::to_vector(p0, ncomponents0 * comm.nprocs), o0_, conj0,
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0),
             detail::to_vector(p1, ncomponents1 * comm.nprocs), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1), beta,
             detail::to_vector(pr, ncomponentsr * comm.nprocs), o_r_,
             detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr), comm, co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
-    /// Contract two tensors
+    /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+    /// \param alpha: factor on the contraction
     /// \param p0: partitioning of the first origin tensor in consecutive ranges
     /// \param ncomponents0: number of consecutive components in each MPI rank
     /// \param o0: dimension labels for the first operator
@@ -1320,6 +1324,7 @@ namespace superbblas {
     /// \param conj1: whether element-wise conjugate the second operator
     /// \param v1: data for the second operator
     /// \param ctx1: context for each data pointer in v1
+    /// \param beta: factor on the destination tensor
     /// \param pr: partitioning of the resulting tensor in consecutive ranges
     /// \param ncomponentsr: number of consecutive components in each MPI rank
     /// \param o_r: dimension labels for the output operator
@@ -1335,10 +1340,10 @@ namespace superbblas {
     /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void contraction(const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0, bool conj0,
-                     const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
+    void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
+                     bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
-                     const Context *ctx1, const PartitionItem<Ndo> *pr, int ncomponentsr,
+                     const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
                      const char *o_r, T **vr, const Context *ctxr, CoorOrder co) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
@@ -1348,10 +1353,10 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            detail::to_vector(p0, ncomponents0 * comm.nprocs), o0_, conj0,
+            alpha, detail::to_vector(p0, ncomponents0 * comm.nprocs), o0_, conj0,
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0),
             detail::to_vector(p1, ncomponents1 * comm.nprocs), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1), beta,
             detail::to_vector(pr, ncomponentsr * comm.nprocs), o_r_,
             detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr), comm, co);
     }
