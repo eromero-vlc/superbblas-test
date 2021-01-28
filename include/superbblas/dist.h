@@ -597,7 +597,7 @@ namespace superbblas {
                 std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
-                unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, alpha);
+                unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
             };
         }
 #endif // SUPERBBLAS_USE_MPI
