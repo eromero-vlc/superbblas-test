@@ -139,12 +139,12 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(), *ptr1 = t1.data();
-                    copy(p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
+                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
                          p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
-                         SlowToFast);
+                         SlowToFast, Copy);
                 }
             }
             t = omp_get_wtime() - t;
@@ -155,48 +155,48 @@ int main(int argc, char **argv) {
         }
 
         // Copy tensor t0 into each of the n components of tensor 1 (fast)
-        {
-            // Create tensor t0 of Nd-1 dims: a lattice color vector
-            const Coor<Nd - 2> dim0a = {dim[X], dim[Y], dim[Z], dim[T], dim[S]}; // xyzts
-            const Coor<Nd - 2> procs0a = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzts
-            PartitionStored<Nd - 2> p0a = basic_partitioning(dim0a, procs0a);
-            const Coor<Nd - 2> local_size0a = p0a[rank][1];
-            assert(vol0 == detail::volume(local_size0a) * nC);
-            (void)local_size0a;
-
-            // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
-            const Coor<Nd - 1> dim1a = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z]}; // tnsxyz
-            const Coor<Nd - 1> procs1a = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z]}; // tnsxyz
-            PartitionStored<Nd - 1> p1a = basic_partitioning(dim1a, procs1a);
-            const Coor<Nd - 1> local_size1a = p1a[rank][1];
-            assert(vol1 == detail::volume(local_size1a) * nC);
-            (void)local_size1a;
-
-            double t = omp_get_wtime();
-            for (unsigned int rep = 0; rep < nrep; ++rep) {
-                for (int n = 0; n < dim[N]; ++n) {
-                    const Coor<Nd - 2> from0a = {0};
-                    const Coor<Nd - 1> from1a = {0, n, 0};
-                    Coor<Nd - 2> dim0a;
-                    std::copy_n(dim0.begin(), Nd - 2, dim0a.begin());
-                    Coor<Nd - 1> dim1a;
-                    std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
-                    std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data(),
-                                      *ptr1 = (std::array<Scalar, nC> *)t1.data();
-                    copy(p0a.data(), 1, "xyzts", from0a, dim0a,
-                         (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a.data(), 1, "tnsxyz",
-                         from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
-#ifdef SUPERBBLAS_USE_MPI
-                         MPI_COMM_WORLD,
-#endif
-                         SlowToFast);
-                 }
-            }
-            t = omp_get_wtime() - t;
-            if (rank == 0)
-                std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast) " << t / nrep
-                          << " (overhead " << t / nrep / tref << " )" << std::endl;
-        }
+//         {
+//             // Create tensor t0 of Nd-1 dims: a lattice color vector
+//             const Coor<Nd - 2> dim0a = {dim[X], dim[Y], dim[Z], dim[T], dim[S]}; // xyzts
+//             const Coor<Nd - 2> procs0a = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzts
+//             PartitionStored<Nd - 2> p0a = basic_partitioning(dim0a, procs0a);
+//             const Coor<Nd - 2> local_size0a = p0a[rank][1];
+//             assert(vol0 == detail::volume(local_size0a) * nC);
+//             (void)local_size0a;
+// 
+//             // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
+//             const Coor<Nd - 1> dim1a = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z]}; // tnsxyz
+//             const Coor<Nd - 1> procs1a = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z]}; // tnsxyz
+//             PartitionStored<Nd - 1> p1a = basic_partitioning(dim1a, procs1a);
+//             const Coor<Nd - 1> local_size1a = p1a[rank][1];
+//             assert(vol1 == detail::volume(local_size1a) * nC);
+//             (void)local_size1a;
+// 
+//             double t = omp_get_wtime();
+//             for (unsigned int rep = 0; rep < nrep; ++rep) {
+//                 for (int n = 0; n < dim[N]; ++n) {
+//                     const Coor<Nd - 2> from0a = {0};
+//                     const Coor<Nd - 1> from1a = {0, n, 0};
+//                     Coor<Nd - 2> dim0a;
+//                     std::copy_n(dim0.begin(), Nd - 2, dim0a.begin());
+//                     Coor<Nd - 1> dim1a;
+//                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
+//                     std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data(),
+//                                       *ptr1 = (std::array<Scalar, nC> *)t1.data();
+//                     copy(1.0, p0a.data(), 1, "xyzts", from0a, dim0a,
+//                          (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a.data(), 1, "tnsxyz",
+//                          from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
+// #ifdef SUPERBBLAS_USE_MPI
+//                          MPI_COMM_WORLD,
+// #endif
+//                          SlowToFast, Copy);
+//                  }
+//             }
+//             t = omp_get_wtime() - t;
+//             if (rank == 0)
+//                 std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast) " << t / nrep
+//                           << " (overhead " << t / nrep / tref << " )" << std::endl;
+//         }
 
         // Copy tensor t0 into each of the c components of tensor 1 in double
         {
@@ -207,12 +207,12 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(); ScalarD *ptr1 = t1d.data();
-                    copy(p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
+                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
                          p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
-                         SlowToFast);
+                         SlowToFast, Copy);
                 }
             }
             t = omp_get_wtime() - t;
@@ -232,12 +232,12 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data();
-                copy(p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1.data(),
-                     1, "tnsxyzc", from1, &ptr1, &ctx,
+                copy(1.0, p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx,
+                     p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
-                     SlowToFast);
+                     SlowToFast, Copy);
             }
             t = omp_get_wtime() - t;
             if (rank == 0) std::cout << "Time in shifting " << t / nrep << std::endl;
@@ -322,12 +322,12 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data().get(), *ptr1 = t1.data().get();
-                    copy(p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
+                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, &ctx,
                          p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
-                         SlowToFast);
+                         SlowToFast, Copy);
                 }
             }
             cudaDeviceSynchronize();
@@ -339,51 +339,51 @@ int main(int argc, char **argv) {
         }
 
         // Copy tensor t0 into each of the n components of tensor 1 (fast)
-        {
-            // Create tensor t0 of Nd-1 dims: a lattice color vector
-            const Coor<Nd - 2> dim0a = {dim[X], dim[Y], dim[Z], dim[T], dim[S]}; // xyzts
-            const Coor<Nd - 2> procs0a = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzts
-            PartitionStored<Nd - 2> p0a = basic_partitioning(dim0a, procs0a);
-            const Coor<Nd - 2> local_size0a = p0a[rank][1];
-            assert(vol0 == detail::volume(local_size0a) * nC);
-            (void)local_size0a;
-
-            // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
-            const Coor<Nd - 1> dim1a = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z]}; // tnsxyz
-            const Coor<Nd - 1> procs1a = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z]}; // tnsxyz
-            PartitionStored<Nd - 1> p1a = basic_partitioning(dim1a, procs1a);
-            const Coor<Nd - 1> local_size1a = p1a[rank][1];
-            assert(vol1 == detail::volume(local_size1a) * nC);
-            (void)local_size1a;
-
-#    ifndef SUPERBBLAS_LIB
-            double t = omp_get_wtime();
-            for (unsigned int rep = 0; rep < nrep; ++rep) {
-                for (int n = 0; n < dim[N]; ++n) {
-                    const Coor<Nd - 2> from0a = {0};
-                    const Coor<Nd - 1> from1a = {0, n, 0};
-                    Coor<Nd - 2> dim0a;
-                    std::copy_n(dim0.begin(), Nd - 2, dim0a.begin());
-                    Coor<Nd - 1> dim1a;
-                    std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
-                    std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data().get(),
-                                      *ptr1 = (std::array<Scalar, nC> *)t1.data().get();
-                    copy(p0a.data(), 1, "xyzts", from0a, dim0a,
-                         (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a.data(), 1, "tnsxyz",
-                         from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
-#ifdef SUPERBBLAS_USE_MPI
-                         MPI_COMM_WORLD,
-#endif
-                         SlowToFast);
-                 }
-            }
-            cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
-            if (rank == 0)
-                std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast) " << t / nrep
-                          << " (overhead " << t / nrep / tref << " )" << std::endl;
-        }
-#    endif // SUPERBBLAS_LIB
+//         {
+//             // Create tensor t0 of Nd-1 dims: a lattice color vector
+//             const Coor<Nd - 2> dim0a = {dim[X], dim[Y], dim[Z], dim[T], dim[S]}; // xyzts
+//             const Coor<Nd - 2> procs0a = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzts
+//             PartitionStored<Nd - 2> p0a = basic_partitioning(dim0a, procs0a);
+//             const Coor<Nd - 2> local_size0a = p0a[rank][1];
+//             assert(vol0 == detail::volume(local_size0a) * nC);
+//             (void)local_size0a;
+// 
+//             // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
+//             const Coor<Nd - 1> dim1a = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z]}; // tnsxyz
+//             const Coor<Nd - 1> procs1a = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z]}; // tnsxyz
+//             PartitionStored<Nd - 1> p1a = basic_partitioning(dim1a, procs1a);
+//             const Coor<Nd - 1> local_size1a = p1a[rank][1];
+//             assert(vol1 == detail::volume(local_size1a) * nC);
+//             (void)local_size1a;
+// 
+// #    ifndef SUPERBBLAS_LIB
+//             double t = omp_get_wtime();
+//             for (unsigned int rep = 0; rep < nrep; ++rep) {
+//                 for (int n = 0; n < dim[N]; ++n) {
+//                     const Coor<Nd - 2> from0a = {0};
+//                     const Coor<Nd - 1> from1a = {0, n, 0};
+//                     Coor<Nd - 2> dim0a;
+//                     std::copy_n(dim0.begin(), Nd - 2, dim0a.begin());
+//                     Coor<Nd - 1> dim1a;
+//                     std::copy_n(dim1.begin(), Nd - 1, dim1a.begin());
+//                     std::array<Scalar, nC> *ptr0 = (std::array<Scalar, nC> *)t0.data().get(),
+//                                       *ptr1 = (std::array<Scalar, nC> *)t1.data().get();
+//                     copy(1.0, p0a.data(), 1, "xyzts", from0a, dim0a,
+//                          (const std::array<Scalar, nC> **)&ptr0, &ctx, p1a.data(), 1, "tnsxyz",
+//                          from1a, (std::array<Scalar, nC> **)&ptr1, &ctx,
+// #ifdef SUPERBBLAS_USE_MPI
+//                          MPI_COMM_WORLD,
+// #endif
+//                          SlowToFast, Copy);
+//                  }
+//             }
+//             cudaDeviceSynchronize();
+//             t = omp_get_wtime() - t;
+//             if (rank == 0)
+//                 std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast) " << t / nrep
+//                           << " (overhead " << t / nrep / tref << " )" << std::endl;
+//#    endif // SUPERBBLAS_LIB
+//         }
 
         // Shift tensor 1 on the z-direction and store it on tensor 2
         Tensor t2(vol1);
@@ -394,12 +394,12 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get();
-                copy(p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx, p1.data(),
-                     1, "tnsxyzc", from1, &ptr1, &ctx,
+                copy(1.0, p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, &ctx,
+                     p1.data(), 1, "tnsxyzc", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
-                     SlowToFast);
+                     SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
             t = omp_get_wtime() - t;

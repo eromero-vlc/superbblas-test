@@ -134,11 +134,11 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     copy_n<IndexType, T, T>(t0.data(), i0.begin(), Cpu{}, size / 2, t0_xpu.data(), xpu,
                             EWOp::Copy{});
     // t0_xpu[i0_xpu[i]] = t0[i]
-    copy_n<IndexType, T, T>(t0.data(), Cpu{}, size / 2, t0_xpu.data(), i0_xpu.begin(), xpu,
-                         EWOp::Copy{});
+    copy_n<IndexType, T, T>(1.0, t0.data(), Cpu{}, size / 2, t0_xpu.data(), i0_xpu.begin(), xpu,
+                            EWOp::Copy{});
     // t1_xpu[i0_xpu[i]] = t0_xpu[i0_xpu[i]]
-    copy_n<IndexType, T, T>(t0_xpu.data(), i0_xpu.begin(), xpu, size / 4, t1_xpu.data(),
-                         i0_xpu.begin() + size / 4, xpu, EWOP{});
+    copy_n<IndexType, T, T>(1.0, t0_xpu.data(), i0_xpu.begin(), xpu, size / 4, t1_xpu.data(),
+                            i0_xpu.begin() + size / 4, xpu, EWOP{});
     // t0[i] = t0_xpu[i0[i]]
     copy_n<IndexType, T, T>(t1_xpu.data(), i0_xpu.begin(), xpu, size / 2, t1.data(), Cpu{},
                             EWOp::Copy{});
@@ -147,8 +147,9 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     zero_n<T>(r.data(), size, Cpu{});
     zero_n<T>(r1.data(), size, Cpu{});
     copy_n<IndexType, T, T>(t0.data(), i0.begin(), Cpu{}, size / 2, r0.data(), Cpu{}, EWOp::Copy{});
-    copy_n<IndexType, T, T>(t0.data(), Cpu{}, size / 2, r0.data(), i0.begin(), Cpu{}, EWOp::Copy{});
-    copy_n<IndexType, T, T>(r0.data(), i0.begin(), Cpu{}, size / 4, r1.data(),
+    copy_n<IndexType, T, T>(1.0, t0.data(), Cpu{}, size / 2, r0.data(), i0.begin(), Cpu{},
+                            EWOp::Copy{});
+    copy_n<IndexType, T, T>(1.0, r0.data(), i0.begin(), Cpu{}, size / 4, r1.data(),
                             i0.begin() + size / 4, Cpu{}, EWOP{});
     copy_n<IndexType, T, T>(r1.data(), i0.begin(), Cpu{}, size / 2, r.data(), Cpu{}, EWOp::Copy{});
     check_are_equal<T>(t1, r);
@@ -177,8 +178,8 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     Indices<XPU> p = gen_dummy_perm(size, size, xpu);
     t = omp_get_wtime();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType, T, T>(t0_xpu.data(), p.begin(), xpu, size, t1_xpu.data(), p.begin(), xpu,
-                                EWOP{});
+        copy_n<IndexType, T, T>(1.0, t0_xpu.data(), p.begin(), xpu, size, t1_xpu.data(), p.begin(),
+                                xpu, EWOP{});
     }
     sync(xpu);
     double tp_xpu_xpu = (omp_get_wtime() - t) / nrep;

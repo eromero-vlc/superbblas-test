@@ -31,6 +31,12 @@ namespace superbblas {
         FastToSlow  ///< The first coordinate runs the fastest and the first runs the slowest
     };
 
+    /// Action on the destination elements
+    enum CopyAdd {
+        Copy, ///< Copy the origin values into the destination tensor
+        Add   ///< Add the origin values into the destination tensor
+    };
+
     namespace detail {
 
         /// Vector of `IndexType`
@@ -40,11 +46,10 @@ namespace superbblas {
         // Auxiliary functions
         //
 
-        template <typename T, std::size_t N>
-        std::array<T, N> operator+(const std::array<T, N> &a, const std::array<T, N> &b) {
-            std::array<T, N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = a[i] + b[i];
-            return r;
+        template <typename T, std::size_t Na, std::size_t Nb,
+                  typename std::enable_if<Na != Nb, bool>::type = true>
+        bool operator==(const std::array<T, Na> &, const std::array<T, Nb> &) {
+            return false;
         }
 
         template <typename T, std::size_t N>
@@ -442,19 +447,36 @@ namespace superbblas {
             }
         };
 
+        template <typename T> struct Hash<const T> {
+            static std::size_t hash(T const &t) noexcept { return Hash<T>::hash(t); }
+        };
+
+        /// Extend hash to std::array
         template <typename T, std::size_t N> struct Hash<std::array<T, N>> {
             static std::size_t hash(std::array<T, N> const &t) noexcept {
                 std::size_t r = 12345;
-                for (std::size_t i = 0; i < N; ++i) r = r ^ std::hash<T>{}(t[i]);
+                for (std::size_t i = 0; i < N; ++i) r = r ^ Hash<T>::hash(t[i]);
                 return r;
             }
         };
 
         template <class Tuple> struct TupleHash;
 
+        /// Extend Hash for std::tuple
+
         template <typename... Ts> struct Hash<std::tuple<Ts...>> {
             static std::size_t hash(std::tuple<Ts...> const &t) noexcept {
                 return TupleHash<std::tuple<Ts...>>{}(t);
+            }
+        };
+
+        /// Extend Hash for vector<T, Cpu>
+
+        template <typename T> struct Hash<vector<T, Cpu>> {
+            static std::size_t hash(vector<T, Cpu> const &t) noexcept {
+                std::size_t r = 12345;
+                for (std::size_t i = 0; i < t.size(); ++i) r = r ^ Hash<T>::hash(t[i]);
+                return r;
             }
         };
 
@@ -471,10 +493,20 @@ namespace superbblas {
             }
         };
 
-        template <class Tuple> struct TupleHash {
+        /// Hash for tuples
+
+        template <class T> struct TupleHash;
+
+        template <class... TupleItems> struct TupleHash<typename std::tuple<TupleItems...>> {
+            using Tuple = typename std::tuple<TupleItems...>;
             std::size_t operator()(Tuple const &t) const noexcept {
                 return TupleHashHelp<Tuple, std::tuple_size<Tuple>::value - 1>::hash(t);
             }
+        };
+
+        template <typename T> struct TupleHash<vector<T, Cpu>> {
+            using type = vector<T, Cpu>;
+            std::size_t operator()(type const &t) const noexcept { return Hash<type>::hash(t); }
         };
 
         /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
@@ -515,8 +547,8 @@ namespace superbblas {
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
 
             // Check in the storage
-            using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int, int>;
-            using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, int>;
+            using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
+            using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
             static std::unordered_map<size_dim, std::shared_ptr<Indices<XPU>>, TupleHash<size_dim>>
                 size_dim_map(16);
             static std::unordered_map<from_size_dim, std::shared_ptr<Indices<XPU>>,
@@ -883,14 +915,23 @@ namespace superbblas {
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
+        /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOp>
-        void local_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                        const Coor<Nd0> &dim0, vector<const T, XPU0> v0, const Order<Nd1> &o1,
-                        const Coor<Nd1> &from1, const Coor<Nd1> &dim1, vector<Q, XPU1> v1,
-                        EWOp ewop, CoorOrder co) {
+        void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
+                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                        vector<Q, XPU1> v1, EWOp ewop, CoorOrder co) {
+
+            // Shortcut to scale or zero out a tensor
+            if (std::is_same<T, Q>::value && v0.data() == (T *)v1.data() && o0 == o1 &&
+                from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
+                std::is_same<EWOp, detail::EWOp::Copy>::value) {
+                xscal(volume(dim1), Q(alpha), v1.data(), 1, v1.ctx());
+                return;
+            }
 
             // Get the permutation vectors
             std::shared_ptr<Indices<XPU0>> indices0;
@@ -902,9 +943,40 @@ namespace superbblas {
                                                         v1.ctx(), indices1, disp1, co);
 
             // Do the copy
-            copy_n<IndexType, T, Q>(v0.data() + disp0, indices0->begin(), v0.ctx(),
+            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0->begin(), v0.ctx(),
                                     indices0->size(), v1.data() + disp1, indices1->begin(),
                                     v1.ctx(), ewop);
+        }
+
+        /// Copy the content of tensor o0 into o1
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param copyadd: either to copy or to add the origin values into the destination tensor
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1>
+        void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
+                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                        vector<Q, XPU1> v1, CopyAdd copyadd, CoorOrder co) {
+            switch (copyadd) {
+            case Copy:
+                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, o1, from1, dim1, v1,
+                                     EWOp::Copy{}, co);
+                break;
+            case Add:
+                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, o1, from1, dim1, v1,
+                                     EWOp::Add{}, co);
+                break;
+            }
         }
     }
 
@@ -921,12 +993,13 @@ namespace superbblas {
     /// \param v1: data for the destination tensor
     /// \param ctx1: device context for v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param copyadd: either copy or add the origin value to the destination values
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void local_copy(const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                    const Coor<Nd0> &dim0, const T *v0, const Context ctx0, const char *o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, const Context ctx1,
-                    CoorOrder co) {
+    void local_copy(typename elem<T>::type alpha, const char *o0, const Coor<Nd0> &from0,
+                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0, const Context ctx0,
+                    const char *o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1,
+                    const Context ctx1, CoorOrder co, CopyAdd copyadd) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -948,22 +1021,22 @@ namespace superbblas {
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu()), o1_, from1, dim1,
-                detail::to_vector(v1, ctx1.toCpu()), detail::EWOp::Copy{}, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu()), o1_, from1,
+                dim1, detail::to_vector(v1, ctx1.toCpu()), copyadd, co);
         }
 #ifdef SUPERBBLAS_USE_CUDA
         else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu()), o1_, from1, dim1,
-                detail::to_vector(v1, ctx1.toCuda()), detail::EWOp::Copy{}, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu()), o1_, from1,
+                dim1, detail::to_vector(v1, ctx1.toCuda()), copyadd, co);
         } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda()), o1_, from1, dim1,
-                detail::to_vector(v1, ctx1.toCpu()), detail::EWOp::Copy{}, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda()), o1_, from1,
+                dim1, detail::to_vector(v1, ctx1.toCpu()), copyadd, co);
         } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda()), o1_, from1, dim1,
-                detail::to_vector(v1, ctx1.toCuda()), detail::EWOp::Copy{}, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda()), o1_, from1,
+                dim1, detail::to_vector(v1, ctx1.toCuda()), copyadd, co);
         }
 #endif
         else {
