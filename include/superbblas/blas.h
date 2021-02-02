@@ -120,8 +120,9 @@ namespace superbblas {
         /// \param cpu: context
 
         template <typename T> T *allocate(std::size_t n, Cpu) {
+            if (n == 0) return nullptr;
             T *r = new T[n];
-            if (n > 0 && r == nullptr) std::runtime_error("Memory allocation failed!");
+            if (r == nullptr) std::runtime_error("Memory allocation failed!");
             return r;
         }
 
@@ -129,7 +130,9 @@ namespace superbblas {
         /// \param ptr: pointer to the memory to deallocate
         /// \param cpu: context
 
-        template <typename T> void deallocate(T *ptr, Cpu) { delete[] ptr; }
+        template <typename T> void deallocate(T *ptr, Cpu) {
+            if (ptr) delete[] ptr;
+        }
 
 #ifdef SUPERBBLAS_USE_CUDA
         /// Allocate memory on a device
@@ -137,10 +140,11 @@ namespace superbblas {
         /// \param cuda: context
 
         template <typename T> T *allocate(std::size_t n, Cuda cuda) {
+            if (n == 0) return nullptr;
             cudaCheck(cudaSetDevice(deviceId(cuda)));
             T *r = nullptr;
             cudaCheck(cudaMalloc(&r, sizeof(T) * n));
-            if (n > 0 && r == nullptr) std::runtime_error("Memory allocation failed!");
+            if (r == nullptr) std::runtime_error("Memory allocation failed!");
             return r;
         }
 
@@ -149,6 +153,7 @@ namespace superbblas {
         /// \param cuda: context
 
         template <typename T> void deallocate(T *ptr, Cuda cuda) {
+            if (!ptr) return;
             detail::cudaCheck(cudaSetDevice(deviceId(cuda)));
             detail::cudaCheck(cudaFree((void *)ptr));
         }
