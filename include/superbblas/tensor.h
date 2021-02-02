@@ -882,6 +882,7 @@ namespace superbblas {
             int volA_nonzero = volA > 0 ? 1 : 0;
             int volB = nB == 0 ? volA_nonzero : volume<Nd0>(o0, dim0, sB, nB);
             int volC = nC == 0 ? volA_nonzero : volume<Nd1>(o1, dim1, sC, nC);
+            if (volA == 0) volA = 1;
             assert(volT * volA * volB == (int)volume<Nd0>(dim0));
             assert(volT * volA * volC == (int)volume<Nd1>(dim1));
             assert(volT * volB * volC == (int)volume<Ndo>(dimr));
