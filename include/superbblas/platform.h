@@ -1,6 +1,7 @@
 #ifndef __SUPERBBLAS_PLATFORM__
 #define __SUPERBBLAS_PLATFORM__
 
+#include "superbblas_lib.h"
 #include <complex>
 #include <memory>
 #include <sstream>
