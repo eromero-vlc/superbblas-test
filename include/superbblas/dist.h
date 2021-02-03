@@ -316,16 +316,16 @@ namespace superbblas {
                     // order on the destination; in other words, apply the permutation before
                     // doing the MPI call
                     Coor<Nd0> fromi = fs[i][0], sizei = fs[i][1];
-                    Coor<Nd1> dim1 = reorder_coor<Nd0, Nd1>(dim0, perm0, 1);
+                    Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
                     std::shared_ptr<Indices<Cpu>> indices;
                     IndexType disp;
-                    get_permutation_origin_cache<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, zeros, dim1,
-                                                           Cpu{}, indices, disp, co);
+                    get_permutation_origin_cache<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, zeros,
+                                                           sizei1, Cpu{}, indices, disp, co);
                     assert(indices->size() + n <= vol);
                     std::transform(indices->begin(), indices->end(), indices0.begin() + n,
                                    [&](const IndexType &d) { return d + disp; });
                     get_permutation_destination_cache<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, zeros,
-                                                                dim1, Cpu{}, indices, disp, co);
+                                                                sizei1, Cpu{}, indices, disp, co);
                     assert(indices->size() + n <= vol);
                     std::transform(indices->begin(), indices->end(), indices1.begin() + n,
                                    [&](const IndexType &d) { return d + disp1[i] + disp; });
@@ -428,7 +428,7 @@ namespace superbblas {
         /// \param alpha: factor applied to packed tensors
 
         template <std::size_t Nd, typename T, typename XPU>
-        void unpack(PackedValues<T> &r, const From_size<Nd> &toReceive,
+        void unpack(const PackedValues<T> &r, const From_size<Nd> &toReceive,
                     const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm,
                     EWOp::Copy, CoorOrder co, typename elem<T>::type alpha) {
 
