@@ -271,6 +271,7 @@ namespace superbblas {
             if (!(check_order(o0) && check_order(o1) && check_positive<Nd0>(size0) &&
                   all_less_or_equal(size0, dim0) && is_a_subset_of<Nd0, Nd1>(o0, size0, o1)))
                 return false;
+            if (volume(size0) == 0) return true;
 
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);

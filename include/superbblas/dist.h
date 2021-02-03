@@ -733,11 +733,11 @@ namespace superbblas {
                           Coor<Nd> &sizer) {
             From_size_vector<Nd> fs = intersection<Nd>(from0, size0, from1, size1, dim);
             if (fs.size() == 0) {
-                fromr = fill_coor<Nd>(0);
-                sizer = fill_coor<Nd>(0);
+                fromr = Coor<Nd>{};
+                sizer = Coor<Nd>{};
             } else if (fs.size() == 1) {
                 fromr = fs[0][0];
-                sizer = fs[0][1];
+                sizer = (volume(fs[0][1]) > 0 ? fs[0][1] : Coor<Nd>{});
             } else {
                 throw std::runtime_error("Not supported complex overlap of intervals");
             }
@@ -764,6 +764,7 @@ namespace superbblas {
                     from1,
                 dim1);
             sizer = reorder_coor<Nd0, Nd1>(rsize0, perm, 1);
+            if (volume(sizer) == 0) sizer = Coor<Nd1>{};
         }
 
         /// Return a permutation that transform an o0 coordinate into an o1 coordinate
