@@ -86,15 +86,6 @@ namespace superbblas {
             return r;
         }
 
-        /// Return an array with all elements set to a given value
-        /// \param v: input value
-
-        template <std::size_t Nd, typename T> std::array<T, Nd> fill_coor(T v = 0) {
-            std::array<T, Nd> r;
-            r.fill(v);
-            return r;
-        }
-
         /// Return an array from a string
         /// \param v: input string
         /// \param name: name of the variable
@@ -252,8 +243,7 @@ namespace superbblas {
         /// \param from: coordinates to check
 
         template <std::size_t Nd> bool check_positive(const Coor<Nd> &from) {
-            Coor<Nd> zeros = {};
-            return all_less_or_equal(zeros, from);
+            return all_less_or_equal({}, from);
         }
 
         /// Check that the copy operation is possible
@@ -584,7 +574,7 @@ namespace superbblas {
             if (all_less_or_equal(from1 + size1, dim1)) {
                 std::shared_ptr<Indices<XPU>> indices1_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
-                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
+                        o0, {}, size0, dim0, o1, {}, dim1, xpu, co));
                 size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
             }
 
@@ -665,9 +655,8 @@ namespace superbblas {
 
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from0 + size0, dim0)) {
-                std::shared_ptr<Indices<XPU>> indices0_sd =
-                    std::make_shared<Indices<XPU>>(get_permutation_origin<Nd0, Nd1>(
-                        o0, from0, size0, dim0, o1, fill_coor<Nd1>(0), dim1, xpu, co));
+                std::shared_ptr<Indices<XPU>> indices0_sd = std::make_shared<Indices<XPU>>(
+                    get_permutation_origin<Nd0, Nd1>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co));
                 size_dim_map[perm_size_dim{perm1, size0, dim0, deviceId(xpu), co}] = indices0_sd;
             }
 
