@@ -878,7 +878,7 @@ namespace superbblas {
             assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Avoid issues with uninitialized memory by zeroing out
-            if (std::fabs(beta) != 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
+            if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
 
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';

@@ -702,6 +702,7 @@ namespace superbblas {
             fromr = from0 + std::min(std::max(from1 - from0, 0), size0);
             sizer = from0 + std::min(std::max(from1 + size1 - from0, 0), size0) - fromr;
             fromr = (fromr + dim) % dim;
+            if (sizer == dim) fromr = from0;
         }
 
         /// Return the intersection between two ranges in a periodic lattice
@@ -729,10 +730,10 @@ namespace superbblas {
                 IndexType fromr0 = 0, sizer0 = 0, fromr1 = 0, sizer1 = 0;
 
                 // Proceed with easy cases: if one of the ranges in the whole lattice
-                if (size0[i] == dim[i]) {
-                    fromr0 = from1[i], sizer0 = size1[i];
-                } else if (size1[i] == dim[i]) {
+                if (size1[i] == dim[i]) {
                     fromr0 = from0[i], sizer0 = size0[i];
+                } else if (size0[i] == dim[i]) {
+                    fromr0 = from1[i], sizer0 = size1[i];
 
                     // Proceed with the general case
                 } else {
