@@ -7,7 +7,6 @@ OTHER_HEADERS := \
   ../include/superbblas/blas_cblas_tmpl.hpp \
   ../include/superbblas/blas_ftn_tmpl.hpp \
   ../include/superbblas/blas.h \
-  ../include/superbblas/bsr.h \
   ../include/superbblas/cblas.h \
   ../include/superbblas/dist.h \
   ../include/superbblas/platform.h \
