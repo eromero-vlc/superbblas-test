@@ -25,6 +25,7 @@
 
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
+#    include <cuda_runtime.h>
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
@@ -62,9 +63,25 @@ namespace superbblas {
         inline void cudaCheck(cudaError_t err) {
             if (err != cudaSuccess) {
                 std::stringstream s;
-                s << "CUDA error: " << err;
+                s << "CUDA error: " << cudaGetErrorName(err) << ": " << cudaGetErrorString(err);
                 throw std::runtime_error(s.str());
             }
+        }
+
+        /// Return the device in which the pointer was allocated
+
+        inline int getPtrDevice(const void *x) {
+            struct cudaPointerAttributes ptr_attr;
+            if (cudaPointerGetAttributes(&ptr_attr, x) != cudaSuccess) return CPU_DEVICE_ID;
+
+#    if CUDART_VERSION >= 10000
+            if (ptr_attr.type == cudaMemoryTypeUnregistered || ptr_attr.type == cudaMemoryTypeHost)
+                return CPU_DEVICE_ID;
+#    else
+            if (!ptr_attr.isManaged && ptr_attr.memoryType == cudaMemoryTypeHost)
+                return CPU_DEVICE_ID;
+#    endif
+            return ptr_attr.device;
         }
 
         inline const char *cublasStatusToStr(cublasStatus_t status) {
@@ -98,6 +115,11 @@ namespace superbblas {
 
         /// Return a device identification
         inline int deviceId(Cuda cuda) { return cuda.device; }
+#else
+
+        /// Return the device in which the pointer was allocated
+
+        inline int getPtrDevice(void *) { return CPU_DEVICE_ID; }
 #endif
 
         // struct Gpuamd {int device; };
