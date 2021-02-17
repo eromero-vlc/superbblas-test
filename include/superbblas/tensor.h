@@ -910,16 +910,16 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1, typename EWOp>
+                  typename XPU1, typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        vector<Q, XPU1> v1, EWOp ewop, CoorOrder co) {
+                        vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
 
             // Shortcut to scale or zero out a tensor
-            if (std::is_same<T, Q>::value && v0.data() == (T *)v1.data() && o0 == o1 &&
+            if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
                 from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
-                std::is_same<EWOp, detail::EWOp::Copy>::value) {
+                std::is_same<EWOP, detail::EWOp::Copy>::value) {
                 xscal(volume(dim1), Q(alpha), v1.data(), 1, v1.ctx());
                 return;
             }
