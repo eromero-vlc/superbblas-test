@@ -30,7 +30,6 @@
 
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
-#    include <cuda_runtime.h>
 #    ifndef SUPERBBLAS_LIB
 #        include <thrust/complex.h>
 #        include <thrust/device_ptr.h>
@@ -135,13 +134,23 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
+
+        /// Set the current device as the one passed
+        /// \param cuda: context
+
+        void setDevice(Cuda cuda) {
+            int currentDevice;
+            cudaCheck(cudaGetDevice(&currentDevice));
+            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
+        }
+
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param cuda: context
 
         template <typename T> T *allocate(std::size_t n, Cuda cuda) {
             if (n == 0) return nullptr;
-            cudaCheck(cudaSetDevice(deviceId(cuda)));
+            setDevice(cuda);
             T *r = nullptr;
             cudaCheck(cudaMalloc(&r, sizeof(T) * n));
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
@@ -154,7 +163,7 @@ namespace superbblas {
 
         template <typename T> void deallocate(T *ptr, Cuda cuda) {
             if (!ptr) return;
-            detail::cudaCheck(cudaSetDevice(deviceId(cuda)));
+            setDevice(cuda);
             detail::cudaCheck(cudaFree((void *)ptr));
         }
 #endif
@@ -299,8 +308,8 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         inline void sync(Cuda cuda) {
-            cudaCheck(cudaSetDevice(deviceId(cuda)));
-            cudaDeviceSynchronize();
+            setDevice(cuda);
+            cudaCheck(cudaDeviceSynchronize());
         }
 #endif
 
@@ -478,7 +487,7 @@ namespace superbblas {
 
         template <typename IndexType, typename T>
         void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cpu, EWOp::Copy) {
-            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            setDevice(cudav);
             cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToHost));
         }
 
@@ -495,7 +504,7 @@ namespace superbblas {
 
         template <typename IndexType, typename T>
         void copy_n(const T *v, Cpu, std::size_t n, T *w, Cuda cudaw, EWOp::Copy) {
-            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            setDevice(cudaw);
             cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyHostToDevice));
         }
 
@@ -512,7 +521,7 @@ namespace superbblas {
 
         template <typename IndexType, typename T>
         void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cuda cudaw, EWOp::Copy) {
-            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            setDevice(cudaw);
             if (deviceId(cudav) == deviceId(cudaw)) {
                 cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
             } else {
@@ -526,7 +535,7 @@ namespace superbblas {
         DECL_COPY_T(void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cuda cudaw, EWOp::Add))
         IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
-                cudaCheck(cudaSetDevice(deviceId(cudaw)));
+                setDevice(cudaw);
                 thrust::transform(encapsulate_pointer(v), encapsulate_pointer(v) + n,
                                   encapsulate_pointer(w), encapsulate_pointer(w),
                                   thrust::plus<typename cuda_complex<T>::type>());
@@ -543,7 +552,7 @@ namespace superbblas {
         DECL_COPY_T_Q(void copy_n(const T *v, const IndexType *indices, Cuda cudav, std::size_t n,
                                   Q *w, Cpu, EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            setDevice(cudav);
             thrust::copy_n(thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indices)),
                            n, (typename cuda_complex<Q>::type *)w);
@@ -558,8 +567,7 @@ namespace superbblas {
 
             typedef Q result_type;
 
-            __thrust_exec_check_disable__ __host__ __device__ result_type
-            operator()(const T &lhs, const Q &rhs) const {
+            __host__ __device__ result_type operator()(const T &lhs, const Q &rhs) const {
                 return lhs + rhs;
             }
         };
@@ -572,10 +580,7 @@ namespace superbblas {
             using scalar_type = typename elem<cuda_T>::type;
             const scalar_type a;
             scale(scalar_type a) : a(a) {}
-            __thrust_exec_check_disable__ __host__ __device__ cuda_T
-            operator()(const cuda_T &i) const {
-                return a * i;
-            }
+            __host__ __device__ cuda_T operator()(const cuda_T &i) const { return a * i; }
         };
 #    endif // SUPERBBLAS_USE_THRUST
 
@@ -589,7 +594,7 @@ namespace superbblas {
             if (alpha == typename elem<T>::type{1}) {
                 copy_n<IndexType, T, Q>(v, indices, cudav, n, w, Cpu{}, EWOp::Copy{});
             } else {
-                cudaCheck(cudaSetDevice(deviceId(cudav)));
+                setDevice(cudav);
                 thrust::copy_n(thrust::make_transform_iterator(
                                    thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                                      encapsulate_pointer(indices)),
@@ -613,7 +618,7 @@ namespace superbblas {
                                   const IndexType *indices, Cpu, std::size_t n, Q *w, Cuda cudaw,
                                   EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            setDevice(cudaw);
             auto itv =
                 thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indices);
             auto itw = encapsulate_pointer(w);
@@ -631,7 +636,7 @@ namespace superbblas {
                                   const IndexType *indices, Cuda cudav, std::size_t n, Q *w,
                                   EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            setDevice(cudav);
             auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                          encapsulate_pointer(indices));
             if (alpha == typename elem<T>::type{1}) {
@@ -648,7 +653,7 @@ namespace superbblas {
         DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n,
                                   Q *w, const IndexType *indices, Cuda cudaw, EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            setDevice(cudaw);
             auto itv = (typename cuda_complex<T>::type *)v;
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                          encapsulate_pointer(indices));
@@ -665,7 +670,7 @@ namespace superbblas {
         DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cuda cudav,
                                   std::size_t n, Q *w, const IndexType *indices, EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            setDevice(cudav);
             auto itv = encapsulate_pointer(v);
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                          encapsulate_pointer(indices));
@@ -682,7 +687,7 @@ namespace superbblas {
         DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cuda cudav,
                                   std::size_t n, Q *w, const IndexType *indices, EWOp::Add))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            setDevice(cudav);
             auto itv = encapsulate_pointer(v);
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                          encapsulate_pointer(indices));
@@ -705,7 +710,7 @@ namespace superbblas {
                                   const IndexType *indicesv, Cpu, std::size_t n, Q *w,
                                   const IndexType *indicesw, Cuda cudaw, EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            setDevice(cudaw);
 
             auto itv =
                 thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indicesv);
@@ -725,7 +730,7 @@ namespace superbblas {
                                   const IndexType *indicesv, Cpu, std::size_t n, Q *w,
                                   const IndexType *indicesw, Cuda cudaw, EWOp::Add))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudaw)));
+            setDevice(cudaw);
             std::vector<Q> v_gather(n);
             copy_n<IndexType, T, Q>(v, indicesv, Cpu{}, n, v_gather.data(), Cpu{}, EWOp::Copy{});
             vector<Q, Cuda> v_dev(n, cudaw);
@@ -750,7 +755,7 @@ namespace superbblas {
                                   const IndexType *indicesv, Cuda cudav, std::size_t n, Q *w,
                                   const IndexType *indicesw, Cpu, EWOp::Copy))
         IMPL({
-            cudaCheck(cudaSetDevice(deviceId(cudav)));
+            setDevice(cudav);
             auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                          encapsulate_pointer(indicesv));
             auto itw =
@@ -805,8 +810,7 @@ namespace superbblas {
 
             typedef void result_type;
 
-            __thrust_exec_check_disable__ __host__ __device__ result_type
-            operator()(const IndexType &i) const {
+            __host__ __device__ result_type operator()(const IndexType &i) const {
                 w[indicesw[i / N] * N + i % N] = v[indicesv[i / N] * N + i % N];
             }
         };
@@ -827,8 +831,7 @@ namespace superbblas {
 
             typedef void result_type;
 
-            __thrust_exec_check_disable__ __host__ __device__ result_type
-            operator()(const IndexType &i) const {
+            __host__ __device__ result_type operator()(const IndexType &i) const {
                 w[indicesw[i / N] * N + i % N] = alpha * v[indicesv[i / N] * N + i % N];
             }
         };
@@ -870,7 +873,7 @@ namespace superbblas {
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cuda cudav,
                     std::size_t n, Q *w, const IndexType *indicesw, Cuda cudaw, EWOp::Copy) IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
-                cudaCheck(cudaSetDevice(deviceId(cudav)));
+                setDevice(cudav);
                 if (alpha == typename elem<T>::type{1}) {
                     thrust::for_each_n(
                         thrust::counting_iterator<IndexType>(0), n * N,
@@ -898,7 +901,7 @@ namespace superbblas {
                                   const IndexType *indicesw, Cuda cudaw, EWOp::Add))
         IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
-                cudaCheck(cudaSetDevice(deviceId(cudav)));
+                setDevice(cudav);
                 auto vit = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indicesv));
                 auto wit = thrust::make_permutation_iterator(encapsulate_pointer(w),
@@ -968,7 +971,7 @@ namespace superbblas {
         /// \param cuda: device context
 
         template <typename T> void zero_n(T *v, std::size_t n, Cuda cuda) {
-            cudaCheck(cudaSetDevice(deviceId(cuda)));
+            setDevice(cuda);
             cudaCheck(cudaMemset(v, 0, sizeof(T) * n));
         }
 
@@ -987,7 +990,7 @@ namespace superbblas {
 
         template <typename T> inline void xscal(int n, T alpha, T *x, int incx, Cuda cuda) {
             if (std::fabs(alpha) == 0.0) {
-                cudaCheck(cudaSetDevice(deviceId(cuda)));
+                setDevice(cuda);
                 cudaMemset2D(x, sizeof(T) * incx, 0, sizeof(T), n);
                 return;
             }
@@ -1073,6 +1076,8 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_MKL
 
 #ifdef SUPERBBLAS_USE_CUDA
+
+#    if CUDART_VERSION >= 11000
         template <typename T> inline cublasComputeType_t toCudaComputeType(void);
 
         template <> inline cublasComputeType_t toCudaComputeType<float>(void) {
@@ -1087,6 +1092,11 @@ namespace superbblas {
         template <> inline cublasComputeType_t toCudaComputeType<std::complex<double>>(void) {
             return CUBLAS_COMPUTE_64F;
         }
+#    else
+        template <typename T> inline cudaDataType_t toCudaComputeType(void) {
+            return toCudaDataType<T>();
+        }
+#    endif
 
         inline cublasOperation_t toCublasTrans(char trans) {
             switch (trans) {
@@ -1134,7 +1144,6 @@ namespace superbblas {
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }
-        return nullptr;
     }
 
     /// Deallocate memory on a device

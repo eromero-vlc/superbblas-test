@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -217,21 +218,33 @@ namespace superbblas {
                 case CPU:
                     r.second.push_back(
                         Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
+                    assert(getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case CUDA:
                     r.first.push_back(
                         Component<Nd, T, Cuda>{to_vector(v[i], ctx[i].toCuda()), fs[i][1], i});
+                    assert(getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_CUDA
                 case CPU:
                     r.first.push_back(
                         Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
+                    assert(getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
                 default: throw std::runtime_error("Unsupported platform");
                 }
             }
             return r;
+        }
+
+        /// Return a const version of `Component_tmpl`
+
+        template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
+        Components_tmpl<Nd, const T, XPU0, XPU1>
+        toConst(const Components_tmpl<Nd, T, XPU0, XPU1> &c) {
+            return {std::vector<Component<Nd, const T, XPU0>>(c.first.begin(), c.first.end()),
+                    std::vector<Component<Nd, const T, XPU1>>(c.second.begin(), c.second.end())};
         }
 
         /// Print a message in the standard error
@@ -1053,6 +1066,11 @@ namespace superbblas {
                 copy(alpha, p0, from0, size0, o0, v0, p1, from1, o1, v1, comm, EWOp::Add{}, co);
                 break;
             }
+
+#ifndef NDEBUG
+            for (const auto &i : v1.first) sync(i.it.ctx());
+            for (const auto &i : v1.second) sync(i.it.ctx());
+#endif
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -1259,7 +1277,6 @@ namespace superbblas {
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.first[i].it, o1,
                                                     p1[pi][1], conj1, v1.first[i].it, T{0.0}, o_r,
                                                     dimi, vr0[i], co);
-                xscal(volume(pr[pi][1]), beta, vr.first[i].it.data(), 1, vr.first[i].it.ctx());
             }
             std::vector<vector<T, XPU1>> vr1(v0.second.size());
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
@@ -1271,11 +1288,19 @@ namespace superbblas {
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.second[i].it,
                                                     o1, p1[pi][1], conj1, v1.second[i].it, T{0.0},
                                                     o_r, dimi, vr1[i], co);
-                xscal(volume(pr[pi][1]), beta, vr.second[i].it.data(), 1, vr.second[i].it.ctx());
             }
+
+            // Scale the output tensor by beta
+            copy<Ndo, Ndo, T>(beta, pr, {}, dimr, o_r, toConst(vr), pr, {}, o_r, vr, comm,
+                              EWOp::Copy{}, co);
 
             // Reduce all the subtensors to the final tensor
             copy<Ndo, Ndo, T>(1.0, pr_, {}, dimr, o_r, vr_, pr, {}, o_r, vr, comm, EWOp::Add{}, co);
+
+#ifndef NDEBUG
+            for (const auto &i : vr.first) sync(i.it.ctx());
+            for (const auto &i : vr.second) sync(i.it.ctx());
+#endif
         }
 
         /// Return a From_size from a partition that can be hashed and stored
