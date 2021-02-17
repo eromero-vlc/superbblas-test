@@ -869,6 +869,7 @@ namespace superbblas {
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
 
         template <typename IndexType, typename T, typename Q,
+                  typename std::enable_if<is_std_array<T>::value, bool>::type = true,
                   std::size_t N = std::tuple_size<T>::value>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cuda cudav,
                     std::size_t n, Q *w, const IndexType *indicesw, Cuda cudaw, EWOp::Copy) IMPL({
