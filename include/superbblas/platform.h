@@ -3,6 +3,7 @@
 
 #include "superbblas_lib.h"
 #include <complex>
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -50,6 +51,12 @@ namespace superbblas {
     /// Default value in `Context`
 
     constexpr int CPU_DEVICE_ID = -1;
+
+    /// Function to allocate memory
+    using Allocator = std::function<void *(std::size_t, enum platform)>;
+
+    /// Function to deallocate memory
+    using Deallocator = std::function<void(void *, enum platform)>;
 
     /// Platform and device information of data
 
@@ -111,6 +118,10 @@ namespace superbblas {
         struct Cuda {
             int device;
             cublasHandle_t cublasHandle;
+            /// Optional function for allocating memory on devices
+            Allocator alloc;
+            /// Optional function for deallocating memory on devices
+            Deallocator dealloc;
         };
 
         /// Return a device identification
@@ -119,7 +130,7 @@ namespace superbblas {
 
         /// Return the device in which the pointer was allocated
 
-        inline int getPtrDevice(void *) { return CPU_DEVICE_ID; }
+        inline int getPtrDevice(const void *) { return CPU_DEVICE_ID; }
 #endif
 
         // struct Gpuamd {int device; };
@@ -150,12 +161,21 @@ namespace superbblas {
         int device;
 
     private:
+        /// Optional function for allocating memory on devices
+        const Allocator alloc;
+
+        /// Optional function for deallocating memory on devices
+        const Deallocator dealloc;
+
 #ifdef SUPERBBLAS_USE_CUDA
         std::shared_ptr<cublasHandle_t> cublasHandle;
 #endif
 
     public:
-        Context(enum platform plat, int device) : plat(plat), device(device) {
+        Context(enum platform plat, int device, Allocator alloc = Allocator(),
+                Deallocator dealloc = Deallocator())
+            : plat(plat), device(device), alloc(alloc), dealloc(dealloc) {
+
 #ifdef SUPERBBLAS_USE_CUDA
             if (plat == CUDA) {
                 cublasHandle =
@@ -171,7 +191,7 @@ namespace superbblas {
         detail::Cpu toCpu() const { return detail::Cpu(); }
 
 #ifdef SUPERBBLAS_USE_CUDA
-        detail::Cuda toCuda() const { return detail::Cuda{device, *cublasHandle}; }
+        detail::Cuda toCuda() const { return detail::Cuda{device, *cublasHandle, alloc, dealloc}; }
 #else
         void toCuda() const { throw std::runtime_error("Cuda: unsupported platform"); }
 #endif
@@ -183,7 +203,10 @@ namespace superbblas {
 
     /// Return a CUDA context
     /// \param device: device ID
-    inline Context createCudaContext(int device = 0) { return Context{CUDA, device}; }
+    inline Context createCudaContext(int device = 0, Allocator alloc = Allocator(),
+                                     Deallocator dealloc = Deallocator()) {
+        return Context{CUDA, device, alloc, dealloc};
+    }
 
     /// Return a GPUAMD context
     /// \param device: device ID

@@ -151,6 +151,7 @@ namespace superbblas {
         template <typename T> T *allocate(std::size_t n, Cuda cuda) {
             if (n == 0) return nullptr;
             setDevice(cuda);
+            if (cuda.alloc) return (T *)cuda.alloc(sizeof(T) * n, CUDA);
             T *r = nullptr;
             cudaCheck(cudaMalloc(&r, sizeof(T) * n));
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
@@ -164,7 +165,10 @@ namespace superbblas {
         template <typename T> void deallocate(T *ptr, Cuda cuda) {
             if (!ptr) return;
             setDevice(cuda);
-            detail::cudaCheck(cudaFree((void *)ptr));
+            if (cuda.dealloc)
+                cuda.dealloc((void *)ptr, CUDA);
+            else
+                detail::cudaCheck(cudaFree((void *)ptr));
         }
 #endif
 
