@@ -74,6 +74,15 @@ int main(int argc, char **argv) {
     // If --procs isn't set, put all processes on the first dimension
     if (!procs_was_set) procs[X] = nprocs;
 
+    // Show lattice dimensions and processes arrangement
+    if (rank == 0) {
+        std::cout << "Testing lattice dimensions xyzt= " << dim[X] << " " << dim[Y] << " " << dim[Z]
+                  << " " << dim[T] << " spin-color= " << dim[S] << " " << dim[C]
+                  << "  num_vecs= " << dim[N] << std::endl;
+        std::cout << "Processes arrangement xyzt= " << procs[X] << " " << procs[Y] << " "
+                  << procs[Z] << " " << procs[T] << std::endl;
+    }
+
     // using Scalar = float;
     using Scalar = std::complex<float>;
     using ScalarD = std::complex<double>;
@@ -264,9 +273,13 @@ int main(int argc, char **argv) {
             t = omp_get_wtime() - t;
             if (rank == 0) std::cout << "Time in contracting xyzs " << t / nrep << std::endl;
         }
+
+        if (rank == 0) reportTimings(std::cout);
     }
 #ifdef SUPERBBLAS_USE_CUDA
     {
+	resetTiming();
+
         using Tensor = thrust::device_vector<Scalar>;
 
         // Create tensor t0 of Nd-1 dims: a lattice color vector
@@ -428,6 +441,8 @@ int main(int argc, char **argv) {
             t = omp_get_wtime() - t;
             if (rank == 0) std::cout << "Time in contracting xyzs " << t / nrep << std::endl;
         }
+
+        if (rank == 0) reportTimings(std::cout);
     }
 #endif
 

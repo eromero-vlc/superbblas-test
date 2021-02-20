@@ -1,6 +1,7 @@
 #ifndef __SUPERBBLAS_BLAS__
 #define __SUPERBBLAS_BLAS__
 
+#include "performance.h"
 #include "platform.h"
 #include <algorithm>
 #include <stdexcept>

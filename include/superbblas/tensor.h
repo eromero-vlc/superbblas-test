@@ -288,6 +288,8 @@ namespace superbblas {
             (void)dim1;
             (void)cpu;
 
+            tracker _t("comp. permutations");
+
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
@@ -338,6 +340,8 @@ namespace superbblas {
             (void)from0;
             (void)dim0;
             (void)cpu;
+
+            tracker _t("comp. permutations");
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
@@ -777,6 +781,8 @@ namespace superbblas {
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
+            tracker _t("local contraction");
+
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))
                 throw std::runtime_error("all arrays should be on the same device");
@@ -915,6 +921,8 @@ namespace superbblas {
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
                         vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
+
+            tracker _t("local copy");
 
             // Shortcut to scale or zero out a tensor
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&

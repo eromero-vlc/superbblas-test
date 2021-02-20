@@ -9,6 +9,7 @@ OTHER_HEADERS := \
   ../include/superbblas/blas.h \
   ../include/superbblas/cblas.h \
   ../include/superbblas/dist.h \
+  ../include/superbblas/performance.h \
   ../include/superbblas/platform.h \
   ../include/superbblas/template.h \
   ../include/superbblas/template_types.h \

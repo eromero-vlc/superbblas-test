@@ -612,6 +612,8 @@ namespace superbblas {
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
 
+            tracker _t("packing");
+
             if (comm.nprocs <= 1) return [] {};
 
             // Pack v0 and prepare for receiving data from other processes
@@ -644,14 +646,18 @@ namespace superbblas {
             // Do this later
             return [=] {
                 // Wait for the MPI communication to finish
-                MPI_Request r0 = r; // this copy avoid compiler warnings
-                MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
+                {
+                    tracker _t("alltoall");
+                    MPI_Request r0 = r; // this copy avoid compiler warnings
+                    MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
+                }
 
                 // Do this copy is unnecessary, but v0ToSend needs to be captured to avoid
                 // being released until this point
                 std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
+                tracker _t("unpacking");
                 unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
             };
         }
@@ -844,6 +850,9 @@ namespace superbblas {
                                            const Coor<Nd0> &size0, From_size<Nd1> p1,
                                            unsigned int componentId1, unsigned int ncomponents1,
                                            const Order<Nd1> &o1, const Coor<Nd1> &from1) {
+
+            tracker _t("comp. tensor overlaps");
+
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
@@ -908,6 +917,9 @@ namespace superbblas {
                                               const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                                               const From_size<Nd1> &p1, unsigned int to_rank,
                                               const Order<Nd1> &o1, const Coor<Nd1> &from1) {
+
+            tracker _t("comp. tensor overlaps");
+
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
@@ -996,6 +1008,8 @@ namespace superbblas {
                   const Coor<Nd1> &from1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop,
                   CoorOrder co) {
+
+            tracker _t("distributed copy");
 
             // Check the dimensions of p0 and p1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -1240,6 +1254,8 @@ namespace superbblas {
                          const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1, T beta,
                          const From_size<Ndo> &pr, const Order<Ndo> &o_r,
                          const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
+
+            tracker _t("distributed contraction");
 
             // Check the compatibility of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
