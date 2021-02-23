@@ -218,18 +218,18 @@ namespace superbblas {
                 case CPU:
                     r.second.push_back(
                         Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
-                    assert(getPtrDevice(v[i]) == CPU_DEVICE_ID);
+                    assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case CUDA:
                     r.first.push_back(
                         Component<Nd, T, Cuda>{to_vector(v[i], ctx[i].toCuda()), fs[i][1], i});
-                    assert(getPtrDevice(v[i]) == ctx[i].device);
+                    assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_CUDA
                 case CPU:
                     r.first.push_back(
                         Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
-                    assert(getPtrDevice(v[i]) == CPU_DEVICE_ID);
+                    assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
                 default: throw std::runtime_error("Unsupported platform");
