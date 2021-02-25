@@ -120,9 +120,17 @@ namespace superbblas {
         /// \param cpu: context
 
         template <typename T> T *allocate(std::size_t n, Cpu) {
+            // Shortcut for zero allocations
             if (n == 0) return nullptr;
+
+            // Do the allocation
             T *r = new T[n];
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
+
+            // Annotate allocation
+            getAllocations()[(void *)r] = sizeof(T) * n;
+            getCpuMemUsed() += double(sizeof(T) * n);
+
             return r;
         }
 
@@ -131,7 +139,16 @@ namespace superbblas {
         /// \param cpu: context
 
         template <typename T> void deallocate(T *ptr, Cpu) {
-            if (ptr) delete[] ptr;
+            // Shortcut for zero allocations
+            if (!ptr) return;
+
+            // Deallocate the pointer
+            delete[] ptr;
+
+            // Remove annotation
+            const auto& it = getAllocations().find((void*)ptr);
+            getCpuMemUsed() -= double(it->second);
+            getAllocations().erase(it);
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
@@ -150,12 +167,23 @@ namespace superbblas {
         /// \param cuda: context
 
         template <typename T> T *allocate(std::size_t n, Cuda cuda) {
+            // Shortcut for zero allocations
             if (n == 0) return nullptr;
+
+            // Do the allocation
             setDevice(cuda);
-            if (cuda.alloc) return (T *)cuda.alloc(sizeof(T) * n, CUDA);
             T *r = nullptr;
-            cudaCheck(cudaMalloc(&r, sizeof(T) * n));
+            if (cuda.alloc) {
+                r = (T *)cuda.alloc(sizeof(T) * n, CUDA);
+            } else {
+                cudaCheck(cudaMalloc(&r, sizeof(T) * n));
+            }
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
+
+            // Annotate allocation
+            getAllocations()[(void *)r] = sizeof(T) * n;
+            getGpuMemUsed() += double(sizeof(T) * n);
+
             return r;
         }
 
@@ -164,12 +192,20 @@ namespace superbblas {
         /// \param cuda: context
 
         template <typename T> void deallocate(T *ptr, Cuda cuda) {
+            // Shortcut for zero allocations
             if (!ptr) return;
+
+            // Deallocate the pointer
             setDevice(cuda);
             if (cuda.dealloc)
                 cuda.dealloc((void *)ptr, CUDA);
             else
                 detail::cudaCheck(cudaFree((void *)ptr));
+
+            // Remove annotation
+            const auto& it = getAllocations().find((void*)ptr);
+            getGpuMemUsed() -= double(it->second);
+            getAllocations().erase(it);
         }
 #endif
 

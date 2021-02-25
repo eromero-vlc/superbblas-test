@@ -362,6 +362,8 @@ namespace superbblas {
 
             // If they are not, compute the permutation vectors
             if (it == cache.end()) {
+                tracker _t("comp. pack permutation");
+
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
                 Indices<Cpu> indices0(vol), indices1(vol);
                 for (std::size_t i = 0, n = 0; i < fs.size(); ++i) {
@@ -497,6 +499,7 @@ namespace superbblas {
             // If they are not, compute the permutation vectors
             std::size_t vol = r.buf.size();
             if (it == cache.end()) {
+                tracker _t("comp. unpack permutation for copy");
                 Indices<Cpu> indices1(vol);
                 Order<Nd> o = trivial_order<Nd>();
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
@@ -546,6 +549,8 @@ namespace superbblas {
             // If they are not, compute the permutation vectors
             std::size_t vol = r.buf.size();
             if (it == cache.end()) {
+                tracker _t("comp. unpack permutation for add");
+
                 Indices<Cpu> indices1(vol);
                 Order<Nd> o = trivial_order<Nd>();
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
