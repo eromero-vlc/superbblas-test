@@ -1148,6 +1148,7 @@ namespace superbblas {
                 std::size_t vol = volume(v.dim);
                 Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+                vector<IndexType, Cpu> v_host = toCpu(v.it);
 
 #ifdef _OPENMP
 #    pragma omp parallel for
@@ -1168,7 +1169,7 @@ namespace superbblas {
                         else if (rep == 0)
                             true_val = 0;
                     }
-                    if (v.it[i] != true_val)
+                    if (v_host[i] != true_val)
                         throw std::runtime_error("test_copy_check do not pass!");
                 }
             }

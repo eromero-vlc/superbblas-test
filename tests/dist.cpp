@@ -287,7 +287,7 @@ int main(int argc, char **argv) {
     }
 #ifdef SUPERBBLAS_USE_CUDA
     {
-	resetTiming();
+	resetTimings();
 
         using Tensor = thrust::device_vector<Scalar>;
 

@@ -99,7 +99,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define DECL_COPY_REDUCE(...)                                                                  \
         EMIT REPLACE1(copy_reduce_n, superbblas::detail::copy_reduce_n<IndexType, T>)              \
-            REPLACE(T, SUPERBBLAS_TYPES) template __VA_ARGS__;
+            REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) template __VA_ARGS__;
 #else
 #    define DECL_COPY_T(...) __VA_ARGS__
 #    define DECL_COPY_T_Q(...) __VA_ARGS__
@@ -1198,6 +1198,16 @@ namespace superbblas {
                 toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
         }
 #endif // SUPERBBLAS_USE_CUDA
+
+        template <typename T> vector<T, Cpu> toCpu(const vector<T, Cpu> &v) { return v; }
+
+        template <typename T, typename XPU,
+                  typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
+        vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
+            vector<T, Cpu> r(v.size());
+            copy_n<std::size_t, T>(v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
+            return r;
+        }
     }
 
     /// Allocate memory on a device
