@@ -86,6 +86,22 @@ namespace superbblas {
             return r;
         }
 
+        /// Return whether the point is in the interval
+        /// \param from: first coordinate in the interval
+        /// \param size: number of consecutive elements in the interval in each direction
+        /// \param dim: tensor dimensions
+        /// \param coor: coordinate to evaluate whether it is in the interval
+
+        template <std::size_t N>
+        bool is_in_interval(const Coor<N> &from, const Coor<N> &size, const Coor<N> &dim,
+                            const Coor<N> &coor) {
+            for (std::size_t i = 0; i < N; i++)
+                if (!((from[i] <= coor[i] && coor[i] < from[i] + size[i]) ||
+                      (from[i] <= coor[i] + dim[i] && coor[i] + dim[i] < from[i] + size[i])))
+                    return false;
+            return true;
+        }
+
         /// Return an array from a string
         /// \param v: input string
         /// \param name: name of the variable

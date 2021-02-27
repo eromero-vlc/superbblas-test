@@ -49,4 +49,8 @@ $(CUDA_LIB_TARGETS): %_cuda_lib: %.cpp
 clean:
 	rm -f ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS}
 
+known_issues:
+	# MPI_Ialltoallv hungs
+	mpirun -np 4 ./dist_cpu --dim='2 1 1 2 1' --procs='2 1 1 2'
+
 .PHONY: clean ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS}

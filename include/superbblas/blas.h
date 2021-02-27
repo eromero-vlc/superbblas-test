@@ -128,8 +128,10 @@ namespace superbblas {
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
             // Annotate allocation
-            getAllocations()[(void *)r] = sizeof(T) * n;
-            getCpuMemUsed() += double(sizeof(T) * n);
+            if (getTrackingMemory()) {
+                getAllocations()[(void *)r] = sizeof(T) * n;
+                getCpuMemUsed() += double(sizeof(T) * n);
+            }
 
             return r;
         }
@@ -146,9 +148,13 @@ namespace superbblas {
             delete[] ptr;
 
             // Remove annotation
-            const auto& it = getAllocations().find((void*)ptr);
-            getCpuMemUsed() -= double(it->second);
-            getAllocations().erase(it);
+            if (getTrackingMemory()) {
+                const auto &it = getAllocations().find((void *)ptr);
+                if (it == getAllocations().end())
+                    throw std::runtime_error("Unexpected pointer to deallocate");
+                getCpuMemUsed() -= double(it->second);
+                getAllocations().erase(it);
+            }
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
@@ -181,8 +187,10 @@ namespace superbblas {
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
             // Annotate allocation
-            getAllocations()[(void *)r] = sizeof(T) * n;
-            getGpuMemUsed() += double(sizeof(T) * n);
+            if (getTrackingMemory()) {
+                getAllocations()[(void *)r] = sizeof(T) * n;
+                getGpuMemUsed() += double(sizeof(T) * n);
+            }
 
             return r;
         }
@@ -203,9 +211,13 @@ namespace superbblas {
                 detail::cudaCheck(cudaFree((void *)ptr));
 
             // Remove annotation
-            const auto& it = getAllocations().find((void*)ptr);
-            getGpuMemUsed() -= double(it->second);
-            getAllocations().erase(it);
+            if (getTrackingMemory()) {
+                const auto &it = getAllocations().find((void *)ptr);
+                if (it == getAllocations().end())
+                    throw std::runtime_error("Unexpected pointer to deallocate");
+                getGpuMemUsed() -= double(it->second);
+                getAllocations().erase(it);
+            }
         }
 #endif
 
@@ -1030,7 +1042,9 @@ namespace superbblas {
 
         /// Template scal for GPUs
 
-        template <typename T> inline void xscal(int n, T alpha, T *x, int incx, Cuda cuda) {
+        template <typename T,
+                  typename std::enable_if<!std::is_same<int, T>::value, bool>::type = true>
+        inline void xscal(int n, T alpha, T *x, int incx, Cuda cuda) {
             if (std::fabs(alpha) == 0.0) {
                 setDevice(cuda);
                 cudaMemset2D(x, sizeof(T) * incx, 0, sizeof(T), n);
@@ -1041,6 +1055,18 @@ namespace superbblas {
             cublasCheck(cublasScalEx(cuda.cublasHandle, n, &alpha, cT, x, cT, incx, cT));
         }
 #endif
+
+        /// Template scal for integers
+        template <typename XPU> inline void xscal(int n, int alpha, int *x, int incx, XPU xpu) {
+            if (alpha == 1) return;
+            if (incx != 1) throw std::runtime_error("Unsupported xscal variant");
+            if (std::abs(alpha) == 0) {
+                zero_n(x, n, xpu);
+            } else {
+                copy_n<int>(x, xpu, n, x, xpu, EWOp::Copy{});
+            }
+        }
+
         /// Template multiple GEMM
 
         template <typename T>

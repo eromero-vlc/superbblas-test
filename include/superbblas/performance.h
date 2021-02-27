@@ -1,6 +1,7 @@
 #ifndef __SUPERBBLAS_PERFORMANCE__
 #define __SUPERBBLAS_PERFORMANCE__
 
+#include "runtime_features.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -68,6 +69,8 @@ namespace superbblas {
 
         /// Track time between creation and destruction of the object
         struct tracker {
+            /// Whether the tacker has been stopped
+            bool stopped;
             /// Name of the function being tracked
             const std::string funcName;
             /// Instant of the construction
@@ -75,12 +78,20 @@ namespace superbblas {
 
             /// Start a tracker
             tracker(std::string funcName)
-                : funcName(funcName), start(std::chrono::system_clock::now()) {
-                pushCall(funcName); // NOTE: well this is timed...
+                : stopped(!getTrackingTime()),
+                  funcName(!stopped ? funcName : std::string()),
+                  start(!stopped ? std::chrono::system_clock::now()
+                                 : std::chrono::time_point<std::chrono::system_clock>{}) {
+                if (!stopped) pushCall(funcName); // NOTE: well this is timed...
             }
 
+            ~tracker() { stop(); }
+
             /// Stop the tracker and store the timing
-            ~tracker() {
+            void stop() {
+                if (stopped) return;
+                stopped = true;
+
                 // Count elapsed time since the creation of the object
                 double elapsedTime =
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
@@ -100,7 +111,11 @@ namespace superbblas {
         };
     }
 
-    void resetTiming() { getTimings().clear(); }
+    /// Reset all tracked timings
+    void resetTimings() { getTimings().clear(); }
+
+    /// Report all tracked timings
+    /// \param s: stream to write the report
 
     template <typename OStream> void reportTimings(OStream &s) {
         // Print the timings alphabetically
@@ -112,21 +127,37 @@ namespace superbblas {
         for (const auto &name : names) s << name << " : " << getTimings()[name] << std::endl;
     }
 
+    /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
+
     double &getCpuMemUsed() {
         static double mem = 0;
         return mem;
     }
+
+    /// Get total memory allocated on devices if tracking memory consumption (see `getTrackingMemory`)
 
     double &getGpuMemUsed() {
         static double mem = 0;
         return mem;
     }
 
-    using Allocations = std::unordered_map<void *, std::size_t>;
+    namespace detail {
+        /// Structure to store the memory allocations
+        /// NOTE: the only instance is expected to be in `getAllocations`.
 
-    Allocations &getAllocations() {
-        static Allocations allocs(16);
-        return allocs;
+        struct Allocations : public std::unordered_map<void *, std::size_t> {
+            Allocations(std::size_t num_backets)
+                : std::unordered_map<void *, std::size_t>{num_backets} {}
+            // Make sure of no usage of the instance after its destruction
+            ~Allocations() { getTrackingMemory() = false; }
+        };
+
+        /// Return all current allocations
+
+        Allocations &getAllocations() {
+            static Allocations allocs(16);
+            return allocs;
+        }
     }
 }
 

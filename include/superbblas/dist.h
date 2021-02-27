@@ -286,6 +286,10 @@ namespace superbblas {
         };
 
 #ifdef SUPERBBLAS_USE_MPI
+        /// Communication barrier
+
+        void barrier(MpiComm comm) { MPI_Barrier(comm.comm); }
+
         /// Allocate buffers and prepare arrays from a list of ranges to be used in a MPI communication
         /// \param ranges: iterator over a list of tensor ranges to be packed
         /// \param nranges: number of elements in the list
@@ -500,6 +504,8 @@ namespace superbblas {
             std::size_t vol = r.buf.size();
             if (it == cache.end()) {
                 tracker _t("comp. unpack permutation for copy");
+
+                // Compute the destination index for all received elements
                 Indices<Cpu> indices1(vol);
                 Order<Nd> o = trivial_order<Nd>();
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
@@ -512,9 +518,13 @@ namespace superbblas {
                     n += voli;
                     assert(n <= vol);
                 }
+
+                // Copy indices1_cmp to the same device as the destination tensor
                 Indices<XPU> indices1_xpu(indices1.size(), v.it.ctx());
                 copy_n<IndexType, IndexType>(indices1.data(), Cpu{}, indices1.size(),
                                              indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
+
+                // Cache this effort
                 cache[key] = indices1_xpu;
                 it = cache.find(key);
             }
@@ -551,6 +561,7 @@ namespace superbblas {
             if (it == cache.end()) {
                 tracker _t("comp. unpack permutation for add");
 
+                // Compute the destination index for all received elements
                 Indices<Cpu> indices1(vol);
                 Order<Nd> o = trivial_order<Nd>();
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
@@ -563,17 +574,20 @@ namespace superbblas {
                     n += voli;
                     assert(n <= vol);
                 }
+
+                // Rearrange together the received elements with the same destination
                 Indices<Cpu> perm(vol);
                 for (std::size_t i = 0; i < vol; ++i) perm[i] = i;
                 std::sort(perm.begin(), perm.end(), [&](const IndexType &a, const IndexType &b) {
                     return indices1[a] < indices1[b];
                 });
 
-                // Count how many distinct elements are there
+                // Count how many distinct destination indices there are
                 std::size_t perm_distinct_size = (vol == 0 ? 1 : 2);
                 for (std::size_t i = 1; i < vol; ++i)
                     if (indices1[perm[i]] != indices1[perm[i - 1]]) perm_distinct_size++;
 
+                // Compute where each distinct destination index starts
                 Indices<Cpu> perm_distinct(perm_distinct_size);
                 std::size_t perm_distinct_i = 0;
                 if (vol > 0) perm_distinct[perm_distinct_i++] = 0;
@@ -582,10 +596,18 @@ namespace superbblas {
                         perm_distinct[perm_distinct_i++] = i;
                 }
                 perm_distinct[perm_distinct_i++] = vol;
+
+                // Compute the destination indices for each group
+                Indices<Cpu> indices1_cmp(perm_distinct_size - 1);
+                for (std::size_t i = 0; i < perm_distinct_size - 1; ++i)
+                    indices1_cmp[i] = indices1[perm[perm_distinct[i]]];
+
+                // Copy indices1_cmp to the same device as the destination tensor
                 Indices<XPU> indices1_xpu(perm_distinct_size - 1, v.it.ctx());
-                copy_n<IndexType, IndexType, IndexType>(
-                    indices1.data(), perm_distinct.begin(), Cpu{}, perm_distinct_size - 1,
-                    indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
+                copy_n<IndexType>(indices1_cmp.data(), Cpu{}, perm_distinct_size - 1,
+                                  indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
+
+                // Cache this effort
                 cache[key] = std::make_tuple(perm, perm_distinct, indices1_xpu);
                 it = cache.find(key);
             }
@@ -643,15 +665,26 @@ namespace superbblas {
             assert((v1ToReceive->displ.back() + v1ToReceive->counts.back()) *
                        (unsigned int)dtype_size <=
                    v1ToReceive->buf.size() * sizeof(Q));
-            MPI_check(MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
-                                     v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
-                                     v1ToReceive->counts.data(), v1ToReceive->displ.data(), dtype,
-                                     comm.comm, &r));
+            assert(v0ToSend->counts[comm.rank] == 0);
+            assert(v1ToReceive->counts[comm.rank] == 0);
+            if (getUseAsyncAlltoall()) {
+                // NOTE: detected hung of MPI_Ialltoallv in some cases; still exploring the source of the problem
+                MPI_check(MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
+                                         v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
+                                         v1ToReceive->counts.data(), v1ToReceive->displ.data(),
+                                         dtype, comm.comm, &r));
+            } else {
+                MPI_check(MPI_Alltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
+                                        v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
+                                        v1ToReceive->counts.data(), v1ToReceive->displ.data(),
+                                        dtype, comm.comm));
+                v0ToSend.reset();
+            }
 
             // Do this later
             return [=] {
                 // Wait for the MPI communication to finish
-                {
+                if (getUseAsyncAlltoall()) {
                     tracker _t("alltoall");
                     MPI_Request r0 = r; // this copy avoid compiler warnings
                     MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
@@ -666,6 +699,10 @@ namespace superbblas {
                 unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
             };
         }
+#else
+
+        void barrier(SelfComm) {}
+
 #endif // SUPERBBLAS_USE_MPI
 
         /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
@@ -989,6 +1026,209 @@ namespace superbblas {
             return new_dim1 == dim1;
         }
 
+        namespace ns_copy_test {
+            enum MockFilling { FillWithIndices, FillWithZeros };
+
+            /// Return a vector with the global indices of the elements that contains
+            /// \param from: first coordinate of the component
+            /// \param size: number of elements to copy in each dimension
+            /// \param dim: global dimension size of the tensor
+            /// \param co: coordinate linearization order
+            /// \param mf: either fill with indices or zeros
+
+            template <std::size_t Nd>
+            vector<IndexType, Cpu> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                       const Coor<Nd> &dim, Cpu, CoorOrder co,
+                                                       MockFilling mf) {
+                std::size_t vol = volume(size);
+                vector<IndexType, Cpu> r(vol);
+
+                if (mf == FillWithIndices) {
+                    Coor<Nd> local_stride = get_strides(size, co);
+                    Coor<Nd> stride = get_strides(dim, co);
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
+                    for (std::size_t i = 0; i < vol; ++i)
+                        r[i] = coor2index(
+                            normalize_coor(index2coor<Nd>(i, size, local_stride) + from, dim), dim,
+                            stride);
+                } else {
+                    zero_n(r.data(), vol, r.ctx());
+                }
+
+                return r;
+            }
+
+            /// Return a vector with the global indices of the elements that contains
+            /// \param from: first coordinate of the component
+            /// \param size: number of elements to copy in each dimension
+            /// \param dim: global dimension size of the tensor
+            /// \param co: coordinate linearization order
+            /// \param mf: either fill with indices or zeros
+
+            template <std::size_t Nd, typename XPU,
+                      typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
+            vector<IndexType, XPU> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                       const Coor<Nd> &dim, XPU xpu, CoorOrder co,
+                                                       MockFilling mf) {
+                std::size_t vol = volume(size);
+                vector<IndexType, XPU> r(vol, xpu);
+                vector<IndexType, Cpu> r_host = get_mock_components(from, size, dim, Cpu{}, co, mf);
+                copy_n<IndexType>(r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
+                                  EWOp::Copy{});
+                return r;
+            }
+
+            template <typename T>
+            using mockIndexType = typename std::conditional<std::is_const<T>::value,
+                                                            const IndexType, IndexType>::type;
+
+            /// Return a tensor with the same shape as the given one but where each element has its index
+            /// \param p0: partitioning of the origin tensor in consecutive ranges
+            /// \param o0: dimension labels for the origin tensor
+            /// \param from0: first coordinate to copy from the origin tensor
+            /// \param size0: number of elements to copy in each dimension
+            /// \param v0: data for the origin tensor
+            /// \param p1: partitioning of the destination tensor in consecutive ranges
+            /// \param o1: dimension labels for the destination tensor
+            /// \param dim1: dimension size for the destination tensor
+            /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+            /// \param v1: data for the destination tensor
+            /// \param comm: communicator context
+            /// \param ewop: either to copy or to add the origin values into the destination values
+            /// \param co: coordinate linearization order
+
+            template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1>
+            Components_tmpl<Nd, mockIndexType<T>, XPU0, XPU1>
+            get_mock_components(const From_size<Nd> &p, const Components_tmpl<Nd, T, XPU0, XPU1> &v,
+                                CoorOrder co, MockFilling mf, Comm comm) {
+                Components_tmpl<Nd, mockIndexType<T>, XPU0, XPU1> r;
+                Coor<Nd> dim = get_dim(p);
+                unsigned int ncomponents = v.first.size() + v.second.size();
+                for (const Component<Nd, T, XPU0> &c : v.first) {
+                    r.first.push_back(Component<Nd, IndexType, XPU0>{
+                        get_mock_components(p[c.componentId + comm.rank * ncomponents][0], c.dim,
+                                            dim, c.it.ctx(), co, mf),
+                        c.dim, c.componentId});
+                }
+                for (const Component<Nd, T, XPU1> &c : v.second) {
+                    r.second.push_back(Component<Nd, IndexType, XPU1>{
+                        get_mock_components(p[c.componentId + comm.rank * ncomponents][0], c.dim,
+                                            dim, c.it.ctx(), co, mf),
+                        c.dim, c.componentId});
+                }
+                return r;
+            }
+
+            /// Test to copy the content of plural tensor v0 into v1
+            /// \param p0: partitioning of the origin tensor in consecutive ranges
+            /// \param from0: first coordinate to copy from the origin tensor
+            /// \param size0: number of elements to copy in each dimension
+            /// \param dim0: number of elements on the origin tensor on each dimension
+            /// \param o0: dimension labels for the origin tensor
+            /// \param o1: dimension labels for the destination tensor
+            /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+            /// \param dim1: dimension size for the destination tensor
+            /// \param v: data to check
+            /// \param local_from1: first coordinate of the destination tensor
+            /// \param co: coordinate linearization order
+
+            template <std::size_t Nd0, std::size_t Nd1, typename XPU, typename EWOP>
+            void test_copy_check(const From_size<Nd0> &p, const Coor<Nd0> &from0,
+                                 const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                 const Order<Nd0> &o0, const Coor<Nd1> &from1,
+                                 const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                                 const Component<Nd1, IndexType, XPU> &v,
+                                 const Coor<Nd1> &local_from1, EWOP, CoorOrder co) {
+
+                Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+                Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+                Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+                std::size_t vol = volume(v.dim);
+                Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
+                Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
+                for (std::size_t i = 0; i < vol; ++i) {
+                    Coor<Nd1> c1 =
+                        normalize_coor(index2coor(i, v.dim, local_stride1) + local_from1, dim1);
+                    IndexType true_val = 0;
+                    if (is_in_interval(from1, size1, dim1, c1)) {
+                        Coor<Nd0> c0 =
+                            normalize_coor(reorder_coor(c1 - from1, perm1) + from0, dim0);
+                        true_val = coor2index(c0, dim0, stride0);
+                        int rep = 0;
+                        for (const auto &fs : p)
+                            if (is_in_interval(fs[0], fs[1], dim0, c0)) ++rep;
+                        if (std::is_same<EWOp::Add, EWOP>::value)
+                            true_val *= rep;
+                        else if (rep == 0)
+                            true_val = 0;
+                    }
+                    if (v.it[i] != true_val)
+                        throw std::runtime_error("test_copy_check do not pass!");
+                }
+            }
+
+            /// Test to copy the content of plural tensor v0 into v1
+            /// \param alpha: factor applied to the input tensors
+            /// \param p0: partitioning of the origin tensor in consecutive ranges
+            /// \param o0: dimension labels for the origin tensor
+            /// \param from0: first coordinate to copy from the origin tensor
+            /// \param size0: number of elements to copy in each dimension
+            /// \param v0: data for the origin tensor
+            /// \param p1: partitioning of the destination tensor in consecutive ranges
+            /// \param o1: dimension labels for the destination tensor
+            /// \param dim1: dimension size for the destination tensor
+            /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+            /// \param v1: data for the destination tensor
+            /// \param comm: communicator context
+            /// \param ewop: either to copy or to add the origin values into the destination values
+            /// \param co: coordinate linearization order
+
+            template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
+                      typename XPU0, typename XPU1, typename EWOP>
+            void test_copy(typename elem<T>::type, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+                           const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                           const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                           const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
+                           const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP,
+                           CoorOrder co) {
+
+                bool trackingTime = getTrackingTime();
+                getTrackingTime() = false;
+
+                // Fill the mock input and output tensors
+                const Components_tmpl<Nd0, const IndexType, XPU0, XPU1> v0_ =
+                    get_mock_components(p0, v0, co, FillWithIndices, comm);
+                const Components_tmpl<Nd1, IndexType, XPU0, XPU1> v1_ =
+                    get_mock_components(p1, v1, co, FillWithZeros, comm);
+
+                // Copy the indices
+                copy(1, p0, from0, size0, o0, v0_, p1, from1, o1, v1_, comm, EWOP{}, co, false);
+
+                // Check that the modified elements on v1_ are what they should be
+                unsigned int ncomponents1 = v1.first.size() + v1.second.size();
+                Coor<Nd0> dim0 = get_dim<Nd0>(p0);
+                Coor<Nd1> dim1 = get_dim<Nd1>(p1);
+                for (const Component<Nd1, IndexType, XPU0> &c : v1_.first) {
+                    test_copy_check<Nd0, Nd1>(p0, from0, size0, dim0, o0, from1, dim1, o1, c,
+                                              p1[c.componentId + comm.rank * ncomponents1][0],
+                                              EWOP{}, co);
+                }
+                for (const Component<Nd1, IndexType, XPU1> &c : v1_.second) {
+                    test_copy_check<Nd0, Nd1>(p0, from0, size0, dim0, o0, from1, dim1, o1, c,
+                                              p1[c.componentId + comm.rank * ncomponents1][0],
+                                              EWOP{}, co);
+                }
+
+                getTrackingTime() = trackingTime;
+            }
+        }
+
         /// Copy the content of plural tensor v0 into v1
         /// \param alpha: factor applied to the input tensors
         /// \param p0: partitioning of the origin tensor in consecutive ranges
@@ -1011,8 +1251,13 @@ namespace superbblas {
                   const Coor<Nd0> &size0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
                   const Coor<Nd1> &from1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop,
-                  CoorOrder co) {
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
+                  bool do_test = true) {
+
+            if (getDebugLevel() >= 2 && do_test) {
+                ns_copy_test::test_copy(alpha, p0, from0, size0, o0, v0, p1, from1, o1, v1, comm,
+                                        EWOp{}, co);
+            }
 
             tracker _t("distributed copy");
 
@@ -1077,6 +1322,13 @@ namespace superbblas {
                   const Coor<Nd1> &from1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, CopyAdd copyadd,
                   CoorOrder co) {
+
+            if (getDebugLevel() >= 1) {
+                barrier(comm);
+                for (const auto &i : v1.first) sync(i.it.ctx());
+                for (const auto &i : v1.second) sync(i.it.ctx());
+            }
+
             switch (copyadd) {
             case Copy:
                 copy(alpha, p0, from0, size0, o0, v0, p1, from1, o1, v1, comm, EWOp::Copy{}, co);
@@ -1086,10 +1338,11 @@ namespace superbblas {
                 break;
             }
 
-#ifndef NDEBUG
-            for (const auto &i : v1.first) sync(i.it.ctx());
-            for (const auto &i : v1.second) sync(i.it.ctx());
-#endif
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : v1.first) sync(i.it.ctx());
+                for (const auto &i : v1.second) sync(i.it.ctx());
+                barrier(comm);
+            }
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -1260,6 +1513,12 @@ namespace superbblas {
                          const From_size<Ndo> &pr, const Order<Ndo> &o_r,
                          const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
 
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : vr.first) sync(i.it.ctx());
+                for (const auto &i : vr.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+
             tracker _t("distributed contraction");
 
             // Check the compatibility of the tensors
@@ -1318,10 +1577,12 @@ namespace superbblas {
             // Reduce all the subtensors to the final tensor
             copy<Ndo, Ndo, T>(1.0, pr_, {}, dimr, o_r, vr_, pr, {}, o_r, vr, comm, EWOp::Add{}, co);
 
-#ifndef NDEBUG
-            for (const auto &i : vr.first) sync(i.it.ctx());
-            for (const auto &i : vr.second) sync(i.it.ctx());
-#endif
+            _t.stop();
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : vr.first) sync(i.it.ctx());
+                for (const auto &i : vr.second) sync(i.it.ctx());
+                barrier(comm);
+            }
         }
 
         /// Return a From_size from a partition that can be hashed and stored
