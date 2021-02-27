@@ -42,10 +42,10 @@ namespace superbblas {
             getCallStack().push_back(funcName);
 
             if (getCallStackWithPath().empty()) {
-		// If the stack is empty, just append the function name
+                // If the stack is empty, just append the function name
                 getCallStackWithPath().push_back(funcName);
             } else {
-		// Otherwise, push the previous one appending "/`funcName`"
+                // Otherwise, push the previous one appending "/`funcName`"
                 getCallStackWithPath().push_back(getCallStackWithPath().back() + "/" + funcName);
             }
         }
@@ -57,6 +57,13 @@ namespace superbblas {
             getCallStack().pop_back();
             getCallStackWithPath().pop_back();
             return back;
+        }
+
+        /// Return the number of seconds from some start
+        double w_time() {
+            return std::chrono::duration<double>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                .count();
         }
 
         /// Track time between creation and destruction of the object
@@ -78,10 +85,10 @@ namespace superbblas {
                 double elapsedTime =
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
 
-		// Pop out this call
+                // Pop out this call
                 std::string category = popCall();
 
-		// If this function is not recursive, store the timings in the category with its name only
+                // If this function is not recursive, store the timings in the category with its name only
                 const auto &stack = getCallStack();
                 if (std::find(stack.begin(), stack.end(), funcName) == stack.end())
                     getTimings()[funcName] += elapsedTime;
@@ -97,13 +104,12 @@ namespace superbblas {
 
     template <typename OStream> void reportTimings(OStream &s) {
         // Print the timings alphabetically
-	s << "Timing of superbblas kernels:" << std::endl;
-	s << "-----------------------------" << std::endl;
+        s << "Timing of superbblas kernels:" << std::endl;
+        s << "-----------------------------" << std::endl;
         std::vector<std::string> names;
         for (const auto &it : getTimings()) names.push_back(it.first);
         std::sort(names.begin(), names.end());
-        for (const auto &name : names)
-            s << name << " : " << getTimings()[name] << std::endl;
+        for (const auto &name : names) s << name << " : " << getTimings()[name] << std::endl;
     }
 
     double &getCpuMemUsed() {

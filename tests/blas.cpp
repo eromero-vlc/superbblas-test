@@ -2,7 +2,6 @@
 #include <array>
 #include <iostream>
 #include <limits>
-#include <omp.h>
 #include <stdexcept>
 #include <vector>
 
@@ -156,33 +155,33 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
 
     // Test performance
     double t;
-    t  = omp_get_wtime();
+    t  = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
         copy_n<IndexType, T>(t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
     }
-    double t_cpu_xpu = (omp_get_wtime() - t) / nrep;
+    double t_cpu_xpu = (w_time() - t) / nrep;
 
-    t = omp_get_wtime();
+    t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
         copy_n<IndexType, T>(t0_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOP{});
     }
-    double t_xpu_cpu = (omp_get_wtime() - t) / nrep;
+    double t_xpu_cpu = (w_time() - t) / nrep;
 
-    t = omp_get_wtime();
+    t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
         copy_n<IndexType, T>(t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
     }
     sync(xpu);
-    double t_xpu_xpu = (omp_get_wtime() - t) / nrep;
+    double t_xpu_xpu = (w_time() - t) / nrep;
 
     Indices<XPU> p = gen_dummy_perm(size, size, xpu);
-    t = omp_get_wtime();
+    t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
         copy_n<IndexType, T, T>(1.0, t0_xpu.data(), p.begin(), xpu, size, t1_xpu.data(), p.begin(),
                                 xpu, EWOP{});
     }
     sync(xpu);
-    double tp_xpu_xpu = (omp_get_wtime() - t) / nrep;
+    double tp_xpu_xpu = (w_time() - t) / nrep;
 
     std::cout << toStr<T>::get << " in " << toStr<EWOP>::get << " ("
               << sizeof(T) * size / 1024. / 1024 << " MiB)\t\t"

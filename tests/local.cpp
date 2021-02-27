@@ -1,9 +1,12 @@
 #include "superbblas.h"
 #include <vector>
 #include <iostream>
-#include <omp.h>
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
 
 using namespace superbblas;
+using namespace superbblas::detail;
 
 int main(int argc, char **argv) {
     constexpr std::size_t Nd = 7; // xyztscn
@@ -31,6 +34,12 @@ int main(int argc, char **argv) {
         }
     }
 
+#ifdef _OPENMP
+    int num_threads = omp_get_max_threads();
+#else
+    int num_threads = 1;
+#endif
+
     //using Scalar = double;
     using Scalar = std::complex<float>;
     using ScalarD = std::complex<double>;
@@ -51,7 +60,7 @@ int main(int argc, char **argv) {
 
         Context ctx = createCpuContext();
 
-        std::cout << ">>> CPU tests with " << omp_get_max_threads() << " threads" << std::endl;
+        std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
 
         std::cout << "Maximum number of elements in a tested tensor: " << vol1 << " ( "
                   << vol1 * 1.0 * sizeof(Scalar) / 1024 / 1024 << " MiB)" << std::endl;
@@ -59,7 +68,7 @@ int main(int argc, char **argv) {
         // Copy tensor t0 into tensor 1 (for reference)
         double tref = 0.0;
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
 #ifdef _OPENMP
@@ -69,7 +78,7 @@ int main(int argc, char **argv) {
                         t1[i + n * (unsigned int)vol0] = t0[i];
                 }
             }
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in dummy copying from xyzts to tnsxyzc " << t / nrep << std::endl;
             tref = t / nrep; // time in copying a whole tensor with size dim1
         }
@@ -77,7 +86,7 @@ int main(int argc, char **argv) {
 
         // Copy tensor t0 into each of the c components of tensor 1
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
@@ -86,14 +95,14 @@ int main(int argc, char **argv) {
                                from1, dim1, t1.data(), ctx, SlowToFast, Copy);
                 }
             }
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in copying/permuting from xyztsc to tnsxyzc " << t / nrep
                       << " (overhead " << t / nrep / tref << " )" << std::endl;
         }
 
         // Copy tensor t0 into each of the n components of tensor 1 (fast)
         // {
-        //     double t = omp_get_wtime();
+        //     double t = w_time();
         //     for (unsigned int rep = 0; rep < nrep; ++rep) {
         //         for (int n = 0; n < dim[N]; ++n) {
         //             const Coor<Nd - 2> from0 = {0};
@@ -107,7 +116,7 @@ int main(int argc, char **argv) {
         //                        dim1a, (std::array<Scalar, nC> *)t1.data(), ctx, SlowToFast, Copy);
         //         }
         //     }
-        //     t = omp_get_wtime() - t;
+        //     t = w_time() - t;
         //     std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast) " << t / nrep
         //               << " (overhead " << t / nrep / tref << " )" << std::endl;
         // }
@@ -115,7 +124,7 @@ int main(int argc, char **argv) {
         // Shift tensor 1 on the z-direction and store it on tensor 2
         Tensor t2(vol1);
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
@@ -123,14 +132,14 @@ int main(int argc, char **argv) {
                 local_copy((Scalar)1.0, "tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc",
                            from1, dim1, t2.data(), ctx, SlowToFast, Copy);
             }
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in shifting " << t / nrep << std::endl;
         }
 
         // Shift tensor 1 on the z-direction and store it on tensor 2
         {
             TensorD t2d(vol1);
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
@@ -138,7 +147,7 @@ int main(int argc, char **argv) {
                 local_copy((Scalar)1.0, "tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc",
                            from1, dim1, t2d.data(), ctx, SlowToFast, Copy);
             }
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in shifting and converting to double " << t / nrep << std::endl;
         }
 
@@ -146,13 +155,13 @@ int main(int argc, char **argv) {
         std::size_t volc = detail::volume(dimc); 
         Tensor tc(volc);
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 local_contraction((Scalar)1.0, "tnsxyzc", dim1, false, t1.data(), "tNSxyzc", dim1,
                                   false, t2.data(), (Scalar)0.0, "tNSns", dimc, tc.data(), ctx,
                                   SlowToFast);
             }
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in contracting xyzc " << t / nrep << std::endl;
         }
     }
@@ -186,14 +195,14 @@ int main(int argc, char **argv) {
         // Copy tensor t0 into tensor 1 (for reference)
         double tref = 0.0;
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
                     thrust::copy_n(t0.begin(), vol0, t1.begin() + n * vol0);
                 }
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in dummy copying from xyzts to tnsxyzc " << t / nrep << std::endl;
             tref = t / nrep; // time in copying a whole tensor with size dim1
         }
@@ -201,7 +210,7 @@ int main(int argc, char **argv) {
 
         // Copy tensor t0 into each of the c components of tensor 1
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
@@ -211,7 +220,7 @@ int main(int argc, char **argv) {
                 }
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in copying/permuting from xyztsc to tnsxyzc " << t / nrep
                       << " (overhead " << t / nrep / tref << " )" << std::endl;
         }
@@ -227,7 +236,7 @@ int main(int argc, char **argv) {
 
             Context cpuctx = createCpuContext();
 
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
@@ -238,7 +247,7 @@ int main(int argc, char **argv) {
                 }
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in copying/permuting from xyztsc from cpu to "
                          "tnsxyzc on GPU "
                       << t / nrep << " (overhead " << t / nrep / tref << " )"
@@ -249,7 +258,7 @@ int main(int argc, char **argv) {
 // #    ifndef SUPERBBLAS_LIB
 //         // Copy tensor t0 into each of the c components of tensor 1 (fast?)
 //         {
-//             double t = omp_get_wtime();
+//             double t = w_time();
 //             for (unsigned int rep = 0; rep < nrep; ++rep) {
 //                 for (int n = 0; n < dim[N]; ++n) {
 //                     const Coor<Nd - 2> from0 = {0};
@@ -265,7 +274,7 @@ int main(int argc, char **argv) {
 //                 }
 //             }
 //             cudaDeviceSynchronize();
-//             t = omp_get_wtime() - t;
+//             t = w_time() - t;
 //             std::cout << "Time in copying/permuting from xyzts to tnsxyzs (fast?) " << t / nrep
 //                       << " (overhead " << t / nrep / tref << " )" << std::endl;
 //         }
@@ -274,7 +283,7 @@ int main(int argc, char **argv) {
         // Shift tensor 1 on the z-direction and store it on tensor 2
         Tensor t2(vol1);
          {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
@@ -283,14 +292,14 @@ int main(int argc, char **argv) {
                            "tnsxyzc", from1, dim1, t2.data().get(), ctx, SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in shifting " << t / nrep << std::endl;
         }
 
         // Shift tensor 1 on the z-direction and store it on tensor 2
         {
             TensorD t2d(vol1);
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
@@ -299,7 +308,7 @@ int main(int argc, char **argv) {
                            "tnsxyzc", from1, dim1, t2d.data().get(), ctx, SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in shifting and converting to double " << t / nrep << std::endl;
         }
 
@@ -307,14 +316,14 @@ int main(int argc, char **argv) {
         std::size_t volc = detail::volume(dimc); 
         Tensor tc(volc);
         {
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 local_contraction((Scalar)1.0, "tnsxyzc", dim1, false, t1.data().get(), "tNSxyzc",
                                   dim1, false, t2.data().get(), (Scalar)0.0, "tNSns", dimc,
                                   tc.data().get(), ctx, SlowToFast);
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in contracting " << t / nrep << std::endl;
         }
 
@@ -325,14 +334,14 @@ int main(int argc, char **argv) {
 
             Context cpuctx = createCpuContext();
 
-            double t = omp_get_wtime();
+            double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                     const Coor<5> from0 = {0};
                     local_copy((Scalar)1.0, "tnsNS", from0, dimc, dimc, tc.data().get(), ctx,
                                "tnsNS", from0, dimc, tc_cpu.data(), cpuctx, SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
-            t = omp_get_wtime() - t;
+            t = w_time() - t;
             std::cout << "Time in copying tnsNS to the cpu " << t / nrep
                       << std::endl;
         }
