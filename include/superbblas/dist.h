@@ -579,7 +579,9 @@ namespace superbblas {
                 Indices<Cpu> perm(vol);
                 for (std::size_t i = 0; i < vol; ++i) perm[i] = i;
                 std::sort(perm.begin(), perm.end(), [&](const IndexType &a, const IndexType &b) {
-                    return indices1[a] < indices1[b];
+                    return (indices1[a] < indices1[b]
+                                ? true
+                                : (indices1[a] == indices1[b] ? a < b : false));
                 });
 
                 // Count how many distinct destination indices there are
