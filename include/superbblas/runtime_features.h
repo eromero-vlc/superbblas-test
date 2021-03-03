@@ -11,7 +11,7 @@ namespace superbblas {
     /// The current log levels are:
     ///   * 0: no log (default)
     ///   * 1: some log
-    
+
     int getLogLevel() {
         static int log_level = []() {
             const char *l = std::getenv("SB_LOG");
@@ -27,7 +27,7 @@ namespace superbblas {
     ///   * 0: no extra checking (default)
     ///   * >= 1: GPU sync and MPI barriers before and after `copy` and `contraction`
     ///   * >= 2: verify all `copy` calls (expensive)
-    
+
     int getDebugLevel() {
         static int debug_level = []() {
             const char *l = std::getenv("SB_DEBUG");
@@ -43,7 +43,7 @@ namespace superbblas {
     ///   * 0: no tracking memory consumption (default)
     ///   * != 0: tracking memory consumption
 
-    bool& getTrackingMemory() {
+    bool &getTrackingMemory() {
         static bool track_mem = []() {
             const char *l = std::getenv("SB_TRACK_MEM");
             if (l) return (0 != std::atoi(l));
@@ -58,7 +58,7 @@ namespace superbblas {
     ///   * 0: no tracking time (default)
     ///   * != 0: tracking time
 
-    bool& getTrackingTime() {
+    bool &getTrackingTime() {
         static bool track_time = []() {
             const char *l = std::getenv("SB_TRACK_TIME");
             if (l) return (0 != std::atoi(l));
