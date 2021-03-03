@@ -116,7 +116,7 @@ namespace superbblas {
         /// Throw exception if MPI reports an error
         /// \param error: MPI returned error
 
-        void MPI_check(int error) {
+        inline void MPI_check(int error) {
             if (error == MPI_SUCCESS) return;
 
 #    define CHECK_AND_THROW(ERR)                                                                   \
@@ -288,7 +288,7 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_MPI
         /// Communication barrier
 
-        void barrier(MpiComm comm) { MPI_Barrier(comm.comm); }
+        inline void barrier(MpiComm comm) { MPI_Barrier(comm.comm); }
 
         /// Allocate buffers and prepare arrays from a list of ranges to be used in a MPI communication
         /// \param ranges: iterator over a list of tensor ranges to be packed
@@ -703,7 +703,7 @@ namespace superbblas {
         }
 #else
 
-        void barrier(SelfComm) {}
+        inline void barrier(SelfComm) {}
 
 #endif // SUPERBBLAS_USE_MPI
 

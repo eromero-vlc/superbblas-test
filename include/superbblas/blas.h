@@ -162,7 +162,7 @@ namespace superbblas {
         /// Set the current device as the one passed
         /// \param cuda: context
 
-        void setDevice(Cuda cuda) {
+        inline void setDevice(Cuda cuda) {
             int currentDevice;
             cudaCheck(cudaGetDevice(&currentDevice));
             if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));

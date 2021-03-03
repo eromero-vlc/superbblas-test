@@ -12,7 +12,7 @@ namespace superbblas {
     ///   * 0: no log (default)
     ///   * 1: some log
 
-    int getLogLevel() {
+    inline int getLogLevel() {
         static int log_level = []() {
             const char *l = std::getenv("SB_LOG");
             if (l) return std::max(0, std::atoi(l));
@@ -28,7 +28,7 @@ namespace superbblas {
     ///   * >= 1: GPU sync and MPI barriers before and after `copy` and `contraction`
     ///   * >= 2: verify all `copy` calls (expensive)
 
-    int getDebugLevel() {
+    inline int getDebugLevel() {
         static int debug_level = []() {
             const char *l = std::getenv("SB_DEBUG");
             if (l) return std::max(0, std::atoi(l));
@@ -43,7 +43,7 @@ namespace superbblas {
     ///   * 0: no tracking memory consumption (default)
     ///   * != 0: tracking memory consumption
 
-    bool &getTrackingMemory() {
+    inline bool &getTrackingMemory() {
         static bool track_mem = []() {
             const char *l = std::getenv("SB_TRACK_MEM");
             if (l) return (0 != std::atoi(l));
@@ -58,7 +58,7 @@ namespace superbblas {
     ///   * 0: no tracking time (default)
     ///   * != 0: tracking time
 
-    bool &getTrackingTime() {
+    inline bool &getTrackingTime() {
         static bool track_time = []() {
             const char *l = std::getenv("SB_TRACK_TIME");
             if (l) return (0 != std::atoi(l));
@@ -73,7 +73,7 @@ namespace superbblas {
     ///   * 0: use the synchronous version MPI_Alltoallv
     ///   * != 0: use the asynchronous version MPI_Ialltoallv (default)
 
-    bool getUseAsyncAlltoall() {
+    inline bool getUseAsyncAlltoall() {
         static bool async_alltoall = []() {
             const char *l = std::getenv("SB_ASYNC_ALLTOALL");
             if (l) return (0 != std::atoi(l));

@@ -27,19 +27,19 @@ namespace superbblas {
         using CallStack = std::vector<std::string>;
 
         /// Return the current function call stack begin tracked
-        CallStack &getCallStackWithPath() {
+        inline CallStack &getCallStackWithPath() {
             static CallStack callStack{};
             return callStack;
         }
 
         /// Return the current function call stack begin tracked
-        CallStack &getCallStack() {
+        inline CallStack &getCallStack() {
             static CallStack callStack{};
             return callStack;
         }
 
         /// Push function call to be tracked
-        void pushCall(std::string funcName) {
+        inline void pushCall(std::string funcName) {
             getCallStack().push_back(funcName);
 
             if (getCallStackWithPath().empty()) {
@@ -52,7 +52,7 @@ namespace superbblas {
         }
 
         /// Pop function call from the stack
-        std::string popCall() {
+        inline std::string popCall() {
             assert(getCallStack().size() > 0);
             std::string back = getCallStackWithPath().back();
             getCallStack().pop_back();
@@ -61,7 +61,7 @@ namespace superbblas {
         }
 
         /// Return the number of seconds from some start
-        double w_time() {
+        inline double w_time() {
             return std::chrono::duration<double>(
                        std::chrono::system_clock::now().time_since_epoch())
                 .count();
@@ -112,7 +112,7 @@ namespace superbblas {
     }
 
     /// Reset all tracked timings
-    void resetTimings() { getTimings().clear(); }
+    inline void resetTimings() { getTimings().clear(); }
 
     /// Report all tracked timings
     /// \param s: stream to write the report
@@ -131,14 +131,14 @@ namespace superbblas {
 
     /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
 
-    double &getCpuMemUsed() {
+    inline double &getCpuMemUsed() {
         static double mem = 0;
         return mem;
     }
 
     /// Get total memory allocated on devices if tracking memory consumption (see `getTrackingMemory`)
 
-    double &getGpuMemUsed() {
+    inline double &getGpuMemUsed() {
         static double mem = 0;
         return mem;
     }
@@ -156,7 +156,7 @@ namespace superbblas {
 
         /// Return all current allocations
 
-        Allocations &getAllocations() {
+        inline Allocations &getAllocations() {
             static Allocations allocs(16);
             return allocs;
         }
