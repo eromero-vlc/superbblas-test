@@ -118,6 +118,8 @@ namespace superbblas {
     /// \param s: stream to write the report
 
     template <typename OStream> void reportTimings(OStream &s) {
+        if (!getTrackingTime()) return;
+
         // Print the timings alphabetically
         s << "Timing of superbblas kernels:" << std::endl;
         s << "-----------------------------" << std::endl;
