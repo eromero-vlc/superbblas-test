@@ -41,6 +41,10 @@ namespace superbblas {
         /// Type use in MPI calls to indicate cardinality and displacements
         using MpiInt = int;
 
+        /// Set a user-defined MPI type that allows to send up 256 GiB in a single calls
+        /// MPI type with this size; the maximum package size is
+        constexpr std::size_t MpiTypeSize = 64;
+
         /// First coordinate and size of a range
         template <std::size_t N> using From_size_item = PartitionItem<N>;
         /// List of ranges
@@ -164,18 +168,15 @@ namespace superbblas {
         /// Return a communicator for a MPI_Comm
         inline SelfComm get_comm() { return SelfComm{1u, 0u}; }
 
-        /// Return the native type of MPI_Datatype use for MPI communications
-        template <typename T>
-        using NativeMpiDatatype = typename std::conditional<
-            sizeof(T) % sizeof(double) == 0, double,
-            typename std::conditional<sizeof(T) % sizeof(float) == 0, float, char>::type>::type;
-
 #ifdef SUPERBBLAS_USE_MPI
         /// Return the MPI_datatype for a type returned by `NativeMpiDatatype`
-        template <typename T> MPI_Datatype get_mpi_datatype() {
-            if (sizeof(T) % sizeof(double) == 0) return MPI_DOUBLE;
-            if (sizeof(T) % sizeof(float) == 0) return MPI_FLOAT;
-            return MPI_CHAR;
+        MPI_Datatype get_mpi_datatype() {
+            if (MpiTypeSize == sizeof(char)) return MPI_CHAR;
+            if (MpiTypeSize == sizeof(float)) return MPI_FLOAT;
+            if (MpiTypeSize == sizeof(double)) return MPI_DOUBLE;
+            MPI_Datatype t;
+            MPI_check(MPI_Type_contiguous(MpiTypeSize, MPI_CHAR, &t));
+            return t;
         }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -301,9 +302,6 @@ namespace superbblas {
                                      unsigned int ncomponents, MpiComm comm) {
 
             // Allocate PackedValues
-            using MpiT = NativeMpiDatatype<T>;
-            static_assert(sizeof(T) % sizeof(MpiT) == 0,
-                          "NativeMpiDatatype hasn't return a right type!");
             PackedValues<T> r{std::vector<T>(), std::vector<MpiInt>(comm.nprocs),
                               std::vector<MpiInt>(comm.nprocs)};
 
@@ -324,11 +322,13 @@ namespace superbblas {
                     }
                 }
                 n += n_rank;
-                r.counts[rank] = n_rank * MpiInt(sizeof(T) / sizeof(MpiT));
+                r.counts[rank] = (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
                 r.displ[rank] = d;
                 d += r.counts[rank];
             }
-            assert(d * sizeof(MpiT) == n * sizeof(T));
+            if (d * MpiTypeSize != n * sizeof(T))
+                throw std::runtime_error(
+                    "Exceeded the maximum package size: increase `MpiTypeSize`");
             r.buf.resize(n);
 
             return r;
@@ -653,7 +653,7 @@ namespace superbblas {
                 prepare_pack<Nd1, Q>(&toReceive, 1, ncomponents0, comm));
 
             // Do the MPI communication
-            MPI_Datatype dtype = get_mpi_datatype<Q>();
+            static MPI_Datatype dtype = get_mpi_datatype();
             MPI_Request r = MPI_REQUEST_NULL;
             assert(v0ToSend->counts.size() == comm.nprocs);
             assert(v0ToSend->displ.size() == comm.nprocs);
@@ -662,10 +662,10 @@ namespace superbblas {
             int dtype_size = 0;
             MPI_check(MPI_Type_size(dtype, &dtype_size));
             (void)dtype_size;
-            assert((v0ToSend->displ.back() + v0ToSend->counts.back()) * (unsigned int)dtype_size <=
+            assert((std::size_t)dtype_size == MpiTypeSize);
+            assert((v0ToSend->displ.back() + v0ToSend->counts.back()) * MpiTypeSize <=
                    v0ToSend->buf.size() * sizeof(Q));
-            assert((v1ToReceive->displ.back() + v1ToReceive->counts.back()) *
-                       (unsigned int)dtype_size <=
+            assert((v1ToReceive->displ.back() + v1ToReceive->counts.back()) * MpiTypeSize <=
                    v1ToReceive->buf.size() * sizeof(Q));
             assert(v0ToSend->counts[comm.rank] == 0);
             assert(v1ToReceive->counts[comm.rank] == 0);
