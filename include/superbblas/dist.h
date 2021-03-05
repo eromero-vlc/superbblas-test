@@ -170,12 +170,13 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_MPI
         /// Return the MPI_datatype for a type returned by `NativeMpiDatatype`
-        MPI_Datatype get_mpi_datatype() {
+        inline MPI_Datatype get_mpi_datatype() {
             if (MpiTypeSize == sizeof(char)) return MPI_CHAR;
             if (MpiTypeSize == sizeof(float)) return MPI_FLOAT;
             if (MpiTypeSize == sizeof(double)) return MPI_DOUBLE;
             MPI_Datatype t;
             MPI_check(MPI_Type_contiguous(MpiTypeSize, MPI_CHAR, &t));
+            MPI_check(MPI_Type_commit(&t));
             return t;
         }
 #endif // SUPERBBLAS_USE_MPI
@@ -302,6 +303,8 @@ namespace superbblas {
                                      unsigned int ncomponents, MpiComm comm) {
 
             // Allocate PackedValues
+            static_assert(MpiTypeSize % sizeof(T) == 0,
+                          "Please change MpiTypeSize to be a power of two!");
             PackedValues<T> r{std::vector<T>(), std::vector<MpiInt>(comm.nprocs),
                               std::vector<MpiInt>(comm.nprocs)};
 
@@ -321,7 +324,7 @@ namespace superbblas {
                         }
                     }
                 }
-                n += n_rank;
+                n += (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize * MpiTypeSize / sizeof(T);
                 r.counts[rank] = (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
                 r.displ[rank] = d;
                 d += r.counts[rank];
