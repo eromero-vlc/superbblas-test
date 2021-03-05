@@ -899,6 +899,9 @@ namespace superbblas {
             assert(volT * volA * volC == (int)volume<Nd1>(dim1));
             assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
+            // Quick exit
+            if (volT == 0) return;
+
             // Avoid issues with uninitialized memory by zeroing out
             if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
 
