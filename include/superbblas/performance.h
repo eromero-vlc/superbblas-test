@@ -21,6 +21,30 @@ namespace superbblas {
         return timings;
     }
 
+    /// Type for storing the memory usage
+    using CacheUsage = std::unordered_map<std::string, double>;
+
+    /// Return the performance timings
+    Timings &getCacheUsage() {
+        static CacheUsage cacheUsage(16);
+        return cacheUsage;
+    }
+
+    /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
+
+    inline double &getCpuMemUsed() {
+        static double mem = 0;
+        return mem;
+    }
+
+    /// Get total memory allocated on devices if tracking memory consumption (see `getTrackingMemory`)
+
+    inline double &getGpuMemUsed() {
+        static double mem = 0;
+        return mem;
+    }
+
+
     namespace detail {
 
         /// Stack of function calls being tracked
@@ -73,6 +97,8 @@ namespace superbblas {
             bool stopped;
             /// Name of the function being tracked
             const std::string funcName;
+            /// Memory usage at that point
+            const double mem_cpu, mem_gpu;
             /// Instant of the construction
             const std::chrono::time_point<std::chrono::system_clock> start;
 
@@ -80,6 +106,8 @@ namespace superbblas {
             tracker(std::string funcName)
                 : stopped(!getTrackingTime()),
                   funcName(!stopped ? funcName : std::string()),
+                  mem_cpu(getTrackingMemory() ? getCpuMemUsed() : 0),
+                  mem_gpu(getTrackingMemory() ? getGpuMemUsed() : 0),
                   start(!stopped ? std::chrono::system_clock::now()
                                  : std::chrono::time_point<std::chrono::system_clock>{}) {
                 if (!stopped) pushCall(funcName); // NOTE: well this is timed...
@@ -107,6 +135,11 @@ namespace superbblas {
                 // If this is not the first function being tracked, store the timings in the
                 // category with its path name
                 if (category != funcName) getTimings()[category] += elapsedTime;
+
+		// Record memory not released
+                if (getTrackingMemory())
+                    getCacheUsage()[funcName] +=
+                        getCpuMemUsed() - mem_cpu + getGpuMemUsed() - mem_gpu;
             }
         };
     }
@@ -129,18 +162,20 @@ namespace superbblas {
         for (const auto &name : names) s << name << " : " << getTimings()[name] << std::endl;
     }
 
-    /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
+    /// Report all tracked cache memory usage
+    /// \param s: stream to write the report
 
-    inline double &getCpuMemUsed() {
-        static double mem = 0;
-        return mem;
-    }
+    template <typename OStream> void reportCacheUsage(OStream &s) {
+        if (!getTrackingMemory()) return;
 
-    /// Get total memory allocated on devices if tracking memory consumption (see `getTrackingMemory`)
-
-    inline double &getGpuMemUsed() {
-        static double mem = 0;
-        return mem;
+        // Print the timings alphabetically
+        s << "Cache usage of superbblas kernels:" << std::endl;
+        s << "-----------------------------" << std::endl;
+        std::vector<std::string> names;
+        for (const auto &it : getCacheUsage()) names.push_back(it.first);
+        std::sort(names.begin(), names.end());
+        for (const auto &name : names)
+            s << name << " : " << getCacheUsage()[name] / 1024 / 1024 / 1024 << " GiB" << std::endl;
     }
 
     namespace detail {
