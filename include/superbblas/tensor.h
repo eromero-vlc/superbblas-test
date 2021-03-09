@@ -584,19 +584,23 @@ namespace superbblas {
                 }
             }
 
-            // Get the permutation and store it in cache
-            std::shared_ptr<Indices<XPU>> indices1 =
-                std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
-                    o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
-            from_size_dim_map[from_size_dim{from1, size1, dim1, deviceId(xpu), co}] = indices1;
-
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from1 + size1, dim1)) {
                 std::shared_ptr<Indices<XPU>> indices1_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
                         o0, {}, size0, dim0, o1, {}, dim1, xpu, co));
                 size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
+                Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
+                disp = coor2index<Nd1>(from1, dim1, stride1);
+		indices_out = indices1_sd;
+                return;
             }
+
+            // Get the permutation and store it in cache
+            std::shared_ptr<Indices<XPU>> indices1 =
+                std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
+                    o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
+            from_size_dim_map[from_size_dim{from1, size1, dim1, deviceId(xpu), co}] = indices1;
 
             // Return the permutation
             indices_out = indices1;
@@ -667,18 +671,22 @@ namespace superbblas {
                 }
             }
 
-            // Get the permutation and store it in cache
-            std::shared_ptr<Indices<XPU>> indices0 = std::make_shared<Indices<XPU>>(
-                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
-            from_size_dim_map[perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}] =
-                indices0;
-
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from0 + size0, dim0)) {
                 std::shared_ptr<Indices<XPU>> indices0_sd = std::make_shared<Indices<XPU>>(
                     get_permutation_origin<Nd0, Nd1>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co));
                 size_dim_map[perm_size_dim{perm1, size0, dim0, deviceId(xpu), co}] = indices0_sd;
+                Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+                disp = coor2index<Nd0>(from0, dim0, stride0);
+                indices_out = indices0_sd;
+                return;
             }
+
+            // Get the permutation and store it in cache
+            std::shared_ptr<Indices<XPU>> indices0 = std::make_shared<Indices<XPU>>(
+                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
+            from_size_dim_map[perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}] =
+                indices0;
 
             // Return the permutation
             indices_out = indices0;

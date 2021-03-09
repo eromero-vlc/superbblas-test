@@ -382,20 +382,17 @@ namespace superbblas {
                     // doing the MPI call
                     Coor<Nd0> fromi = fs[i][0], sizei = fs[i][1];
                     Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
-                    std::shared_ptr<Indices<Cpu>> indices;
-                    IndexType disp;
-                    get_permutation_origin_cache<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, {}, sizei1,
-                                                           Cpu{}, indices, disp, co);
-                    assert(indices->size() + n <= vol);
-                    std::transform(indices->begin(), indices->end(), indices0.begin() + n,
-                                   [&](const IndexType &d) { return d + disp; });
-                    get_permutation_destination_cache<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, {},
-                                                                sizei1, Cpu{}, indices, disp, co);
-                    assert(indices->size() + n <= vol);
-                    std::transform(indices->begin(), indices->end(), indices1.begin() + n,
-                                   [&](const IndexType &d) { return d + disp1[i] + disp; });
+                    Indices<Cpu> indices = get_permutation_origin<Nd0, Nd1>(
+                        o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
+                    assert(indices.size() + n <= vol);
+                    std::copy_n(indices.begin(), indices.size(), indices0.begin() + n);
+                    indices = get_permutation_destination<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, {},
+                                                                    sizei1, Cpu{}, co);
+                    assert(indices.size() + n <= vol);
+                    std::transform(indices.begin(), indices.end(), indices1.begin() + n,
+                                   [=](IndexType d) { return d + disp1[i]; });
 
-                    n += indices->size();
+                    n += indices.size();
                     assert(n <= vol);
                     assert(i != fs.size() - 1 || n == vol);
                 }
