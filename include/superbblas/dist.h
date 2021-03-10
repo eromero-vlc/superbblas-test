@@ -496,7 +496,9 @@ namespace superbblas {
 
             // Find indices on cache
             using pointer_dev = std::tuple<From_size_iterator<Nd>, int, CoorOrder>;
-            static std::unordered_map<pointer_dev, Indices<XPU>, TupleHash<pointer_dev>> cache(16);
+            static std::unordered_map<pointer_dev, std::array<Indices<XPU>, 2>,
+                                      TupleHash<pointer_dev>>
+                cache(16);
             pointer_dev key{toReceive.data(), deviceId(v.it.ctx()), co};
             auto it = cache.find(key);
 
@@ -505,13 +507,30 @@ namespace superbblas {
             if (it == cache.end()) {
                 tracker _t("comp. unpack permutation for copy");
 
-                // Compute the destination index for all received elements
-                Indices<Cpu> indices1(vol);
-                Order<Nd> o = trivial_order<Nd>();
+		// Check whether the packages has extra elements to fill up to MpiTypeSize
+                bool pre_index = false;
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
+                    Coor<Nd> sizei = toReceive[i][1];
+                    std::size_t voli = volume(sizei);
+                    if (n != r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T)))
+                        pre_index = true;
+                    n += voli;
+                }
+
+                // Compute the destination index for all received elements
+                Indices<Cpu> indices0(pre_index ? vol : 0), indices1(vol);
+                Order<Nd> o = trivial_order<Nd>();
+                for (std::size_t i = 0, n = 0, n_pre = 0; i < comm.nprocs * ncomponents0; ++i) {
                     if (i / ncomponents0 == comm.rank) continue;
                     Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
                     std::size_t voli = volume<Nd>(sizei);
+
+                    if (pre_index) {
+                        IndexType disp = r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T));
+                        if (i % ncomponents0 == 0) n_pre = 0;
+                        for (std::size_t j = 0; j < voli; ++j) indices0[n + j] = n_pre++ + disp;
+                    }
+
                     Indices<Cpu> indices = get_permutation_destination<Nd, Nd>(
                         o, {}, sizei, sizei, o, fromi, v.dim, Cpu{}, co);
                     std::copy_n(indices.begin(), voli, indices1.begin() + n);
@@ -520,18 +539,26 @@ namespace superbblas {
                 }
 
                 // Copy indices1_cmp to the same device as the destination tensor
+                Indices<XPU> indices0_xpu(indices0.size(), v.it.ctx());
+                copy_n<IndexType, IndexType>(indices0.data(), Cpu{}, indices0.size(),
+                                             indices0_xpu.data(), v.it.ctx(), EWOp::Copy{});
                 Indices<XPU> indices1_xpu(indices1.size(), v.it.ctx());
                 copy_n<IndexType, IndexType>(indices1.data(), Cpu{}, indices1.size(),
                                              indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
 
                 // Cache this effort
-                cache[key] = indices1_xpu;
+                cache[key] = {indices0_xpu, indices1_xpu};
                 it = cache.find(key);
             }
 
             // Do the copy
-            copy_n<IndexType, T, T>(alpha, r.buf.data(), Cpu{}, vol, v.it.data(),
-                                    it->second.begin(), v.it.ctx(), EWOp::Copy{});
+            if (it->second[0].size() == 0)
+                copy_n<IndexType, T, T>(alpha, r.buf.data(), Cpu{}, vol, v.it.data(),
+                                        it->second[1].begin(), v.it.ctx(), EWOp::Copy{});
+            else
+                copy_n<IndexType, T, T>(alpha, r.buf.data(), it->second[0].begin(), Cpu{}, vol,
+                                        v.it.data(), it->second[1].begin(), v.it.ctx(),
+                                        EWOp::Copy{});
         }
 
         /// Unpack and sum-reduce packed tensors from a MPI communication
@@ -560,6 +587,17 @@ namespace superbblas {
             std::size_t vol = r.buf.size();
             if (it == cache.end()) {
                 tracker _t("comp. unpack permutation for add");
+
+		// Check whether the packages has extra elements to fill up to MpiTypeSize
+                bool pre_index = false;
+                for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
+                    Coor<Nd> sizei = toReceive[i][1];
+                    std::size_t voli = volume(sizei);
+                    if (n != r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T)))
+                        pre_index = true;
+                    n += voli;
+                }
+                assert(!pre_index);
 
                 // Compute the destination index for all received elements
                 Indices<Cpu> indices1(vol);
@@ -619,6 +657,42 @@ namespace superbblas {
                                         std::get<1>(it->second).begin(),
                                         std::get<1>(it->second).size(), Cpu{}, v.it.data(),
                                         std::get<2>(it->second).begin(), v.it.ctx());
+        }
+
+        /// Unpack and copy packed tensors from a MPI communication
+        /// \param r: packed subtensors
+        /// \param toReceive: list of tensor ranges to receive
+        /// \param v: data for the destination tensor
+        /// \param ncomponents0: number of components on the origin tensor
+        /// \param comm: communication
+        /// \param co: coordinate linearization order
+        /// \param alpha: factor applied to packed tensors
+
+        template <std::size_t Nd, typename T, typename XPU, typename EWOP>
+        void unpack_alt(const PackedValues<T> &r, const From_size<Nd> &toReceive,
+                        const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm,
+                        EWOP, CoorOrder co, typename elem<T>::type alpha) {
+
+            tracker _t("unpack for add (alt)");
+
+            // Compute the destination index for all received elements
+            Order<Nd> o = trivial_order<Nd>();
+            for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
+                if (i / ncomponents0 == comm.rank) continue;
+                Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
+                std::size_t voli = volume<Nd>(sizei);
+                std::shared_ptr<Indices<XPU>> indices1;
+                IndexType disp;
+                get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
+                                                          v.it.ctx(), indices1, disp, co);
+                // Do the addition
+                const T *data =
+                    r.buf.data() + r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T));
+                if (i % ncomponents0 == 0) n = 0;
+                copy_n<IndexType, T, T>(alpha, data, Cpu{}, voli, v.it.data() + disp,
+                                        indices1->begin(), v.it.ctx(), EWOP{});
+                n += voli;
+            }
         }
 
         /// Asynchronous sending and receiving
@@ -698,7 +772,12 @@ namespace superbblas {
 
                 // Copy back to v1
                 tracker _t("unpacking");
-                unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
+                if (getUnpackAlt())
+                    unpack_alt<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co,
+                                    Q(alpha));
+                else
+                    unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co,
+                                Q(alpha));
             };
         }
 #else

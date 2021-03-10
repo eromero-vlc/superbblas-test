@@ -81,6 +81,21 @@ namespace superbblas {
         }();
         return async_alltoall;
     }
+
+    /// Return whether to use a different way for unpacking
+    /// \return bool: whether to use a different way for unpacking
+    /// The accepted value in the environment variable SB_UNPACK_ALT are:
+    ///   * 0: use the regular version
+    ///   * != 0: use the alternative version (default)
+
+    inline bool getUnpackAlt() {
+        static bool unpack_alt = []() {
+            const char *l = std::getenv("SB_UNPACK_ALT");
+            if (l) return (0 != std::atoi(l));
+            return true;
+        }();
+        return unpack_alt;
+    }
 }
 
 #endif // __SUPERBBLAS_RUNTIME_FEATURES__
