@@ -271,9 +271,9 @@ int main(int argc, char **argv) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data(), *ptrc = tc.data();
-                contraction((Scalar)1.0, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
+                contraction(Scalar{1.0}, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
                             &ctx, p1.data(), 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
-                            (Scalar)0.0, pc.data(), 1, "tNSns", &ptrc, &ctx,
+                            Scalar{0.0}, pc.data(), 1, "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif
@@ -284,6 +284,7 @@ int main(int argc, char **argv) {
         }
 
         if (rank == 0) reportTimings(std::cout);
+        if (rank == 0) reportCacheUsage(std::cout);
     }
 #ifdef SUPERBBLAS_USE_CUDA
     {
@@ -438,9 +439,9 @@ int main(int argc, char **argv) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get(), *ptrc = tc.data().get();
-                contraction((Scalar)1.0, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
+                contraction(Scalar{1.0}, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
                             &ctx, p1.data(), 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
-                            (Scalar)0.0, pc.data(), 1, "tNSns", &ptrc, &ctx,
+                            Scalar{0.0}, pc.data(), 1, "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif
