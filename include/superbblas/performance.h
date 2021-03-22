@@ -16,7 +16,7 @@ namespace superbblas {
     using Timings = std::unordered_map<std::string, double>;
 
     /// Return the performance timings
-    Timings &getTimings() {
+    inline Timings &getTimings() {
         static Timings timings(16);
         return timings;
     }
@@ -25,7 +25,7 @@ namespace superbblas {
     using CacheUsage = std::unordered_map<std::string, double>;
 
     /// Return the performance timings
-    Timings &getCacheUsage() {
+    inline Timings &getCacheUsage() {
         static CacheUsage cacheUsage(16);
         return cacheUsage;
     }
