@@ -52,22 +52,6 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    define SUPERBBLAS_REAL_TYPES float, double
 #    define SUPERBBLAS_COMPLEX_TYPES std::complex<float>, std::complex<double>
 #    define SUPERBBLAS_TYPES SUPERBBLAS_REAL_TYPES, SUPERBBLAS_COMPLEX_TYPES
-// #    define SUPERBBLAS_ARRAY_RANGES 3, 4, 12
-
-#    if SUPERBBLAS_ARRAY_RANGES
-// clang-format off
-#    define META_ARRAY_TYPES_T                                                                     \
-        REPLACE $(T $ T $ std::array<T,NNN>) REPLACE(NNN, SUPERBBLAS_ARRAY_RANGES)
-// clang-format on
-#    else
-#        define META_ARRAY_TYPES_T
-#    endif
-
-/// Generate template instantiations for copy_n functions with template parameters IndexType and T
-
-#    define DECL_COPY_T(...)                                                                       \
-        EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T>)                            \
-            META_ARRAY_TYPES_T REPLACE(T, SUPERBBLAS_TYPES) template __VA_ARGS__;
 
 // When generating template instantiations for copy_n functions with different input and output
 // types, avoid copying from complex types to non-complex types (note the missing TCOMPLEX QREAL
@@ -78,31 +62,25 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         REPLACE(TREAL, SUPERBBLAS_REAL_TYPES)                                                      \
         REPLACE(QREAL, SUPERBBLAS_REAL_TYPES)                                                      \
         REPLACE(TCOMPLEX, SUPERBBLAS_COMPLEX_TYPES) REPLACE(QCOMPLEX, SUPERBBLAS_COMPLEX_TYPES)
+#    define REPLACE_T_Q                                                                            \
+        REPLACE(T Q, IndexType IndexType, T Q) REPLACE(T Q, META_TYPES) REPLACE_META_TYPES
 
-#    if SUPERBBLAS_ARRAY_RANGES
-// clang-format off
-#    define META_ARRAY_TYPES_T_Q                                                                   \
-        REPLACE$(T Q $ T Q $ std::array<T,NNN> std::array<Q,NNN>)                                  \
-        REPLACE(NNN, SUPERBBLAS_ARRAY_RANGES)
-// clang-format on
-#    else
-#        define META_ARRAY_TYPES_T_Q REPLACE(T Q, IndexType IndexType, T Q)
-#    endif
+#    define REPLACE_EWOP REPLACE(EWOP, EWOp::Copy, EWOp::Add)
 
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
 
-#    define DECL_COPY_T_Q(...)                                                                     \
-        EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T, Q>) META_ARRAY_TYPES_T_Q    \
-        REPLACE(T Q, META_TYPES) REPLACE_META_TYPES template __VA_ARGS__;
+#    define DECL_COPY_T_Q_EWOP(...)                                                                \
+        EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T, Q, EWOP>)                   \
+            REPLACE_T_Q REPLACE_EWOP template __VA_ARGS__;
 
 /// Generate template instantiations for copy_reduce_n functions with template parameters IndexType and T
 
 #    define DECL_COPY_REDUCE(...)                                                                  \
         EMIT REPLACE1(copy_reduce_n, superbblas::detail::copy_reduce_n<IndexType, T>)              \
             REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) template __VA_ARGS__;
+
 #else
-#    define DECL_COPY_T(...) __VA_ARGS__
-#    define DECL_COPY_T_Q(...) __VA_ARGS__
+#    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
 #    define DECL_COPY_REDUCE(...) __VA_ARGS__
 #endif
 
@@ -167,6 +145,8 @@ namespace superbblas {
             cudaCheck(cudaGetDevice(&currentDevice));
             if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
         }
+
+        inline void setDevice(Cpu) {}
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
@@ -396,33 +376,94 @@ namespace superbblas {
 
         /// Copy n values, w[i] = v[i]
 
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cpu, std::size_t n, T *w, Cpu, EWOp::Copy) {
+        template <typename IndexType, typename T, typename Q>
+        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w, Cpu,
+                    EWOp::Copy) {
+            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
+            if (alpha == typename elem<T>::type{1}) {
+                if (std::is_same<T, Q>::value && (void *)v == (void *)w) return;
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+                for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+            } else {
+                if (std::is_same<T, Q>::value && (void *)v == (void *)w) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] *= alpha;
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[i];
+                }
+            }
         }
 
         /// Copy n values, w[i] += v[i]
 
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cpu, std::size_t n, T *w, Cpu, EWOp::Add) {
+        template <typename IndexType, typename T, typename Q>
+        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w, Cpu,
+                    EWOp::Add) {
+            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
+            if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+                for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+            } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[i];
+            }
         }
 
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(const T *v, const IndexType *indices, Cpu, std::size_t n, Q *w, Cpu,
-                    EWOp::Copy) {
+        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, Cpu,
+                    std::size_t n, Q *w, Cpu, EWOp::Copy) {
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
+            } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+                    for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[indices[i]];
+                }
+            }
+        }
+
+        /// Copy n values, w[i] += v[indices[i]]
+
+        template <typename IndexType, typename T, typename Q>
+        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, Cpu,
+                    std::size_t n, Q *w, Cpu, EWOp::Add) {
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
+            } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] += v[indices[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[indices[i]];
+                }
+            }
         }
 
         /// Copy n values, w[indices[i]] = v[i]
@@ -430,16 +471,21 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w,
                     const IndexType *indices, Cpu, EWOp::Copy) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
+                }
             }
         }
 
@@ -448,16 +494,21 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w,
                     const IndexType *indices, Cpu, EWOp::Add) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
+                }
             }
         }
 
@@ -465,16 +516,23 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cpu,
                     std::size_t n, Q *w, const IndexType *indicesw, Cpu, EWOp::Copy) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+            if (indicesv == nullptr) {
+                copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Copy{});
+            } else if (indicesw == nullptr) {
+                copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
+                }
             }
         }
 
@@ -482,16 +540,23 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cpu,
                     std::size_t n, Q *w, const IndexType *indicesw, Cpu, EWOp::Add) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+            if (indicesv == nullptr) {
+                copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Add{});
+            } else if (indicesw == nullptr) {
+                copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Add{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
+                }
             }
         }
 
@@ -500,6 +565,7 @@ namespace superbblas {
         void copy_reduce_n(typename elem<T>::type alpha, const T *v, Cpu, const IndexType *perm,
                            const IndexType *perm_distinct, std::size_t ndistinct, Cpu, T *w,
                            const IndexType *indicesw, Cpu) {
+            assert(ndistinct == 0 || (void *)v != (void *)w);
             if (alpha == typename elem<T>::type{1}) {
                 if (indicesw) {
 #ifdef _OPENMP
@@ -536,81 +602,6 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
-        /// Copy n values, w[i] = v[i]
-
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cpu, EWOp::Copy) {
-            setDevice(cudav);
-            cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToHost));
-        }
-
-        /// Copy n values, w[i] += v[i]
-
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cpu, EWOp::Add) {
-            vector<T, Cpu> t(n, Cpu{});
-            copy_n<IndexType, T>(v, cudav, n, t.data(), Cpu{}, EWOp::Copy{});
-            copy_n<IndexType, T>(t.data(), Cpu{}, n, w, Cpu{}, EWOp::Add{});
-        }
-
-        /// Copy n values, w[i] = v[i]
-
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cpu, std::size_t n, T *w, Cuda cudaw, EWOp::Copy) {
-            setDevice(cudaw);
-            cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyHostToDevice));
-        }
-
-        /// Copy n values, w[i] += v[i]
-
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cpu, std::size_t n, T *w, Cuda cudaw, EWOp::Add) {
-            vector<T, Cuda> t(n, cudaw);
-            copy_n<IndexType, T>(v, Cpu{}, n, t.data(), cudaw, EWOp::Copy{});
-            copy_n<IndexType, T>(t.data(), cudaw, n, w, cudaw, EWOp::Add{});
-        }
-
-        /// Copy n values, w[i] = v[i]
-
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cuda cudaw, EWOp::Copy) {
-            setDevice(cudaw);
-            if (deviceId(cudav) == deviceId(cudaw)) {
-                cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
-            } else {
-                cudaCheck(cudaMemcpyPeer(w, deviceId(cudaw), v, deviceId(cudav), sizeof(T) * n));
-            }
-        }
-
-        /// Copy n values, w[i] += v[i]
-
-        template <typename IndexType, typename T>
-        DECL_COPY_T(void copy_n(const T *v, Cuda cudav, std::size_t n, T *w, Cuda cudaw, EWOp::Add))
-        IMPL({
-            if (deviceId(cudav) == deviceId(cudaw)) {
-                setDevice(cudaw);
-                thrust::transform(encapsulate_pointer(v), encapsulate_pointer(v) + n,
-                                  encapsulate_pointer(w), encapsulate_pointer(w),
-                                  thrust::plus<typename cuda_complex<T>::type>());
-            } else {
-                vector<T, Cuda> t(n, cudaw);
-                copy_n<IndexType, T>(v, cudav, n, t.data(), cudaw, EWOp::Copy{});
-                copy_n<IndexType, T>(t.data(), cudaw, n, w, cudaw, EWOp::Add{});
-            }
-        })
-
-        /// Copy n values, w[i] = v[indices[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(const T *v, const IndexType *indices, Cuda cudav, std::size_t n,
-                                  Q *w, Cpu, EWOp::Copy))
-        IMPL({
-            setDevice(cudav);
-            thrust::copy_n(thrust::make_permutation_iterator(encapsulate_pointer(v),
-                                                             encapsulate_pointer(indices)),
-                           n, (typename cuda_complex<Q>::type *)w);
-        })
-
 #    ifdef SUPERBBLAS_USE_THRUST
         /// Addition of two values with different types
         template <typename T, typename Q> struct plus {
@@ -635,346 +626,182 @@ namespace superbblas {
             scale(scalar_type a) : a(a) {}
             __host__ __device__ cuda_T operator()(const cuda_T &i) const { return a * i; }
         };
-#    endif // SUPERBBLAS_USE_THRUST
 
-        /// Copy n values, w[i] = v[indices[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indices, Cuda cudav, std::size_t n, Q *w, Cpu,
-                                  EWOp::Copy))
-        IMPL({
-            if (alpha == typename elem<T>::type{1}) {
-                copy_n<IndexType, T, Q>(v, indices, cudav, n, w, Cpu{}, EWOp::Copy{});
-            } else {
-                setDevice(cudav);
-                thrust::copy_n(thrust::make_transform_iterator(
-                                   thrust::make_permutation_iterator(encapsulate_pointer(v),
-                                                                     encapsulate_pointer(indices)),
-                                   scale<T>(alpha)),
-                               n, (typename cuda_complex<Q>::type *)w);
-            }
-        })
-
-        /// Copy n values, w[i] = v[indices[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(const T *v, const IndexType *indices, Cpu, std::size_t n, Q *w, Cuda cudaw,
-                    EWOp::Copy) {
-            copy_n<IndexType, T, Q>(1, v, indices, Cpu{}, n, w, cudaw, EWOp::Copy{});
+        template <typename T, typename Q, typename IteratorV, typename IteratorW>
+        void copy_n_same_dev_thrust(const IteratorV &itv, std::size_t n, const IteratorW &itw,
+                                    EWOp::Copy) {
+            thrust::copy_n(itv, n, itw);
         }
 
-        /// Copy n values, w[i] = v[indices[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indices, Cpu, std::size_t n, Q *w, Cuda cudaw,
-                                  EWOp::Copy))
-        IMPL({
-            setDevice(cudaw);
-            auto itv =
-                thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indices);
-            auto itw = encapsulate_pointer(w);
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::copy_n(itv, n, itw);
-            } else {
-                thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n, itw);
-            }
-        })
-
-        /// Copy n values, w[i] = v[indices[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indices, Cuda cudav, std::size_t n, Q *w,
-                                  EWOp::Copy))
-        IMPL({
-            setDevice(cudav);
-            auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
-                                                         encapsulate_pointer(indices));
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::copy_n(itv, n, encapsulate_pointer(w));
-            } else {
-                thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n,
-                               encapsulate_pointer(w));
-            }
-        })
-
-        /// Copy n values, w[indices[i]] = v[i]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n,
-                                  Q *w, const IndexType *indices, Cuda cudaw, EWOp::Copy))
-        IMPL({
-            setDevice(cudaw);
-            auto itv = (typename cuda_complex<T>::type *)v;
-            auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
-                                                         encapsulate_pointer(indices));
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::copy_n(itv, n, itw);
-            } else {
-                thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n, itw);
-            }
-        })
-
-        /// Copy n values, w[indices[i]] = v[i]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cuda cudav,
-                                  std::size_t n, Q *w, const IndexType *indices, EWOp::Copy))
-        IMPL({
-            setDevice(cudav);
-            auto itv = encapsulate_pointer(v);
-            auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
-                                                         encapsulate_pointer(indices));
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::copy_n(itv, n, itw);
-            } else {
-                thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n, itw);
-            }
-        })
-
-        /// Copy n values, w[indices[i]] += v[i]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cuda cudav,
-                                  std::size_t n, Q *w, const IndexType *indices, EWOp::Add))
-        IMPL({
-            setDevice(cudav);
-            auto itv = encapsulate_pointer(v);
-            auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
-                                                         encapsulate_pointer(indices));
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::transform(
-                    itv, itv + n, itw, itw,
-                    plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
-            } else {
-                auto itv_scale = thrust::make_transform_iterator(itv, scale<T>(alpha));
-                thrust::transform(
-                    itv_scale, itv_scale + n, itw, itw,
-                    plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
-            }
-        })
-
-        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indicesv, Cpu, std::size_t n, Q *w,
-                                  const IndexType *indicesw, Cuda cudaw, EWOp::Copy))
-        IMPL({
-            setDevice(cudaw);
-
-            auto itv =
-                thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indicesv);
-            auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
-                                                         encapsulate_pointer(indicesw));
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::copy_n(itv, n, itw);
-            } else {
-                thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n, itw);
-            }
-        })
-
-        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indicesv, Cpu, std::size_t n, Q *w,
-                                  const IndexType *indicesw, Cuda cudaw, EWOp::Add))
-        IMPL({
-            setDevice(cudaw);
-            std::vector<Q> v_gather(n);
-            copy_n<IndexType, T, Q>(v, indicesv, Cpu{}, n, v_gather.data(), Cpu{}, EWOp::Copy{});
-            vector<Q, Cuda> v_dev(n, cudaw);
-            copy_n<IndexType, Q>(v_gather.data(), Cpu{}, n, v_dev.data(), cudaw, EWOp::Copy{});
-            auto itv = encapsulate_pointer(v_dev.begin());
-            auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
-                                                         encapsulate_pointer(indicesw));
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::transform(itv, itv + n, itw, itw,
-                                  thrust::plus<typename cuda_complex<Q>::type>());
-            } else {
-                auto itv_scale = thrust::make_transform_iterator(itv, scale<Q>(alpha));
-                thrust::transform(itv_scale, itv_scale + n, itw, itw,
-                                  thrust::plus<typename cuda_complex<Q>::type>());
-            }
-        })
-
-        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indicesv, Cuda cudav, std::size_t n, Q *w,
-                                  const IndexType *indicesw, Cpu, EWOp::Copy))
-        IMPL({
-            setDevice(cudav);
-            auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
-                                                         encapsulate_pointer(indicesv));
-            auto itw =
-                thrust::make_permutation_iterator((typename cuda_complex<Q>::type *)w, indicesw);
-            if (alpha == typename elem<T>::type{1}) {
-                thrust::copy_n(itv, n, itw);
-            } else {
-                thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n, itw);
-            }
-        })
-
-        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cuda cudav,
-                    std::size_t n, Q *w, const IndexType *indicesw, Cpu cpuw, EWOp::Add) {
-            vector<T, Cpu> v_gather(n, Cpu{});
-            copy_n<IndexType, T, T>(alpha, v, indicesv, cudav, n, v_gather.data(), cpuw,
-                                    EWOp::Copy{});
-            copy_n<IndexType, T, Q>(1, v_gather.data(), cpuw, n, w, indicesw, cpuw, EWOp::Add{});
+        template <typename T, typename Q, typename IteratorV, typename IteratorW>
+        void copy_n_same_dev_thrust(const IteratorV &itv, std::size_t n, const IteratorW &itw,
+                                    EWOp::Add) {
+            thrust::transform(
+                itv, itv + n, itw, itw,
+                plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
         }
 
-#    ifdef SUPERBBLAS_USE_THRUST
-
-        /// Copy n values, w[indicesw[i]] = (or +=) v[indicesv[i]] cudav and cudaw being on
-        /// different devices
-
-        template <typename IndexType, typename T, typename Q, typename EWOP>
-        void copy_n_gen(typename elem<T>::type alpha, const T *v, const IndexType *indicesv,
-                        Cuda cudav, std::size_t n, Q *w, const IndexType *indicesw, Cuda cudaw,
-                        EWOP) {
-            vector<T, Cuda> v_gather(n, cudav);
-            copy_n<IndexType, T, T>(alpha, v, indicesv, cudav, n, v_gather.data(), EWOp::Copy{});
-            vector<T, Cuda> w_gather(n, cudaw);
-            copy_n<IndexType, T>(v_gather.data(), cudav, n, w_gather.data(), cudaw, EWOp::Copy{});
-            copy_n<IndexType, T, Q>(1, w_gather.data(), cudaw, n, w, indicesw, EWOP{});
-        }
-
-        /// Assign array to another array of the same type
-
-        template <typename IndexType, typename T, typename Q, std::size_t N> struct assign_array {
-
-            const T *const v;
-            const IndexType *const indicesv;
-            Q *const w;
-            const IndexType *const indicesw;
-
-            assign_array(const T *v, const IndexType *indicesv, Q *w, const IndexType *indicesw)
-                : v(v), indicesv(indicesv), w(w), indicesw(indicesw) {}
-
-            typedef IndexType first_argument_type;
-
-            typedef void result_type;
-
-            __host__ __device__ result_type operator()(const IndexType &i) const {
-                w[indicesw[i / N] * N + i % N] = v[indicesv[i / N] * N + i % N];
-            }
-        };
-
-        template <typename IndexType, typename T, typename Q, std::size_t N> struct scale_array {
-
-            const T alpha;
-            const T *const v;
-            const IndexType *const indicesv;
-            Q *const w;
-            const IndexType *const indicesw;
-
-            scale_array(T alpha, const T *v, const IndexType *indicesv, Q *w,
-                        const IndexType *indicesw)
-                : alpha(alpha), v(v), indicesv(indicesv), w(w), indicesw(indicesw) {}
-
-            typedef IndexType first_argument_type;
-
-            typedef void result_type;
-
-            __host__ __device__ result_type operator()(const IndexType &i) const {
-                w[indicesw[i / N] * N + i % N] = alpha * v[indicesv[i / N] * N + i % N];
-            }
-        };
-
-#    endif // SUPERBBLAS_USE_THRUST
-
-        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
-
-        template <typename T> struct is_std_array : std::false_type {};
-        template <typename T, std::size_t N>
-        struct is_std_array<std::array<T, N>> : std::true_type {};
-
-        template <typename IndexType, typename T, typename Q,
-                  typename std::enable_if<!is_std_array<T>::value, bool>::type = true>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indicesv, Cuda cudav, std::size_t n, Q *w,
-                                  const IndexType *indicesw, Cuda cudaw, EWOp::Copy))
-        IMPL({
-            if (deviceId(cudav) == deviceId(cudaw)) {
-                auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
-                                                             encapsulate_pointer(indicesv));
+        template <typename IndexType, typename T, typename Q, typename IteratorV, typename EWOP>
+        void copy_n_same_dev_thrust(const IteratorV &itv, std::size_t n, Q *w,
+                                    const IndexType *indicesw, EWOP) {
+            if (indicesw == nullptr) {
+                copy_n_same_dev_thrust<T, Q>(itv, n, encapsulate_pointer(w), EWOP{});
+            } else {
                 auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                              encapsulate_pointer(indicesw));
+                copy_n_same_dev_thrust<T, Q>(itv, n, itw, EWOP{});
+            }
+        }
+
+        template <typename IndexType, typename T, typename Q, typename EWOP>
+        void copy_n_same_dev_thrust(typename elem<T>::type alpha, const T *v,
+                                    const IndexType *indicesv, std::size_t n, Q *w,
+                                    const IndexType *indicesw, Cuda cuda, EWOP) {
+            setDevice(cuda);
+            if (indicesv == nullptr) {
+                auto itv = encapsulate_pointer(v);
                 if (alpha == typename elem<T>::type{1}) {
-                    thrust::copy_n(itv, n, itw);
+                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{});
                 } else {
-                    thrust::copy_n(thrust::make_transform_iterator(itv, scale<T>(alpha)), n, itw);
+                    copy_n_same_dev_thrust<IndexType, T, Q>(
+                        thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
+                        EWOP{});
                 }
             } else {
-                copy_n_gen<IndexType, T, Q>(alpha, v, indicesv, cudav, n, w, indicesw, cudaw,
-                                            EWOp::Copy{});
-            }
-        })
-
-        /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
-
-        template <typename IndexType, typename T, typename Q,
-                  typename std::enable_if<is_std_array<T>::value, bool>::type = true,
-                  std::size_t N = std::tuple_size<T>::value>
-        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cuda cudav,
-                    std::size_t n, Q *w, const IndexType *indicesw, Cuda cudaw, EWOp::Copy) IMPL({
-            if (deviceId(cudav) == deviceId(cudaw)) {
-                setDevice(cudav);
-                if (alpha == typename elem<T>::type{1}) {
-                    thrust::for_each_n(
-                        thrust::counting_iterator<IndexType>(0), n * N,
-                        assign_array<IndexType, typename T::value_type, typename Q::value_type, N>(
-                            (typename T::const_pointer)v, indicesv, (typename Q::pointer)w,
-                            indicesw));
-                } else {
-                    thrust::for_each_n(
-                        thrust::counting_iterator<IndexType>(0), n * N,
-                        scale_array<IndexType, typename T::value_type, typename Q::value_type, N>(
-                            alpha, (typename T::const_pointer)v, indicesv, (typename Q::pointer)w,
-                            indicesw));
-                }
-            } else {
-                copy_n_gen<IndexType, T, Q>(alpha, v, indicesv, cudav, n, w, indicesw, cudaw,
-                                            EWOp::Copy{});
-            }
-        })
-
-        /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v,
-                                  const IndexType *indicesv, Cuda cudav, std::size_t n, Q *w,
-                                  const IndexType *indicesw, Cuda cudaw, EWOp::Add))
-        IMPL({
-            if (deviceId(cudav) == deviceId(cudaw)) {
-                setDevice(cudav);
-                auto vit = thrust::make_permutation_iterator(encapsulate_pointer(v),
+                auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indicesv));
-                auto wit = thrust::make_permutation_iterator(encapsulate_pointer(w),
-                                                             encapsulate_pointer(indicesw));
                 if (alpha == typename elem<T>::type{1}) {
-                    thrust::transform(
-                        vit, vit + n, wit, wit,
-                        plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
+                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{});
                 } else {
-                    auto vit_scalar = thrust::make_transform_iterator(vit, scale<T>(alpha));
-                    thrust::transform(
-                        vit_scalar, vit_scalar + n, wit, wit,
-                        plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
+                    copy_n_same_dev_thrust<IndexType, T, Q>(
+                        thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
+                        EWOP{});
                 }
-            } else {
-                copy_n_gen<IndexType, T, Q, EWOp::Add>(alpha, v, indicesv, cudav, n, w, indicesw,
-                                                       cudaw, EWOp::Add{});
+            }
+        }
+
+#    endif // SUPERBBLAS_USE_THRUST
+
+        /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] when v and w are on device
+
+        template <typename IndexType, typename T, typename Q, typename EWOP>
+        DECL_COPY_T_Q_EWOP(void copy_n(typename elem<T>::type alpha, const T *v,
+                                       const IndexType *indicesv, Cuda cudav, std::size_t n, Q *w,
+                                       const IndexType *indicesw, Cuda cudaw, EWOP))
+        IMPL({
+            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
+            if (n == 0) return;
+
+            // Actions when the v and w are on the same device
+            if (deviceId(cudav) == deviceId(cudaw)) {
+                if (alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
+                    std::is_same<EWOP, EWOp::Copy>::value) {
+                    setDevice(cudaw);
+                    cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
+                } else {
+                    copy_n_same_dev_thrust(alpha, v, indicesv, n, w, indicesw, cudaw, EWOP{});
+                }
+            }
+
+            // Simple case when the v and w are NOT on the same device and no permutation is involved
+            else if (indicesv == nullptr && indicesw == nullptr &&
+                     alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
+                     std::is_same<EWOP, EWOp::Copy>::value && deviceId(cudav) != deviceId(cudaw)) {
+                setDevice(cudaw);
+                cudaCheck(cudaMemcpyPeer(w, deviceId(cudaw), v, deviceId(cudav), sizeof(T) * n));
+            }
+
+            // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
+            else if (indicesv != nullptr) {
+                vector<Q, Cuda> v0(n, cudav);
+                copy_n<IndexType>(alpha, v, indicesv, cudav, n, v0.data(), nullptr, cudav,
+                                  EWOp::Copy{});
+                copy_n<IndexType>(Q{1}, v0.data(), nullptr, cudav, n, w, indicesw, cudaw, EWOP{});
+            }
+
+            // Otherwise copy v to cudaw, and then copy it to the w[indices[i]]
+            else {
+                vector<T, Cuda> v1(n, cudaw);
+                copy_n<IndexType>(T{1}, v, indicesv, cudav, n, v1.data(), nullptr, cudaw,
+                                  EWOp::Copy{});
+                copy_n<IndexType>(T{alpha}, v1.data(), nullptr, cudaw, n, w, indicesw, cudaw,
+                                  EWOP{});
             }
         })
+
+        /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] from device to host and vice versa
+
+        template <typename IndexType, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename EWOP,
+                  typename std::enable_if<!std::is_same<XPU0, XPU1>::value, bool>::type = true>
+        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, XPU0 xpu0,
+                    std::size_t n, Q *w, const IndexType *indicesw, XPU1 xpu1, EWOP) {
+            if (n == 0) return;
+
+            // Base case
+            if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
+                indicesv == nullptr && indicesw == nullptr) {
+                setDevice(xpu0);
+                setDevice(xpu1);
+                cudaCheck(cudaMemcpy(w, v, sizeof(T) * n,
+                                     std::is_same<XPU0, Cuda>::value ? cudaMemcpyDeviceToHost
+                                                                     : cudaMemcpyHostToDevice));
+                // Scale by alpha
+                copy_n<IndexType>(alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
+            }
+
+            // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
+            else if (indicesv != nullptr) {
+                vector<Q, XPU0> v0(n, xpu0);
+                copy_n<IndexType>(alpha, v, indicesv, xpu0, n, v0.data(), nullptr, xpu0,
+                                  EWOp::Copy{});
+                copy_n<IndexType>(Q{1}, v0.data(), nullptr, xpu0, n, w, indicesw, xpu1, EWOP{});
+            }
+
+            // Otherwise copy v to xpu1, and then copy it to the w[indices[i]]
+            else {
+                vector<T, XPU1> v1(n, xpu1);
+                copy_n<IndexType>(T{1}, v, indicesv, xpu0, n, v1.data(), nullptr, xpu1,
+                                  EWOp::Copy{});
+                copy_n<IndexType>(T{alpha}, v1.data(), nullptr, xpu1, n, w, indicesw, xpu1, EWOP{});
+            }
+        }
+
+        /// Copy n values, w[i] (+)= v[i] when v or w is on device
+
+        template <typename IndexType, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename EWOP,
+                  typename std::enable_if<std::is_same<XPU0, Cuda>::value |
+                                              std::is_same<XPU1, Cuda>::value,
+                                          bool>::type = true>
+        void copy_n(typename elem<T>::type alpha, const T *v, XPU0 xpu0, std::size_t n, Q *w,
+                    XPU1 xpu1, EWOP) {
+            copy_n<IndexType>(alpha, v, nullptr, xpu0, n, w, nullptr, xpu1, EWOP{});
+        }
+
+        /// Copy n values, w[i] (+)= v[indices[i]] when v or w is on device
+
+        template <typename IndexType, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename EWOP,
+                  typename std::enable_if<std::is_same<XPU0, Cuda>::value |
+                                              std::is_same<XPU1, Cuda>::value,
+                                          bool>::type = true>
+        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, XPU0 xpu0,
+                    std::size_t n, Q *w, XPU1 xpu1, EWOP) {
+            copy_n<IndexType>(alpha, v, indices, xpu0, n, w, nullptr, xpu1, EWOP{});
+        }
+
+        /// Copy n values, w[indices[i]] (+)= v[i] when v or w is on device
+
+        template <typename IndexType, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename EWOP,
+                  typename std::enable_if<std::is_same<XPU0, Cuda>::value |
+                                              std::is_same<XPU1, Cuda>::value,
+                                          bool>::type = true>
+        void copy_n(typename elem<T>::type alpha, const T *v, XPU0 xpu0, std::size_t n, Q *w,
+                    const IndexType *indices, XPU1 xpu1, EWOP) {
+            copy_n<IndexType>(alpha, v, nullptr, xpu0, n, w, indices, xpu1, EWOP{});
+        }
 
         /// Copy and reduce n values, w[indicesw[i]] += sum(v[perm[perm_distinct[i]:perm_distinct[i+1]]])
         template <typename IndexType, typename T>
@@ -987,7 +814,7 @@ namespace superbblas {
             copy_reduce_n<IndexType, T>(1, v, Cpu{}, perm, perm_distinct, ndistinct, cpuv,
                                         w_host.data(), nullptr, Cpu{});
             vector<T, Cuda> w_device(ndistinct - 1, cudaw);
-            copy_n<IndexType, T>(w_host.data(), cpuv, ndistinct - 1, w_device.data(), cudaw,
+            copy_n<IndexType, T>(T{1}, w_host.data(), cpuv, ndistinct - 1, w_device.data(), cudaw,
                                  EWOp::Copy{});
             auto itw_dev = encapsulate_pointer(w_device.begin());
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
@@ -1025,6 +852,7 @@ namespace superbblas {
         /// \param cuda: device context
 
         template <typename T> void zero_n(T *v, std::size_t n, Cuda cuda) {
+            if (n == 0) return;
             setDevice(cuda);
             cudaCheck(cudaMemset(v, 0, sizeof(T) * n));
         }
@@ -1063,7 +891,7 @@ namespace superbblas {
             if (std::abs(alpha) == 0) {
                 zero_n(x, n, xpu);
             } else {
-                copy_n<int>(x, xpu, n, x, xpu, EWOp::Copy{});
+                copy_n<int>(alpha, x, xpu, n, x, xpu, EWOp::Copy{});
             }
         }
 
@@ -1199,13 +1027,16 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_CUDA
 
-        template <typename T> vector<T, Cpu> toCpu(const vector<T, Cpu> &v) { return v; }
+        template <typename IndexType, typename T> vector<T, Cpu> toCpu(const vector<T, Cpu> &v) {
+            return v;
+        }
 
-        template <typename T, typename XPU,
+        template <typename IndexType, typename T, typename XPU,
                   typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
         vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
             vector<T, Cpu> r(v.size());
-            copy_n<std::size_t, T>(v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
+            copy_n<IndexType, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
+                                 EWOp::Copy{});
             return r;
         }
     }

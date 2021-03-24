@@ -410,7 +410,7 @@ namespace superbblas {
             Indices<Cpu> indices_host = get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1,
                                                                          from1, dim1, Cpu{}, co);
             Indices<Cuda> indices(indices_host.size(), cuda);
-            copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
+            copy_n<IndexType, IndexType>(1, indices_host.data(), Cpu{}, indices_host.size(),
                                          indices.data(), cuda, EWOp::Copy{});
             return indices;
         }
@@ -435,7 +435,7 @@ namespace superbblas {
             Indices<Cpu> indices_host = get_permutation_destination<Nd0, Nd1>(
                 o0, from0, size0, dim0, o1, from1, dim1, Cpu{}, co);
             Indices<Cuda> indices(indices_host.size(), cuda);
-            copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
+            copy_n<IndexType, IndexType>(1, indices_host.data(), Cpu{}, indices_host.size(),
                                          indices.data(), cuda, EWOp::Copy{});
             return indices;
         }
@@ -592,7 +592,7 @@ namespace superbblas {
                 size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
                 Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                 disp = coor2index<Nd1>(from1, dim1, stride1);
-		indices_out = indices1_sd;
+                indices_out = indices1_sd;
                 return;
             }
 

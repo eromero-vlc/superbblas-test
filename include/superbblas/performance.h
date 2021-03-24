@@ -44,7 +44,6 @@ namespace superbblas {
         return mem;
     }
 
-
     namespace detail {
 
         /// Stack of function calls being tracked
@@ -136,7 +135,7 @@ namespace superbblas {
                 // category with its path name
                 if (category != funcName) getTimings()[category] += elapsedTime;
 
-		// Record memory not released
+                // Record memory not released
                 if (getTrackingMemory())
                     getCacheUsage()[funcName] +=
                         getCpuMemUsed() - mem_cpu + getGpuMemUsed() - mem_gpu;

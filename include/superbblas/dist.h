@@ -397,14 +397,14 @@ namespace superbblas {
                     assert(i != fs.size() - 1 || n == vol);
                 }
                 Indices<XPU0> indices0_xpu(indices0.size(), v0.ctx());
-                copy_n<IndexType, IndexType>(indices0.data(), Cpu{}, indices0.size(),
+                copy_n<IndexType, IndexType>(1, indices0.data(), Cpu{}, indices0.size(),
                                              indices0_xpu.data(), v0.ctx(), EWOp::Copy{});
                 cache[key] = PairIndices{indices0_xpu, indices1};
                 it = cache.find(key);
             }
 
             // Do the copy
-            copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.first.begin(), v0.ctx(), vol,
+            copy_n<IndexType, T, Q>(T{1}, v0.data(), it->second.first.begin(), v0.ctx(), vol,
                                     v1.data(), it->second.second.begin(), Cpu{}, EWOp::Copy{});
         }
 
@@ -507,7 +507,7 @@ namespace superbblas {
             if (it == cache.end()) {
                 tracker _t("comp. unpack permutation for copy");
 
-		// Check whether the packages has extra elements to fill up to MpiTypeSize
+                // Check whether the packages has extra elements to fill up to MpiTypeSize
                 bool pre_index = false;
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
                     Coor<Nd> sizei = toReceive[i][1];
@@ -540,10 +540,10 @@ namespace superbblas {
 
                 // Copy indices1_cmp to the same device as the destination tensor
                 Indices<XPU> indices0_xpu(indices0.size(), v.it.ctx());
-                copy_n<IndexType, IndexType>(indices0.data(), Cpu{}, indices0.size(),
+                copy_n<IndexType, IndexType>(1, indices0.data(), Cpu{}, indices0.size(),
                                              indices0_xpu.data(), v.it.ctx(), EWOp::Copy{});
                 Indices<XPU> indices1_xpu(indices1.size(), v.it.ctx());
-                copy_n<IndexType, IndexType>(indices1.data(), Cpu{}, indices1.size(),
+                copy_n<IndexType, IndexType>(1, indices1.data(), Cpu{}, indices1.size(),
                                              indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
 
                 // Cache this effort
@@ -588,7 +588,7 @@ namespace superbblas {
             if (it == cache.end()) {
                 tracker _t("comp. unpack permutation for add");
 
-		// Check whether the packages has extra elements to fill up to MpiTypeSize
+                // Check whether the packages has extra elements to fill up to MpiTypeSize
                 bool pre_index = false;
                 for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
                     Coor<Nd> sizei = toReceive[i][1];
@@ -644,7 +644,7 @@ namespace superbblas {
 
                 // Copy indices1_cmp to the same device as the destination tensor
                 Indices<XPU> indices1_xpu(perm_distinct_size - 1, v.it.ctx());
-                copy_n<IndexType>(indices1_cmp.data(), Cpu{}, perm_distinct_size - 1,
+                copy_n<IndexType>(1, indices1_cmp.data(), Cpu{}, perm_distinct_size - 1,
                                   indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
 
                 // Cache this effort
@@ -1156,7 +1156,7 @@ namespace superbblas {
                 std::size_t vol = volume(size);
                 vector<IndexType, XPU> r(vol, xpu);
                 vector<IndexType, Cpu> r_host = get_mock_components(from, size, dim, Cpu{}, co, mf);
-                copy_n<IndexType>(r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
+                copy_n<IndexType>(1, r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
                                   EWOp::Copy{});
                 return r;
             }
@@ -1229,7 +1229,7 @@ namespace superbblas {
                 std::size_t vol = volume(v.dim);
                 Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-                vector<IndexType, Cpu> v_host = toCpu(v.it);
+                vector<IndexType, Cpu> v_host = toCpu<IndexType>(v.it);
 
 #ifdef _OPENMP
 #    pragma omp parallel for
