@@ -717,6 +717,17 @@ namespace superbblas {
             }
         })
 
+        /// Copy n values, w[indices[i]] += v[i]
+
+        template <typename IndexType, typename T, typename Q>
+        DECL_COPY_T_Q(void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n,
+                                  Q *w, const IndexType *indices, Cuda cudaw, EWOp::Add))
+        IMPL({
+            vector<T, Cuda> v_dev(n, cudaw);
+            copy_n<IndexType, T>(v, Cpu{}, n, v_dev.data(), cudaw, EWOp::Copy{});
+            copy_n<IndexType, T, Q>(alpha, v_dev.data(), cudaw, n, w, indices, EWOp::Add{});
+        })
+
         /// Copy n values, w[indices[i]] = v[i]
 
         template <typename IndexType, typename T, typename Q>

@@ -516,6 +516,7 @@ namespace superbblas {
                         pre_index = true;
                     n += voli;
                 }
+                assert(!pre_index);
 
                 // Compute the destination index for all received elements
                 Indices<Cpu> indices0(pre_index ? vol : 0), indices1(vol);
