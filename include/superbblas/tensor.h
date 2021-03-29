@@ -863,11 +863,11 @@ namespace superbblas {
                 throw std::runtime_error("o_r has unmatched dimensions");
 
             // Check that no order ends with T
-            if (!(nT == 0 || o0.size() == 0 || o0.back() != eT))
+            if (!(nT == 0 || o0.size() == 0 || nA == 0 || nB == 0 || o0.back() != eT))
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the first tensor");
-            if (!(nT == 0 || o1.size() == 0 || o1.back() != eT))
+            if (!(nT == 0 || o1.size() == 0 || nA == 0 || nC == 0 || o1.back() != eT))
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the second tensor");
@@ -875,6 +875,12 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the output tensor");
+            if (o0.size() == 0 xor o1.size() == 0)
+                throw std::runtime_error("Unsupported contraction: one of the input tensors is "
+                                         "empty and the other is not");
+            if (o_r.size() == 0 && o0.size() + o1.size() > 0)
+                throw std::runtime_error("Unsupported contraction: the output tensor is empty but "
+                                         "some of the input tensors is not");
 
             // Check whether each order starts with T
             bool o0_starts_with_T = (nT == 0 || o0.size() == 0 || o0[0] == sT);
@@ -884,7 +890,7 @@ namespace superbblas {
             // Check if o0 and o1 need transpose
             bool o0_trans = (o0.size() > nT && o0[o0_starts_with_T ? nT : 0] == sB);
             bool o1_trans = (o1.size() > nT && o1[o1_starts_with_T ? nT : 0] == sA);
-            bool or_trans = (o_r.size() > nT && o_r[o0_starts_with_T ? nT : 0] == sB);
+            bool or_trans = (o_r.size() > nT && nC > 0 && o_r[o0_starts_with_T ? nT : 0] == sB);
             if (or_trans)
                 throw std::runtime_error(
                     "Unsupported contraction: on the output labels, put the labels from the second "
@@ -897,11 +903,11 @@ namespace superbblas {
                                          "second tensor to use conjugation");
 
             // Compute the volume for each piece
-            int volT = nT == 0 ? 1 : volume<Nd0>(o0, dim0, sT, nT);
-            int volA = volume<Nd0>(o0, dim0, sA, nA);
-            int volA_nonzero = volA > 0 ? 1 : 0;
-            int volB = nB == 0 ? volA_nonzero : volume<Nd0>(o0, dim0, sB, nB);
-            int volC = nC == 0 ? volA_nonzero : volume<Nd1>(o1, dim1, sC, nC);
+            int nonzero = (o0.size() > 0 & o1.size() > 0 & o_r.size() > 0 ? 1 : 0);
+            int volT = nT == 0 ? nonzero : volume<Nd0>(o0, dim0, sT, nT);
+            int volA = nA == 0 ? nonzero : volume<Nd0>(o0, dim0, sA, nA);
+            int volB = nB == 0 ? nonzero : volume<Nd0>(o0, dim0, sB, nB);
+            int volC = nC == 0 ? nonzero : volume<Nd1>(o1, dim1, sC, nC);
             if (volA == 0) volA = 1;
             assert(volT * volA * volB == (int)volume<Nd0>(dim0));
             assert(volT * volA * volC == (int)volume<Nd1>(dim1));
