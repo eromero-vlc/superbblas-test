@@ -7,7 +7,7 @@ install_cpu:
 
 install_cuda:
 	@mkdir -p $(BUILDDIR)
-	@$(MAKE) -C src clean install TARGET=cuda
+	@$(MAKE) -C src clean install TARGET=cuda CXX=
 
 test_cpu:
 	@$(MAKE) -C tests clean all_cpu
