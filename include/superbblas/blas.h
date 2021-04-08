@@ -93,6 +93,38 @@ namespace superbblas {
 
     namespace detail {
 
+        /// Check the given pointer has proper alignment
+        /// \param v: ptr to check
+	/// NOTE: thrust::complex requires sizeof(complex<T>) alignment
+
+        template <typename T> struct check_ptr_align {
+            static void check(T *v) {
+                std::size_t size = sizeof(T);
+                void *ptr = (void *)v;
+                if (v != nullptr && std::align(alignof(T), sizeof(T), ptr, size) == nullptr)
+                    throw std::runtime_error("Ups! Unaligned pointer");
+            }
+        };
+
+        /// Check the given pointer has proper alignment
+        /// \param v: ptr to check
+        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
+
+        template <typename T> struct check_ptr_align<std::complex<T>> {
+            static void check(std::complex<T> *v) {
+                using U = std::complex<T>;
+#ifdef SUPERBBLAS_USE_CUDA
+                std::size_t alignment = sizeof(U);
+#else
+                std::size_t alignment = alignof(U);
+#endif
+                std::size_t size = sizeof(U);
+                void *ptr = (void *)v;
+                if (v != nullptr && std::align(alignment, sizeof(U), ptr, size) == nullptr)
+                    throw std::runtime_error("Ups! Unaligned pointer");
+            }
+        };
+
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param cpu: context
@@ -111,6 +143,7 @@ namespace superbblas {
                 getCpuMemUsed() += double(sizeof(T) * n);
             }
 
+            check_ptr_align<T>::check(r);
             return r;
         }
 
@@ -172,6 +205,7 @@ namespace superbblas {
                 getGpuMemUsed() += double(sizeof(T) * n);
             }
 
+            check_ptr_align<T>::check(r);
             return r;
         }
 
@@ -310,12 +344,14 @@ namespace superbblas {
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
         template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n = 0) {
+            check_ptr_align<T>::check(ptr);
             return vector<T, Cpu>(n, ptr, Cpu{});
         }
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
         template <typename T> vector<T, Cpu> to_vector(T *ptr, Cpu cpu) {
+            check_ptr_align<T>::check(ptr);
             return vector<T, Cpu>(0, ptr, cpu);
         }
 
@@ -323,6 +359,7 @@ namespace superbblas {
         /// Construct a `vector<T, Cuda>` with the given pointer and context
 
         template <typename T> vector<T, Cuda> to_vector(T *ptr, Cuda cuda) {
+            check_ptr_align<T>::check(ptr);
             return vector<T, Cuda>(0, ptr, cuda);
         }
 #endif
