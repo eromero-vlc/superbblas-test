@@ -117,7 +117,7 @@ namespace superbblas {
 
         /// Check the given pointer has proper alignment
         /// \param v: ptr to check
-	/// NOTE: thrust::complex requires sizeof(complex<T>) alignment
+        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
 
         template <typename T> struct check_ptr_align {
             static void check(T *v) {
@@ -161,6 +161,8 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
+                if (getAllocations().count((void *)r) > 0)
+                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
                 getAllocations()[(void *)r] = sizeof(T) * n;
                 getCpuMemUsed() += double(sizeof(T) * n);
             }
@@ -177,9 +179,6 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
-            // Deallocate the pointer
-            delete[] ptr;
-
             // Remove annotation
             if (getTrackingMemory()) {
                 const auto &it = getAllocations().find((void *)ptr);
@@ -188,6 +187,9 @@ namespace superbblas {
                 getCpuMemUsed() -= double(it->second);
                 getAllocations().erase(it);
             }
+
+            // Deallocate the pointer
+            delete[] ptr;
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
@@ -212,6 +214,8 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
+                if (getAllocations().count((void *)r) > 0)
+                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
                 getAllocations()[(void *)r] = sizeof(T) * n;
                 getGpuMemUsed() += double(sizeof(T) * n);
             }
@@ -228,13 +232,6 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
-            // Deallocate the pointer
-            setDevice(cuda);
-            if (cuda.dealloc)
-                cuda.dealloc((void *)ptr, CUDA);
-            else
-                detail::cudaCheck(cudaFree((void *)ptr));
-
             // Remove annotation
             if (getTrackingMemory()) {
                 const auto &it = getAllocations().find((void *)ptr);
@@ -243,6 +240,13 @@ namespace superbblas {
                 getGpuMemUsed() -= double(it->second);
                 getAllocations().erase(it);
             }
+
+            // Deallocate the pointer
+            setDevice(cuda);
+            if (cuda.dealloc)
+                cuda.dealloc((void *)ptr, CUDA);
+            else
+                detail::cudaCheck(cudaFree((void *)ptr));
         }
 #endif
 
@@ -617,6 +621,7 @@ namespace superbblas {
         IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
                 setDevice(cudaw);
+                if (n == 0) return;
                 thrust::transform(encapsulate_pointer(v), encapsulate_pointer(v) + n,
                                   encapsulate_pointer(w), encapsulate_pointer(w),
                                   thrust::plus<typename cuda_complex<T>::type>());
@@ -634,6 +639,7 @@ namespace superbblas {
                                   Q *w, Cpu, EWOp::Copy))
         IMPL({
             setDevice(cudav);
+            if (n == 0) return;
             thrust::copy_n(thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indices)),
                            n, (typename cuda_complex<Q>::type *)w);
@@ -676,6 +682,7 @@ namespace superbblas {
                 copy_n<IndexType, T, Q>(v, indices, cudav, n, w, Cpu{}, EWOp::Copy{});
             } else {
                 setDevice(cudav);
+                if (n == 0) return;
                 thrust::copy_n(thrust::make_transform_iterator(
                                    thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                                      encapsulate_pointer(indices)),
@@ -700,6 +707,7 @@ namespace superbblas {
                                   EWOp::Copy))
         IMPL({
             setDevice(cudaw);
+            if (n == 0) return;
             auto itv =
                 thrust::make_permutation_iterator((typename cuda_complex<T>::type *)v, indices);
             auto itw = encapsulate_pointer(w);
@@ -718,6 +726,7 @@ namespace superbblas {
                                   EWOp::Copy))
         IMPL({
             setDevice(cudav);
+            if (n == 0) return;
             auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                          encapsulate_pointer(indices));
             if (alpha == typename elem<T>::type{1}) {
@@ -735,6 +744,7 @@ namespace superbblas {
                                   Q *w, const IndexType *indices, Cuda cudaw, EWOp::Copy))
         IMPL({
             setDevice(cudaw);
+            if (n == 0) return;
             auto itv = (typename cuda_complex<T>::type *)v;
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                          encapsulate_pointer(indices));
@@ -763,6 +773,7 @@ namespace superbblas {
                                   std::size_t n, Q *w, const IndexType *indices, EWOp::Copy))
         IMPL({
             setDevice(cudav);
+            if (n == 0) return;
             auto itv = encapsulate_pointer(v);
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                          encapsulate_pointer(indices));
@@ -780,6 +791,7 @@ namespace superbblas {
                                   std::size_t n, Q *w, const IndexType *indices, EWOp::Add))
         IMPL({
             setDevice(cudav);
+            if (n == 0) return;
             auto itv = encapsulate_pointer(v);
             auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                          encapsulate_pointer(indices));
@@ -802,6 +814,7 @@ namespace superbblas {
                                   const IndexType *indicesv, Cpu, std::size_t n, Q *w,
                                   const IndexType *indicesw, Cuda cudaw, EWOp::Copy))
         IMPL({
+            if (n == 0) return;
             setDevice(cudaw);
 
             auto itv =
@@ -823,6 +836,7 @@ namespace superbblas {
                                   const IndexType *indicesw, Cuda cudaw, EWOp::Add))
         IMPL({
             setDevice(cudaw);
+            if (n == 0) return;
             std::vector<Q> v_gather(n);
             copy_n<IndexType, T, Q>(v, indicesv, Cpu{}, n, v_gather.data(), Cpu{}, EWOp::Copy{});
             vector<Q, Cuda> v_dev(n, cudaw);
@@ -848,6 +862,7 @@ namespace superbblas {
                                   const IndexType *indicesw, Cpu, EWOp::Copy))
         IMPL({
             setDevice(cudav);
+            if (n == 0) return;
             auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                          encapsulate_pointer(indicesv));
             auto itw =
@@ -943,6 +958,8 @@ namespace superbblas {
                                   const IndexType *indicesw, Cuda cudaw, EWOp::Copy))
         IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
+                setDevice(cudav);
+                if (n == 0) return;
                 auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indicesv));
                 auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
@@ -967,6 +984,7 @@ namespace superbblas {
                     std::size_t n, Q *w, const IndexType *indicesw, Cuda cudaw, EWOp::Copy) IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
                 setDevice(cudav);
+                if (n == 0) return;
                 if (alpha == typename elem<T>::type{1}) {
                     thrust::for_each_n(
                         thrust::counting_iterator<IndexType>(0), n * N,
@@ -995,6 +1013,7 @@ namespace superbblas {
         IMPL({
             if (deviceId(cudav) == deviceId(cudaw)) {
                 setDevice(cudav);
+                if (n == 0) return;
                 auto vit = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indicesv));
                 auto wit = thrust::make_permutation_iterator(encapsulate_pointer(w),
@@ -1022,6 +1041,8 @@ namespace superbblas {
                                             std::size_t ndistinct, Cpu cpuv, T *w,
                                             const IndexType *indicesw, Cuda cudaw))
         IMPL({
+            if (ndistinct <= 1) return;
+            setDevice(cudaw);
             std::vector<T> w_host(ndistinct - 1);
             copy_reduce_n<IndexType, T>(1, v, Cpu{}, perm, perm_distinct, ndistinct, cpuv,
                                         w_host.data(), nullptr, Cpu{});
@@ -1222,7 +1243,7 @@ namespace superbblas {
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
                                  T *c, int ldc, int stridec, int batch_size, Cuda cuda) {
             // Quick exits
-            if (m == 0 || n == 0) return;
+            if (m == 0 || n == 0 || batch_size == 0) return;
 
             // Replace some invalid arguments when k is zero
             if (k == 0) {
@@ -1231,10 +1252,18 @@ namespace superbblas {
             }
 
             cudaDataType_t cT = toCudaDataType<T>();
-            cublasCheck(cublasGemmStridedBatchedEx(
-                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha, a,
-                cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
-                toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+            if (batch_size == 1) {
+                cublasCheck(cublasGemmEx(cuda.cublasHandle, toCublasTrans(transa),
+                                         toCublasTrans(transb), m, n, k, &alpha, a, cT, lda, b, cT,
+                                         ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
+                                         CUBLAS_GEMM_DEFAULT));
+            } else {
+
+                cublasCheck(cublasGemmStridedBatchedEx(
+                    cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                    &alpha, a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec,
+                    batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+            }
         }
 #endif // SUPERBBLAS_USE_CUDA
 
