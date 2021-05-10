@@ -192,15 +192,6 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
 
-        /// Set the current device as the one passed
-        /// \param cuda: context
-
-        inline void setDevice(Cuda cuda) {
-            int currentDevice;
-            cudaCheck(cudaGetDevice(&currentDevice));
-            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
-        }
-
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param cuda: context

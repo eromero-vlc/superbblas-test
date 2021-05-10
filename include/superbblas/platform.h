@@ -67,6 +67,10 @@ namespace superbblas {
         inline int deviceId(Cpu) { return CPU_DEVICE_ID; }
 
 #ifdef SUPERBBLAS_USE_CUDA
+
+        /// Throw exception if the given error isn't success
+        /// \param err: cuda error code
+
         inline void cudaCheck(cudaError_t err) {
             if (err != cudaSuccess) {
                 std::stringstream s;
@@ -126,6 +130,16 @@ namespace superbblas {
 
         /// Return a device identification
         inline int deviceId(Cuda cuda) { return cuda.device; }
+
+        /// Set the current device as the one passed
+        /// \param cuda: context
+
+        inline void setDevice(Cuda cuda) {
+            int currentDevice;
+            cudaCheck(cudaGetDevice(&currentDevice));
+            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
+        }
+
 #else
 
         /// Return the device in which the pointer was allocated
@@ -178,6 +192,9 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
             if (plat == CUDA) {
+                int currentDevice = -1;
+                detail::cudaCheck(cudaGetDevice(&currentDevice));
+                if (currentDevice != device) detail::cudaCheck(cudaSetDevice(device));
                 cublasHandle =
                     std::shared_ptr<cublasHandle_t>(new cublasHandle_t, [](cublasHandle_t *p) {
                         detail::cublasCheck(cublasDestroy(*p));
