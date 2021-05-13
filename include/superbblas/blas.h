@@ -180,10 +180,8 @@ namespace superbblas {
             if (!ptr) return;
 
             // Remove annotation
-            if (getTrackingMemory()) {
+            if (getTrackingMemory() && getAllocations().count((void *)ptr) > 0) {
                 const auto &it = getAllocations().find((void *)ptr);
-                if (it == getAllocations().end())
-                    throw std::runtime_error("Unexpected pointer to deallocate");
                 getCpuMemUsed() -= double(it->second);
                 getAllocations().erase(it);
             }
@@ -233,10 +231,8 @@ namespace superbblas {
             if (!ptr) return;
 
             // Remove annotation
-            if (getTrackingMemory()) {
+            if (getTrackingMemory() && getAllocations().count((void *)ptr) > 0) {
                 const auto &it = getAllocations().find((void *)ptr);
-                if (it == getAllocations().end())
-                    throw std::runtime_error("Unexpected pointer to deallocate");
                 getGpuMemUsed() -= double(it->second);
                 getAllocations().erase(it);
             }
