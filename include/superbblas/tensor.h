@@ -16,6 +16,42 @@
 #include <utility>
 #include <vector>
 
+//////////////////////
+// NOTE:
+// Functions in this file that uses `thrust` should be instrumented to remove the dependency from
+// `thrust` when the superbblas library is used not as header-only. Use the macro `IMPL` to hide
+// the definition of functions using `thrust` and use DECL_... macros to generate template
+// instantiations to be included in the library.
+
+#ifdef SUPERBBLAS_USE_THRUST 
+#    include <thrust/device_ptr.h>
+#    include <thrust/execution_policy.h>
+#    include <thrust/transform.h>
+#endif
+
+#ifdef SUPERBBLAS_CREATING_LIB
+
+#    define COOR_DIMS 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+#    define REPLACE_Nd0_Nd1 REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS)
+
+/// Generate template instantiations for get_permutation_origin and get_permutation_destination functions
+/// with template parameters Nd0 and Nd1
+
+#    define DECL_ORIG_PERM(...)                                                                    \
+        EMIT REPLACE1(get_permutation_origin,                                                      \
+                      superbblas::detail::get_permutation_origin<Nd0, Nd1>)                        \
+            REPLACE_Nd0_Nd1 template __VA_ARGS__;
+
+#    define DECL_DEST_PERM(...)                                                                    \
+        EMIT REPLACE1(get_permutation_destination,                                                 \
+                      superbblas::detail::get_permutation_destination<Nd0, Nd1>)                   \
+            REPLACE_Nd0_Nd1 template __VA_ARGS__;
+
+#else
+#    define DECL_ORIG_PERM(...) __VA_ARGS__
+#    define DECL_DEST_PERM(...) __VA_ARGS__
+#endif
+
 namespace superbblas {
 
     /// Coordinate Index type
@@ -38,6 +74,94 @@ namespace superbblas {
     };
 
     namespace detail {
+
+#ifdef SUPERBBLAS_USE_THRUST
+        /// Thrust does not support std::array container; here we implement a quick-and-dirty array container based on tuples
+
+        template <typename T, std::size_t N> struct tarray_aux;
+        template <typename T, std::size_t N> struct tarray_aux {
+            using type =
+                thrust::tuple<T, T, T, T, T, T, T, T, T, typename tarray_aux<T, N - 9>::type>;
+        };
+
+        template <typename T> struct tarray_aux<T, 0ul> { using type = thrust::tuple<>; };
+        template <typename T> struct tarray_aux<T, 1ul> { using type = thrust::tuple<T>; };
+        template <typename T> struct tarray_aux<T, 2ul> { using type = thrust::tuple<T, T>; };
+        template <typename T> struct tarray_aux<T, 3ul> { using type = thrust::tuple<T, T, T>; };
+        template <typename T> struct tarray_aux<T, 4ul> { using type = thrust::tuple<T, T, T, T>; };
+        template <typename T> struct tarray_aux<T, 5ul> {
+            using type = thrust::tuple<T, T, T, T, T>;
+        };
+        template <typename T> struct tarray_aux<T, 6ul> {
+            using type = thrust::tuple<T, T, T, T, T, T>;
+        };
+        template <typename T> struct tarray_aux<T, 7ul> {
+            using type = thrust::tuple<T, T, T, T, T, T, T>;
+        };
+        template <typename T> struct tarray_aux<T, 8ul> {
+            using type = thrust::tuple<T, T, T, T, T, T, T, T>;
+        };
+        template <typename T> struct tarray_aux<T, 9ul> {
+            using type = thrust::tuple<T, T, T, T, T, T, T, T, T>;
+        };
+        // template <typename T> struct tarray_aux<T, 10ul> {
+        //     using type = thrust::tuple<T, T, T, T, T, T, T, T, T, thrust::tuple<T>>;
+        // };
+        // template <typename T> struct tarray_aux<T, 11ul> {
+        //     using type = thrust::tuple<T, T, T, T, T, T, T, T, T, thrust::tuple<T, T>>;
+        // };
+        /// array container implementation based on tuples
+
+        template <typename T, std::size_t N> using tarray = typename tarray_aux<T, N>::type;
+
+	/// Return the I-th element on a tarray
+	/// \tparam I: index of the element to return
+	/// \param t: input array
+
+        template <std::size_t I, typename T, std::size_t N,
+                  typename std::enable_if<(I < 9 && I < N), bool>::type = true>
+        inline __HOST__ __DEVICE__ T &tget(tarray<T, N> &t) {
+            return thrust::get<I>(t);
+        }
+
+        template <std::size_t I, typename T, std::size_t N,
+                  typename std::enable_if<(I < 9 && I < N), bool>::type = true>
+        inline __HOST__ __DEVICE__ const T &tget(const tarray<T, N> &t) {
+            return thrust::get<I>(t);
+        }
+
+        template <std::size_t I, typename T, std::size_t N,
+                  typename std::enable_if<(I >= 9 && I < N), bool>::type = true>
+        inline __HOST__ __DEVICE__ T &tget(tarray<T, N> &t) {
+            return tget<I - 9, T, N - 9>(thrust::get<9>(t));
+        }
+
+        template <std::size_t I, typename T, std::size_t N,
+                  typename std::enable_if<(I >= 9 && I < N), bool>::type = true>
+        inline __HOST__ __DEVICE__ const T &tget(const tarray<T, N> &t) {
+            return tget<I - 9, T, N - 9>(thrust::get<9>(t));
+        }
+
+	/// Return the i-th element on a tarray
+	/// \param i: index of the element to return
+	/// \param t: input array
+        template <typename T, typename Indx, std::size_t N, std::size_t I = 0,
+                  typename std::enable_if<(I >= N), bool>::type = true>
+        inline __HOST__ __DEVICE__ T tget(Indx, const tarray<T, N> &) {
+            return T{0};
+        }
+
+        template <typename T, typename Indx, std::size_t N, std::size_t I = 0,
+                  typename std::enable_if<(I < N), bool>::type = true>
+        inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &a) {
+            return ((std::size_t)i == I ? tget<I, T, N>(a) : tget<T, Indx, N, I + 1>(i, a));
+        }
+
+	/// Coordinate based on tarray
+	/// \tparam Nd: number of dimensions
+
+        template <std::size_t Nd> using TCoor = tarray<IndexType, Nd>;
+#endif
 
         /// Vector of `IndexType`
         template <typename XPU> using Indices = vector<IndexType, XPU>;
@@ -85,6 +209,56 @@ namespace superbblas {
             std::reverse(r.begin(), r.end());
             return r;
         }
+
+#ifdef SUPERBBLAS_USE_THRUST 
+        namespace ns_plus_aux {
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I >= Nd), bool>::type = true>
+            __HOST__ __DEVICE__ inline void plus_aux(const TCoor<Nd> &, const TCoor<Nd> &,
+                                                     TCoor<Nd> &) {}
+
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I < Nd), bool>::type = true>
+            __HOST__ __DEVICE__ inline void plus_aux(const TCoor<Nd> &a, const TCoor<Nd> &b,
+                                                     TCoor<Nd> &r) {
+                tget<I, IndexType, Nd>(r) = tget<I, IndexType, Nd>(a) + tget<I, IndexType, Nd>(b);
+                plus_aux<Nd, I + 1>(a, b, r);
+            }
+        }
+
+	/// Add two arrays
+	/// \param a: first array to add
+	/// \param b: second array to add
+
+        template <std::size_t Nd>
+        __HOST__ __DEVICE__ inline TCoor<Nd> tplus(TCoor<Nd> a, TCoor<Nd> b) {
+            TCoor<Nd> r;
+            ns_plus_aux::plus_aux<Nd>(a, b, r);
+            return r;
+        }
+
+        namespace ns_toTCoor_aux {
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I >= Nd), bool>::type = true>
+            inline void toTCoor_aux(const Coor<Nd> &, TCoor<Nd> &) {}
+
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I < Nd), bool>::type = true>
+            inline void toTCoor_aux(const Coor<Nd> &a, TCoor<Nd> &r) {
+                tget<I, IndexType, Nd>(r) = a[I];
+                toTCoor_aux<Nd, I + 1>(a, r);
+            }
+        }
+
+        /// Convert from Coor to TCoor
+        /// \param a: input coordinate
+
+        template <std::size_t Nd> inline TCoor<Nd> toTCoor(const Coor<Nd> &a) {
+            TCoor<Nd> r;
+            ns_toTCoor_aux::toTCoor_aux<Nd>(a, r);
+            return r;
+        }
+#endif
 
         /// Return whether the point is in the interval
         /// \param from: first coordinate in the interval
@@ -151,6 +325,24 @@ namespace superbblas {
             return r;
         }
 
+#ifdef SUPERBBLAS_USE_THRUST 
+        template <std::size_t Nd, std::size_t I = 0,
+                  typename std::enable_if<(I >= Nd), bool>::type = true>
+        __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &, const TCoor<Nd> &,
+                                                 const TCoor<Nd> &) {
+            return 0;
+        }
+
+        template <std::size_t Nd, std::size_t I = 0,
+                  typename std::enable_if<(I < Nd), bool>::type = true>
+        __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &coor, const TCoor<Nd> &dim,
+                                                 const TCoor<Nd> &stride) {
+            return (tget<I, IndexType, Nd>(coor) % tget<I, IndexType, Nd>(dim)) *
+                       tget<I, IndexType, Nd>(stride) +
+                   coor2index<Nd, I + 1>(coor, dim, stride);
+        }
+#endif
+
         /// Return the coordinate associated to an index
         /// \param index: input vertex index
         /// \param dim: lattice dimensions
@@ -163,6 +355,32 @@ namespace superbblas {
             for (std::size_t j = 0; j < Nd; j++) r[j] = (index / stride[j]) % dim[j];
             return r;
         }
+
+#ifdef SUPERBBLAS_USE_THRUST
+        namespace ns_index2coor_aux {
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I >= Nd), bool>::type = true>
+            __HOST__ __DEVICE__ inline void index2coor(IndexType, const TCoor<Nd> &,
+                                                       const TCoor<Nd> &, TCoor<Nd> &) {}
+
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I < Nd), bool>::type = true>
+            __HOST__ __DEVICE__ inline void index2coor(IndexType index, const TCoor<Nd> &dim,
+                                                       const TCoor<Nd> &stride, TCoor<Nd> &r) {
+                tget<I, IndexType, Nd>(r) =
+                    (index / tget<I, IndexType, Nd>(stride)) % tget<I, IndexType, Nd>(dim);
+                index2coor<Nd, I + 1>(index, dim, stride, r);
+            }
+        }
+
+        template <std::size_t Nd>
+        __HOST__ __DEVICE__ inline TCoor<Nd> index2coor(IndexType index, const TCoor<Nd> &dim,
+                                                        const TCoor<Nd> &stride) {
+            TCoor<Nd> r;
+            ns_index2coor_aux::index2coor<Nd>(index, dim, stride, r);
+            return r;
+        }
+#endif
 
         /// Check all dimension labels are distinct
         /// \param order: dimension labels
@@ -222,6 +440,35 @@ namespace superbblas {
             for (std::size_t i = 0; i < Nd1; ++i) r[i] = perm[i] >= 0 ? coor[perm[i]] : blanck;
             return r;
         }
+
+#ifdef SUPERBBLAS_USE_THRUST
+        namespace ns_reorder_coor_aux {
+            template <std::size_t Nd0, std::size_t Nd1, std::size_t I = 0,
+                      typename std::enable_if<(I >= Nd1), bool>::type = true>
+            __HOST__ __DEVICE__ inline void reorder_coor(const TCoor<Nd0> &, const TCoor<Nd1> &,
+                                                         IndexType, TCoor<Nd1> &) {}
+
+            template <std::size_t Nd0, std::size_t Nd1, std::size_t I = 0,
+                      typename std::enable_if<(I < Nd1), bool>::type = true>
+            __HOST__ __DEVICE__ inline void reorder_coor(const TCoor<Nd0> &coor,
+                                                         const TCoor<Nd1> &perm, IndexType blanck,
+                                                         TCoor<Nd1> &r) {
+                tget<I, IndexType, Nd1>(r) =
+                    (tget<I, IndexType, Nd1>(perm) >= 0
+                         ? tget<IndexType, IndexType, Nd0>(tget<I, IndexType, Nd1>(perm), coor)
+                         : blanck);
+                reorder_coor<Nd0, Nd1, I + 1>(coor, perm, blanck, r);
+            }
+        }
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        __HOST__ __DEVICE__ inline TCoor<Nd1>
+        reorder_coor(const TCoor<Nd0> &coor, const TCoor<Nd1> &perm, IndexType blanck = 0) {
+            TCoor<Nd1> r;
+            ns_reorder_coor_aux::reorder_coor<Nd0, Nd1>(coor, perm, blanck, r);
+            return r;
+        }
+#endif
 
         /// Check that there exists a permutation from the first tensor to the second
         /// \param o0: dimension labels
@@ -389,6 +636,53 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
+
+#    ifdef SUPERBBLAS_USE_THRUST
+	/// Class that compute the origin permutation
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        struct perm_orig_elem : public thrust::unary_function<IndexType, IndexType> {
+            const TCoor<Nd0> from0, dim0, stride0;
+            const TCoor<Nd1> new_stride1, size1;
+            const TCoor<Nd0> perm1;
+            perm_orig_elem(TCoor<Nd0> from0, TCoor<Nd0> dim0, TCoor<Nd0> stride0,
+                           TCoor<Nd1> new_stride1, TCoor<Nd1> size1, TCoor<Nd0> perm1)
+                : from0(from0),
+                  dim0(dim0),
+                  stride0(stride0),
+                  new_stride1(new_stride1),
+                  size1(size1),
+                  perm1(perm1) {}
+
+            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+                return coor2index<Nd0>(
+                    tplus<Nd0>(
+                        reorder_coor<Nd1, Nd0>(index2coor<Nd1>(i, size1, new_stride1), perm1),
+                        from0),
+                    dim0, stride0);
+            }
+        };
+
+	/// Class that compute the destination permutation
+
+        template <std::size_t Nd1>
+        struct perm_dest_elem : public thrust::unary_function<IndexType, IndexType> {
+            const TCoor<Nd1> from1, dim1, stride1, new_stride1, size1;
+            perm_dest_elem(TCoor<Nd1> from1, TCoor<Nd1> dim1, TCoor<Nd1> stride1,
+                           TCoor<Nd1> new_stride1, TCoor<Nd1> size1)
+                : from1(from1),
+                  dim1(dim1),
+                  stride1(stride1),
+                  new_stride1(new_stride1),
+                  size1(size1) {}
+
+            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+                return coor2index<Nd1>(tplus<Nd1>(index2coor<Nd1>(i, size1, new_stride1), from1),
+                                       dim1, stride1);
+            }
+        };
+#    endif
+
         /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
@@ -401,19 +695,44 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1>
-        Indices<Cuda> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                             const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                             const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
+        DECL_ORIG_PERM(Indices<Cuda> get_permutation_origin(
+            const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+            const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co))
+        IMPL({
 
-            (void)cuda;
-            Indices<Cpu> indices_host = get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1,
-                                                                         from1, dim1, Cpu{}, co);
-            Indices<Cuda> indices(indices_host.size(), cuda);
-            copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
-                                         indices.data(), cuda, EWOp::Copy{});
-            return indices;
-        }
+            (void)from1;
+            (void)dim1;
+
+            tracker _t("comp. permutations cuda");
+
+            // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit
+            if (volume<Nd0>(size0) == 0) { return Indices<Cuda>(0, cuda); }
+
+            // Compute the indices
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+            std::size_t vol0 = volume<Nd0>(dim0);
+            std::size_t vol = volume<Nd0>(size0);
+
+            Indices<Cuda> indices0(vol, cuda);
+            Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
+            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+
+            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                              thrust::make_counting_iterator(IndexType(vol)),
+                              encapsulate_pointer(indices0.data()),
+                              perm_orig_elem<Nd0, Nd1>(toTCoor(from0), toTCoor(dim0),
+                                                       toTCoor(stride0), toTCoor(new_stride1),
+                                                       toTCoor(size1), toTCoor(perm1)));
+
+            return indices0;
+        })
 
         /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
@@ -427,18 +746,40 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1>
-        Indices<Cuda> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                                  const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                                  const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co) {
-            (void)cuda;
-            Indices<Cpu> indices_host = get_permutation_destination<Nd0, Nd1>(
-                o0, from0, size0, dim0, o1, from1, dim1, Cpu{}, co);
-            Indices<Cuda> indices(indices_host.size(), cuda);
-            copy_n<IndexType, IndexType>(indices_host.data(), Cpu{}, indices_host.size(),
-                                         indices.data(), cuda, EWOp::Copy{});
-            return indices;
-        }
+        DECL_DEST_PERM(Indices<Cuda> get_permutation_destination(
+            const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+            const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co))
+        IMPL({
+            (void)from0;
+            (void)dim0;
+
+            tracker _t("comp. permutations cuda");
+
+            // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit
+            if (volume<Nd0>(size0) == 0) { return Indices<Cuda>(); }
+
+            // Compute the indices
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+            std::size_t vol = volume<Nd0>(size0);
+
+            Indices<Cuda> indices1(vol, cuda);
+            Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
+            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
+
+            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                              thrust::make_counting_iterator(IndexType(vol)),
+                              encapsulate_pointer(indices1.data()),
+                              perm_dest_elem<Nd1>(toTCoor(from1), toTCoor(dim1), toTCoor(stride1),
+                                                  toTCoor(new_stride1), toTCoor(size1)));
+
+            return indices1;
+        })
 #endif // SUPERBBLAS_USE_CUDA
 
         //
@@ -592,7 +933,7 @@ namespace superbblas {
                 size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
                 Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                 disp = coor2index<Nd1>(from1, dim1, stride1);
-		indices_out = indices1_sd;
+                indices_out = indices1_sd;
                 return;
             }
 
@@ -875,7 +1216,7 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the output tensor");
-            if (o0.size() == 0 xor o1.size() == 0)
+            if ((o0.size() == 0) xor (o1.size() == 0))
                 throw std::runtime_error("Unsupported contraction: one of the input tensors is "
                                          "empty and the other is not");
             if (o_r.size() == 0 && o0.size() + o1.size() > 0)
@@ -903,7 +1244,7 @@ namespace superbblas {
                                          "second tensor to use conjugation");
 
             // Compute the volume for each piece
-            int nonzero = (o0.size() > 0 & o1.size() > 0 & o_r.size() > 0 ? 1 : 0);
+            int nonzero = (o0.size() > 0 && o1.size() > 0 && (o_r.size() > 0 ? 1 : 0));
             int volT = nT == 0 ? nonzero : volume<Nd0>(o0, dim0, sT, nT);
             int volA = nA == 0 ? nonzero : volume<Nd0>(o0, dim0, sA, nA);
             int volB = nB == 0 ? nonzero : volume<Nd0>(o0, dim0, sB, nB);
