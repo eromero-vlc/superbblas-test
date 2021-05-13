@@ -79,9 +79,9 @@ install: $(OBJECT_LIB) install_headers
 	@rm -f $(LIBRARY)
 	install -d $(libdir)
 ifeq ($(UNAME), Darwin)
-	libtool -static -o $(LIBRARY) $< -no_warning_for_no_symbols
+	libtool -static -o $(LIBRARY) $(OBJECT_LIB) -no_warning_for_no_symbols
 else
-	$(AR) r $(LIBRARY) $<
+	$(AR) r $(LIBRARY) $(OBJECT_LIB)
 	$(RANLIB) $(LIBRARY)
 endif
 	install -m 644 $(LIBRARY) $(libdir)
