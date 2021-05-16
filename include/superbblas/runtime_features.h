@@ -96,6 +96,36 @@ namespace superbblas {
         }();
         return unpack_alt;
     }
+
+    /// Return the maximum size of the cache permutation for CPU in GiB
+    /// \return int: value
+    /// The accepted value in the environment variable SB_CACHEGB_CPU are:
+    ///   * < 0: use the 10% of the total memory (default)
+    ///   * >= 0: use that amount of GiB for cache
+
+    inline int getMaxCacheGiBCpu() {
+        static int size = []() {
+            const char *l = std::getenv("SB_CACHEGB_CPU");
+            if (l) return std::atoi(l);
+            return -1;
+        }();
+        return size;
+    }
+
+    /// Return the maximum size of the cache permutation for GPU in GiB
+    /// \return int: value
+    /// The accepted value in the environment variable SB_CACHEGB_GPU are:
+    ///   * < 0: use the 10% of the total memory of the device (default)
+    ///   * >= 0: use that amount of GiB for cache
+
+    inline int getMaxCacheGiBGpu() {
+        static int size = []() {
+            const char *l = std::getenv("SB_CACHEGB_GPU");
+            if (l) return std::atoi(l);
+            return -1;
+        }();
+        return size;
+    }
 }
 
 #endif // __SUPERBBLAS_RUNTIME_FEATURES__

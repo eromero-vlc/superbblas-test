@@ -363,7 +363,9 @@ namespace superbblas {
             // Find indices on cache
             using pointer_perm = std::tuple<From_size<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
             using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
-            static std::unordered_map<pointer_perm, PairIndices, TupleHash<pointer_perm>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<pointer_perm, PairIndices, TupleHash<pointer_perm>, cache_tag>(
+                deviceId(v0.ctx()));
             pointer_perm key{fs, get_perms(o0, o1), deviceId(v0.ctx()), co};
             auto it = cache.find(key);
 
@@ -399,13 +401,19 @@ namespace superbblas {
                 Indices<XPU0> indices0_xpu(indices0.size(), v0.ctx());
                 copy_n<IndexType, IndexType>(indices0.data(), Cpu{}, indices0.size(),
                                              indices0_xpu.data(), v0.ctx(), EWOp::Copy{});
-                cache[key] = PairIndices{indices0_xpu, indices1};
+                // The cache trackers consider that all cache entries are on the same device; so just track the
+                // indices0_xpu when using gpus
+                std::size_t size =
+                    storageSize(*indices0_xpu) +
+                    (deviceId(v0.ctx()) == CPU_DEVICE_ID ? storageSize(indices1) : 0ul);
+                cache.insert(key, PairIndices{indices0_xpu, indices1}, size);
                 it = cache.find(key);
             }
 
             // Do the copy
-            copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.first.begin(), v0.ctx(), vol,
-                                    v1.data(), it->second.second.begin(), Cpu{}, EWOp::Copy{});
+            copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.value.first.begin(), v0.ctx(), vol,
+                                    v1.data(), it->second.value.second.begin(), Cpu{},
+                                    EWOp::Copy{});
         }
 
         /// Pack a list of ranges to be used in a MPI communication

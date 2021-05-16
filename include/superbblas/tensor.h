@@ -2,6 +2,7 @@
 #define __SUPERBBLAS_TENSOR__
 
 #include "blas.h"
+#include "cache.h"
 #include <algorithm>
 #include <array>
 #include <assert.h>
@@ -23,7 +24,7 @@
 // the definition of functions using `thrust` and use DECL_... macros to generate template
 // instantiations to be included in the library.
 
-#ifdef SUPERBBLAS_USE_THRUST 
+#ifdef SUPERBBLAS_USE_THRUST
 #    include <thrust/device_ptr.h>
 #    include <thrust/execution_policy.h>
 #    include <thrust/transform.h>
@@ -114,9 +115,9 @@ namespace superbblas {
 
         template <typename T, std::size_t N> using tarray = typename tarray_aux<T, N>::type;
 
-	/// Return the I-th element on a tarray
-	/// \tparam I: index of the element to return
-	/// \param t: input array
+        /// Return the I-th element on a tarray
+        /// \tparam I: index of the element to return
+        /// \param t: input array
 
         template <std::size_t I, typename T, std::size_t N,
                   typename std::enable_if<(I < 9 && I < N), bool>::type = true>
@@ -142,9 +143,9 @@ namespace superbblas {
             return tget<I - 9, T, N - 9>(thrust::get<9>(t));
         }
 
-	/// Return the i-th element on a tarray
-	/// \param i: index of the element to return
-	/// \param t: input array
+        /// Return the i-th element on a tarray
+        /// \param i: index of the element to return
+        /// \param t: input array
         template <typename T, typename Indx, std::size_t N, std::size_t I = 0,
                   typename std::enable_if<(I >= N), bool>::type = true>
         inline __HOST__ __DEVICE__ T tget(Indx, const tarray<T, N> &) {
@@ -157,8 +158,8 @@ namespace superbblas {
             return ((std::size_t)i == I ? tget<I, T, N>(a) : tget<T, Indx, N, I + 1>(i, a));
         }
 
-	/// Coordinate based on tarray
-	/// \tparam Nd: number of dimensions
+        /// Coordinate based on tarray
+        /// \tparam Nd: number of dimensions
 
         template <std::size_t Nd> using TCoor = tarray<IndexType, Nd>;
 #endif
@@ -210,7 +211,7 @@ namespace superbblas {
             return r;
         }
 
-#ifdef SUPERBBLAS_USE_THRUST 
+#ifdef SUPERBBLAS_USE_THRUST
         namespace ns_plus_aux {
             template <std::size_t Nd, std::size_t I = 0,
                       typename std::enable_if<(I >= Nd), bool>::type = true>
@@ -226,9 +227,9 @@ namespace superbblas {
             }
         }
 
-	/// Add two arrays
-	/// \param a: first array to add
-	/// \param b: second array to add
+        /// Add two arrays
+        /// \param a: first array to add
+        /// \param b: second array to add
 
         template <std::size_t Nd>
         __HOST__ __DEVICE__ inline TCoor<Nd> tplus(TCoor<Nd> a, TCoor<Nd> b) {
@@ -325,7 +326,7 @@ namespace superbblas {
             return r;
         }
 
-#ifdef SUPERBBLAS_USE_THRUST 
+#ifdef SUPERBBLAS_USE_THRUST
         template <std::size_t Nd, std::size_t I = 0,
                   typename std::enable_if<(I >= Nd), bool>::type = true>
         __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &, const TCoor<Nd> &,
@@ -638,7 +639,7 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_CUDA
 
 #    ifdef SUPERBBLAS_USE_THRUST
-	/// Class that compute the origin permutation
+        /// Class that compute the origin permutation
 
         template <std::size_t Nd0, std::size_t Nd1>
         struct perm_orig_elem : public thrust::unary_function<IndexType, IndexType> {
@@ -663,7 +664,7 @@ namespace superbblas {
             }
         };
 
-	/// Class that compute the destination permutation
+        /// Class that compute the destination permutation
 
         template <std::size_t Nd1>
         struct perm_dest_elem : public thrust::unary_function<IndexType, IndexType> {
@@ -700,7 +701,6 @@ namespace superbblas {
             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
             const Coor<Nd1> &dim1, Cuda cuda, CoorOrder co))
         IMPL({
-
             (void)from1;
             (void)dim1;
 
@@ -861,6 +861,13 @@ namespace superbblas {
             std::size_t operator()(type const &t) const noexcept { return Hash<type>::hash(t); }
         };
 
+        /// Return the memory footprint of an object
+        /// \param v: input object
+
+        template <typename T, typename XPU> std::size_t storageSize(const vector<T, XPU> &v) {
+            return sizeof(T) * v.size();
+        }
+
         /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
@@ -901,16 +908,18 @@ namespace superbblas {
             // Check in the storage
             using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
             using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
-            static std::unordered_map<size_dim, std::shared_ptr<Indices<XPU>>, TupleHash<size_dim>>
-                size_dim_map(16);
-            static std::unordered_map<from_size_dim, std::shared_ptr<Indices<XPU>>,
-                                      TupleHash<from_size_dim>>
-                from_size_dim_map(16);
+            struct size_dim_map_tag {};
+            auto size_dim_map = getCache<size_dim, std::shared_ptr<Indices<XPU>>,
+                                         TupleHash<size_dim>, size_dim_map_tag>(deviceId(xpu));
+            struct from_size_dim_map_tag {};
+            auto from_size_dim_map =
+                getCache<from_size_dim, std::shared_ptr<Indices<XPU>>, TupleHash<from_size_dim>,
+                         from_size_dim_map_tag>(deviceId(xpu));
             {
                 auto it =
                     from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
-                    indices_out = it->second;
+                    indices_out = it->second.value;
                     disp = 0;
                     return;
                 }
@@ -918,7 +927,7 @@ namespace superbblas {
             if (all_less_or_equal(from1 + size1, dim1)) {
                 auto it = size_dim_map.find(size_dim{size1, dim1, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
-                    indices_out = it->second;
+                    indices_out = it->second.value;
                     Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                     disp = coor2index<Nd1>(from1, dim1, stride1);
                     return;
@@ -930,7 +939,8 @@ namespace superbblas {
                 std::shared_ptr<Indices<XPU>> indices1_sd =
                     std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
                         o0, {}, size0, dim0, o1, {}, dim1, xpu, co));
-                size_dim_map[size_dim{size1, dim1, deviceId(xpu), co}] = indices1_sd;
+                size_dim_map.insert(size_dim{size1, dim1, deviceId(xpu), co}, indices1_sd,
+                                    storageSize(*indices1_sd));
                 Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                 disp = coor2index<Nd1>(from1, dim1, stride1);
                 indices_out = indices1_sd;
@@ -941,7 +951,8 @@ namespace superbblas {
             std::shared_ptr<Indices<XPU>> indices1 =
                 std::make_shared<Indices<XPU>>(get_permutation_destination<Nd0, Nd1>(
                     o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
-            from_size_dim_map[from_size_dim{from1, size1, dim1, deviceId(xpu), co}] = indices1;
+            from_size_dim_map.insert(from_size_dim{from1, size1, dim1, deviceId(xpu), co}, indices1,
+                                     storageSize(*indices1));
 
             // Return the permutation
             indices_out = indices1;
@@ -986,18 +997,19 @@ namespace superbblas {
             using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
             using perm_from_size_dim =
                 std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
-            static std::unordered_map<perm_size_dim, std::shared_ptr<Indices<XPU>>,
-                                      TupleHash<perm_size_dim>>
-                size_dim_map(16);
-            static std::unordered_map<perm_from_size_dim, std::shared_ptr<Indices<XPU>>,
-                                      TupleHash<perm_from_size_dim>>
-                from_size_dim_map(16);
+            struct size_dim_map_tag {};
+            auto size_dim_map = getCache<perm_size_dim, std::shared_ptr<Indices<XPU>>,
+                                         TupleHash<perm_size_dim>, size_dim_map_tag>(deviceId(xpu));
+            struct from_size_dim_map_tag {};
+            auto from_size_dim_map =
+                getCache<perm_from_size_dim, std::shared_ptr<Indices<XPU>>,
+                         TupleHash<perm_from_size_dim>, from_size_dim_map_tag>(deviceId(xpu));
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             {
                 auto it = from_size_dim_map.find(
                     perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
-                    indices_out = it->second;
+                    indices_out = it->second.value;
                     disp = 0;
                     return;
                 }
@@ -1005,7 +1017,7 @@ namespace superbblas {
             if (all_less_or_equal(from0 + size0, dim0)) {
                 auto it = size_dim_map.find(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
-                    indices_out = it->second;
+                    indices_out = it->second.value;
                     Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
                     disp = coor2index<Nd0>(from0, dim0, stride0);
                     return;
@@ -1016,7 +1028,8 @@ namespace superbblas {
             if (all_less_or_equal(from0 + size0, dim0)) {
                 std::shared_ptr<Indices<XPU>> indices0_sd = std::make_shared<Indices<XPU>>(
                     get_permutation_origin<Nd0, Nd1>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co));
-                size_dim_map[perm_size_dim{perm1, size0, dim0, deviceId(xpu), co}] = indices0_sd;
+                size_dim_map.insert(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co},
+                                    indices0_sd, storageSize(*indices0_sd));
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
                 disp = coor2index<Nd0>(from0, dim0, stride0);
                 indices_out = indices0_sd;
@@ -1026,8 +1039,9 @@ namespace superbblas {
             // Get the permutation and store it in cache
             std::shared_ptr<Indices<XPU>> indices0 = std::make_shared<Indices<XPU>>(
                 get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co));
-            from_size_dim_map[perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}] =
-                indices0;
+            from_size_dim_map.insert(
+                perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}, indices0,
+                storageSize(*indices0));
 
             // Return the permutation
             indices_out = indices0;
