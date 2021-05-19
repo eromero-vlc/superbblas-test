@@ -212,9 +212,8 @@ namespace superbblas {
             }
         };
 
-        /// Return the cache to store objects on the device
-        template <typename K, typename V, typename H, typename T = std::tuple<K, V>>
-        inline cacheHelper<K, V, H, T> getCache(int device) {
+        /// Return the caches associated to the devices
+        inline std::vector<cache> &getCaches() {
             static std::vector<cache> caches;
 
             // Initialize caches
@@ -250,11 +249,17 @@ namespace superbblas {
                 for (int d = 0; d < numDevices; ++d) caches[d + 1].setMaxCacheSize(cacheMaxSizeGpu);
 #endif
             }
+            return caches;
+        }
 
+        /// Return the cache to store objects on the device
+        template <typename K, typename V, typename H, typename T = std::tuple<K, V>>
+        inline cacheHelper<K, V, H, T> getCache(int device) {
+            auto &caches = getCaches();
             if (device < -1 || device + 1 >= (int)caches.size())
                 throw std::runtime_error("Invalid device");
             return cacheHelper<K, V, H, T>{caches[device + 1]};
-        }
+	}
     }
 }
 

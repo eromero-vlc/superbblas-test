@@ -404,7 +404,7 @@ namespace superbblas {
                 // The cache trackers consider that all cache entries are on the same device; so just track the
                 // indices0_xpu when using gpus
                 std::size_t size =
-                    storageSize(*indices0_xpu) +
+                    storageSize(indices0_xpu) +
                     (deviceId(v0.ctx()) == CPU_DEVICE_ID ? storageSize(indices1) : 0ul);
                 cache.insert(key, PairIndices{indices0_xpu, indices1}, size);
                 it = cache.find(key);
