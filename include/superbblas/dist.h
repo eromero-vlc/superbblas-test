@@ -690,7 +690,7 @@ namespace superbblas {
                 if (i / ncomponents0 == comm.rank) continue;
                 Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
                 std::size_t voli = volume<Nd>(sizei);
-                std::shared_ptr<Indices<XPU>> indices1;
+                Indices<XPU> indices1;
                 IndexType disp;
                 get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
                                                           v.it.ctx(), indices1, disp, co);
@@ -699,7 +699,7 @@ namespace superbblas {
                     r.buf.data() + r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T));
                 if (i % ncomponents0 == 0) n = 0;
                 copy_n<IndexType, T, T>(alpha, data, Cpu{}, voli, v.it.data() + disp,
-                                        indices1->begin(), v.it.ctx(), EWOP{});
+                                        indices1.begin(), v.it.ctx(), EWOP{});
                 n += voli;
             }
         }
