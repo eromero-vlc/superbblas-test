@@ -25,7 +25,7 @@ namespace superbblas {
     using CacheUsage = std::unordered_map<std::string, double>;
 
     /// Return the performance timings
-    inline Timings &getCacheUsage() {
+    inline CacheUsage &getCacheUsage() {
         static CacheUsage cacheUsage(16);
         return cacheUsage;
     }
