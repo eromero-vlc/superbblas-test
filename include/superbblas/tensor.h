@@ -910,11 +910,10 @@ namespace superbblas {
             using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
             struct size_dim_map_tag {};
             auto size_dim_map =
-                getCache<size_dim, Indices<XPU>, TupleHash<size_dim>, size_dim_map_tag>(
-                    deviceId(xpu));
+                getCache<size_dim, Indices<XPU>, TupleHash<size_dim>, size_dim_map_tag>(xpu);
             struct from_size_dim_map_tag {};
             auto from_size_dim_map = getCache<from_size_dim, Indices<XPU>, TupleHash<from_size_dim>,
-                                              from_size_dim_map_tag>(deviceId(xpu));
+                                              from_size_dim_map_tag>(xpu);
             {
                 auto it =
                     from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
@@ -997,11 +996,11 @@ namespace superbblas {
             struct size_dim_map_tag {};
             auto size_dim_map =
                 getCache<perm_size_dim, Indices<XPU>, TupleHash<perm_size_dim>, size_dim_map_tag>(
-                    deviceId(xpu));
+                    xpu);
             struct from_size_dim_map_tag {};
             auto from_size_dim_map =
                 getCache<perm_from_size_dim, Indices<XPU>, TupleHash<perm_from_size_dim>,
-                         from_size_dim_map_tag>(deviceId(xpu));
+                         from_size_dim_map_tag>(xpu);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             {
                 auto it = from_size_dim_map.find(
@@ -1379,12 +1378,13 @@ namespace superbblas {
     /// \param ctx1: device context for v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param copyadd: either copy or add the origin value to the destination values
+    /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void local_copy(typename elem<T>::type alpha, const char *o0, const Coor<Nd0> &from0,
                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0, const Context ctx0,
                     const char *o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1,
-                    const Context ctx1, CoorOrder co, CopyAdd copyadd) {
+                    const Context ctx1, CoorOrder co, CopyAdd copyadd, Session session = 0) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1406,22 +1406,22 @@ namespace superbblas {
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu()), o1_, from1,
-                dim1, detail::to_vector(v1, ctx1.toCpu()), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu(session)), o1_,
+                from1, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
         }
 #ifdef SUPERBBLAS_USE_CUDA
         else if (ctx0.plat == CPU && ctx1.plat == CUDA) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu()), o1_, from1,
-                dim1, detail::to_vector(v1, ctx1.toCuda()), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu(session)), o1_,
+                from1, dim1, detail::to_vector(v1, ctx1.toCuda(session)), copyadd, co);
         } else if (ctx0.plat == CUDA && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda()), o1_, from1,
-                dim1, detail::to_vector(v1, ctx1.toCpu()), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda(session)), o1_,
+                from1, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
         } else if (ctx0.plat == CUDA && ctx1.plat == CUDA) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda()), o1_, from1,
-                dim1, detail::to_vector(v1, ctx1.toCuda()), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCuda(session)), o1_,
+                from1, dim1, detail::to_vector(v1, ctx1.toCuda(session)), copyadd, co);
         }
 #endif
         else {
@@ -1444,6 +1444,7 @@ namespace superbblas {
     /// \param dimr: dimension size for the output operator
     /// \param vr: data for the second operator
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
     ///
     /// The order of the labels should be as following:
     ///
@@ -1456,7 +1457,7 @@ namespace superbblas {
     void local_contraction(T alpha, const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
                            const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1, T beta,
                            const char *o_r, const Coor<Ndo> &dimr, T *vr, const Context ctx,
-                           CoorOrder co) {
+                           CoorOrder co, Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1465,16 +1466,16 @@ namespace superbblas {
         switch (ctx.plat) {
         case CPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCpu()), o1_, dim1, conj1,
-                detail::to_vector(v1, ctx.toCpu()), beta, o_r_, dimr,
-                detail::to_vector(vr, ctx.toCpu()), co);
+                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCpu(session)), o1_, dim1,
+                conj1, detail::to_vector(v1, ctx.toCpu(session)), beta, o_r_, dimr,
+                detail::to_vector(vr, ctx.toCpu(session)), co);
             break;
 #ifdef SUPERBBLAS_USE_CUDA
         case CUDA:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCuda()), o1_, dim1, conj1,
-                detail::to_vector(v1, ctx.toCuda()), beta, o_r_, dimr,
-                detail::to_vector(vr, ctx.toCuda()), co);
+                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCuda(session)), o1_, dim1,
+                conj1, detail::to_vector(v1, ctx.toCuda(session)), beta, o_r_, dimr,
+                detail::to_vector(vr, ctx.toCuda(session)), co);
             break;
 #endif
         default: throw std::runtime_error("Unsupported platform");

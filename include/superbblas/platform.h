@@ -58,10 +58,17 @@ namespace superbblas {
     /// Function to deallocate memory
     using Deallocator = std::function<void(void *, enum platform)>;
 
+    /// Cache session
+    using Session = unsigned int;
+
     /// Platform and device information of data
 
     namespace detail {
-        struct Cpu {};
+
+        struct Cpu {
+            /// Cache session
+            Session session;
+        };
 
         /// Return a device identification
         inline int deviceId(Cpu) { return CPU_DEVICE_ID; }
@@ -126,6 +133,8 @@ namespace superbblas {
             Allocator alloc;
             /// Optional function for deallocating memory on devices
             Deallocator dealloc;
+            /// Cache session
+            Session session;
         };
 
         /// Return a device identification
@@ -205,14 +214,16 @@ namespace superbblas {
 #endif
         }
 
-        detail::Cpu toCpu() const { return detail::Cpu(); }
+        detail::Cpu toCpu(Session session) const { return detail::Cpu{session}; }
 
 #ifdef SUPERBBLAS_USE_CUDA
-        detail::Cuda toCuda() const { return detail::Cuda{device, *cublasHandle, alloc, dealloc}; }
+        detail::Cuda toCuda(Session session) const {
+            return detail::Cuda{device, *cublasHandle, alloc, dealloc, session};
+        }
 #else
-        void toCuda() const { throw std::runtime_error("Cuda: unsupported platform"); }
+        void toCuda(Session) const { throw std::runtime_error("Cuda: unsupported platform"); }
 #endif
-        void toGpuamd() const { throw std::runtime_error("Gpuamd: unsupported platform"); }
+        void toGpuamd(Session) const { throw std::runtime_error("Gpuamd: unsupported platform"); }
     };
 
     /// Return a CPU context

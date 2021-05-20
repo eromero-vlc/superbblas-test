@@ -1280,9 +1280,9 @@ namespace superbblas {
 
     template <typename T> T *allocate(std::size_t n, Context ctx) {
         switch (ctx.plat) {
-        case CPU: return detail::allocate<T>(n, ctx.toCpu());
+        case CPU: return detail::allocate<T>(n, ctx.toCpu(0));
 #ifdef SUPERBBLAS_USE_CUDA
-        case CUDA: return detail::allocate<T>(n, ctx.toCuda());
+        case CUDA: return detail::allocate<T>(n, ctx.toCuda(0));
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }
@@ -1294,9 +1294,9 @@ namespace superbblas {
 
     template <typename T> void deallocate(T *ptr, Context ctx) {
         switch (ctx.plat) {
-        case CPU: detail::deallocate(ptr, ctx.toCpu()); break;
+        case CPU: detail::deallocate(ptr, ctx.toCpu(0)); break;
 #ifdef SUPERBBLAS_USE_CUDA
-        case CUDA: detail::deallocate(ptr, ctx.toCuda()); break;
+        case CUDA: detail::deallocate(ptr, ctx.toCuda(0)); break;
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }

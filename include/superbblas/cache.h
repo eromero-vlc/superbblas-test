@@ -1,9 +1,11 @@
 #ifndef __SUPERBBLAS_CACHE__
 #define __SUPERBBLAS_CACHE__
 
+#include "platform.h"
 #include "runtime_features.h"
 #include <limits>
 #include <map>
+#include <mutex>
 #include <stdexcept>
 #include <tuple>
 #include <typeindex>
@@ -213,49 +215,58 @@ namespace superbblas {
         };
 
         /// Return the caches associated to the devices
-        inline std::vector<cache> &getCaches() {
-            static std::vector<cache> caches;
+        inline std::vector<cache> &getCaches(Session session) {
+            static std::array<std::vector<cache>, 256> caches;
+            static std::mutex m;
 
             // Initialize caches
             if (caches.size() == 0) {
-                // Get maximum memory use for CPU cache
-                std::size_t cacheMaxSizeCpu = 0;
-                if (getMaxCacheGiBCpu() >= 0) {
-                    cacheMaxSizeCpu = std::size_t(getMaxCacheGiBCpu()) * 1024 * 1024 * 1024;
-                } else {
-                    cacheMaxSizeCpu =
-                        std::size_t(sysconf(_SC_PAGESIZE)) * sysconf(_SC_PHYS_PAGES) / 10;
-                }
+                std::lock_guard<std::mutex> g(m);
 
-                // Create the cache for the cpu objects and set the maximum size
-                caches.resize(1);
-                caches[0].setMaxCacheSize(cacheMaxSizeCpu);
+                if (caches.size() == 0) {
+                    for (Session s = 0; s < 256; ++s) {
+                        // Get maximum memory use for CPU cache
+                        std::size_t cacheMaxSizeCpu = 0;
+                        if (getMaxCacheGiBCpu() >= 0) {
+                            cacheMaxSizeCpu = std::size_t(getMaxCacheGiBCpu()) * 1024 * 1024 * 1024;
+                        } else {
+                            cacheMaxSizeCpu =
+                                std::size_t(sysconf(_SC_PAGESIZE)) * sysconf(_SC_PHYS_PAGES) / 10;
+                        }
+
+                        // Create the cache for the cpu objects and set the maximum size
+                        caches[s].resize(1);
+                        caches[s][0].setMaxCacheSize(cacheMaxSizeCpu);
 
 #ifdef SUPERBBLAS_USE_CUDA
-                // Get maximum memory use for GPU cache
-                std::size_t cacheMaxSizeGpu = 0;
-                if (getMaxCacheGiBGpu() >= 0) {
-                    cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu()) * 1024 * 1024 * 1024;
-                } else {
-                    std::size_t free = 0, total = 0;
-                    cudaCheck(cudaMemGetInfo(&free, &total));
-                    cacheMaxSizeGpu = total / 10;
-                }
+                        // Get maximum memory use for GPU cache
+                        std::size_t cacheMaxSizeGpu = 0;
+                        if (getMaxCacheGiBGpu() >= 0) {
+                            cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu()) * 1024 * 1024 * 1024;
+                        } else {
+                            std::size_t free = 0, total = 0;
+                            cudaCheck(cudaMemGetInfo(&free, &total));
+                            cacheMaxSizeGpu = total / 10;
+                        }
 
-                // Create the caches for the gpu objects and set the maximum size
-                int numDevices = 0;
-                cudaCheck(cudaGetDeviceCount(&numDevices));
-                caches.resize(numDevices + 1);
-                for (int d = 0; d < numDevices; ++d) caches[d + 1].setMaxCacheSize(cacheMaxSizeGpu);
+                        // Create the caches for the gpu objects and set the maximum size
+                        int numDevices = 0;
+                        cudaCheck(cudaGetDeviceCount(&numDevices));
+                        caches[s].resize(numDevices + 1);
+                        for (int d = 0; d < numDevices; ++d)
+                            caches[s][d + 1].setMaxCacheSize(cacheMaxSizeGpu);
 #endif
+                    }
+                }
             }
-            return caches;
+            return caches[session];
         }
 
         /// Return the cache to store objects on the device
-        template <typename K, typename V, typename H, typename T = std::tuple<K, V>>
-        inline cacheHelper<K, V, H, T> getCache(int device) {
-            auto &caches = getCaches();
+        template <typename K, typename V, typename H, typename T = std::tuple<K, V>, typename XPU>
+        inline cacheHelper<K, V, H, T> getCache(XPU xpu) {
+            auto &caches = getCaches(xpu.session);
+            int device = deviceId(xpu);
             if (device < -1 || device + 1 >= (int)caches.size())
                 throw std::runtime_error("Invalid device");
             return cacheHelper<K, V, H, T>{caches[device + 1]};

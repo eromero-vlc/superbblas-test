@@ -209,7 +209,7 @@ namespace superbblas {
 
         template <std::size_t Nd, typename T, typename Comm>
         Components<Nd, T> get_components(T **v, const Context *ctx, unsigned int ncomponents,
-                                         From_size_iterator<Nd> p, Comm comm) {
+                                         From_size_iterator<Nd> p, Comm comm, Session session) {
             // Get components on the local process
             From_size_iterator<Nd> fs = p + comm.rank * ncomponents;
 
@@ -219,18 +219,18 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_CUDA
                 case CPU:
                     r.second.push_back(
-                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
+                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case CUDA:
-                    r.first.push_back(
-                        Component<Nd, T, Cuda>{to_vector(v[i], ctx[i].toCuda()), fs[i][1], i});
+                    r.first.push_back(Component<Nd, T, Cuda>{
+                        to_vector(v[i], ctx[i].toCuda(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_CUDA
                 case CPU:
                     r.first.push_back(
-                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
+                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
@@ -364,8 +364,8 @@ namespace superbblas {
             using pointer_perm = std::tuple<From_size<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
             using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
             struct cache_tag {};
-            auto cache = getCache<pointer_perm, PairIndices, TupleHash<pointer_perm>, cache_tag>(
-                deviceId(v0.ctx()));
+            auto cache =
+                getCache<pointer_perm, PairIndices, TupleHash<pointer_perm>, cache_tag>(v0.ctx());
             pointer_perm key{fs, get_perms(o0, o1), deviceId(v0.ctx()), co};
             auto it = cache.find(key);
 
@@ -1731,23 +1731,25 @@ namespace superbblas {
     /// \param v1: vector of data pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
               const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0,
               const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
               const Coor<Nd1> &from1, Q **v1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co,
-              CopyAdd copyadd) {
+              CopyAdd copyadd, Session session = 0) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::copy<Nd0, Nd1>(alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0,
-                               size0, detail::toArray<Nd0>(o0, "o0"),
-                               detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
-                               detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
-                               detail::toArray<Nd1>(o1, "o1"),
-                               detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), comm,
-                               copyadd, co);
+        detail::copy<Nd0, Nd1>(
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0, size0,
+            detail::toArray<Nd0>(o0, "o0"),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
+            detail::toArray<Nd1>(o1, "o1"),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
+            co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1767,22 +1769,25 @@ namespace superbblas {
     /// \param v1: vector of data pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
               const char *o0, const Coor<Nd0> from0, const Coor<Nd0> size0, const T **v0,
               const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
-              const Coor<Nd1> from1, Q **v1, const Context *ctx1, CoorOrder co, CopyAdd copyadd) {
+              const Coor<Nd1> from1, Q **v1, const Context *ctx1, CoorOrder co, CopyAdd copyadd,
+              Session session = 0) {
 
         detail::SelfComm comm = detail::get_comm();
 
-        detail::copy<Nd0, Nd1>(alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0,
-                               size0, detail::toArray<Nd0>(o0, "o0"),
-                               detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
-                               detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
-                               detail::toArray<Nd1>(o1, "o1"),
-                               detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), comm,
-                               copyadd, co);
+        detail::copy<Nd0, Nd1>(
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0, size0,
+            detail::toArray<Nd0>(o0, "o0"),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
+            detail::toArray<Nd1>(o1, "o1"),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
+            co);
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -1807,6 +1812,7 @@ namespace superbblas {
     /// \param vr: data for the second operator
     /// \param ctxr: context for each data pointer in vr
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
     ///
     /// The order of the labels should be as following:
     ///
@@ -1820,7 +1826,8 @@ namespace superbblas {
                      bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
                      const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
-                     const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
+                     const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co,
+                     Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1830,11 +1837,11 @@ namespace superbblas {
 
         detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), o0_, conj0,
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), beta,
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
             detail::get_from_size(pr, ncomponentsr * comm.nprocs), o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm), comm, co);
+            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1859,6 +1866,7 @@ namespace superbblas {
     /// \param vr: data for the second operator
     /// \param ctxr: context for each data pointer in vr
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
     ///
     /// The order of the labels should be as following:
     ///
@@ -1872,7 +1880,8 @@ namespace superbblas {
                      bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
                      const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
-                     const char *o_r, T **vr, const Context *ctxr, CoorOrder co) {
+                     const char *o_r, T **vr, const Context *ctxr, CoorOrder co,
+                     Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1882,11 +1891,11 @@ namespace superbblas {
 
         detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), o0_, conj0,
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), beta,
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
             detail::get_from_size(pr, ncomponentsr * comm.nprocs), o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm), comm, co);
+            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
     }
 }
 
