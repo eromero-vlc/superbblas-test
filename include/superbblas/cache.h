@@ -161,10 +161,10 @@ namespace superbblas {
                     /// In the extremely unlikely situation that it gets out of timestamp, clean everything and start over
                     if (timestamp == std::numeric_limits<Timestamp>::max()) {
                         clear();
-                        return find<K, V, H, T>(k);
+                        return cache.cache.end();
                     }
 
-                    auto &value = cache.cache[k];
+                    auto &value = it->second;
                     timestamps.erase(value.ts);
                     cache.keys.erase(value.ts);
                     ++timestamp;
@@ -238,7 +238,7 @@ namespace superbblas {
                     cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu()) * 1024 * 1024 * 1024;
                 } else {
                     std::size_t free = 0, total = 0;
-                    cudaCheck(cudaGetMemInfo(&free, &total));
+                    cudaCheck(cudaMemGetInfo(&free, &total));
                     cacheMaxSizeGpu = total / 10;
                 }
 
@@ -259,7 +259,7 @@ namespace superbblas {
             if (device < -1 || device + 1 >= (int)caches.size())
                 throw std::runtime_error("Invalid device");
             return cacheHelper<K, V, H, T>{caches[device + 1]};
-	}
+        }
     }
 }
 
