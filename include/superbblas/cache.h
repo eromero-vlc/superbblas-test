@@ -220,10 +220,10 @@ namespace superbblas {
             static std::mutex m;
 
             // Initialize caches
-            if (caches.size() == 0) {
+            if (caches[0].size() == 0) {
                 std::lock_guard<std::mutex> g(m);
 
-                if (caches.size() == 0) {
+                if (caches[0].size() == 0) {
                     for (Session s = 0; s < 256; ++s) {
                         // Get maximum memory use for CPU cache
                         std::size_t cacheMaxSizeCpu = 0;
