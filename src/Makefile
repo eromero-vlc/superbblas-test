@@ -55,7 +55,9 @@ ifeq ($(TARGET), cuda)
 	${NVCC} -E ${MPISBFLAG} ${NVCCFLAGS} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
 
-$(SOURCE_LIB): $(LIB_SOURCE_STEM)
+$(SOURCE_LIB): $(LIB_SOURCE_STEM).split
+
+$(LIB_SOURCE_STEM).split: $(LIB_SOURCE_STEM)
 	split -d -n l/10 -a 1 $< $(LIB_SOURCE_STEM)_
 	for i in $(LIB_SOURCE_STEM)_? ; do \
 		( \
@@ -65,6 +67,7 @@ $(SOURCE_LIB): $(LIB_SOURCE_STEM)
 			cat $$i \
 		) > $${i}.cpp; \
 	done
+	touch $(LIB_SOURCE_STEM).split
 
 %.o: %.cpp
 ifeq ($(TARGET), cpu)
