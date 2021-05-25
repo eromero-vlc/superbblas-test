@@ -995,10 +995,11 @@ namespace superbblas {
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, unsigned int, Coor<Nd0>, Coor<Nd0>,
                                    From_size<Nd1>, unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
-            static std::unordered_map<Key, From_size<Nd0>, TupleHash<Key>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<Key, From_size<Nd0>, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0, from_rank, from0, size0, p1, componentId1, from1, get_perms(o0, o1)};
             auto it = cache.find(key);
-            if (it != cache.end()) return it->second;
+            if (it != cache.end()) return it->second.value;
 
             // Restrict the local range in v0 to the range from0, size0
             Coor<Nd0> local_from0 = p0[from_rank][0];
@@ -1025,7 +1026,7 @@ namespace superbblas {
                 translate_range(fromi, sizei, from1, dim1, from0, dim0, perm1, r[i][0], r[i][1]);
                 r[i][0] = normalize_coor(r[i][0] - local_from0, dim0);
             }
-            cache[key] = r;
+            cache.insert(key, r, storageSize(r));
 
             return r;
         }
@@ -1062,10 +1063,11 @@ namespace superbblas {
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
                                    unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
-            static std::unordered_map<Key, From_size<Nd1>, TupleHash<Key>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<Key, From_size<Nd1>, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0, from0, size0, p1, to_rank, from1, get_perms(o0, o1)};
             auto it = cache.find(key);
-            if (it != cache.end()) return it->second;
+            if (it != cache.end()) return it->second.value;
 
             // Restrict the local range in v1 to the range from1, size1
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
@@ -1093,7 +1095,7 @@ namespace superbblas {
                 translate_range(fromi, sizei, from0, dim0, from1, dim1, perm0, r[i][0], r[i][1]);
                 r[i][0] = normalize_coor(r[i][0] - local_from1, dim1);
             }
-            cache[key] = r;
+            cache.insert(key, r, storageSize(r));
 
             return r;
         }
@@ -1550,10 +1552,11 @@ namespace superbblas {
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, From_size<Nd1>, PairPerms<Nd0, Nd1>,
                                    PairPerms<Nd0, Ndo>, PairPerms<Nd1, Ndo>>;
-            static std::unordered_map<Key, From_size<Ndo>, TupleHash<Key>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<Key, From_size<Ndo>, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0, p1, get_perms(o0, o1), get_perms(o0, o_r), get_perms(o1, o_r)};
             auto it = cache.find(key);
-            if (it != cache.end()) return it->second;
+            if (it != cache.end()) return it->second.value;
 
             // Create partition
             From_size_out<Ndo> pr(p0.size());
@@ -1561,7 +1564,7 @@ namespace superbblas {
                 pr[i][0] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][0], o1, p1[i][0], o_r);
                 pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r);
             }
-            cache[key] = pr;
+            cache.insert(key, pr, storageSize(pr));
 
             return pr;
         }
@@ -1681,12 +1684,17 @@ namespace superbblas {
         /// \return: From_size
 
         template <std::size_t Nd>
-        From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n) {
-            static std::unordered_set<From_size<Nd>, TupleHash<From_size<Nd>>> cache(16);
+        From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n, Session session) {
+            struct cache_tag {};
+            struct nothing {};
+            auto cache =
+                getCache<From_size<Nd>, nothing, TupleHash<From_size<Nd>>, cache_tag>(Cpu{session});
             From_size<Nd> fs = to_vector(p, n);
             auto it = cache.find(fs);
-            if (it == cache.end()) it = cache.insert(fs.clone()).first;
-            return *it;
+            if (it != cache.end()) return it->first;
+            fs = fs.clone();
+            cache.insert(fs, {}, storageSize(fs));
+            return fs;
         }
     }
 
@@ -1743,10 +1751,10 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::copy<Nd0, Nd1>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0, size0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
             co);
@@ -1781,10 +1789,10 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::copy<Nd0, Nd1>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0, size0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
             co);
@@ -1836,11 +1844,11 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), o0_, conj0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs), o1_, conj1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
             detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs), o_r_,
+            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
             detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
     }
 #endif // SUPERBBLAS_USE_MPI
@@ -1890,11 +1898,11 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), o0_, conj0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs), o1_, conj1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
             detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs), o_r_,
+            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
             detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
     }
 }
