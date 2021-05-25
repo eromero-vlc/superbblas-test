@@ -232,30 +232,30 @@ int main(int argc, char **argv) {
 
     {
         Context ctx = createCpuContext();
-        test_copy<float, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<float, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<double, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<double, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<std::array<std::complex<float>, 12>, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
+        test_copy<float, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<float, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<double, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<double, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<std::array<std::complex<float>, 12>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
      }
 
 #ifdef SUPERBBLAS_USE_CUDA
     {
         Context ctx = createCudaContext();
-        test_copy<float, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<float, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-        test_copy<double, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<double, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-        test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-        test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
+        test_copy<float, Cuda>(size, ctx.toCuda(0), EWOp::Copy{}, nrep);
+        test_copy<float, Cuda>(size, ctx.toCuda(0), EWOp::Add{}, nrep);
+        test_copy<double, Cuda>(size, ctx.toCuda(0), EWOp::Copy{}, nrep);
+        test_copy<double, Cuda>(size, ctx.toCuda(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(0), EWOp::Add{}, nrep);
 #    ifndef SUPERBBLAS_LIB
-        test_copy<std::array<std::complex<float>, 12>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
+        test_copy<std::array<std::complex<float>, 12>, Cuda>(size, ctx.toCuda(0), EWOp::Copy{}, nrep);
 #    endif
      }
 #endif
