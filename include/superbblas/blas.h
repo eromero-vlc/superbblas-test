@@ -1263,7 +1263,7 @@ namespace superbblas {
         template <typename T, typename XPU,
                   typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
         vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
-            vector<T, Cpu> r(v.size());
+            vector<T, Cpu> r(v.size(), v.ctx().toCpu());
             copy_n<std::size_t, T>(v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
             return r;
         }

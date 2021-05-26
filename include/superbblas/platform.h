@@ -135,6 +135,9 @@ namespace superbblas {
             Deallocator dealloc;
             /// Cache session
             Session session;
+
+            /// Return a CPU context with the same session
+            Cpu toCpu() const { return Cpu{session}; }
         };
 
         /// Return a device identification
