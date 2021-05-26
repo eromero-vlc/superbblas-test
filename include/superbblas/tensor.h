@@ -550,7 +550,6 @@ namespace superbblas {
                                             const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from1;
             (void)dim1;
-            (void)cpu;
 
             tracker _t("comp. permutations");
 
@@ -567,7 +566,7 @@ namespace superbblas {
             std::size_t vol0 = volume<Nd0>(dim0);
             std::size_t vol = volume<Nd0>(size0);
 
-            Indices<Cpu> indices0(vol);
+            Indices<Cpu> indices0(vol, cpu);
             Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
@@ -603,7 +602,6 @@ namespace superbblas {
                                                  const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from0;
             (void)dim0;
-            (void)cpu;
 
             tracker _t("comp. permutations");
 
@@ -620,7 +618,7 @@ namespace superbblas {
             std::size_t vol1 = volume<Nd1>(dim1);
             std::size_t vol = volume<Nd0>(size0);
 
-            Indices<Cpu> indices1(vol);
+            Indices<Cpu> indices1(vol, cpu);
             Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
 #ifdef _OPENMP

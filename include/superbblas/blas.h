@@ -277,11 +277,6 @@ namespace superbblas {
             /// Default constructor: create an empty vector
             vector() : vector(0, XPU{}) {}
 
-            /// `Cpu` vectors can construct a `vector` without providing a device context
-            template <typename U = XPU,
-                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
-            vector(std::size_t n = 0) : vector(n, Cpu{}) {}
-
             /// Construct a vector with `n` elements a with context device `xpu_`
             vector(std::size_t n, XPU xpu_)
                 : n(n),
@@ -341,7 +336,7 @@ namespace superbblas {
             template <typename U = XPU,
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
             vector<T, Cpu> clone() const {
-                vector<T_no_const, Cpu> r(n);
+                vector<T_no_const, Cpu> r(n, xpu);
                 std::copy_n(data(), n, r.data());
                 return r;
             }
@@ -354,9 +349,9 @@ namespace superbblas {
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
-        template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n = 0) {
+        template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n, Cpu cpu) {
             check_ptr_align<T>::check(ptr);
-            return vector<T, Cpu>(n, ptr, Cpu{});
+            return vector<T, Cpu>(n, ptr, cpu);
         }
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context

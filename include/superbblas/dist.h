@@ -1017,7 +1017,7 @@ namespace superbblas {
             // Compute the indices
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             unsigned int nprocs = p1.size() / ncomponents1;
-            From_size_out<Nd0> r(nprocs);
+            From_size_out<Nd0> r(nprocs, p0.ctx());
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd1> &local_from1 = p1[i * ncomponents1 + componentId1][0];
                 const Coor<Nd1> &local_size1 = p1[i * ncomponents1 + componentId1][1];
@@ -1086,7 +1086,7 @@ namespace superbblas {
 
             // Compute the indices
             unsigned int nprocs = p0.size();
-            From_size_out<Nd1> r(nprocs);
+            From_size_out<Nd1> r(nprocs, p0.ctx());
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd0> &local_from0 = p0[i][0];
                 const Coor<Nd0> &local_size0 = p0[i][1];
@@ -1130,10 +1130,10 @@ namespace superbblas {
 
             template <std::size_t Nd>
             vector<IndexType, Cpu> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
-                                                       const Coor<Nd> &dim, Cpu, CoorOrder co,
+                                                       const Coor<Nd> &dim, Cpu cpu, CoorOrder co,
                                                        MockFilling mf) {
                 std::size_t vol = volume(size);
-                vector<IndexType, Cpu> r(vol);
+                vector<IndexType, Cpu> r(vol, cpu);
 
                 if (mf == FillWithIndices) {
                     Coor<Nd> local_stride = get_strides(size, co);
@@ -1559,7 +1559,7 @@ namespace superbblas {
             if (it != cache.end()) return it->second.value;
 
             // Create partition
-            From_size_out<Ndo> pr(p0.size());
+            From_size_out<Ndo> pr(p0.size(), p0.ctx());
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 pr[i][0] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][0], o1, p1[i][0], o_r);
                 pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r);
@@ -1689,7 +1689,7 @@ namespace superbblas {
             struct nothing {};
             auto cache =
                 getCache<From_size<Nd>, nothing, TupleHash<From_size<Nd>>, cache_tag>(Cpu{session});
-            From_size<Nd> fs = to_vector(p, n);
+            From_size<Nd> fs = to_vector(p, n, Cpu{session});
             auto it = cache.find(fs);
             if (it != cache.end()) return it->first;
             fs = fs.clone();

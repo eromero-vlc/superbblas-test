@@ -11,8 +11,8 @@ using namespace superbblas::detail;
 template <typename T, typename XPU> struct gen_dummy_vector;
 
 template <typename T> struct gen_dummy_vector<T, Cpu> {
-    static vector<T, Cpu> get(std::size_t size, Cpu) {
-        vector<T, Cpu> v(size);
+    static vector<T, Cpu> get(std::size_t size, Cpu cpu) {
+        vector<T, Cpu> v(size, cpu);
         for (unsigned int i = 0; i < size; i++) v[i] = i;
         return v;
     }
@@ -21,8 +21,8 @@ template <typename T> struct gen_dummy_vector<T, Cpu> {
 template <typename T, std::size_t N>
 struct gen_dummy_vector <std::array<T, N>, Cpu>{
     using Q = std::array<T, N>;
-    static vector<Q, Cpu> get(std::size_t size, Cpu) {
-        vector<Q, Cpu> v(size);
+    static vector<Q, Cpu> get(std::size_t size, Cpu cpu) {
+        vector<Q, Cpu> v(size, cpu);
         for (unsigned int i = 0; i < size; i++)
             for (unsigned int j = 0; j < N; ++j) v[i][j] = i * N + j;
         return v;
@@ -40,8 +40,8 @@ template <typename T> struct gen_dummy_vector<T, Cuda> {
 };
 #endif
 
-Indices<Cpu> gen_dummy_perm(std::size_t size, std::size_t max_size, Cpu) {
-    Indices<Cpu> v(size);
+Indices<Cpu> gen_dummy_perm(std::size_t size, std::size_t max_size, Cpu cpu) {
+    Indices<Cpu> v(size, cpu);
     for (unsigned int i = 0; i < size; i++) v[i] = (i * 3) % max_size;
     return v;
 }
@@ -142,7 +142,7 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     copy_n<IndexType, T, T>(t1_xpu.data(), i0_xpu.begin(), xpu, size / 2, t1.data(), Cpu{},
                             EWOp::Copy{});
 
-    vector<T, Cpu> r0(size), r1(size);
+    vector<T, Cpu> r0(size, Cpu{}), r1(size, Cpu{});
     zero_n<T>(r.data(), size, Cpu{});
     zero_n<T>(r1.data(), size, Cpu{});
     copy_n<IndexType, T, T>(t0.data(), i0.begin(), Cpu{}, size / 2, r0.data(), Cpu{}, EWOp::Copy{});
