@@ -1500,7 +1500,7 @@ namespace superbblas {
 
         template <std::size_t Nd>
         From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n, Session session) {
-            return to_vector(p, n, Cpu{session});
+            return to_vector(p, n, Cpu{session}).clone();
         }
     }
 
