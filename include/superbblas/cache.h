@@ -61,7 +61,9 @@ namespace superbblas {
                 ~Cache() {}
                 std::size_t deleteTs(Timestamp ts) override {
                     auto k = keys.find(ts);
+                    if (k == keys.end()) throw std::runtime_error("Timestamp not found");
                     auto v = cache.find(k->second);
+                    if (v == cache.end()) throw std::runtime_error("This shouldn't happen");
                     std::size_t size = v->second.size;
                     cache.erase(v);
                     keys.erase(k);
@@ -216,14 +218,14 @@ namespace superbblas {
 
         /// Return the caches associated to the devices
         inline std::vector<cache> &getCaches(Session session) {
-            static std::array<std::vector<cache>, 256> caches;
+            static std::array<std::vector<cache>, 256> caches{};
             static std::mutex m;
 
             // Initialize caches
-            if (caches[0].size() == 0) {
+            if (caches[255].size() == 0) {
                 std::lock_guard<std::mutex> g(m);
 
-                if (caches[0].size() == 0) {
+                if (caches[255].size() == 0) {
                     for (Session s = 0; s < 256; ++s) {
                         // Get maximum memory use for CPU cache
                         std::size_t cacheMaxSizeCpu = 0;
@@ -235,8 +237,8 @@ namespace superbblas {
                         }
 
                         // Create the cache for the cpu objects and set the maximum size
-                        caches[s].resize(1);
-                        caches[s][0].setMaxCacheSize(cacheMaxSizeCpu);
+			std::vector<cache> cache_s(1);
+                        cache_s[0].setMaxCacheSize(cacheMaxSizeCpu);
 
 #ifdef SUPERBBLAS_USE_CUDA
                         // Get maximum memory use for GPU cache
@@ -252,10 +254,11 @@ namespace superbblas {
                         // Create the caches for the gpu objects and set the maximum size
                         int numDevices = 0;
                         cudaCheck(cudaGetDeviceCount(&numDevices));
-                        caches[s].resize(numDevices + 1);
+                        cache_s.resize(numDevices + 1);
                         for (int d = 0; d < numDevices; ++d)
-                            caches[s][d + 1].setMaxCacheSize(cacheMaxSizeGpu);
+                            cache_s[d + 1].setMaxCacheSize(cacheMaxSizeGpu);
 #endif
+                        std::swap(caches[s], cache_s);
                     }
                 }
             }
