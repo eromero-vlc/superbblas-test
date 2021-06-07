@@ -1280,9 +1280,9 @@ namespace superbblas {
                 (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
             int ldcb = (or_starts_with_T ? 1 : volT) * volB;
             int stridecb = (or_starts_with_T ? volume<Ndo>(dimr) / volT : volC);
-            xgemm_batch_strided<T>(transab, transca, volB, volC, volA, alpha, v0.data(), ldab,
-                                   strideab, v1.data(), ldca, strideca, beta, vr.data(), ldcb,
-                                   stridecb, volT, vr.ctx());
+            xgemm_batch_strided(transab, transca, volB, volC, volA, alpha, v0.data(), ldab,
+                                strideab, v1.data(), ldca, strideca, beta, vr.data(), ldcb,
+                                stridecb, volT, vr.ctx());
         }
 
         /// Copy the content of tensor o0 into o1

@@ -77,6 +77,7 @@
 // #include "template_undef.h"
 // #undef __SUPERBBLAS_USE_QUADCOMPLEX
 
+#    undef THIS_FILE
 #endif // THIS_FILE
 
 #endif // __SUPERBBLAS_TEMPLATE_TYPES__
