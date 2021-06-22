@@ -903,7 +903,7 @@ namespace superbblas {
                                          "second tensor to use conjugation");
 
             // Compute the volume for each piece
-            int nonzero = (o0.size() > 0 & o1.size() > 0 & o_r.size() > 0 ? 1 : 0);
+            int nonzero = ((o0.size() > 0 && o1.size() > 0 && o_r.size() > 0) ? 1 : 0);
             int volT = nT == 0 ? nonzero : volume<Nd0>(o0, dim0, sT, nT);
             int volA = nA == 0 ? nonzero : volume<Nd0>(o0, dim0, sA, nA);
             int volB = nB == 0 ? nonzero : volume<Nd0>(o0, dim0, sB, nB);

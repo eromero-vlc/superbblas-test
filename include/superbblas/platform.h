@@ -15,10 +15,16 @@
 #    ifndef SUPERBBLAS_USE_CUDA
 #        define SUPERBBLAS_USE_CUDA
 #    endif
+#elif defined(__HIPCC__)
+#    define __HOST__ __host__
+#    define __DEVICE__ __device__
+#    ifndef SUPERBBLAS_USE_HIP
+#        define SUPERBBLAS_USE_HIP
+#    endif
 #else
 #    define __HOST__
 #    define __DEVICE__
-#endif // __CUDA_ARCH__
+#endif
 
 #if !defined(SUPERBBLAS_USE_CPU) && defined(SUPERBBLAS_USE_MKL)
 #    undef SUPERBBLAS_USE_MKL
@@ -29,9 +35,17 @@
 #    include <cuda_runtime.h>
 #endif
 
+#ifdef SUPERBBLAS_USE_HIP
+#    include <hipblas.h>
+#    include <hip/hip_runtime_api.h>
+#endif
+
 #ifdef SUPERBBLAS_CREATING_FLAGS
 #    ifdef SUPERBBLAS_USE_CUDA
 EMIT_define(SUPERBBLAS_USE_CUDA)
+#    endif
+#    ifdef SUPERBBLAS_USE_HIP
+EMIT_define(SUPERBBLAS_USE_HIP)
 #    endif
 #    ifdef SUPERBBLAS_USE_MKL
 EMIT_define(SUPERBBLAS_USE_MKL)
@@ -126,6 +140,61 @@ namespace superbblas {
 
         /// Return a device identification
         inline int deviceId(Cuda cuda) { return cuda.device; }
+
+#elif defined(SUPERBBLAS_USE_HIP)
+        inline void hipCheck(hipError_t err) {
+            if (err != hipSuccess) {
+                std::stringstream s;
+                s << "HIP error: " << hipGetErrorName(err) << ": " << hipGetErrorString(err);
+                throw std::runtime_error(s.str());
+            }
+        }
+
+        /// Return the device in which the pointer was allocated
+
+        inline int getPtrDevice(const void *x) {
+            struct hipPointerAttribute_t ptr_attr;
+            if (hipPointerGetAttributes(&ptr_attr, x) != hipSuccess) return CPU_DEVICE_ID;
+
+            if (ptr_attr.memoryType != hipMemoryTypeDevice)
+                return CPU_DEVICE_ID;
+            return ptr_attr.device;
+        }
+
+        inline const char *hipblasStatusToStr(hipblasStatus_t status) {
+            // clang-format off
+            if (status == HIPBLAS_STATUS_SUCCESS         ) return "HIPBLAS_STATUS_SUCCESS";
+            if (status == HIPBLAS_STATUS_NOT_INITIALIZED ) return "HIPBLAS_STATUS_NOT_INITIALIZED";
+            if (status == HIPBLAS_STATUS_ALLOC_FAILED    ) return "HIPBLAS_STATUS_ALLOC_FAILED";
+            if (status == HIPBLAS_STATUS_INVALID_VALUE   ) return "HIPBLAS_STATUS_INVALID_VALUE";
+            if (status == HIPBLAS_STATUS_ARCH_MISMATCH   ) return "HIPBLAS_STATUS_ARCH_MISMATCH";
+            if (status == HIPBLAS_STATUS_MAPPING_ERROR   ) return "HIPBLAS_STATUS_MAPPING_ERROR";
+            if (status == HIPBLAS_STATUS_EXECUTION_FAILED) return "HIPBLAS_STATUS_EXECUTION_FAILED";
+            if (status == HIPBLAS_STATUS_INTERNAL_ERROR  ) return "HIPBLAS_STATUS_INTERNAL_ERROR";
+            if (status == HIPBLAS_STATUS_NOT_SUPPORTED   ) return "HIPBLAS_STATUS_NOT_SUPPORTED";
+            // clang-format on
+            return "(unknown error code)";
+        }
+
+        inline void hipblasCheck(hipblasStatus_t status) {
+            if (status != HIPBLAS_STATUS_SUCCESS) {
+                std::stringstream s;
+                s << "HIPBLAS error: " << hipblasStatusToStr(status);
+                throw std::runtime_error(s.str());
+            }
+        }
+
+        struct Hip {
+            int device;
+            hipblasHandle_t hipblasHandle;
+            /// Optional function for allocating memory on devices
+            Allocator alloc;
+            /// Optional function for deallocating memory on devices
+            Deallocator dealloc;
+        };
+
+        /// Return a device identification
+        inline int deviceId(Hip hip) { return hip.device; }
 #else
 
         /// Return the device in which the pointer was allocated
@@ -169,6 +238,8 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         std::shared_ptr<cublasHandle_t> cublasHandle;
+#elif defined(SUPERBBLAS_USE_HIP)
+        std::shared_ptr<hipblasHandle_t> hipblasHandle;
 #endif
 
     public:
@@ -185,6 +256,15 @@ namespace superbblas {
                     });
                 detail::cublasCheck(cublasCreate(cublasHandle.get()));
             }
+#elif defined(SUPERBBLAS_USE_HIP)
+            if (plat == GPUAMD) {
+                hipblasHandle =
+                    std::shared_ptr<hipblasHandle_t>(new hipblasHandle_t, [](hipblasHandle_t *p) {
+                        detail::hipblasCheck(hipblasDestroy(*p));
+                        delete p;
+                    });
+                detail::hipblasCheck(hipblasCreate(hipblasHandle.get()));
+            }
 #endif
         }
 
@@ -192,10 +272,12 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         detail::Cuda toCuda() const { return detail::Cuda{device, *cublasHandle, alloc, dealloc}; }
+#elif defined(SUPERBBLAS_USE_HIP)
+        detail::Hip toHip() const { return detail::Hip{device, *hipblasHandle, alloc, dealloc}; }
 #else
         void toCuda() const { throw std::runtime_error("Cuda: unsupported platform"); }
+        void toHip() const { throw std::runtime_error("HIP: unsupported platform"); }
 #endif
-        void toGpuamd() const { throw std::runtime_error("Gpuamd: unsupported platform"); }
     };
 
     /// Return a CPU context
@@ -210,7 +292,10 @@ namespace superbblas {
 
     /// Return a GPUAMD context
     /// \param device: device ID
-    inline Context createGpuamdContext(int device = 0) { return Context{GPUAMD, device}; }
+    inline Context createHipContext(int device = 0, Allocator alloc = Allocator(),
+                                     Deallocator dealloc = Deallocator()) {
+        return Context{GPUAMD, device, alloc, dealloc};
+    }
 
     /// Return if `T` is a supported type
     template <typename T> struct supported_type {

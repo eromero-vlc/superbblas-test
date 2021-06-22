@@ -9,6 +9,10 @@ install_cuda:
 	@mkdir -p $(BUILDDIR)
 	@$(MAKE) -C src clean install TARGET=cuda CXX=
 
+install_hip:
+	@mkdir -p $(BUILDDIR)
+	@$(MAKE) -C src clean install TARGET=hip CXX=
+
 test_cpu:
 	@$(MAKE) -C tests clean all_cpu
 
@@ -18,11 +22,14 @@ test_cuda:
 test_header_only_cuda:
 	@$(MAKE) -C tests clean all_cuda
 
-test_header_only_cpu test_header_only_cuda: export SB_LDFLAGS :=
-test_header_only_cpu test_header_only_cuda: export SB_INCLUDE := -I../include
+test_header_only_hip:
+	@$(MAKE) -C tests clean all_hip
+
+test_header_only_cpu test_header_only_cuda test_header_only_hip: export SB_LDFLAGS :=
+test_header_only_cpu test_header_only_cuda test_header_only_hip: export SB_INCLUDE := -I../include
 test_header_only_cpu: test_cpu
 
 format:
 	${MAKE} -C src format
 
-.PHONY: lib_cpu lib_cuda clean tests
+.PHONY: install_cpu install_cuda install_hip test_cpu test_cuda test_hip test_header_only_cuda test_header_only_hip format

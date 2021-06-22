@@ -26,6 +26,14 @@ NVCCFLAGS ?= -x cu -O3 -arch=sm_75
 NVCCLDFLAGS ?= -lcublas -lcudart
 
 #
+# Compiler for rocm target, compiler flags, and linking flags
+#
+HIP ?= $(shell which hipcc)
+ROCMDIR ?= $(shell hipconfig -R)
+HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I/home/eromero/local/include
+HIPLDFLAGS ?= -L$(ROCMDIR)/hipblas/lib -L/home/eromero/local/lib -lhipblas
+
+#
 # Building directory
 #
 BUILDDIR ?= $(PWD)/build
