@@ -12,6 +12,7 @@ OTHER_HEADERS := \
   ../include/superbblas/performance.h \
   ../include/superbblas/platform.h \
   ../include/superbblas/runtime_features.h \
+  ../include/superbblas/storage.h \
   ../include/superbblas/template.h \
   ../include/superbblas/template_types.h \
   ../include/superbblas/template_undef.h \
