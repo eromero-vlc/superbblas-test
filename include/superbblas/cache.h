@@ -237,7 +237,7 @@ namespace superbblas {
                         }
 
                         // Create the cache for the cpu objects and set the maximum size
-			std::vector<cache> cache_s(1);
+                        std::vector<cache> cache_s(1);
                         cache_s[0].setMaxCacheSize(cacheMaxSizeCpu);
 
 #ifdef SUPERBBLAS_USE_CUDA

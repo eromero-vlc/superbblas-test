@@ -475,7 +475,6 @@ namespace superbblas {
         /// \param o0: dimension labels
         /// \param dim0: dimension size for o0
         /// \param o1: dimension labels
-        /// \param dim1: dimension size for o0
         ///
         /// Return whether all labels with dimension size greater than one in o0 are also in o1 and
         /// and the dimension of the first is smaller or equal than the second
@@ -551,7 +550,7 @@ namespace superbblas {
             (void)from1;
             (void)dim1;
 
-            tracker _t("comp. permutations");
+            tracker<Cpu> _t("comp. permutations", cpu);
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
@@ -603,7 +602,7 @@ namespace superbblas {
             (void)from0;
             (void)dim0;
 
-            tracker _t("comp. permutations");
+            tracker<Cpu> _t("comp. permutations", cpu);
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
@@ -702,7 +701,7 @@ namespace superbblas {
             (void)from1;
             (void)dim1;
 
-            tracker _t("comp. permutations cuda");
+            tracker<Cuda> _t("comp. permutations cuda", cuda);
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
@@ -752,7 +751,7 @@ namespace superbblas {
             (void)from0;
             (void)dim0;
 
-            tracker _t("comp. permutations cuda");
+            tracker<Cuda> _t("comp. permutations cuda", cuda);
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
@@ -1155,7 +1154,7 @@ namespace superbblas {
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
-            tracker _t("local contraction");
+            tracker<XPU> _t("local contraction", vr.ctx());
 
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))
@@ -1285,7 +1284,8 @@ namespace superbblas {
                                 stridecb, volT, vr.ctx());
         }
 
-        /// Copy the content of tensor o0 into o1
+        /// Copy the content of tensor v0 into v1
+        /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
@@ -1305,7 +1305,7 @@ namespace superbblas {
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
                         vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
 
-            tracker _t("local copy");
+            tracker<XPU1> _t("local copy", v1.ctx());
 
             // Shortcut to scale or zero out a tensor
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
@@ -1331,6 +1331,7 @@ namespace superbblas {
         }
 
         /// Copy the content of tensor o0 into o1
+        /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
@@ -1363,6 +1364,7 @@ namespace superbblas {
     }
 
     /// Copy the content of tensor o0 into o1
+    /// \param alpha: factor on the copy
     /// \param o0: dimension labels for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
     /// \param size0: number of coordinates to copy in each direction

@@ -40,6 +40,9 @@ int main(int argc, char **argv) {
     int num_threads = 1;
 #endif
 
+    std::cout << "Testing lattice dimensions xyzt= " << dim[X] << " " << dim[Y] << " " << dim[Z]
+              << " " << dim[T] << "  num_vecs= " << dim[N] << std::endl;
+
     //using Scalar = double;
     using Scalar = std::complex<float>;
     using ScalarD = std::complex<double>;
@@ -347,6 +350,9 @@ int main(int argc, char **argv) {
         }
     }
 #endif
+
+    reportTimings(std::cout);
+    reportCacheUsage(std::cout);
 
     return 0;
 }

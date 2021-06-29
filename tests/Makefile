@@ -11,9 +11,12 @@
 #  make dist_cuda CXX=mpicxx  # builds dist.cpp with ${NVCC} adding the flags
 #                             # and linking information for MPI
 
+BUILDDIR ?= ..
+SB_LDFLAGS ?= 
+
 include ../make.inc
 
-SOURCES := blas.cpp local.cpp dist.cpp
+SOURCES := blas.cpp local.cpp dist.cpp storage.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))

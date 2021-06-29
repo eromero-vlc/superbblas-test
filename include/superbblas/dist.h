@@ -371,7 +371,7 @@ namespace superbblas {
 
             // If they are not, compute the permutation vectors
             if (it == cache.end()) {
-                tracker _t("comp. pack permutation");
+                tracker<XPU0> _t("comp. pack permutation", v0.ctx());
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
                 Indices<Cpu> indices0(vol, fs.ctx()), indices1(vol, fs.ctx());
@@ -433,8 +433,7 @@ namespace superbblas {
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm, CoorOrder co) {
             unsigned int ncomponents0 = toSend.size();
-            PackedValues<Q> r =
-                prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, ncomponents1, comm);
+            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, 1, comm);
 
             Indices<Cpu> buf_disp(comm.nprocs, Cpu{});
             std::size_t n = 0; // accumulate total number of Q elements
@@ -443,11 +442,7 @@ namespace superbblas {
                 if (rank != comm.rank) { // Skip the local communications
                     // Compute the total number of Q elements for rank i
                     for (unsigned int irange = 0; irange < ncomponents0; ++irange) {
-                        for (unsigned int componentId1 = 0; componentId1 < ncomponents1;
-                             ++componentId1) {
-                            n_rank +=
-                                volume<Nd0>(toSend[irange][rank * ncomponents1 + componentId1][1]);
-                        }
+                        n_rank += volume<Nd0>(toSend[irange][rank][1]);
                     }
                 }
                 buf_disp[rank] = n;
@@ -488,7 +483,7 @@ namespace superbblas {
             return r;
         }
 
-       /// Unpack and copy packed tensors from a MPI communication
+        /// Unpack and copy packed tensors from a MPI communication
         /// \param r: packed subtensors
         /// \param toReceive: list of tensor ranges to receive
         /// \param v: data for the destination tensor
@@ -502,7 +497,7 @@ namespace superbblas {
                     const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm, EWOP,
                     CoorOrder co, typename elem<T>::type alpha) {
 
-            tracker _t("unpack for add (alt)");
+            tracker<XPU> _t("unpack for add (alt)", v.it.ctx());
 
             // Compute the destination index for all received elements
             Order<Nd> o = trivial_order<Nd>();
@@ -544,7 +539,7 @@ namespace superbblas {
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
 
-            tracker _t("packing");
+            tracker<Cpu> _t("packing", toReceive.ctx());
 
             if (comm.nprocs <= 1) return [] {};
 
@@ -590,7 +585,7 @@ namespace superbblas {
             return [=] {
                 // Wait for the MPI communication to finish
                 if (getUseAsyncAlltoall()) {
-                    tracker _t("alltoall");
+                    tracker<Cpu> _t("alltoall", toReceive.ctx());
                     MPI_Request r0 = r; // this copy avoid compiler warnings
                     MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
                 }
@@ -600,7 +595,7 @@ namespace superbblas {
                 std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
-                tracker _t("unpacking");
+                tracker<Cpu> _t("unpacking", toReceive.ctx());
                 unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
             };
         }
@@ -785,8 +780,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param indices0: coordinate in origin tensor that are going to send to each process
-        /// \param indices1: coordinate in destination tensor that are going to receive from each process
         /// \param rank: rank of the current process
         /// \param nprocs: total number of processes
         /// \param cpu: device context
@@ -798,7 +791,7 @@ namespace superbblas {
                                            unsigned int componentId1, unsigned int ncomponents1,
                                            const Order<Nd1> &o1, const Coor<Nd1> &from1) {
 
-            tracker _t("comp. tensor overlaps");
+            tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
 
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
@@ -854,8 +847,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param indices0: coordinate in origin tensor that are going to send to each process
-        /// \param indices1: coordinate in destination tensor that are going to receive from each process
         /// \param rank: rank of the current process
         /// \param nprocs: total number of processes
         /// \param cpu: device context
@@ -866,7 +857,7 @@ namespace superbblas {
                                               const From_size<Nd1> &p1, unsigned int to_rank,
                                               const Order<Nd1> &o1, const Coor<Nd1> &from1) {
 
-            tracker _t("comp. tensor overlaps");
+            tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
 
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
@@ -1167,7 +1158,7 @@ namespace superbblas {
                                         EWOp{}, co);
             }
 
-            tracker _t("distributed copy");
+            tracker<Cpu> _t("distributed copy", p0.ctx());
 
             // Check the dimensions of p0 and p1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -1428,7 +1419,7 @@ namespace superbblas {
                 barrier(comm);
             }
 
-            tracker _t("distributed contraction");
+            tracker<Cpu> _t("distributed contraction", p0.ctx());
 
             // Check the compatibility of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
@@ -1500,7 +1491,7 @@ namespace superbblas {
 
         template <std::size_t Nd>
         From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n, Session session) {
-            return to_vector(p, n, Cpu{session}).clone();
+            return clone(to_vector(p, n, Cpu{session}));
         }
     }
 

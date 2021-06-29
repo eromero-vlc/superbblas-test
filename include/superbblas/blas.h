@@ -99,7 +99,12 @@ namespace superbblas {
     /// elem<T>::type is T::value_type if T is an array; otherwise it is T
 
     template <typename T> struct elem { using type = T; };
-    template <typename T, std::size_t N> struct elem<std::array<T, N>> { using type = T; };
+    template <typename T, std::size_t N> struct elem<std::array<T, N>> {
+        using type = typename elem<T>::type;
+    };
+    template <typename T, std::size_t N> struct elem<const std::array<T, N>> {
+        using type = typename elem<T>::type;
+    };
 
     namespace detail {
 
@@ -139,7 +144,7 @@ namespace superbblas {
         /// \param n: number of element of type `T` to allocate
         /// \param cpu: context
 
-        template <typename T> T *allocate(std::size_t n, Cpu) {
+        template <typename T> T *allocate(std::size_t n, Cpu cpu) {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
@@ -149,10 +154,10 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
-                if (getAllocations().count((void *)r) > 0)
+                if (getAllocations(cpu.session).count((void *)r) > 0)
                     throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations()[(void *)r] = sizeof(T) * n;
-                getCpuMemUsed() += double(sizeof(T) * n);
+                getAllocations(cpu.session)[(void *)r] = sizeof(T) * n;
+                getCpuMemUsed(cpu.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>::check(r);
@@ -163,15 +168,15 @@ namespace superbblas {
         /// \param ptr: pointer to the memory to deallocate
         /// \param cpu: context
 
-        template <typename T> void deallocate(T *ptr, Cpu) {
+        template <typename T> void deallocate(T *ptr, Cpu cpu) {
             // Shortcut for zero allocations
             if (!ptr) return;
 
             // Remove annotation
-            if (getTrackingMemory() && getAllocations().count((void *)ptr) > 0) {
-                const auto &it = getAllocations().find((void *)ptr);
-                getCpuMemUsed() -= double(it->second);
-                getAllocations().erase(it);
+            if (getTrackingMemory() && getAllocations(cpu.session).count((void *)ptr) > 0) {
+                const auto &it = getAllocations(cpu.session).find((void *)ptr);
+                getCpuMemUsed(cpu.session) -= double(it->second);
+                getAllocations(cpu.session).erase(it);
             }
 
             // Deallocate the pointer
@@ -200,10 +205,10 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
-                if (getAllocations().count((void *)r) > 0)
+                if (getAllocations(cuda.session).count((void *)r) > 0)
                     throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations()[(void *)r] = sizeof(T) * n;
-                getGpuMemUsed() += double(sizeof(T) * n);
+                getAllocations(cuda.session)[(void *)r] = sizeof(T) * n;
+                getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>::check(r);
@@ -219,10 +224,10 @@ namespace superbblas {
             if (!ptr) return;
 
             // Remove annotation
-            if (getTrackingMemory() && getAllocations().count((void *)ptr) > 0) {
-                const auto &it = getAllocations().find((void *)ptr);
-                getGpuMemUsed() -= double(it->second);
-                getAllocations().erase(it);
+            if (getTrackingMemory() && getAllocations(cuda.session).count((void *)ptr) > 0) {
+                const auto &it = getAllocations(cuda.session).find((void *)ptr);
+                getGpuMemUsed(cuda.session) -= double(it->second);
+                getAllocations(cuda.session).erase(it);
             }
 
             // Deallocate the pointer
@@ -320,15 +325,6 @@ namespace superbblas {
                 return true;
             }
 
-            /// Clone content
-            template <typename U = XPU,
-                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
-            vector<T, Cpu> clone() const {
-                vector<T_no_const, Cpu> r(n, xpu);
-                std::copy_n(data(), n, r.data());
-                return r;
-            }
-
         private:
             std::size_t n;                   ///< Number of allocated `T` elements
             std::shared_ptr<T_no_const> ptr; ///< Pointer to the allocated memory
@@ -407,33 +403,94 @@ namespace superbblas {
 
         /// Copy n values, w[i] = v[i]
 
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cpu, std::size_t n, T *w, Cpu, EWOp::Copy) {
+        template <typename IndexType, typename T, typename Q>
+        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w, Cpu,
+                    EWOp::Copy) {
+            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
+            if (alpha == typename elem<T>::type{1}) {
+                if (std::is_same<T, Q>::value && (void *)v == (void *)w) return;
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+                for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+            } else {
+                if (std::is_same<T, Q>::value && (void *)v == (void *)w) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] *= alpha;
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[i];
+                }
+            }
         }
 
         /// Copy n values, w[i] += v[i]
 
-        template <typename IndexType, typename T>
-        void copy_n(const T *v, Cpu, std::size_t n, T *w, Cpu, EWOp::Add) {
+        template <typename IndexType, typename T, typename Q>
+        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w, Cpu,
+                    EWOp::Add) {
+            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
+            if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+                for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+            } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[i];
+            }
         }
 
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(const T *v, const IndexType *indices, Cpu, std::size_t n, Q *w, Cpu,
-                    EWOp::Copy) {
+        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, Cpu,
+                    std::size_t n, Q *w, Cpu, EWOp::Copy) {
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
+            } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-            for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+                    for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[indices[i]];
+                }
+            }
+        }
+
+        /// Copy n values, w[i] += v[indices[i]]
+
+        template <typename IndexType, typename T, typename Q>
+        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, Cpu,
+                    std::size_t n, Q *w, Cpu, EWOp::Add) {
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
+            } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] += v[indices[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[indices[i]];
+                }
+            }
         }
 
         /// Copy n values, w[indices[i]] = v[i]
@@ -441,16 +498,21 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w,
                     const IndexType *indices, Cpu, EWOp::Copy) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
+                }
             }
         }
 
@@ -459,16 +521,21 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w,
                     const IndexType *indices, Cpu, EWOp::Add) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
+            if (indices == nullptr) {
+                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
+                }
             }
         }
 
@@ -476,16 +543,23 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cpu,
                     std::size_t n, Q *w, const IndexType *indicesw, Cpu, EWOp::Copy) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+            if (indicesv == nullptr) {
+                copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Copy{});
+            } else if (indicesw == nullptr) {
+                copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
+                }
             }
         }
 
@@ -493,16 +567,23 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cpu,
                     std::size_t n, Q *w, const IndexType *indicesw, Cpu, EWOp::Add) {
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+            if (indicesv == nullptr) {
+                copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Add{});
+            } else if (indicesw == nullptr) {
+                copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Add{});
             } else {
+                assert(n == 0 || (void *)v != (void *)w);
+                if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+                } else {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
+                }
             }
         }
 
@@ -1043,6 +1124,25 @@ namespace superbblas {
 
 #endif // SUPERBBLAS_USE_CUDA
 
+        /// Return a copy of a vector
+
+        template <typename T, typename XPU,
+                  typename std::enable_if<!std::is_same<XPU, Cpu>::value, bool>::type = true>
+        vector<T, XPU> clone(const vector<T, XPU> &v) {
+            using T_no_const = typename std::remove_const<T>::type;
+            vector<T_no_const, XPU> r(v.size(), v.ctx());
+            copy_n(typename elem<T>::type{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
+                   EWOp::Copy{});
+            return r;
+        }
+
+        template <typename T> vector<T, Cpu> clone(const vector<T, Cpu> &v) {
+            using T_no_const = typename std::remove_const<T>::type;
+            vector<T_no_const, Cpu> r(v.size(), v.ctx());
+            std::copy_n(v.data(), v.size(), r.data());
+            return r;
+        }
+
         /// Set the first `n` elements with a value
         /// \param it: first element to set
         /// \param n: number of elements to set
@@ -1105,7 +1205,6 @@ namespace superbblas {
                 copy_n<int>(x, xpu, n, x, xpu, EWOp::Copy{});
             }
         }
-
 
 #ifdef SUPERBBLAS_USE_CUDA
 
