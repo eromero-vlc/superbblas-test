@@ -21,6 +21,7 @@
 /// metadata_content <char*metadata_size>: content of the metadata
 /// padding <char*((8 - metadata_size % 8) % 8 + 4)>: zero
 /// size <double*dimensions>: size of the tensor in each dimension (coordinates in SlowToFast)
+/// num_chunks <double>: number of chunks that follows
 /// chunk: repeat as many times as needed
 ///  -  number_of_blocks <double>: number of blocks
 ///  -  from_size <{from <double*dimensions>, size <double*dimensions>}*number_of_blocks>: the i-th
@@ -159,7 +160,7 @@ namespace superbblas {
         };
 
         inline std::FILE *file_open(SelfComm, const char *filename, Mode mode) {
-            std::FILE *f;
+            std::FILE *f = nullptr;
             switch (mode) {
             case CreateForReadWrite: f = std::fopen(filename, "w+"); break;
             case ReadWrite: f = std::fopen(filename, "r+"); break;
@@ -172,11 +173,8 @@ namespace superbblas {
             return f;
         }
 
-        inline void preallocate(std::FILE *, std::size_t) { /* Do nothing */
-        }
-
         inline void seek(std::FILE *f, std::size_t offset) {
-            if (fseek(f, offset, SEEK_SET) != 0)
+            if (fseeko(f, offset, SEEK_SET) != 0)
                 throw std::runtime_error("Error setting file position");
         }
 
@@ -201,6 +199,36 @@ namespace superbblas {
             read(f, v, n);
         }
 
+        inline void preallocate(std::FILE *f, std::size_t n) {
+            off_t old_offset = 0, end_of_file;
+
+            // Save the current position on the file
+            if ((old_offset = ftello(f)) == -1)
+                throw std::runtime_error("Error getting file position");
+
+            // Get the current size of the file
+            if (fseeko(f, -1, SEEK_END) != 0) throw std::runtime_error("Error setting file position");
+            if ((end_of_file = ftello(f) + 1) == 0)
+                throw std::runtime_error("Error getting file position");
+            std::size_t curr_size = end_of_file;
+
+            if (curr_size < n) {
+                std::vector<char> v(std::min(n - curr_size, (std::size_t)256 * 1024 * 1024));
+
+                if (fseeko(f, 0, SEEK_END) != 0)
+                    throw std::runtime_error("Error setting file position");
+                while (curr_size < n) {
+                    std::size_t d = std::min(n - curr_size, v.size());
+                    write(f, v.data(), d);
+                    curr_size += d;
+                }
+            }
+
+            // Restore position on the file
+            if (fseeko(f, old_offset, SEEK_SET) != 0)
+                throw std::runtime_error("Error setting file position");
+        }
+
         inline void close(std::FILE *f) {
             if (fclose(f) != 0) throw std::runtime_error("Error closing file");
         }
@@ -221,20 +249,24 @@ namespace superbblas {
 
         template <std::size_t N, typename Comm> struct Storage_context : Storage_context_abstract {
             values_datatype values_type;           ///< type of the nonzero values
+            std::size_t header_size;               ///< number of bytes before the field num_chunks
             std::size_t disp;                      ///< number of bytes before the current chunk
             typename File<Comm>::type fh;          ///< file descriptor
             Coor<N> dim;                           ///< global tensor dimensions
             bool change_endianness;                ///< whether to change endianness
-            std::vector<From_size_item<N>> chunks; ///< list of chunks already written
+            std::size_t num_chunks;                ///< number of chunks written
+            std::vector<From_size_item<N>> blocks; ///< list of blocks already written
             std::vector<std::size_t> disps;        ///< displacements of the chunks in bytes
 
-            Storage_context(values_datatype values_type, std::size_t disp,
+            Storage_context(values_datatype values_type, std::size_t header_size,
                             typename File<Comm>::type fh, Coor<N> dim, bool change_endianness)
                 : values_type(values_type),
-                  disp(disp),
+                  header_size(header_size),
+                  disp(header_size + sizeof(double)), // hop over num_chunks
                   fh(fh),
                   dim(dim),
-                  change_endianness(change_endianness) {}
+                  change_endianness(change_endianness),
+                  num_chunks(0) {}
 
             std::size_t getNdim() override { return N; }
             CommType getCommType() override { return File<Comm>::value; }
@@ -464,11 +496,11 @@ namespace superbblas {
             // Generate the list of subranges to send from each component from v0 to v1
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
             auto send_receive = get_ranges_to_send_receive(dim0, p0, o0, from0, size0, sto.dim,
-                                                           sto.chunks, o1, from1);
+                                                           sto.blocks, o1, from1);
 
             // Do the local file modifications
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            for (unsigned int j = 0; j < sto.chunks.size(); ++j) {
+            for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
                 const From_size<Nd0> &toSend = std::get<0>(send_receive)[j];
                 const From_size<Nd1> &toReceive = std::get<1>(send_receive)[j];
                 for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
@@ -517,19 +549,19 @@ namespace superbblas {
 
             // Generate the list of subranges to send from each component from v0 to v1
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
-            auto send_receive = get_ranges_to_send_receive(sto.dim, sto.chunks, o0, from0, size0,
+            auto send_receive = get_ranges_to_send_receive(sto.dim, sto.blocks, o0, from0, size0,
                                                            dim1, p1, o1, from1);
 
             // Do the local file modifications
             unsigned int ncomponents0 = v1.first.size() + v1.second.size();
-            for (unsigned int j = 0; j < sto.chunks.size(); ++j) {
+            for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
                 const From_size<Nd0> &toSend = std::get<0>(send_receive)[j];
                 const From_size<Nd1> &toReceive = std::get<1>(send_receive)[j];
                 for (const Component<Nd1, Q, XPU0> &c0 : v1.first) {
                     int i = c0.componentId + comm.rank * ncomponents0;
                     assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
                     local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
-                                               sto.chunks[j][1], sto.fh, sto.disps[j], o1,
+                                               sto.blocks[j][1], sto.fh, sto.disps[j], o1,
                                                toReceive[i][0], c0.dim, c0.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
@@ -537,7 +569,7 @@ namespace superbblas {
                     int i = c0.componentId + comm.rank * ncomponents0;
                     assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
                     local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
-                                               sto.chunks[j][1], sto.fh, sto.disps[j], o1,
+                                               sto.blocks[j][1], sto.fh, sto.disps[j], o1,
                                                toReceive[i][0], c0.dim, c0.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
@@ -598,6 +630,10 @@ namespace superbblas {
                 std::array<double, Nd> dimd;
                 std::copy_n(dim.begin(), Nd, dimd.begin());
                 write(fh, &dimd[0], Nd);
+
+                // Write num_chunks
+                double d = 0;
+                write(fh, &d, 1);
             }
 
             // Create the handler
@@ -680,40 +716,6 @@ namespace superbblas {
             header_size = sizeof(int) * 5 + metadata_length + padding.size() + sizeof(double) * Nd;
         }
 
-        /// Open a storage for reading and writing
-        /// \param filename: path and name of the file
-        /// \param comm: communicator
-        ///
-        /// NOTE: If the file does not exist, an exception will raise
-
-        template <std::size_t Nd, typename T, typename Comm>
-        Storage_context<Nd, Comm> *open_storage_template(const char *filename, Comm comm) {
-
-            // Open storage and check template parameters
-            typename File<Comm>::type fh;
-            values_datatype values_dtype;
-            std::vector<char> metadata;
-            std::vector<IndexType> size;
-            std::size_t header_size;
-            bool do_change_endianness;
-            detail::open_storage(filename, SlowToFast, values_dtype, metadata, size, header_size,
-                                 do_change_endianness, comm, fh);
-
-            if (values_dtype != get_values_datatype<T>())
-                throw std::runtime_error(
-                    "The template parameter T does not match with the datatype of the storage");
-            if (Nd != size.size())
-                throw std::runtime_error(
-                    "The template parameter Nd does not match with the number of "
-                    "dimensions of the storage");
-            Coor<Nd> dim;
-            std::copy_n(size.begin(), Nd, dim.begin());
-
-            // Create the handler
-            return new Storage_context<Nd, Comm>{values_dtype, header_size, fh, dim,
-                                                 do_change_endianness};
-        }
-
         /// Add blocks to storage
         /// \param p: partitioning of the origin tensor in consecutive ranges
         /// \param num_blocks: number of items in p
@@ -722,13 +724,13 @@ namespace superbblas {
         /// \param co: coordinates order
 
         template <std::size_t Nd1, typename Q, typename Comm>
-        void append_block(const PartitionItem<Nd1> *p, std::size_t num_blocks,
-                          Storage_context<Nd1, Comm> &sto, Comm comm, CoorOrder co) {
+        void append_blocks(const PartitionItem<Nd1> *p, std::size_t num_blocks,
+                           Storage_context<Nd1, Comm> &sto, Comm comm, CoorOrder co) {
 
             // Write the coordinates for all non-empty blocks
-            sto.chunks.reserve(sto.chunks.size() + num_blocks);
+            sto.blocks.reserve(sto.blocks.size() + num_blocks);
 
-            if (comm.rank == 0) seek(sto.fh, sto.disp + sizeof(int));
+            if (comm.rank == 0) seek(sto.fh, sto.disp + sizeof(double)); // skip num_blocks
 
             std::size_t num_values = 0;          ///< number of values in this chunk
             std::size_t num_nonempty_blocks = 0; ///< number of non-empty blocks
@@ -741,7 +743,7 @@ namespace superbblas {
                                                                 detail::reverse(p[i][1])});
                     num_nonempty_blocks++;
                     num_values += vol;
-                    sto.chunks.push_back(fs);
+                    sto.blocks.push_back(fs);
 
                     // Root process writes the "from" and "size" for each block
                     if (comm.rank == 0) {
@@ -758,8 +760,8 @@ namespace superbblas {
 
             // Annotate where the nonzero values start for the new blocks
             std::size_t values_start =
-                sto.disp + sizeof(int) + num_nonempty_blocks * sizeof(double) * 2;
-            sto.disps.reserve(sto.chunks.size());
+                sto.disp + sizeof(double) + num_nonempty_blocks * Nd1 * sizeof(double) * 2;
+            sto.disps.reserve(sto.blocks.size());
             for (std::size_t i = 0; i < num_nonempty_blocks; ++i) sto.disps.push_back(values_start);
 
             // Set the beginning for a new block
@@ -767,14 +769,117 @@ namespace superbblas {
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
-                int i32 = num_nonempty_blocks;
-                if (sto.change_endianness) change_endianness(&i32, 1);
-                write_at(sto.fh, sto.disp, &i32, 1);
+                double d = num_nonempty_blocks;
+                if (sto.change_endianness) change_endianness(&d, 1);
+                write_at(sto.fh, sto.disp, &d, 1);
                 preallocate(sto.fh, new_disp);
             }
 
             // Update disp
             sto.disp = new_disp;
+
+            // Update num_chunks
+            sto.num_chunks++;
+            if (comm.rank == 0) {
+                double num_chunks = sto.num_chunks;
+                if (sto.change_endianness) change_endianness(&num_chunks, 1);
+                write_at(sto.fh, sto.header_size, &num_chunks, 1);
+            }
+        }
+
+        /// Read all blocks from storage
+        /// \param stoh: handle to a tensor storage
+
+        template <std::size_t Nd1, typename Q, typename Comm>
+        void read_all_blocks(Storage_context<Nd1, Comm> &sto) {
+
+            // Read num_chunks
+            double num_chunks = 0;
+            std::size_t cur = sto.header_size;
+            read_at(sto.fh, cur, &num_chunks, 1);
+            cur += sizeof(double);
+            if (sto.change_endianness) change_endianness(&num_chunks, 1);
+            sto.num_chunks = num_chunks;
+
+            // Read chunks
+            sto.blocks.resize(0);
+            for (std::size_t chunk = 0; chunk < sto.num_chunks; chunk++) {
+                // Read the number of blocks in this chunk
+                double d;
+                read(sto.fh, &d, 1);
+                if (sto.change_endianness) change_endianness(&d, 1);
+                std::size_t num_blocks = d;
+
+                // Write the coordinates for all non-empty blocks
+                sto.blocks.reserve(sto.blocks.size() + num_blocks);
+
+                std::size_t num_values = 0;          ///< number of values in this chunk
+                for (std::size_t i = 0; i < num_blocks; ++i) {
+                    // Read from and size
+                    std::array<double, Nd1> fromd, sized;
+                    read(sto.fh, &fromd[0], Nd1);
+                    read(sto.fh, &sized[0], Nd1);
+                    if (sto.change_endianness) change_endianness(&fromd[0], Nd1);
+                    if (sto.change_endianness) change_endianness(&sized[0], Nd1);
+                    Coor<Nd1> from, size;
+                    std::copy_n(fromd.begin(), Nd1, from.begin());
+                    std::copy_n(sized.begin(), Nd1, size.begin());
+                    num_values += volume(size);
+                    sto.blocks.push_back(From_size_item<Nd1>{from, size});
+                }
+
+                // Annotate where the nonzero values start for the block
+                cur += sizeof(double) + num_blocks * Nd1 * sizeof(double) * 2;
+                sto.disps.reserve(sto.blocks.size());
+                for (std::size_t i = 0; i < num_blocks; ++i) sto.disps.push_back(cur);
+
+                // Set the beginning for a new block
+                cur += sizeof(Q) * num_values;
+                seek(sto.fh, cur);
+            }
+
+            // Update disp
+            sto.disp = cur;
+        }
+
+        /// Open a storage for reading and writing
+        /// \param filename: path and name of the file
+        /// \param comm: communicator
+        ///
+        /// NOTE: If the file does not exist, an exception will raise
+
+        template <std::size_t Nd, typename T, typename Comm>
+        Storage_context<Nd, Comm> *open_storage_template(const char *filename, Comm comm) {
+
+            // Open storage and check template parameters
+            typename File<Comm>::type fh;
+            values_datatype values_dtype;
+            std::vector<char> metadata;
+            std::vector<IndexType> size;
+            std::size_t header_size;
+            bool do_change_endianness;
+            open_storage(filename, SlowToFast, values_dtype, metadata, size, header_size,
+                         do_change_endianness, comm, fh);
+
+            if (values_dtype != get_values_datatype<T>())
+                throw std::runtime_error(
+                    "The template parameter T does not match with the datatype of the storage");
+            if (Nd != size.size())
+                throw std::runtime_error(
+                    "The template parameter Nd does not match with the number of "
+                    "dimensions of the storage");
+            Coor<Nd> dim;
+            std::copy_n(size.begin(), Nd, dim.begin());
+
+            // Create the handler
+            Storage_context<Nd, Comm> *sto = new Storage_context<Nd, Comm>{
+                values_dtype, header_size, fh, dim, do_change_endianness};
+
+            // Read the nonzero blocks
+            read_all_blocks<Nd, T, Comm>(*sto);
+
+            // Return handler
+            return sto;
         }
     }
 
@@ -847,13 +952,13 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd1, typename Q>
-    void append_block(const PartitionItem<Nd1> *p, int num_blocks, Storage_handle stoh,
-                      MPI_Comm mpicomm, CoorOrder co) {
+    void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, Storage_handle stoh,
+                       MPI_Comm mpicomm, CoorOrder co) {
 
         Storage_context<Nd1> &sto = *get_storage_context<Nd1, Q>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::append_block<Nd1, Q>(p, num_blocks, sto, comm, co);
+        detail::append_blocks<Nd1, Q>(p, num_blocks, sto, comm, co);
     }
 
     /// Copy the content of plural tensor v0 into a storage
@@ -1001,14 +1106,14 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd1, typename Q>
-    void append_block(const PartitionItem<Nd1> *p, std::size_t num_blocks, Storage_handle stoh,
-                      CoorOrder co) {
+    void append_blocks(const PartitionItem<Nd1> *p, std::size_t num_blocks, Storage_handle stoh,
+                       CoorOrder co) {
 
         detail::Storage_context<Nd1, detail::SelfComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::append_block<Nd1, Q>(p, num_blocks, sto, comm, co);
+        detail::append_blocks<Nd1, Q>(p, num_blocks, sto, comm, co);
     }
 
     /// Copy the content of plural tensor v0 into a storage
