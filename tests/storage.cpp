@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
     // Show lattice dimensions and processes arrangement
     if (rank == 0) {
         std::cout << "Testing lattice dimensions mdtgsn= " << dim[M] << " " << dim[D] << " "
-                  << dim[T] << " " << dim[G] << dim[S0] << " " << dim[N0] << std::endl;
+                  << dim[T] << " " << dim[G] << " " << dim[S0] << " " << dim[N0] << std::endl;
         std::cout << "Processes arrangement t= " << procs[T] << std::endl;
     }
 
@@ -112,20 +112,14 @@ int main(int argc, char **argv) {
         std::size_t vol0 = detail::volume(local_size0);
         Tensor t0(vol0);
 
-        // Create tensor t1 for reading the colorvec matrix
-        const Coor<2> dim1 = {dim[N0], dim[N1]};
-        const Coor<2> procs1 = {1, 1};
-        PartitionStored<2> p1 = basic_partitioning(dim1, procs1);
-        std::size_t vol1 = detail::volume(p1[rank][1]);
-        Tensor t1(vol1);
-
         // Generate random requests
+        std::size_t vol = detail::volume(dim);
         std::vector<std::size_t> reqs(num_reqs);
         {
             std::size_t hash = 5831;
             for (std::size_t c = 0; c < reqs.size(); ++c) {
                 hash = hash * 33 + c;
-                reqs[c] = hash % (vol0 / dim[N0] / dim[N1]);
+                reqs[c] = hash % (vol / dim[N0] / dim[N1]);
             }
         }
 
@@ -138,7 +132,6 @@ int main(int argc, char **argv) {
         if (rank == 0)
             std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
 
-        std::size_t vol = detail::volume(dim);
         if (rank == 0)
             std::cout << "Maximum number of elements in a tested tensor per process: " << vol0
                       << " ( " << vol0 * 1.0 * sizeof(Scalar) / 1024 / 1024
@@ -170,6 +163,7 @@ int main(int argc, char **argv) {
 
             for (std::size_t nni = 0; nni < nn.size(); ++nni) {
                 std::FILE *f = std::fopen(filename, "r");
+                Tensor t1(nn[nni] * nn[nni]);
                 double t = w_time();
                 for (unsigned int rep = 0; rep < nrep; ++rep) {
                     for (std::size_t r : reqs) {
@@ -240,6 +234,13 @@ int main(int argc, char **argv) {
                                          MPI_COMM_WORLD,
 #endif
                                          &stoh);
+
+                // Create tensor t1 for reading the genprop on root process
+                PartitionStored<2> p1(nprocs);
+                p1[0][1] = Coor<2>{n, n};
+                std::size_t vol1 = detail::volume(p1[rank][1]);
+                Tensor t1(vol1);
+
                 double t = w_time();
                 for (unsigned int rep = 0; rep < nrep; ++rep) {
                     for (auto req : reqs) {
@@ -327,6 +328,13 @@ int main(int argc, char **argv) {
                                          MPI_COMM_WORLD,
 #endif
                                          &stoh);
+
+                // Create tensor t1 for reading the genprop on root process
+                PartitionStored<2> p1(nprocs);
+                p1[0][1] = Coor<2>{n, n};
+                std::size_t vol1 = detail::volume(p1[rank][1]);
+                Tensor t1(vol1);
+
                 for (auto req : reqs) {
                     Coor<Nd> from0{};
                     std::copy_n(detail::index2coor(req, dimr, stridesr).begin(), Nd - 2,
@@ -336,6 +344,7 @@ int main(int argc, char **argv) {
                     size0[Nd - 2] = size0[Nd - 1] = n;
                     const Coor<2> from1{};
                     Scalar *ptr1 = t1.data();
+                    for (std::size_t i = 0; i < vol1; ++i) t1[i] = -1;
                     load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
                                                 "nN", from1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI

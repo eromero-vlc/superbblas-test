@@ -79,7 +79,7 @@ namespace superbblas {
         template <> inline MPI_Datatype mpi_datatype_basic_from_type<std::complex<float>>() {
             return MPI_FLOAT;
         }
-        template <> inline MPI_Datatype mpi_datatype_from_type<std::complex<double>>() {
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<std::complex<double>>() {
             return MPI_DOUBLE;
         }
         template <> inline MPI_Datatype mpi_datatype_basic_from_type<int>() { return MPI_INT; }
@@ -97,7 +97,7 @@ namespace superbblas {
         // File descriptor specialization for MpiComm
         template <> struct File<MpiComm> {
             using type = MPI_File;
-            constexpr CommType value = MPI;
+            static constexpr CommType value = MPI;
         };
 
         inline MPI_File file_open(MpiComm comm, const char *filename, Mode mode) {
@@ -106,11 +106,11 @@ namespace superbblas {
             case CreateForReadWrite:
                 // Delete file if it exists
                 MPI_File_delete(filename, MPI_INFO_NULL);
-                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY,
+                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_CREATE | MPI_MODE_RDWR,
                                         MPI_INFO_NULL, &fh));
                 break;
             case ReadWrite:
-                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDONLY, MPI_INFO_NULL, &fh));
+                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
                 break;
             }
             return fh;
@@ -130,26 +130,13 @@ namespace superbblas {
                                      mpi_datatype_basic_from_type<T>(), &status));
         }
 
-        template <typename T>
-        void write_at(MPI_File f, std::size_t offset, const T *v, std::size_t n) {
-            MPI_Status status;
-            MPI_check(MPI_File_write_at(f, offset, v, n * get_count_from_type<T>(),
-                                        mpi_datatype_basic_from_type<T>(), &status));
-        }
-
         template <typename T> void read(MPI_File f, T *v, std::size_t n) {
             MPI_Status status;
             MPI_check(MPI_File_read(f, v, n * get_count_from_type<T>(),
                                     mpi_datatype_basic_from_type<T>(), &status));
         }
 
-        template <typename T> void read_at(MPI_File f, std::size_t offset, T *v, std::size_t n) {
-            MPI_Status status;
-            MPI_check(MPI_File_read_at(f, offset, v, n * get_count_from_type<T>(),
-                                       mpi_datatype_basic_from_type<T>(), &status));
-        }
-
-        inline void close(MPI_File f) { MPI_check(MPI_File_close(f)); }
+        inline void close(MPI_File &f) { MPI_check(MPI_File_close(&f)); }
 
 #endif // SUPERBBLAS_USE_MPI
 
@@ -183,20 +170,9 @@ namespace superbblas {
                 throw std::runtime_error("Error writing in a file");
         }
 
-        template <typename T>
-        void write_at(std::FILE *f, std::size_t offset, const T *v, std::size_t n) {
-            seek(f, offset);
-            write(f, v, n);
-        }
-
         template <typename T> void read(std::FILE *f, T *v, std::size_t n) {
             if (fread(v, sizeof(T), n, f) != n)
                 throw std::runtime_error("Error reading from a file");
-        }
-
-        template <typename T> void read_at(std::FILE *f, std::size_t offset, T *v, std::size_t n) {
-            seek(f, offset);
-            read(f, v, n);
         }
 
         inline void preallocate(std::FILE *f, std::size_t n) {
@@ -402,7 +378,8 @@ namespace superbblas {
                 std::size_t n = 1;
                 for (; i + n < indices1.size() && indices1[i + n - 1] + 1 == indices1[i + n]; ++n)
                     ;
-                write_at(fh, disp + (disp1 + indices1[i]) * sizeof(Q), v0_host.data() + i, n);
+                seek(fh, disp + (disp1 + indices1[i]) * sizeof(Q));
+                write(fh, v0_host.data() + i, n);
                 i += n;
             }
         }
@@ -457,7 +434,8 @@ namespace superbblas {
                 std::size_t n = 1;
                 for (; i + n < indices0.size() && indices0[i + n - 1] + 1 == indices0[i + n]; ++n)
                     ;
-                read_at(fh, disp + (disp0 + indices0[i]) * sizeof(T), v0.data() + i, n);
+                seek(fh, disp + (disp0 + indices0[i]) * sizeof(T));
+                read(fh, v0.data() + i, n);
                 i += n;
             }
 
@@ -555,22 +533,24 @@ namespace superbblas {
             // Do the local file modifications
             unsigned int ncomponents0 = v1.first.size() + v1.second.size();
             for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
-                const From_size<Nd0> &toSend = std::get<0>(send_receive)[j];
-                const From_size<Nd1> &toReceive = std::get<1>(send_receive)[j];
                 for (const Component<Nd1, Q, XPU0> &c0 : v1.first) {
                     int i = c0.componentId + comm.rank * ncomponents0;
-                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
-                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
+                    const From_size<Nd0> &toSend = std::get<0>(send_receive)[i];
+                    const From_size<Nd1> &toReceive = std::get<1>(send_receive)[i];
+                    assert(check_equivalence(o0, toSend[j][1], o1, toReceive[j][1]));
+                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[j][0], toSend[j][1],
                                                sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[i][0], c0.dim, c0.it, EWOP{}, co,
+                                               toReceive[j][0], c0.dim, c0.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
                 for (const Component<Nd1, Q, XPU1> &c0 : v1.second) {
                     int i = c0.componentId + comm.rank * ncomponents0;
-                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
-                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
+                    const From_size<Nd0> &toSend = std::get<0>(send_receive)[i];
+                    const From_size<Nd1> &toReceive = std::get<1>(send_receive)[i];
+                    assert(check_equivalence(o0, toSend[j][1], o1, toReceive[j][1]));
+                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[j][0], toSend[j][1],
                                                sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[i][0], c0.dim, c0.it, EWOP{}, co,
+                                               toReceive[j][0], c0.dim, c0.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
             }
@@ -732,7 +712,8 @@ namespace superbblas {
 
             if (comm.rank == 0) seek(sto.fh, sto.disp + sizeof(double)); // skip num_blocks
 
-            std::size_t num_values = 0;          ///< number of values in this chunk
+            std::vector<std::size_t> num_values; ///< number of values for each block
+            num_values.reserve(num_blocks);
             std::size_t num_nonempty_blocks = 0; ///< number of non-empty blocks
             for (std::size_t i = 0; i < num_blocks; ++i) {
                 std::size_t vol = volume(p[i][1]);
@@ -742,7 +723,7 @@ namespace superbblas {
                                           : From_size_item<Nd1>{detail::reverse(p[i][0]),
                                                                 detail::reverse(p[i][1])});
                     num_nonempty_blocks++;
-                    num_values += vol;
+                    num_values.push_back(vol);
                     sto.blocks.push_back(fs);
 
                     // Root process writes the "from" and "size" for each block
@@ -759,31 +740,33 @@ namespace superbblas {
             }
 
             // Annotate where the nonzero values start for the new blocks
+            sto.disps.reserve(sto.blocks.size());
             std::size_t values_start =
                 sto.disp + sizeof(double) + num_nonempty_blocks * Nd1 * sizeof(double) * 2;
-            sto.disps.reserve(sto.blocks.size());
-            for (std::size_t i = 0; i < num_nonempty_blocks; ++i) sto.disps.push_back(values_start);
-
-            // Set the beginning for a new block
-            std::size_t new_disp = values_start + sizeof(Q) * num_values;
+            for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
+                sto.disps.push_back(values_start);
+                values_start += num_values[i] * sizeof(Q);
+            }
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
                 double d = num_nonempty_blocks;
                 if (sto.change_endianness) change_endianness(&d, 1);
-                write_at(sto.fh, sto.disp, &d, 1);
-                preallocate(sto.fh, new_disp);
+                seek(sto.fh, sto.disp);
+                write(sto.fh, &d, 1);
+                preallocate(sto.fh, values_start);
             }
 
             // Update disp
-            sto.disp = new_disp;
+            sto.disp = values_start;
 
             // Update num_chunks
             sto.num_chunks++;
             if (comm.rank == 0) {
                 double num_chunks = sto.num_chunks;
                 if (sto.change_endianness) change_endianness(&num_chunks, 1);
-                write_at(sto.fh, sto.header_size, &num_chunks, 1);
+                seek(sto.fh, sto.header_size);
+                write(sto.fh, &num_chunks, 1);
             }
         }
 
@@ -796,7 +779,8 @@ namespace superbblas {
             // Read num_chunks
             double num_chunks = 0;
             std::size_t cur = sto.header_size;
-            read_at(sto.fh, cur, &num_chunks, 1);
+            seek(sto.fh, cur);
+            read(sto.fh, &num_chunks, 1);
             cur += sizeof(double);
             if (sto.change_endianness) change_endianness(&num_chunks, 1);
             sto.num_chunks = num_chunks;
@@ -813,7 +797,8 @@ namespace superbblas {
                 // Write the coordinates for all non-empty blocks
                 sto.blocks.reserve(sto.blocks.size() + num_blocks);
 
-                std::size_t num_values = 0;          ///< number of values in this chunk
+                std::vector<std::size_t> num_values; ///< number of values for each block
+                num_values.reserve(num_blocks);
                 for (std::size_t i = 0; i < num_blocks; ++i) {
                     // Read from and size
                     std::array<double, Nd1> fromd, sized;
@@ -824,17 +809,19 @@ namespace superbblas {
                     Coor<Nd1> from, size;
                     std::copy_n(fromd.begin(), Nd1, from.begin());
                     std::copy_n(sized.begin(), Nd1, size.begin());
-                    num_values += volume(size);
+                    num_values.push_back(volume(size));
                     sto.blocks.push_back(From_size_item<Nd1>{from, size});
                 }
 
                 // Annotate where the nonzero values start for the block
                 cur += sizeof(double) + num_blocks * Nd1 * sizeof(double) * 2;
                 sto.disps.reserve(sto.blocks.size());
-                for (std::size_t i = 0; i < num_blocks; ++i) sto.disps.push_back(cur);
+                for (std::size_t i = 0; i < num_blocks; ++i) {
+                    sto.disps.push_back(cur);
+                    cur += num_values[i] * sizeof(Q);
+                }
 
                 // Set the beginning for a new block
-                cur += sizeof(Q) * num_values;
                 seek(sto.fh, cur);
             }
 
@@ -903,8 +890,8 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        *stoh = new Storage_context{
-            create_storage<Nd, T>(dim, co, filename, metadata, metadata_length, comm)};
+        *stoh = new detail::Storage_context<Nd, detail::MpiComm>{
+            detail::create_storage<Nd, T>(dim, co, filename, metadata, metadata_length, comm)};
     }
 
     /// Read fields in the header of a storage
@@ -921,12 +908,12 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        File fh;
+        typename detail::File<detail::MpiComm>::type fh;
         std::size_t header_size;
         bool do_change_endianness;
         detail::open_storage(filename, co, values_dtype, metadata, size, header_size,
                              do_change_endianness, comm, fh);
-        close(fh);
+        detail::close(fh);
     }
 
     /// Open a storage for reading and writing
@@ -955,7 +942,8 @@ namespace superbblas {
     void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, Storage_handle stoh,
                        MPI_Comm mpicomm, CoorOrder co) {
 
-        Storage_context<Nd1> &sto = *get_storage_context<Nd1, Q>(stoh);
+        detail::Storage_context<Nd1, detail::MpiComm> &sto =
+            *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::append_blocks<Nd1, Q>(p, num_blocks, sto, comm, co);
@@ -983,14 +971,15 @@ namespace superbblas {
               const Context *ctx0, const char *o1, const Coor<Nd1> &from1, Storage_handle stoh,
               MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
 
-        Storage_context<Nd1> *sto_ctx = get_storage_context<Nd1, Q>(stoh);
+        detail::Storage_context<Nd1, detail::MpiComm> &sto =
+            *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::save<Nd0, Nd1, T, Q>(
-            detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), *sto_ctx, from1, comm, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -1013,23 +1002,24 @@ namespace superbblas {
               int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, const Context *ctx1,
               MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd, Session session = 0) {
 
-        Storage_context<Nd1> *sto_ctx = get_storage_context<Nd1, Q>(stoh);
+        detail::Storage_context<Nd0, detail::MpiComm> &sto =
+            *detail::get_storage_context<Nd0, T, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         if (copyadd == Copy)
-            detail::load<Nd0, Nd1>(
-                alpha, from0, size0, detail::toArray<Nd0>(o0, "o0"),
+            detail::load<Nd0, Nd1, T, Q>(
+                alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
-                EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co);
         else
-            detail::load<Nd0, Nd1>(
-                alpha, from0, size0, detail::toArray<Nd0>(o0, "o0"),
+            detail::load<Nd0, Nd1, T, Q>(
+                alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
-                EWOp::Add{}, co);
+                detail::EWOp::Add{}, co);
     }
 
 #endif // SUPERBBLAS_USE_MPI
@@ -1051,7 +1041,7 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         *stoh = new detail::Storage_context<Nd, detail::SelfComm>{
-            create_storage<Nd, T>(dim, co, filename, metadata, metadata_length, comm)};
+            detail::create_storage<Nd, T>(dim, co, filename, metadata, metadata_length, comm)};
     }
 
     /// Read fields in the header of a storage
