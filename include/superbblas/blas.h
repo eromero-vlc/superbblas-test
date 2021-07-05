@@ -1202,7 +1202,7 @@ namespace superbblas {
             if (std::abs(alpha) == 0) {
                 zero_n(x, n, xpu);
             } else {
-                copy_n<int>(x, xpu, n, x, xpu, EWOp::Copy{});
+                copy_n<int>(1, x, xpu, n, x, xpu, EWOp::Copy{});
             }
         }
 

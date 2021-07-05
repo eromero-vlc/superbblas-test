@@ -4,6 +4,7 @@
 #include "dist.h"
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -102,6 +103,7 @@ namespace superbblas {
 
         inline MPI_File file_open(MpiComm comm, const char *filename, Mode mode) {
             MPI_File fh;
+            barrier(comm);
             switch (mode) {
             case CreateForReadWrite:
                 // Delete file if it exists
@@ -136,7 +138,12 @@ namespace superbblas {
                                     mpi_datatype_basic_from_type<T>(), &status));
         }
 
-        inline void close(MPI_File &f) { MPI_check(MPI_File_close(&f)); }
+        inline void flush(MPI_File f) { MPI_check(MPI_File_sync(f)); }
+
+        inline void close(MPI_File &f) {
+            flush(f);
+            MPI_check(MPI_File_close(&f));
+        }
 
 #endif // SUPERBBLAS_USE_MPI
 
@@ -146,53 +153,57 @@ namespace superbblas {
             static constexpr CommType value = SEQ;
         };
 
+        template <typename Str> void gen_error(const Str &error_msg) {
+            std::stringstream ss;
+            ss << error_msg << ": " << strerror(errno);
+            throw std::runtime_error(ss.str());
+        }
+
         inline std::FILE *file_open(SelfComm, const char *filename, Mode mode) {
             std::FILE *f = nullptr;
             switch (mode) {
-            case CreateForReadWrite: f = std::fopen(filename, "w+"); break;
-            case ReadWrite: f = std::fopen(filename, "r+"); break;
+            case CreateForReadWrite: f = std::fopen(filename, "wb+"); break;
+            case ReadWrite: f = std::fopen(filename, "rb+"); break;
             }
             if (f == nullptr) {
                 std::stringstream ss;
                 ss << "Error opening file `" << filename << "'";
-                throw std::runtime_error(ss.str());
+                gen_error(ss.str());
             }
             return f;
         }
 
         inline void seek(std::FILE *f, std::size_t offset) {
-            if (fseeko(f, offset, SEEK_SET) != 0)
-                throw std::runtime_error("Error setting file position");
+            if (offset >= std::numeric_limits<long>::max())
+                gen_error("Too small type to represent the displacement");
+            if (std::fseek(f, offset, SEEK_SET) != 0) gen_error("Error setting file position");
         }
 
         template <typename T> void write(std::FILE *f, const T *v, std::size_t n) {
-            if (fwrite(v, sizeof(T), n, f) != n)
-                throw std::runtime_error("Error writing in a file");
+            if (std::fwrite(v, sizeof(T), n, f) != n) gen_error("Error writing in a file");
         }
 
         template <typename T> void read(std::FILE *f, T *v, std::size_t n) {
-            if (fread(v, sizeof(T), n, f) != n)
-                throw std::runtime_error("Error reading from a file");
+            if (std::fread(v, sizeof(T), n, f) != n) gen_error("Error reading from a file");
         }
 
         inline void preallocate(std::FILE *f, std::size_t n) {
             off_t old_offset = 0, end_of_file;
+            if (n >= std::numeric_limits<long>::max())
+                throw std::runtime_error("Too small type to represent the displacement");
 
             // Save the current position on the file
-            if ((old_offset = ftello(f)) == -1)
-                throw std::runtime_error("Error getting file position");
+            if ((old_offset = std::ftell(f)) == -1) gen_error("Error getting file position");
 
             // Get the current size of the file
-            if (fseeko(f, -1, SEEK_END) != 0) throw std::runtime_error("Error setting file position");
-            if ((end_of_file = ftello(f) + 1) == 0)
-                throw std::runtime_error("Error getting file position");
+            if (std::fseek(f, -1, SEEK_END) != 0) gen_error("Error setting file position");
+            if ((end_of_file = std::ftell(f) + 1) == 0) gen_error("Error getting file position");
             std::size_t curr_size = end_of_file;
 
             if (curr_size < n) {
                 std::vector<char> v(std::min(n - curr_size, (std::size_t)256 * 1024 * 1024));
 
-                if (fseeko(f, 0, SEEK_END) != 0)
-                    throw std::runtime_error("Error setting file position");
+                if (std::fseek(f, 0, SEEK_END) != 0) gen_error("Error setting file position");
                 while (curr_size < n) {
                     std::size_t d = std::min(n - curr_size, v.size());
                     write(f, v.data(), d);
@@ -201,12 +212,15 @@ namespace superbblas {
             }
 
             // Restore position on the file
-            if (fseeko(f, old_offset, SEEK_SET) != 0)
-                throw std::runtime_error("Error setting file position");
+            if (std::fseek(f, old_offset, SEEK_SET) != 0) gen_error("Error setting file position");
+        }
+
+        inline void flush(std::FILE *f) {
+            if (std::fflush(f) != 0) gen_error("Error flushing file");
         }
 
         inline void close(std::FILE *f) {
-            if (fclose(f) != 0) throw std::runtime_error("Error closing file");
+            if (std::fclose(f) != 0) gen_error("Error closing file");
         }
 
         template <typename T> void change_endianness(T *v, std::size_t n) {
@@ -230,6 +244,7 @@ namespace superbblas {
             typename File<Comm>::type fh;          ///< file descriptor
             Coor<N> dim;                           ///< global tensor dimensions
             bool change_endianness;                ///< whether to change endianness
+            bool modified;                         ///< whether the storage content changed
             std::size_t num_chunks;                ///< number of chunks written
             std::vector<From_size_item<N>> blocks; ///< list of blocks already written
             std::vector<std::size_t> disps;        ///< displacements of the chunks in bytes
@@ -242,6 +257,7 @@ namespace superbblas {
                   fh(fh),
                   dim(dim),
                   change_endianness(change_endianness),
+                  modified(false),
                   num_chunks(0) {}
 
             std::size_t getNdim() override { return N; }
@@ -496,6 +512,9 @@ namespace superbblas {
                                                co, sto.change_endianness);
                 }
             }
+
+            // Mark the storage as modified
+            sto.modified = true;
         }
 
         /// Copy a range from a storage into a plural tensor v0
@@ -529,6 +548,12 @@ namespace superbblas {
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
             auto send_receive = get_ranges_to_send_receive(sto.dim, sto.blocks, o0, from0, size0,
                                                            dim1, p1, o1, from1);
+
+            // Synchronize the content of the storage before reading from it
+            if (sto.modified) {
+                flush(sto.fh);
+                sto.modified = false;
+            }
 
             // Do the local file modifications
             unsigned int ncomponents0 = v1.first.size() + v1.second.size();

@@ -660,8 +660,8 @@ namespace superbblas {
 
         inline void intersection(IndexType from0, IndexType size0, IndexType from1, IndexType size1,
                                  IndexType dim, IndexType &fromr, IndexType &sizer) {
-            fromr = from0 + std::min(std::max(from1 - from0, 0), size0);
-            sizer = from0 + std::min(std::max(from1 + size1 - from0, 0), size0) - fromr;
+            fromr = from0 + std::min(std::max(from1 - from0, IndexType{0}), size0);
+            sizer = from0 + std::min(std::max(from1 + size1 - from0, IndexType{0}), size0) - fromr;
             fromr = (fromr + dim) % dim;
             if (sizer == dim) fromr = from0;
         }

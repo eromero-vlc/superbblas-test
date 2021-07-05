@@ -1,8 +1,11 @@
 #include "superbblas.h"
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 #ifdef _OPENMP
 #    include <omp.h>
@@ -45,15 +48,18 @@ int main(int argc, char **argv) {
     bool procs_was_set = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strncmp("--dim=", argv[i], 6) == 0) {
-            if (sscanf(argv[i] + 6, "%d %d %d %d %d", &dim[M], &dim[D], &dim[T], &dim[G],
-                       &dim[N0]) != 5) {
+            if (sscanf(argv[i] + 6,
+                       std::is_same<superbblas::IndexType, int>::value ? "%d %d %d %d %d"
+                                                                       : "%ld %ld %ld %ld %ld",
+                       &dim[M], &dim[D], &dim[T], &dim[G], &dim[N0]) != 5) {
                 std::cerr << "--dim= should follow 5 numbers, for instance -dim='2 2 2 2 2'"
                           << std::endl;
                 return -1;
             }
             dim[N1] = dim[N0];
         } else if (std::strncmp("--procs=", argv[i], 8) == 0) {
-            if (sscanf(argv[i] + 8, "%d", &procs[T]) != 1) {
+            if (sscanf(argv[i] + 8, std::is_same<superbblas::IndexType, int>::value ? "%d" : "%ld",
+                       &procs[T]) != 1) {
                 std::cerr << "--procs= should follow one number, for instance --procs=2"
                           << std::endl;
                 return -1;
@@ -97,7 +103,7 @@ int main(int argc, char **argv) {
 #endif
 
     // using Scalar = float;
-    using Scalar = std::complex<float>;
+    using Scalar = std::complex<double>;
     //using ScalarD = std::complex<double>;
     {
         using Tensor = std::vector<Scalar>;
@@ -143,51 +149,63 @@ int main(int argc, char **argv) {
         // Create a file copying the content from a buffer; this should be the fastest way
 	// to populate the file
         double trefw = 0.0;
+	const bool dowrite = true;
         std::vector<double> trefr(nn.size(), 0.0);
-        {
+        if (rank == 0) {
+            std::FILE *f = std::fopen(filename, "w+b");
+
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
-                std::FILE *f = std::fopen(filename, "wb");
                 for (int m = 0; m < dim[M]; ++m) {
-                    if (fwrite(t0.data(), sizeof(Scalar), vol0, f) != vol0)
+                    if (std::fwrite(t0.data(), sizeof(Scalar), vol0, f) != vol0)
                         throw std::runtime_error("Error writing in a file");
                 }
-                std::fclose(f);
             }
+            std::fflush(f);
             t = w_time() - t;
-            if (rank == 0)
-                std::cout << "Time in dummy writing the tensor " << t / nrep << " s  "
-                          << dim[M] * vol0 * sizeof(Scalar) * nrep / t / 1024 / 1024 << " MiB/s"
-                          << std::endl;
+            std::cout << "Time in dummy writing the tensor " << t / nrep << " s  "
+                      << dim[M] * vol0 * sizeof(Scalar) * nrep / t / 1024 / 1024 << " MiB/s"
+                      << std::endl;
             trefw = t / nrep; // time in copying a whole tensor with size dim1
 
+            //std::fclose(f);
+            //f = std::fopen(filename, "rb");
+
             for (std::size_t nni = 0; nni < nn.size(); ++nni) {
-                std::FILE *f = std::fopen(filename, "r");
                 Tensor t1(nn[nni] * nn[nni]);
                 double t = w_time();
                 for (unsigned int rep = 0; rep < nrep; ++rep) {
                     for (std::size_t r : reqs) {
-                        if (fseek(f, sizeof(Scalar) * dim[N0] * dim[N1] * r, SEEK_SET) != 0)
-                            throw std::runtime_error("Error setting file position");
-                        if (fread(t1.data(), sizeof(Scalar), nn[nni] * nn[nni], f) !=
-                            (std::size_t)nn[nni] * nn[nni])
-                            throw std::runtime_error("Error reading in a file");
+                        std::size_t fread_out = 0;
+                        for (int tries = 0; tries < 10; ++tries) {
+                            if (std::fseek(f, sizeof(Scalar) * dim[N0] * dim[N1] * r, SEEK_SET) !=
+                                0)
+                                throw std::runtime_error("Error setting file position");
+                            fread_out = std::fread(t1.data(), sizeof(Scalar), nn[nni] * nn[nni], f);
+                            if (fread_out == (std::size_t)nn[nni] * nn[nni]) break;
+                        }
+                        if (fread_out != (std::size_t)nn[nni] * nn[nni])
+                            superbblas::detail::gen_error("Error reading in a file");
                     }
                 }
                 t = w_time() - t;
-                if (rank == 0)
-                    std::cout << "Time in dummy reading the tensor with " << nn[nni]
-                              << "^2 elements " << t / nrep << " s  "
-                              << nn.size() * nn[nni] * nn[nni] * sizeof(Scalar) * nrep / t / 1024 /
-                                     1024
-                              << " MiB/s" << std::endl;
+                std::cout << "Time in dummy reading the tensor with " << nn[nni] << "^2 elements "
+                          << t / nrep << " s  "
+                          << nn[nni] * nn[nni] * sizeof(Scalar) * nrep * reqs.size() / t / 1024 /
+                                 1024
+                          << " MiB/s" << std::endl;
                 trefr[nni] = t / nrep; // time in copying a whole tensor with size dim1
-                std::fclose(f);
             }
+
+            std::fclose(f);
         }
 
+#ifdef SUPERBBLAS_USE_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+
         // Save tensor t0 
-        {
+        if (dowrite) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Storage_handle stoh;
@@ -223,18 +241,23 @@ int main(int argc, char **argv) {
                           << " )" << std::endl;
         }
 
+	// Reuse the same handle for the following tests
+	// NOTE: it may be a race condition on storage_close and open_storage for the same file
+	//       that does not go away putting a barrier or a sleep
+        Storage_handle stoh;
+        open_storage<Nd, Scalar>(filename,
+#ifdef SUPERBBLAS_USE_MPI
+                                 MPI_COMM_WORLD,
+#endif
+                                 &stoh);
+
         // Load into tensor t1
-        {
+        if (dowrite) {
             const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
             Coor<Nd - 2> stride = detail::get_strides(dimr, SlowToFast);
-            for (auto n : nn) {
-                Storage_handle stoh;
-                open_storage<Nd, Scalar>(filename,
-#ifdef SUPERBBLAS_USE_MPI
-                                         MPI_COMM_WORLD,
-#endif
-                                         &stoh);
 
+            for (std::size_t nni = 0; nni < nn.size(); ++nni) {
+                int n = nn[nni];
                 // Create tensor t1 for reading the genprop on root process
                 PartitionStored<2> p1(nprocs);
                 p1[0][1] = Coor<2>{n, n};
@@ -261,22 +284,15 @@ int main(int argc, char **argv) {
                     }
                 }
                 t = w_time() - t;
-                close_storage(stoh);
                 if (rank == 0)
                     std::cout << "Time in reading the tensor with " << n << "^2 elements "
                               << t / nrep << " s  "
-                              << " (overhead " << t / nrep / trefw << " )" << std::endl;
+                              << " (overhead " << t / nrep / trefr[nni] << " )" << std::endl;
             }
         }
 
         // Store proper values to test the storage
         {
-            Storage_handle stoh;
-            open_storage<Nd, Scalar>(filename,
-#ifdef SUPERBBLAS_USE_MPI
-                                     MPI_COMM_WORLD,
-#endif
-                                     &stoh);
             Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
             for (int m = 0; m < dim[M]; ++m) {
                 const Coor<Nd - 1> from0{};
@@ -284,7 +300,7 @@ int main(int argc, char **argv) {
                 Scalar *ptr0 = t0.data();
                 for (std::size_t i = 0; i < vol0; ++i)
                     t0[i] = coor2index(index2coor(i, dim0, strides0) + p0[0][0], dim0, strides0) +
-                            m * vol0;
+                            m * vol / dim[M];
                 save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
                                                  (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
                                                  stoh,
@@ -293,7 +309,20 @@ int main(int argc, char **argv) {
 #endif
                                                  SlowToFast);
             }
-            close_storage(stoh);
+
+            // The data of the only block should contain the numbers from zero to vol
+            std::size_t padding_size = (8 - metadata.size() % 8) % 8 + 4;
+            std::size_t header_size =
+                sizeof(int) * 5 + metadata.size() + padding_size + sizeof(double) * Nd;
+            std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
+            std::ifstream f(filename, std::ios::binary);
+            f.seekg(disp);
+            Scalar s;
+            for (std::size_t i = 0; i < vol; ++i) {
+                f.read((char *)&s, sizeof(s));
+                if (i != s.real()) throw std::runtime_error("Error writing storage");
+            }
+           f.close();
         }
 
         // Check metadata
@@ -309,7 +338,7 @@ int main(int argc, char **argv) {
             if (std::vector<IndexType>(dim.begin(), dim.end()) != dim0)
                 throw std::runtime_error("Error recovering tensor dimensions");
 
-            if (dtype != CFLOAT) throw std::runtime_error("Error recovering the tensor datatype");
+            if (dtype != CDOUBLE) throw std::runtime_error("Error recovering the tensor datatype");
         }
 
         // Test the readings
@@ -319,15 +348,10 @@ int main(int argc, char **argv) {
             Coor<2> dimNN{dim[N0], dim[N1]};
             Coor<2> stridesNN = detail::get_strides(dimNN, SlowToFast);
             Coor<Nd> strides = detail::get_strides(dim, SlowToFast);
+
             for (auto n : nn) {
                 Coor<2> dimnn{n, n};
                 Coor<2> stridesnn = detail::get_strides(dimnn, SlowToFast);
-                Storage_handle stoh;
-                open_storage<Nd, Scalar>(filename,
-#ifdef SUPERBBLAS_USE_MPI
-                                         MPI_COMM_WORLD,
-#endif
-                                         &stoh);
 
                 // Create tensor t1 for reading the genprop on root process
                 PartitionStored<2> p1(nprocs);
@@ -352,15 +376,16 @@ int main(int argc, char **argv) {
 #endif
                                                 SlowToFast, Copy);
                     for (std::size_t i = 0; i < vol1; ++i)
-                        if ((IndexType)t1[i].real() !=
+                        if (t1[i].real() !=
                             coor2index(index2coor(i, dimnn, stridesnn) + p1[rank][0], dimNN,
-                                       stridesNN) +
-                                coor2index(from0, dim, strides))
+                                              stridesNN) +
+                                   coor2index(from0, dim, strides))
                             throw std::runtime_error("Storage failed!");
                 }
-                close_storage(stoh);
             }
         }
+
+        close_storage(stoh);
 
         if (rank == 0) reportTimings(std::cout);
         if (rank == 0) reportCacheUsage(std::cout);

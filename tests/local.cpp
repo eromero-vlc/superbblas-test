@@ -1,6 +1,6 @@
 #include "superbblas.h"
-#include <vector>
 #include <iostream>
+#include <vector>
 #ifdef _OPENMP
 #    include <omp.h>
 #endif

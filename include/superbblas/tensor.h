@@ -1311,7 +1311,8 @@ namespace superbblas {
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
                 from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
                 std::is_same<EWOP, detail::EWOp::Copy>::value) {
-                xscal(volume(dim1), Q(alpha), v1.data(), 1, v1.ctx());
+                copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
+                                        v1.ctx(), ewop);
                 return;
             }
 
