@@ -115,8 +115,6 @@ int main(int argc, char **argv) {
                                      procs[S1], procs[N0], procs[N1]}; // dtgsSnN
         PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
         const Coor<Nd - 1> local_size0 = p0[rank][1];
-        std::size_t vol0 = detail::volume(local_size0);
-        Tensor t0(vol0);
 
         // Generate random requests
         std::size_t vol = detail::volume(dim);
@@ -129,9 +127,6 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Dummy initialization of t0
-        for (unsigned int i = 0; i < vol0; i++) t0[i] = i;
-
         // Create a context in which the vectors live
         Context ctx = createCpuContext();
 
@@ -139,12 +134,13 @@ int main(int argc, char **argv) {
             std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
 
         if (rank == 0)
-            std::cout << "Maximum number of elements in a tested tensor per process: " << vol0
-                      << " ( " << vol0 * 1.0 * sizeof(Scalar) / 1024 / 1024
+            std::cout << "Maximum number of elements in a tested tensor per process: "
+                      << detail::volume(local_size0) << " ( "
+                      << detail::volume(local_size0) * 1.0 * sizeof(Scalar) / 1024 / 1024
                       << " MiB)   Expected file size: " << vol * 1.0 * sizeof(Scalar) / 1024 / 1024
                       << " MiB" << std::endl;
 
-	const char *filename = "tensor.s3t";
+    const char *filename = "tensor.s3t";
 
         // Create a file copying the content from a buffer; this should be the fastest way
 	// to populate the file
@@ -152,13 +148,19 @@ int main(int argc, char **argv) {
 	const bool dowrite = true;
         std::vector<double> trefr(nn.size(), 0.0);
         if (rank == 0) {
-            std::FILE *f = std::fopen(filename, "w+b");
+            std::FILE *f = std::fopen(filename, "w+");
+            if (f == nullptr) superbblas::detail::gen_error("Error opening file for writing");
+
+            // Dummy initialization of t0
+            std::size_t vol0 = detail::volume(dim) / dim[M];
+            Tensor t0(vol0);
+            for (unsigned int i = 0; i < vol0; i++) t0[i] = i;
 
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int m = 0; m < dim[M]; ++m) {
                     if (std::fwrite(t0.data(), sizeof(Scalar), vol0, f) != vol0)
-                        throw std::runtime_error("Error writing in a file");
+                        superbblas::detail::gen_error("Error writing in a file");
                 }
             }
             std::fflush(f);
@@ -168,22 +170,19 @@ int main(int argc, char **argv) {
                       << std::endl;
             trefw = t / nrep; // time in copying a whole tensor with size dim1
 
-            //std::fclose(f);
-            //f = std::fopen(filename, "rb");
+            std::fclose(f);
+            f = std::fopen(filename, "rb");
+            if (f == nullptr) superbblas::detail::gen_error("Error opening file for reading");
 
             for (std::size_t nni = 0; nni < nn.size(); ++nni) {
                 Tensor t1(nn[nni] * nn[nni]);
                 double t = w_time();
                 for (unsigned int rep = 0; rep < nrep; ++rep) {
                     for (std::size_t r : reqs) {
-                        std::size_t fread_out = 0;
-                        for (int tries = 0; tries < 10; ++tries) {
-                            if (std::fseek(f, sizeof(Scalar) * dim[N0] * dim[N1] * r, SEEK_SET) !=
-                                0)
-                                throw std::runtime_error("Error setting file position");
-                            fread_out = std::fread(t1.data(), sizeof(Scalar), nn[nni] * nn[nni], f);
-                            if (fread_out == (std::size_t)nn[nni] * nn[nni]) break;
-                        }
+                        if (std::fseek(f, sizeof(Scalar) * dim[N0] * dim[N1] * r, SEEK_SET) != 0)
+                            throw std::runtime_error("Error setting file position");
+                        std::size_t fread_out =
+                            std::fread(t1.data(), sizeof(Scalar), nn[nni] * nn[nni], f);
                         if (fread_out != (std::size_t)nn[nni] * nn[nni])
                             superbblas::detail::gen_error("Error reading in a file");
                     }
@@ -206,6 +205,10 @@ int main(int argc, char **argv) {
 
         // Save tensor t0 
         if (dowrite) {
+            std::size_t vol0 = detail::volume(local_size0);
+            Tensor t0(vol0);
+            for (unsigned int i = 0; i < vol0; i++) t0[i] = i;
+
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Storage_handle stoh;
@@ -293,13 +296,18 @@ int main(int argc, char **argv) {
 
         // Store proper values to test the storage
         {
+            PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
+            const Coor<Nd - 1> local_size0 = p0[rank][1];
+            std::size_t vol0 = detail::volume(local_size0);
+            Tensor t0(vol0);
+
             Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
             for (int m = 0; m < dim[M]; ++m) {
                 const Coor<Nd - 1> from0{};
                 const Coor<Nd> from1{m};
                 Scalar *ptr0 = t0.data();
                 for (std::size_t i = 0; i < vol0; ++i)
-                    t0[i] = coor2index(index2coor(i, dim0, strides0) + p0[0][0], dim0, strides0) +
+                    t0[i] = coor2index(index2coor(i, dim0, strides0) + p0[rank][0], dim0, strides0) +
                             m * vol / dim[M];
                 save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
                                                  (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
@@ -310,19 +318,23 @@ int main(int argc, char **argv) {
                                                  SlowToFast);
             }
 
-            // The data of the only block should contain the numbers from zero to vol
-            std::size_t padding_size = (8 - metadata.size() % 8) % 8 + 4;
-            std::size_t header_size =
-                sizeof(int) * 5 + metadata.size() + padding_size + sizeof(double) * Nd;
-            std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
-            std::ifstream f(filename, std::ios::binary);
-            f.seekg(disp);
-            Scalar s;
-            for (std::size_t i = 0; i < vol; ++i) {
-                f.read((char *)&s, sizeof(s));
-                if (i != s.real()) throw std::runtime_error("Error writing storage");
+            flush_storage(stoh);
+
+            if (rank == 0) {
+                // The data of the only block should contain the numbers from zero to vol
+                std::size_t padding_size = (8 - metadata.size() % 8) % 8 + 4;
+                std::size_t header_size =
+                    sizeof(int) * 5 + metadata.size() + padding_size + sizeof(double) * Nd;
+                std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
+                std::ifstream f(filename, std::ios::binary);
+                f.seekg(disp);
+                Scalar s;
+                for (std::size_t i = 0; i < vol; ++i) {
+                    f.read((char *)&s, sizeof(s));
+                    if (i != s.real()) throw std::runtime_error("Failing reading from storage");
+                }
+                f.close();
             }
-           f.close();
         }
 
         // Check metadata

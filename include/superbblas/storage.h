@@ -234,6 +234,7 @@ namespace superbblas {
         struct Storage_context_abstract {
             virtual std::size_t getNdim() { throw std::runtime_error("Not implemented"); }
             virtual CommType getCommType() { throw std::runtime_error("Not implemented"); }
+            virtual void flush() {}
             virtual ~Storage_context_abstract() {}
         };
 
@@ -262,6 +263,7 @@ namespace superbblas {
 
             std::size_t getNdim() override { return N; }
             CommType getCommType() override { return File<Comm>::value; }
+            void flush() override { detail::flush(fh); }
             ~Storage_context() override { close(fh); }
         };
 
@@ -927,9 +929,9 @@ namespace superbblas {
     /// \param metadata: (out) metadata content
     /// \param dim: (out) tensor dimensions
 
-    void read_storage_header(const char *filename, CoorOrder co, values_datatype &values_dtype,
-                             std::vector<char> &metadata, std::vector<IndexType> &size,
-                             MPI_Comm mpicomm) {
+    inline void read_storage_header(const char *filename, CoorOrder co,
+                                    values_datatype &values_dtype, std::vector<char> &metadata,
+                                    std::vector<IndexType> &size, MPI_Comm mpicomm) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
@@ -1077,8 +1079,9 @@ namespace superbblas {
     /// \param metadata: (out) metadata content
     /// \param dim: (out) tensor dimensions
 
-    void read_storage_header(const char *filename, CoorOrder co, values_datatype &values_dtype,
-                             std::vector<char> &metadata, std::vector<IndexType> &size) {
+    inline void read_storage_header(const char *filename, CoorOrder co,
+                                    values_datatype &values_dtype, std::vector<char> &metadata,
+                                    std::vector<IndexType> &size) {
 
         detail::SelfComm comm = detail::get_comm();
 
@@ -1090,10 +1093,15 @@ namespace superbblas {
         detail::close(fh);
     }
 
+    /// Force pending writing to make them visible to other processes
+    /// \param stoh:  handle to a tensor storage
+
+    inline void flush_storage(Storage_handle stoh) { stoh->flush(); }
+
     /// Close a storage
     /// \param stoh:  handle to a tensor storage
 
-    void close_storage(Storage_handle stoh) {
+    inline void close_storage(Storage_handle stoh) {
         // Destroy handle
         delete stoh;
     }

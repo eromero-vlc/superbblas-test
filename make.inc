@@ -12,8 +12,8 @@ endif
 # when compiling for cuda, and general linking flags for all targets
 #
 CXX ?= c++
-CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG)
-#CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG)
+#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG)
+CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG)
 LDFLAGS ?= -lopenblas
 
 #
