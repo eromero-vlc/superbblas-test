@@ -5,6 +5,7 @@
 #include "performance.h"
 #include "platform.h"
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -1012,8 +1013,10 @@ namespace superbblas {
                   typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
         vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
             vector<T, Cpu> r(v.size(), v.ctx().toCpu());
-            copy_n<std::size_t, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
-                                   EWOp::Copy{});
+            // FIXME: change int to std::size_t
+            if (v.size() > std::numeric_limits<int>::max())
+                throw std::runtime_error("Ups! Replace int by something bigger");
+            copy_n<int, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
             return r;
         }
     }
