@@ -261,10 +261,10 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_MKL
 
-        void xgemm_batch_strided(char transa, char transb, int m, int n, int k, float alpha,
-                                 const SCALAR *a, int lda, int stridea, const SCALAR *b, int ldb,
-                                 int strideb, SCALAR beta, SCALAR *c, int ldc, int stridec,
-                                 int batch_size, Cpu) {
+        inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, float alpha,
+                                        const SCALAR *a, int lda, int stridea, const SCALAR *b,
+                                        int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
+                                        int stridec, int batch_size, Cpu) {
 
             CONCAT(cblas_, CONCAT(ARITH(, , s, c, d, z, , ), gemm_batch_strided))
             (CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m, n, k, alpha, a, lda,
@@ -273,10 +273,10 @@ namespace superbblas {
 
 #    else // SUPERBBLAS_USE_MKL
 
-        void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
-                                 const SCALAR *a, int lda, int stridea, const SCALAR *b, int ldb,
-                                 int strideb, SCALAR beta, SCALAR *c, int ldc, int stridec,
-                                 int batch_size, Cpu cpu) {
+        inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
+                                        const SCALAR *a, int lda, int stridea, const SCALAR *b,
+                                        int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
+                                        int stridec, int batch_size, Cpu cpu) {
 
 #        ifdef _OPENMP
 #            pragma omp for
@@ -305,19 +305,21 @@ namespace superbblas {
 #define XSPMM           MKL_SP_FUNCTION(ARITH( , , s_mm , c_mm , d_mm , z_mm , , ))
         // clang-format on
 
-        sparse_matrix_t mkl_sparse_create_bsr(sparse_matrix_t *A, sparse_index_base_t indexing,
-                                              sparse_layout_t block_layout, MKL_INT rows,
-                                              MKL_INT cols, MKL_INT block_size, MKL_INT *rows_start,
-                                              MKL_INT *rows_end, MKL_INT *col_indx,
-                                              SCALAR *values) {
+        inline sparse_matrix_t mkl_sparse_create_bsr(sparse_matrix_t *A,
+                                                     sparse_index_base_t indexing,
+                                                     sparse_layout_t block_layout, MKL_INT rows,
+                                                     MKL_INT cols, MKL_INT block_size,
+                                                     MKL_INT *rows_start, MKL_INT *rows_end,
+                                                     MKL_INT *col_indx, SCALAR *values) {
             return XSPCREATEBSR(A, indexing, block_layout, rows, cols, block_size, rows_start,
                                 rows_end, col_indx, (MKL_SCALAR *)values);
         }
 
-        sparse_status_t mkl_sparse_mm(const sparse_operation_t operation, SCALAR alpha,
-                                      sparse_matrix_t A, struct matrix_descr descr,
-                                      sparse_layout_t layout, const SCALAR *B, MKL_INT columns,
-                                      MKL_INT ldb, SCALAR beta, SCALAR *C, MKL_INT ldc) {
+        inline sparse_status_t mkl_sparse_mm(const sparse_operation_t operation, SCALAR alpha,
+                                             sparse_matrix_t A, struct matrix_descr descr,
+                                             sparse_layout_t layout, const SCALAR *B,
+                                             MKL_INT columns, MKL_INT ldb, SCALAR beta, SCALAR *C,
+                                             MKL_INT ldc) {
             return XSPMM(operation, PASS_SCALAR(alpha), (MKL_SCALAR *)A, descr, layout,
                          (MKL_SCALAR *)B, columns, ldb, PASS_SCALAR(beta), (MKL_SCALAR *)C, ldc);
         }
