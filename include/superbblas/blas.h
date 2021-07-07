@@ -55,6 +55,8 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define REPLACE_EWOP REPLACE(EWOP, EWOp::Copy, EWOp::Add)
 
+#    define REPLACE_XPU REPLACE(XPU, XPU_GPU)
+
 #if defined(SUPERBBLAS_USE_CUDA)
 #define XPU_GPU Cuda
 #elif defined(SUPERBBLAS_USE_HIP)	
@@ -66,13 +68,13 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define DECL_COPY_T_Q_EWOP(...)                                                                \
         EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T, Q, XPU_GPU, EWOP>)          \
-            REPLACE_T_Q REPLACE_EWOP template __VA_ARGS__;
+            REPLACE_T_Q REPLACE_XPU REPLACE_EWOP template __VA_ARGS__;
 
 /// Generate template instantiations for copy_reduce_n functions with template parameters IndexType and T
 
 #    define DECL_COPY_REDUCE(...)                                                                  \
         EMIT REPLACE1(copy_reduce_n, superbblas::detail::copy_reduce_n<IndexType, T, XPU_GPU>)     \
-            REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) template __VA_ARGS__;
+            REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) REPLACE_XPU template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
