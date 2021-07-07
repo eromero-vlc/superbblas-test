@@ -43,6 +43,8 @@ int main(int argc, char **argv) {
     const unsigned int nrep = 1;
     const unsigned int num_reqs = 1000;
     std::string metadata = "S3T format!";
+    const char *filename = "tensor.s3t";
+
 
     // Get options
     bool procs_was_set = false;
@@ -139,8 +141,6 @@ int main(int argc, char **argv) {
                       << detail::volume(local_size0) * 1.0 * sizeof(Scalar) / 1024 / 1024
                       << " MiB)   Expected file size: " << vol * 1.0 * sizeof(Scalar) / 1024 / 1024
                       << " MiB" << std::endl;
-
-    const char *filename = "tensor.s3t";
 
         // Create a file copying the content from a buffer; this should be the fastest way
 	// to populate the file
@@ -308,7 +308,7 @@ int main(int argc, char **argv) {
                 Scalar *ptr0 = t0.data();
                 for (std::size_t i = 0; i < vol0; ++i)
                     t0[i] = coor2index(index2coor(i, dim0, strides0) + p0[rank][0], dim0, strides0) +
-                            m * vol / dim[M];
+                        m * vol / dim[M];
                 save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
                                                  (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
                                                  stoh,
@@ -402,6 +402,144 @@ int main(int argc, char **argv) {
         if (rank == 0) reportTimings(std::cout);
         if (rank == 0) reportCacheUsage(std::cout);
     }
+#ifdef SUPERBBLAS_USE_CUDA
+    {
+	resetTimings();
+
+        using Tensor = thrust::device_vector<Scalar>;
+
+        // Create tensor t0 of Nd dims: a genprop
+        const Coor<Nd - 1> dim0{dim[D], dim[T], dim[G], dim[S0], dim[S1], dim[N0], dim[N1]}; // dtgsSnN
+        const Coor<Nd - 1> procs0 = {procs[D],  procs[T],  procs[G], procs[S0],
+                                     procs[S1], procs[N0], procs[N1]}; // dtgsSnN
+        PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
+
+        // Generate random requests
+        std::size_t vol = detail::volume(dim);
+        std::vector<std::size_t> reqs(num_reqs);
+        {
+            std::size_t hash = 5831;
+            for (std::size_t c = 0; c < reqs.size(); ++c) {
+                hash = hash * 33 + c;
+                reqs[c] = hash % (vol / dim[N0] / dim[N1]);
+            }
+        }
+
+        // Create a context in which the vectors live
+        Context ctx = createCudaContext();
+
+        Storage_handle stoh;
+        create_storage<Nd, Scalar>(dim, SlowToFast, filename, metadata.c_str(), metadata.size(),
+#ifdef SUPERBBLAS_USE_MPI
+                                   MPI_COMM_WORLD,
+#endif
+                                   &stoh);
+        std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
+        append_blocks<Nd, Scalar>(&fs, 1, stoh,
+#ifdef SUPERBBLAS_USE_MPI
+                                  MPI_COMM_WORLD,
+#endif
+                                  SlowToFast);
+
+        // Store proper values to test the storage
+        {
+            PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
+            const Coor<Nd - 1> local_size0 = p0[rank][1];
+            std::size_t vol0 = detail::volume(local_size0);
+            Tensor t0(vol0);
+            std::vector<Scalar> t0_host(vol0);
+
+            Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
+            for (int m = 0; m < dim[M]; ++m) {
+                const Coor<Nd - 1> from0{};
+                const Coor<Nd> from1{m};
+                for (std::size_t i = 0; i < vol0; ++i)
+                    t0_host[i] =
+                        coor2index(index2coor(i, dim0, strides0) + p0[rank][0], dim0, strides0) +
+                        m * vol / dim[M];
+                t0 = t0_host;
+                Scalar *ptr0 = t0.data().get();
+                save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
+                                                 (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
+                                                 stoh,
+#ifdef SUPERBBLAS_USE_MPI
+                                                 MPI_COMM_WORLD,
+#endif
+                                                 SlowToFast);
+            }
+
+            flush_storage(stoh);
+
+            if (rank == 0) {
+                // The data of the only block should contain the numbers from zero to vol
+                std::size_t padding_size = (8 - metadata.size() % 8) % 8 + 4;
+                std::size_t header_size =
+                    sizeof(int) * 5 + metadata.size() + padding_size + sizeof(double) * Nd;
+                std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
+                std::ifstream f(filename, std::ios::binary);
+                f.seekg(disp);
+                Scalar s;
+                for (std::size_t i = 0; i < vol; ++i) {
+                    f.read((char *)&s, sizeof(s));
+                    if (i != s.real()) throw std::runtime_error("Failing reading from storage");
+                }
+                f.close();
+            }
+        }
+
+        // Test the readings
+        {
+            const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
+            Coor<Nd - 2> stridesr = detail::get_strides(dimr, SlowToFast);
+            Coor<2> dimNN{dim[N0], dim[N1]};
+            Coor<2> stridesNN = detail::get_strides(dimNN, SlowToFast);
+            Coor<Nd> strides = detail::get_strides(dim, SlowToFast);
+
+            for (auto n : nn) {
+                Coor<2> dimnn{n, n};
+                Coor<2> stridesnn = detail::get_strides(dimnn, SlowToFast);
+
+                // Create tensor t1 for reading the genprop on root process
+                PartitionStored<2> p1(nprocs);
+                p1[0][1] = Coor<2>{n, n};
+                std::size_t vol1 = detail::volume(p1[rank][1]);
+                Tensor t1(vol1);
+                std::vector<Scalar> t1_host(vol1);
+
+                for (auto req : reqs) {
+                    Coor<Nd> from0{};
+                    std::copy_n(detail::index2coor(req, dimr, stridesr).begin(), Nd - 2,
+                                from0.begin());
+                    Coor<Nd> size0{};
+                    for (auto &c : size0) c = 1;
+                    size0[Nd - 2] = size0[Nd - 1] = n;
+                    const Coor<2> from1{};
+                    Scalar *ptr1 = t1.data().get();
+                    for (std::size_t i = 0; i < vol1; ++i) t1[i] = -1;
+                    load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
+                                                "nN", from1, &ptr1, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                                MPI_COMM_WORLD,
+#endif
+                                                SlowToFast, Copy);
+                    thrust::copy(t1.begin(), t1.end(), t1_host.begin());
+                    for (std::size_t i = 0; i < vol1; ++i)
+                        if (t1_host[i].real() !=
+                            coor2index(index2coor(i, dimnn, stridesnn) + p1[rank][0], dimNN,
+                                       stridesNN) +
+                                coor2index(from0, dim, strides))
+                            throw std::runtime_error("Storage failed!");
+                }
+            }
+        }
+
+ 
+        close_storage(stoh);
+
+        if (rank == 0) reportTimings(std::cout);
+        if (rank == 0) reportCacheUsage(std::cout);
+    }
+#endif
 
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Finalize();

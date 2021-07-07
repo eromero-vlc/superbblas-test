@@ -76,6 +76,10 @@ namespace superbblas {
         /// Return a device identification
         inline int deviceId(Cpu) { return CPU_DEVICE_ID; }
 
+        /// Set the current device as the one passed
+        /// \param cuda: context
+        inline void setDevice(Cpu) {}
+
 #ifdef SUPERBBLAS_USE_CUDA
 
         /// Throw exception if the given error isn't success
@@ -156,7 +160,6 @@ namespace superbblas {
         }
 
 #else
-
         /// Return the device in which the pointer was allocated
 
         inline int getPtrDevice(const void *) { return CPU_DEVICE_ID; }
