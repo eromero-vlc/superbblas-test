@@ -57,13 +57,13 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define REPLACE_XPU REPLACE(XPU, XPU_GPU)
 
-#if defined(SUPERBBLAS_USE_CUDA)
-#define XPU_GPU Cuda
-#elif defined(SUPERBBLAS_USE_HIP)	
-#define XPU_GPU Hip
-#else
-#define XPU_GPU Cpu
-#endif
+#    if defined(SUPERBBLAS_USE_CUDA)
+#        define XPU_GPU Cuda
+#    elif defined(SUPERBBLAS_USE_HIP)
+#        define XPU_GPU Hip
+#    else
+#        define XPU_GPU Cpu
+#    endif
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
 
 #    define DECL_COPY_T_Q_EWOP(...)                                                                \
@@ -748,8 +748,8 @@ namespace superbblas {
                 copy_n<IndexType>(T{1}, v, indicesv, xpuv, n, v1.data(), nullptr, xpuw,
                                   EWOp::Copy{});
                 copy_n<IndexType>(T{alpha}, v1.data(), nullptr, xpuw, n, w, indicesw, xpuw, EWOP{});
+            }
         })
-	}
 
         /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] from device to host and vice versa
 
