@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -565,6 +566,10 @@ namespace superbblas {
             std::size_t vol0 = volume<Nd0>(dim0);
             std::size_t vol = volume<Nd0>(size0);
 
+            // Check that IndexType is big enough
+            if (std::numeric_limits<IndexType>::max() <= vol0)
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
             Indices<Cpu> indices0(vol, cpu);
             Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
@@ -616,6 +621,10 @@ namespace superbblas {
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
             std::size_t vol1 = volume<Nd1>(dim1);
             std::size_t vol = volume<Nd0>(size0);
+
+            // Check that IndexType is big enough
+            if (std::numeric_limits<IndexType>::max() <= vol1)
+                throw std::runtime_error("Ups! IndexType isn't big enough");
 
             Indices<Cpu> indices1(vol, cpu);
             Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
