@@ -302,6 +302,7 @@ namespace superbblas {
             virtual std::size_t getNdim() { throw std::runtime_error("Not implemented"); }
             virtual CommType getCommType() { throw std::runtime_error("Not implemented"); }
             virtual void flush() {}
+            virtual void preallocate(std::size_t) {}
             virtual ~Storage_context_abstract() {}
         };
 
@@ -331,6 +332,7 @@ namespace superbblas {
             std::size_t getNdim() override { return N; }
             CommType getCommType() override { return File<Comm>::value; }
             void flush() override { detail::flush(fh); }
+            void preallocate(std::size_t size) override { detail::preallocate(fh, size); }
             ~Storage_context() override { close(fh); }
         };
 
@@ -1206,6 +1208,14 @@ namespace superbblas {
         detail::open_storage(filename, co, values_dtype, metadata, size, header_size,
                              do_change_endianness, comm, fh);
         detail::close(fh);
+    }
+
+    /// Extend the size of the file
+    /// \param stoh:  handle to a tensor storage
+    /// \param size: expected file size in bytes
+
+    inline void preallocate_storage(Storage_handle stoh, std::size_t size) {
+        stoh->preallocate(size);
     }
 
     /// Force pending writing to make them visible to other processes
