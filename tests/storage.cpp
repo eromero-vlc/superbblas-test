@@ -44,6 +44,7 @@ int main(int argc, char **argv) {
     const unsigned int num_reqs = 1000;
     std::string metadata = "S3T format!";
     const char *filename = "tensor.s3t";
+    const char *filename_sp = "tensor_sp.s3t";
 
 
     // Get options
@@ -301,14 +302,16 @@ int main(int argc, char **argv) {
             std::size_t vol0 = detail::volume(local_size0);
             Tensor t0(vol0);
 
+            Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, SlowToFast);
             Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
             for (int m = 0; m < dim[M]; ++m) {
                 const Coor<Nd - 1> from0{};
                 const Coor<Nd> from1{m};
                 Scalar *ptr0 = t0.data();
                 for (std::size_t i = 0; i < vol0; ++i)
-                    t0[i] = coor2index(index2coor(i, dim0, strides0) + p0[rank][0], dim0, strides0) +
-                        m * vol / dim[M];
+                    t0[i] = coor2index(index2coor(i, local_size0, local_strides0) + p0[rank][0],
+                                       dim0, strides0) +
+                            m * vol / dim[M];
                 save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
                                                  (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
                                                  stoh,
@@ -399,6 +402,94 @@ int main(int argc, char **argv) {
 
         close_storage(stoh);
 
+        create_storage<Nd, Scalar>(dim, SlowToFast, filename_sp, metadata.c_str(), metadata.size(),
+#ifdef SUPERBBLAS_USE_MPI
+                                   MPI_COMM_WORLD,
+#endif
+                                   &stoh);
+
+        // Store proper values to test the sparse storage
+        {
+            PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
+            const Coor<Nd - 1> local_size0 = p0[rank][1];
+            std::size_t vol0 = detail::volume(local_size0);
+            Tensor t0(vol0);
+
+            Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, SlowToFast);
+            Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
+            for (int m = 0; m < dim[M]; ++m) {
+                const Coor<Nd - 1> from0{};
+                const Coor<Nd> from1{m};
+
+                append_blocks<Nd - 1, Nd, Scalar>(p0.data(), nprocs, "dtgsSnN", {}, dim0,
+                                                  "mdtgsSnN", from1, stoh,
+#ifdef SUPERBBLAS_USE_MPI
+                                                  MPI_COMM_WORLD,
+#endif
+                                                  SlowToFast);
+
+                Scalar *ptr0 = t0.data();
+                for (std::size_t i = 0; i < vol0; ++i)
+                    t0[i] = coor2index(index2coor(i, local_size0, local_strides0) + p0[rank][0],
+                                       dim0, strides0) +
+                            m * vol / dim[M];
+                save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
+                                                 (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
+                                                 stoh,
+#ifdef SUPERBBLAS_USE_MPI
+                                                 MPI_COMM_WORLD,
+#endif
+                                                 SlowToFast);
+            }
+        }
+
+        // Test the readings
+        {
+            const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
+            Coor<Nd - 2> stridesr = detail::get_strides(dimr, SlowToFast);
+            Coor<2> dimNN{dim[N0], dim[N1]};
+            Coor<2> stridesNN = detail::get_strides(dimNN, SlowToFast);
+            Coor<Nd> strides = detail::get_strides(dim, SlowToFast);
+
+            for (auto n : nn) {
+                Coor<2> dimnn{n, n};
+                Coor<2> stridesnn = detail::get_strides(dimnn, SlowToFast);
+
+                // Create tensor t1 for reading the genprop on root process
+                PartitionStored<2> p1(nprocs);
+                p1[0][1] = Coor<2>{n, n};
+                std::size_t vol1 = detail::volume(p1[rank][1]);
+                Tensor t1(vol1);
+
+                for (auto req : reqs) {
+                    Coor<Nd> from0{};
+                    std::copy_n(detail::index2coor(req, dimr, stridesr).begin(), Nd - 2,
+                                from0.begin());
+                    Coor<Nd> size0{};
+                    for (auto &c : size0) c = 1;
+                    size0[Nd - 2] = size0[Nd - 1] = n;
+                    const Coor<2> from1{};
+                    Scalar *ptr1 = t1.data();
+                    for (std::size_t i = 0; i < vol1; ++i) t1[i] = -1;
+                    load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
+                                                "nN", from1, &ptr1, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                                MPI_COMM_WORLD,
+#endif
+                                                SlowToFast, Copy);
+                    for (std::size_t i = 0; i < vol1; ++i)
+                        if (t1[i].real() !=
+                            coor2index(index2coor(i, dimnn, stridesnn) + p1[rank][0], dimNN,
+                                              stridesNN) +
+                                   coor2index(from0, dim, strides))
+                            throw std::runtime_error("Storage failed!");
+                }
+            }
+        }
+
+        close_storage(stoh);
+
+
         if (rank == 0) reportTimings(std::cout);
         if (rank == 0) reportCacheUsage(std::cout);
     }
@@ -449,13 +540,15 @@ int main(int argc, char **argv) {
             Tensor t0(vol0);
             std::vector<Scalar> t0_host(vol0);
 
+            Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, SlowToFast);
             Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
             for (int m = 0; m < dim[M]; ++m) {
                 const Coor<Nd - 1> from0{};
                 const Coor<Nd> from1{m};
                 for (std::size_t i = 0; i < vol0; ++i)
                     t0_host[i] =
-                        coor2index(index2coor(i, dim0, strides0) + p0[rank][0], dim0, strides0) +
+                        coor2index(index2coor(i, local_size0, local_strides0) + p0[rank][0], dim0,
+                                   strides0) +
                         m * vol / dim[M];
                 t0 = t0_host;
                 Scalar *ptr0 = t0.data().get();

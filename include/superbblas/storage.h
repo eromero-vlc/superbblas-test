@@ -67,85 +67,15 @@ namespace superbblas {
         /// File descriptor
         template <typename Comm> struct File;
 
-        /// Communicator
-        enum CommType { SEQ, MPI };
-
-#ifdef SUPERBBLAS_USE_MPI
-        /// Return the MPI_Datatype of a type
-        template <typename T> MPI_Datatype mpi_datatype_basic_from_type();
-        template <> inline MPI_Datatype mpi_datatype_basic_from_type<float>() { return MPI_FLOAT; }
-        template <> inline MPI_Datatype mpi_datatype_basic_from_type<double>() {
-            return MPI_DOUBLE;
-        }
-        template <> inline MPI_Datatype mpi_datatype_basic_from_type<std::complex<float>>() {
-            return MPI_FLOAT;
-        }
-        template <> inline MPI_Datatype mpi_datatype_basic_from_type<std::complex<double>>() {
-            return MPI_DOUBLE;
-        }
-        template <> inline MPI_Datatype mpi_datatype_basic_from_type<int>() { return MPI_INT; }
-        template <> inline MPI_Datatype mpi_datatype_basic_from_type<char>() { return MPI_CHAR; }
-
-        /// Return how many items of the basic type are in T type
-        template <typename T> unsigned int get_count_from_type();
-        template <> inline unsigned int get_count_from_type<float>() { return 1; }
-        template <> inline unsigned int get_count_from_type<double>() { return 1; }
-        template <> inline unsigned int get_count_from_type<std::complex<float>>() { return 2; }
-        template <> inline unsigned int get_count_from_type<std::complex<double>>() { return 2; }
-        template <> inline unsigned int get_count_from_type<int>() { return 1; }
-        template <> inline unsigned int get_count_from_type<char>() { return 1; }
-
-        // File descriptor specialization for MpiComm
-        template <> struct File<MpiComm> {
-            using type = MPI_File;
-            static constexpr CommType value = MPI;
+        /// Call used for open the storage
+        enum CommType {
+            SEQ, ///< without MPI
+            MPI  ///< with MPI
         };
 
-        inline MPI_File file_open(MpiComm comm, const char *filename, Mode mode) {
-            MPI_File fh;
-            barrier(comm);
-            switch (mode) {
-            case CreateForReadWrite:
-                // Delete file if it exists
-                MPI_File_delete(filename, MPI_INFO_NULL);
-                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_CREATE | MPI_MODE_RDWR,
-                                        MPI_INFO_NULL, &fh));
-                break;
-            case ReadWrite:
-                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
-                break;
-            }
-            return fh;
-        }
-
-        inline void preallocate(MPI_File f, std::size_t n) {
-            MPI_check(MPI_File_preallocate(f, n));
-        }
-
-        inline void seek(MPI_File f, std::size_t offset) {
-            MPI_check(MPI_File_seek(f, offset, MPI_SEEK_SET));
-        }
-
-        template <typename T> void write(MPI_File f, const T *v, std::size_t n) {
-            MPI_Status status;
-            MPI_check(MPI_File_write(f, v, n * get_count_from_type<T>(),
-                                     mpi_datatype_basic_from_type<T>(), &status));
-        }
-
-        template <typename T> void read(MPI_File f, T *v, std::size_t n) {
-            MPI_Status status;
-            MPI_check(MPI_File_read(f, v, n * get_count_from_type<T>(),
-                                    mpi_datatype_basic_from_type<T>(), &status));
-        }
-
-        inline void flush(MPI_File f) { MPI_check(MPI_File_sync(f)); }
-
-        inline void close(MPI_File &f) {
-            flush(f);
-            MPI_check(MPI_File_close(&f));
-        }
-
-#endif // SUPERBBLAS_USE_MPI
+	//
+	// Low layer implementation without MPI
+	//
 
         // File descriptor specialization for SelfComm
         template <> struct File<SelfComm> {
@@ -222,6 +152,143 @@ namespace superbblas {
         inline void close(std::FILE *f) {
             if (std::fclose(f) != 0) gen_error("Error closing file");
         }
+
+
+	//
+	// Low layer implementation with MPI
+	//
+
+#ifdef SUPERBBLAS_USE_MPI
+#    ifdef SUPERBBLAS_USE_MPIIO
+	/// Use MPI IO
+
+        /// Return the MPI_Datatype of a type
+        template <typename T> MPI_Datatype mpi_datatype_basic_from_type();
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<float>() { return MPI_FLOAT; }
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<double>() {
+            return MPI_DOUBLE;
+        }
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<std::complex<float>>() {
+            return MPI_FLOAT;
+        }
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<std::complex<double>>() {
+            return MPI_DOUBLE;
+        }
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<int>() { return MPI_INT; }
+        template <> inline MPI_Datatype mpi_datatype_basic_from_type<char>() { return MPI_CHAR; }
+
+        /// Return how many items of the basic type are in T type
+        template <typename T> unsigned int get_count_from_type();
+        template <> inline unsigned int get_count_from_type<float>() { return 1; }
+        template <> inline unsigned int get_count_from_type<double>() { return 1; }
+        template <> inline unsigned int get_count_from_type<std::complex<float>>() { return 2; }
+        template <> inline unsigned int get_count_from_type<std::complex<double>>() { return 2; }
+        template <> inline unsigned int get_count_from_type<int>() { return 1; }
+        template <> inline unsigned int get_count_from_type<char>() { return 1; }
+
+        // File descriptor specialization for MpiComm
+        template <> struct File<MpiComm> {
+            using type = MPI_File;
+            static constexpr CommType value = MPI;
+        };
+
+        inline MPI_File file_open(MpiComm comm, const char *filename, Mode mode) {
+            MPI_File fh;
+            barrier(comm);
+            switch (mode) {
+            case CreateForReadWrite:
+                // Delete file if it exists
+                MPI_File_delete(filename, MPI_INFO_NULL);
+                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_CREATE | MPI_MODE_RDWR,
+                                        MPI_INFO_NULL, &fh));
+                break;
+            case ReadWrite:
+                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
+                break;
+            }
+            return fh;
+        }
+
+        inline void preallocate(MPI_File f, std::size_t n) {
+            MPI_check(MPI_File_preallocate(f, n));
+        }
+
+        inline void seek(MPI_File f, std::size_t offset) {
+            MPI_check(MPI_File_seek(f, offset, MPI_SEEK_SET));
+        }
+
+        template <typename T> void write(MPI_File f, const T *v, std::size_t n) {
+            MPI_Status status;
+            MPI_check(MPI_File_write(f, v, n * get_count_from_type<T>(),
+                                     mpi_datatype_basic_from_type<T>(), &status));
+        }
+
+        template <typename T> void read(MPI_File f, T *v, std::size_t n) {
+            MPI_Status status;
+            MPI_check(MPI_File_read(f, v, n * get_count_from_type<T>(),
+                                    mpi_datatype_basic_from_type<T>(), &status));
+        }
+
+        inline void flush(MPI_File f) { MPI_check(MPI_File_sync(f)); }
+
+        inline void close(MPI_File &f) {
+            flush(f);
+            MPI_check(MPI_File_close(&f));
+        }
+
+#    else  // SUPERBBLAS_USE_MPIIO
+	/// Don't use MPI IO
+
+	// MPI_File replacement
+        struct File_Comm {
+            std::FILE *f;
+            MpiComm comm;
+        };
+
+        // File descriptor specialization for MpiComm
+        template <> struct File<MpiComm> {
+            using type = File_Comm;
+            static constexpr CommType value = MPI;
+        };
+
+        inline File_Comm file_open(MpiComm comm, const char *filename, Mode mode) {
+            std::FILE *f = nullptr;
+            // Avoid all processes to create the file at the same time; so root process create the file, and the rest open it
+            if (comm.rank == 0) {
+                f = file_open(detail::get_comm(), filename, mode);
+                barrier(comm);
+            } else {
+                barrier(comm);
+                f = file_open(detail::get_comm(), filename, ReadWrite);
+            }
+            return {f, comm};
+        }
+
+        inline void preallocate(File_Comm f, std::size_t n) {
+            if (f.comm.rank == 0) preallocate(f.f, n);
+            barrier(f.comm);
+        }
+
+        inline void seek(File_Comm f, std::size_t offset) { seek(f.f, offset); }
+
+        template <typename T> void write(File_Comm f, const T *v, std::size_t n) {
+            write(f.f, v, n);
+        }
+
+        template <typename T> void read(File_Comm f, T *v, std::size_t n) { read(f.f, v, n); }
+
+        inline void flush(File_Comm f) {
+            flush(f.f);
+            barrier(f.comm);
+        }
+
+        inline void close(File_Comm &f) {
+            close(f.f);
+            barrier(f.comm);
+        }
+#    endif // SUPERBBLAS_USE_MPIIO
+
+#endif // SUPERBBLAS_USE_MPI
 
         template <typename T> void change_endianness(T *v, std::size_t n) {
             for (std::size_t i = 0; i < n; ++i) {
@@ -326,7 +393,10 @@ namespace superbblas {
                     // Compute the range to send
                     translate_range(r[i][0], r[i][1], from1, dim1, from0, dim0, perm1, s[i][0],
                                     s[i][1]);
+
+                    // Normalize coordinates
                     s[i][0] = normalize_coor(s[i][0] - p0[i][0], dim0);
+                    r[i][0] = normalize_coor(r[i][0] - p1[j][0], dim1);
                 }
                 send_out.push_back(s);
                 receive_out.push_back(r);
@@ -503,15 +573,15 @@ namespace superbblas {
                     int i = c0.componentId + comm.rank * ncomponents0;
                     assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
                     local_save<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1], c0.dim, c0.it,
-                                               o1, toReceive[i][0], sto.dim, sto.fh, sto.disps[j],
-                                               co, sto.change_endianness);
+                                               o1, toReceive[i][0], sto.blocks[j][1], sto.fh,
+                                               sto.disps[j], co, sto.change_endianness);
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
                     int i = c0.componentId + comm.rank * ncomponents0;
                     assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
                     local_save<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1], c0.dim, c0.it,
-                                               o1, toReceive[i][0], sto.dim, sto.fh, sto.disps[j],
-                                               co, sto.change_endianness);
+                                               o1, toReceive[i][0], sto.blocks[j][1], sto.fh,
+                                               sto.disps[j], co, sto.change_endianness);
                 }
             }
 
@@ -723,16 +793,31 @@ namespace superbblas {
             header_size = sizeof(int) * 5 + metadata_length + padding.size() + sizeof(double) * Nd;
         }
 
-        /// Add blocks to storage
-        /// \param p: partitioning of the origin tensor in consecutive ranges
-        /// \param num_blocks: number of items in p
-        /// \param stoh: handle to a tensor storage
+        /// Add blocks to storage after restricted the range indicated by from0, size0, and from1
+        /// \param p0: blocks to add
+        /// \param num_blocks: number of items in p0
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate of the range to consider on p0
+        /// \param size0: number of elements to consider in each dimension
+        /// \param o1: dimension labels for the storage
+        /// \param sto: storage context
+        /// \param from1: first coordinate of the ranges to add
         /// \param comm: communicator context
-        /// \param co: coordinates order
+        /// \param co: coordinate linearization order
 
-        template <std::size_t Nd1, typename Q, typename Comm>
-        void append_blocks(const PartitionItem<Nd1> *p, std::size_t num_blocks,
-                           Storage_context<Nd1, Comm> &sto, Comm comm, CoorOrder co) {
+        template <std::size_t Nd0, std::size_t Nd1, typename Q, typename Comm>
+        void append_blocks(const PartitionItem<Nd0> *p0, std::size_t num_blocks,
+                           const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                           Order<Nd1> o1, Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1,
+                           Comm comm, CoorOrder co) {
+
+            // Generate the list of subranges to add
+            Coor<Nd0> dim0 = get_dim<Nd0>(p0, num_blocks);
+            auto p0_ = to_vector(p0, num_blocks, Cpu{0});
+            PartitionItem<Nd1> fs{Coor<Nd1>{}, sto.dim};
+            auto p1_ = to_vector(&fs, 1, Cpu{0});
+            auto p = std::get<1>(get_ranges_to_send_receive(dim0, p0_, o0, from0, size0, sto.dim,
+                                                            p1_, o1, from1))[0];
 
             // Write the coordinates for all non-empty blocks
             sto.blocks.reserve(sto.blocks.size() + num_blocks);
@@ -781,8 +866,8 @@ namespace superbblas {
                 if (sto.change_endianness) change_endianness(&d, 1);
                 seek(sto.fh, sto.disp);
                 write(sto.fh, &d, 1);
-                preallocate(sto.fh, values_start);
             }
+            preallocate(sto.fh, values_start);
 
             // Update disp
             sto.disp = values_start;
@@ -973,7 +1058,37 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::append_blocks<Nd1, Q>(p, num_blocks, sto, comm, co);
+        detail::append_blocks<Nd1, Nd1, Q>(p, num_blocks, {}, detail::get_dim(p, num_blocks),
+                                           detail::trivial_order<Nd1>(),
+                                           detail::trivial_order<Nd1>(), sto, {}, comm, co);
+    }
+
+    /// Add blocks to storage
+    /// \param p0: blocks to add
+    /// \param num_blocks: number of items in p0
+    /// \param o0: dimension labels for the blocks to add
+    /// \param from0: first coordinate of the range to consider on p0
+    /// \param size0: number of elements to copy in each dimension
+    /// \param o1: dimension labels for the storage
+    /// \param from1: first coordinate of the ranges to add
+    /// \param stoh: handle to a tensor storage
+    /// \param mpicomm: MPI communicator context
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
+
+    template <std::size_t Nd0, std::size_t Nd1, typename Q>
+    void append_blocks(const PartitionItem<Nd0> *p0, int num_blocks, const char *o0,
+                       const Coor<Nd0> &from0, const Coor<Nd0> &size0, const char *o1,
+                       const Coor<Nd1> &from1, Storage_handle stoh, MPI_Comm mpicomm,
+                       CoorOrder co) {
+
+        detail::Storage_context<Nd1, detail::MpiComm> &sto =
+            *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
+        detail::MpiComm comm = detail::get_comm(mpicomm);
+
+        detail::append_blocks<Nd0, Nd1, Q>(p0, num_blocks, from0, size0,
+                                           detail::toArray<Nd0>(o0, "o0"),
+                                           detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
 
     /// Copy the content of plural tensor v0 into a storage
@@ -1125,18 +1240,45 @@ namespace superbblas {
     /// \param p: partitioning of the origin tensor in consecutive ranges
     /// \param num_blocks: number of items in p
     /// \param stoh: handle to a tensor storage
-    /// \param mpicomm: MPI communicator context
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd1, typename Q>
-    void append_blocks(const PartitionItem<Nd1> *p, std::size_t num_blocks, Storage_handle stoh,
+    void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, Storage_handle stoh,
                        CoorOrder co) {
 
         detail::Storage_context<Nd1, detail::SelfComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::append_blocks<Nd1, Q>(p, num_blocks, sto, comm, co);
+        detail::append_blocks<Nd1, Nd1, Q>(
+            p, num_blocks, Coor<Nd1>{}, detail::get_dim(p, num_blocks),
+            detail::trivial_order<Nd1>(), detail::trivial_order<Nd1>(), sto, Coor<Nd1>{}, comm, co);
+    }
+
+    /// Add blocks to storage
+    /// \param p0: blocks to add
+    /// \param num_blocks: number of items in p0
+    /// \param o0: dimension labels for the blocks to add
+    /// \param from0: first coordinate of the range to consider on p0
+    /// \param size0: number of elements to copy in each dimension
+    /// \param o1: dimension labels for the storage
+    /// \param from1: first coordinate of the ranges to add
+    /// \param stoh: handle to a tensor storage
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
+
+    template <std::size_t Nd0, std::size_t Nd1, typename Q>
+    void append_blocks(const PartitionItem<Nd0> *p0, int num_blocks, const char *o0,
+                       const Coor<Nd0> &from0, const Coor<Nd0> &size0, const char *o1,
+                       const Coor<Nd1> &from1, Storage_handle stoh, CoorOrder co) {
+
+        detail::Storage_context<Nd1, detail::SelfComm> &sto =
+            *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
+        detail::SelfComm comm = detail::get_comm();
+
+        detail::append_blocks<Nd0, Nd1, Q>(p0, num_blocks, from0, size0,
+                                           detail::toArray<Nd0>(o0, "o0"),
+                                           detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
 
     /// Copy the content of plural tensor v0 into a storage

@@ -287,6 +287,14 @@ namespace superbblas {
             std::vector<MpiInt> displ;  ///< index of the first element to send/receive for rank i
         };
 
+        /// Return an order with values 0, 1, 2, ..., N-1
+
+        template <std::size_t N> Order<N> trivial_order() {
+            Order<N> r;
+            for (std::size_t i = 0; i < N; i++) r[i] = (char)i;
+            return r;
+        }
+
 #ifdef SUPERBBLAS_USE_MPI
         /// Communication barrier
 
@@ -475,14 +483,6 @@ namespace superbblas {
             return r;
         }
 
-        /// Return an order with values 0, 1, 2, ..., N-1
-
-        template <std::size_t N> Order<N> trivial_order() {
-            Order<N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = (char)i;
-            return r;
-        }
-
         /// Unpack and copy packed tensors from a MPI communication
         /// \param r: packed subtensors
         /// \param toReceive: list of tensor ranges to receive
@@ -646,7 +646,10 @@ namespace superbblas {
         Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
             Coor<Nd> r;
             for (std::size_t j = 0; j < Nd; j++)
-                r[j] = (coor[j] + dim[j] * (coor[j] < 0 ? -coor[j] / dim[j] + 1 : 0)) % dim[j];
+                r[j] =
+                    (dim[j] == 0
+                         ? 0
+                         : (coor[j] + dim[j] * (coor[j] < 0 ? -coor[j] / dim[j] + 1 : 0)) % dim[j]);
             return r;
         }
 
