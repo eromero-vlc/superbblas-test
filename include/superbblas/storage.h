@@ -373,8 +373,11 @@ namespace superbblas {
 
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            std::vector<From_size_out<Nd0>> send_out;
-            std::vector<From_size_out<Nd1>> receive_out;
+            std::vector<From_size_out<Nd0>> send_out(p1.size());
+            std::vector<From_size_out<Nd1>> receive_out(p1.size());
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
             for (unsigned int j = 0; j < p1.size(); ++j) {
                 From_size_out<Nd0> s(p0.size(), cpu); // ranges to send
                 From_size_out<Nd1> r(p0.size(), cpu); // ranges to receive
@@ -400,8 +403,8 @@ namespace superbblas {
                     s[i][0] = normalize_coor(s[i][0] - p0[i][0], dim0);
                     r[i][0] = normalize_coor(r[i][0] - p1[j][0], dim1);
                 }
-                send_out.push_back(s);
-                receive_out.push_back(r);
+                send_out[j] = s;
+                receive_out[j] = r;
             }
 
             return std::tuple<std::vector<From_size_out<Nd0>>, std::vector<From_size_out<Nd1>>>{
@@ -626,9 +629,11 @@ namespace superbblas {
             // Generate the list of subranges to send from each component from v0 to v1
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
             unsigned int ncomponents1 = v1.first.size() + v1.second.size();
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
             auto send_receive = get_ranges_to_send_receive(
-                sto.dim, sto.blocks, o0, from0, size0, dim1,
-                to_vector(p1.data() + comm.rank * ncomponents1, ncomponents1, p1.ctx()), o1, from1);
+                dim1, to_vector(p1.data() + comm.rank * ncomponents1, ncomponents1, p1.ctx()), o1,
+                from1, size1, sto.dim, sto.blocks, o0, from0);
 
             // Synchronize the content of the storage before reading from it
             if (sto.modified) {
@@ -638,24 +643,22 @@ namespace superbblas {
 
             // Do the local file modifications
             for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
+                const From_size<Nd0> &toSend = std::get<1>(send_receive)[j];
+                const From_size<Nd1> &toReceive = std::get<0>(send_receive)[j];
                 for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
                     int i = c1.componentId;
-                    const From_size<Nd0> &toSend = std::get<0>(send_receive)[i];
-                    const From_size<Nd1> &toReceive = std::get<1>(send_receive)[i];
-                    assert(check_equivalence(o0, toSend[j][1], o1, toReceive[j][1]));
-                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[j][0], toSend[j][1],
+                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
+                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
                                                sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[j][0], c1.dim, c1.it, EWOP{}, co,
+                                               toReceive[i][0], c1.dim, c1.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
                 for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
                     int i = c1.componentId;
-                    const From_size<Nd0> &toSend = std::get<0>(send_receive)[i];
-                    const From_size<Nd1> &toReceive = std::get<1>(send_receive)[i];
-                    assert(check_equivalence(o0, toSend[j][1], o1, toReceive[j][1]));
-                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[j][0], toSend[j][1],
+                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
+                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
                                                sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[j][0], c1.dim, c1.it, EWOP{}, co,
+                                               toReceive[i][0], c1.dim, c1.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
             }
