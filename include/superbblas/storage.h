@@ -555,6 +555,8 @@ namespace superbblas {
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, Order<Nd1> o1,
                   Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, Comm comm, CoorOrder co) {
 
+            tracker<XPU1> _t("save", p0.ctx());
+
             // Turn o1 and from1 into SlowToFast
             if (co == FastToSlow) {
                 o1 = reverse(o1);
@@ -562,24 +564,25 @@ namespace superbblas {
             }
 
             // Generate the list of subranges to send from each component from v0 to v1
+            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            auto send_receive = get_ranges_to_send_receive(dim0, p0, o0, from0, size0, sto.dim,
-                                                           sto.blocks, o1, from1);
+            auto send_receive = get_ranges_to_send_receive(
+                dim0, to_vector(p0.data() + comm.rank * ncomponents0, ncomponents0, p0.ctx()), o0,
+                from0, size0, sto.dim, sto.blocks, o1, from1);
 
             // Do the local file modifications
-            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
             for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
                 const From_size<Nd0> &toSend = std::get<0>(send_receive)[j];
                 const From_size<Nd1> &toReceive = std::get<1>(send_receive)[j];
                 for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
-                    int i = c0.componentId + comm.rank * ncomponents0;
+                    int i = c0.componentId;
                     assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
                     local_save<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1], c0.dim, c0.it,
                                                o1, toReceive[i][0], sto.blocks[j][1], sto.fh,
                                                sto.disps[j], co, sto.change_endianness);
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
-                    int i = c0.componentId + comm.rank * ncomponents0;
+                    int i = c0.componentId;
                     assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
                     local_save<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1], c0.dim, c0.it,
                                                o1, toReceive[i][0], sto.blocks[j][1], sto.fh,
@@ -611,6 +614,8 @@ namespace superbblas {
                   const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
                   EWOP, CoorOrder co) {
 
+            tracker<XPU1> _t("load", p1.ctx());
+
             // Turn o0, from0, and size0 into SlowToFast
             if (co == FastToSlow) {
                 o0 = reverse(o0);
@@ -620,8 +625,10 @@ namespace superbblas {
 
             // Generate the list of subranges to send from each component from v0 to v1
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
-            auto send_receive = get_ranges_to_send_receive(sto.dim, sto.blocks, o0, from0, size0,
-                                                           dim1, p1, o1, from1);
+            unsigned int ncomponents1 = v1.first.size() + v1.second.size();
+            auto send_receive = get_ranges_to_send_receive(
+                sto.dim, sto.blocks, o0, from0, size0, dim1,
+                to_vector(p1.data() + comm.rank * ncomponents1, ncomponents1, p1.ctx()), o1, from1);
 
             // Synchronize the content of the storage before reading from it
             if (sto.modified) {
@@ -630,26 +637,25 @@ namespace superbblas {
             }
 
             // Do the local file modifications
-            unsigned int ncomponents0 = v1.first.size() + v1.second.size();
             for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
-                for (const Component<Nd1, Q, XPU0> &c0 : v1.first) {
-                    int i = c0.componentId + comm.rank * ncomponents0;
+                for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
+                    int i = c1.componentId;
                     const From_size<Nd0> &toSend = std::get<0>(send_receive)[i];
                     const From_size<Nd1> &toReceive = std::get<1>(send_receive)[i];
                     assert(check_equivalence(o0, toSend[j][1], o1, toReceive[j][1]));
                     local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[j][0], toSend[j][1],
                                                sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[j][0], c0.dim, c0.it, EWOP{}, co,
+                                               toReceive[j][0], c1.dim, c1.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
-                for (const Component<Nd1, Q, XPU1> &c0 : v1.second) {
-                    int i = c0.componentId + comm.rank * ncomponents0;
+                for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
+                    int i = c1.componentId;
                     const From_size<Nd0> &toSend = std::get<0>(send_receive)[i];
                     const From_size<Nd1> &toReceive = std::get<1>(send_receive)[i];
                     assert(check_equivalence(o0, toSend[j][1], o1, toReceive[j][1]));
                     local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[j][0], toSend[j][1],
                                                sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[j][0], c0.dim, c0.it, EWOP{}, co,
+                                               toReceive[j][0], c1.dim, c1.it, EWOP{}, co,
                                                sto.change_endianness);
                 }
             }
@@ -812,6 +818,8 @@ namespace superbblas {
                            const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Order<Nd0> &o0,
                            Order<Nd1> o1, Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1,
                            Comm comm, CoorOrder co) {
+
+            tracker<Cpu> _t("append blocks", Cpu{0});
 
             // Generate the list of subranges to add
             Coor<Nd0> dim0 = get_dim<Nd0>(p0, num_blocks);
