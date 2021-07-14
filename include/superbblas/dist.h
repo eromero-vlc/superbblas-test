@@ -681,12 +681,12 @@ namespace superbblas {
         /// \param sizer1: size of the second resulting range
 
         template <std::size_t Nd>
-        From_size_vector<Nd> intersection(const Coor<Nd> &from0, const Coor<Nd> &size0,
-                                          const Coor<Nd> &from1, const Coor<Nd> &size1,
-                                          const Coor<Nd> &dim) {
+        std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>
+        intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
+                     const Coor<Nd> &size1, const Coor<Nd> &dim) {
 
-            From_size_vector<Nd> r;
-            r.push_back({Coor<Nd>{}, Coor<Nd>{}});
+            std::array<From_size_item<Nd>, 2> grid;
+            Coor<Nd> grid_n{};
             for (std::size_t i = 0; i < Nd; ++i) {
                 //
                 // Compute the subintervals for the dimension ith
@@ -705,25 +705,28 @@ namespace superbblas {
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
                 }
-                From_size_vector<Nd> q;
-                for (const auto &fs : r) {
-                    if (sizer0 > 0) {
-                        Coor<Nd> fromi = fs[0], sizei = fs[1];
-                        fromi[i] = fromr0;
-                        sizei[i] = sizer0;
-                        q.push_back({fromi, sizei});
-                    }
-                    if (sizer1 > 0) {
-                        Coor<Nd> fromi = fs[0], sizei = fs[1];
-                        fromi[i] = fromr1;
-                        sizei[i] = sizer1;
-                        q.push_back({fromi, sizei});
-                    }
+                if (sizer0 > 0) {
+                    grid[grid_n[i]][0][i] = fromr0;
+                    grid[grid_n[i]++][1][i] = sizer0;
                 }
-                r = q;
+                if (sizer1 > 0) {
+                    grid[grid_n[i]][0][i] = fromr1;
+                    grid[grid_n[i]++][1][i] = sizer1;
+                }
             }
+            return {grid, grid_n};
 
-            return r;
+            // std::size_t vol = volume(grid_n);
+            // From_size_vector<Nd> r(vol);
+            // Coor<Nd> strides = get_strides(grid_n, SlowToFast);
+            // for (std::size_t i = 0; i < vol; ++i) {
+            //     Coor<Nd> c = index2coor(i, grid_n, strides);
+            //     for (std::size_t j = 0; j < Nd; ++j) {
+            //         r[i][0][j] = grid[c[j]][0][j];
+            //         r[i][1][j] = grid[c[j]][1][j];
+            //     }
+            // }
+            //return r;
         }
 
         /// Return the intersection between two ranges in a periodic lattice
@@ -739,13 +742,14 @@ namespace superbblas {
         void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
                           const Coor<Nd> &size1, const Coor<Nd> &dim, Coor<Nd> &fromr,
                           Coor<Nd> &sizer) {
-            From_size_vector<Nd> fs = intersection<Nd>(from0, size0, from1, size1, dim);
-            if (fs.size() == 0) {
+            auto p = intersection<Nd>(from0, size0, from1, size1, dim);
+            std::size_t vol = volume(p.second);
+            if (vol == 0) {
                 fromr = Coor<Nd>{};
                 sizer = Coor<Nd>{};
-            } else if (fs.size() == 1) {
-                fromr = fs[0][0];
-                sizer = (volume(fs[0][1]) > 0 ? fs[0][1] : Coor<Nd>{});
+            } else if (vol == 1) {
+                fromr = p.first[0][0];
+                sizer = p.first[0][1];
             } else {
                 throw std::runtime_error("Not supported complex overlap of intervals");
             }
