@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -73,9 +74,9 @@ namespace superbblas {
             MPI  ///< with MPI
         };
 
-	//
-	// Low layer implementation without MPI
-	//
+        //
+        // Low layer implementation without MPI
+        //
 
         // File descriptor specialization for SelfComm
         template <> struct File<SelfComm> {
@@ -153,14 +154,13 @@ namespace superbblas {
             if (std::fclose(f) != 0) gen_error("Error closing file");
         }
 
-
-	//
-	// Low layer implementation with MPI
-	//
+        //
+        // Low layer implementation with MPI
+        //
 
 #ifdef SUPERBBLAS_USE_MPI
 #    ifdef SUPERBBLAS_USE_MPIIO
-	/// Use MPI IO
+        /// Use MPI IO
 
         /// Return the MPI_Datatype of a type
         template <typename T> MPI_Datatype mpi_datatype_basic_from_type();
@@ -237,9 +237,9 @@ namespace superbblas {
         }
 
 #    else  // SUPERBBLAS_USE_MPIIO
-	/// Don't use MPI IO
+        /// Don't use MPI IO
 
-	// MPI_File replacement
+        // MPI_File replacement
         struct File_Comm {
             std::FILE *f;
             MpiComm comm;
@@ -290,6 +290,267 @@ namespace superbblas {
 
 #endif // SUPERBBLAS_USE_MPI
 
+        /// Range begin, end, and current state
+        template <std::size_t N, typename GRID> struct Grid_range {
+            // Current iterators
+            std ::array<typename GRID::const_iterator, N> it;
+            // List of N grids
+            const GRID *const grid;
+            /// Don't iterate on this dimension
+            std::size_t const excepting;
+
+            Grid_range(const GRID *grid, std::size_t excepting = N)
+                : grid(grid), excepting(excepting) {
+                for (std::size_t i = 0; i < N; ++i) {
+                    if (i == excepting) continue;
+                    it[i] = grid[i].begin();
+                }
+            }
+
+            std::size_t volume() const {
+                if (N == 0 || (N == 1 && excepting == 0)) return 0;
+                std::size_t vol = 1;
+                for (std::size_t i = 0; i < N; ++i) {
+                    if (i == excepting) continue;
+                    vol *= grid[i].size();
+                }
+		return vol;
+            }
+
+            Grid_range<N, GRID> &operator++() {
+                for (std::size_t i = 0; i < N; ++i) {
+                    if (i == excepting) continue;
+                    ++it[i];
+                    if (it[i] != grid[i].end()) return *this;
+                    it[i] = grid[i].begin();
+                }
+                return *this;
+            }
+
+            Grid_range<N, GRID> &operator--() {
+                for (std::size_t i = 0; i < N; ++i) {
+                    if (i == excepting) continue;
+                    if (it[i] != grid[i].begin()) {
+                        --it[i];
+                        return *this;
+                    }
+                    it[i] = --grid[i].end();
+                }
+                return *this;
+            }
+        };
+
+        /// Data-structure to accelerate the intersection of sparse tensors
+        template <std::size_t N, typename Key = void> struct GridHash {
+            /// Index element in `blocks` and `values`
+            using BlockIndex = std::size_t;
+            /// Sparse tensor dimensions
+            Coor<N> dim;
+            /// Nonzero blocks of the sparse tensors
+            std::vector<From_size_item<N>> blocks;
+            /// Values associated to each block
+            std::vector<Key> values;
+
+            /// Ordered list
+            template <typename T> using ordered_list = std::set<T>;
+            /// Set of hyperplanes forming a non-regular grid
+            using Grid = std::array<ordered_list<IndexType>, N>;
+            /// Unordered hyperplanes
+            using Unsorted_Grid = std::array<std::vector<IndexType>, N>;
+
+            /// Set of hyperplanes containing the faces of each nonzero subtensor
+            Grid grid;
+            /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
+            std::unordered_multimap<std::size_t, BlockIndex> gridToBlocks;
+
+            GridHash(Coor<N> dim) : dim{dim}, grid{}, gridToBlocks{16} {
+                assert(check_positive(dim));
+            }
+
+            void append_block(Coor<N> from, Coor<N> size, Key key) {
+                // Shortcut for empty ranges
+                std::size_t vol = volume(size);
+                if (vol == 0) return;
+
+                // Normalize from when being the whole dimension
+                from = normalize_from(from, size);
+
+                // Check if the block has overlaps with other blocks in this tensor
+                std::size_t vol_overlaps = get_overlap_volume(from, size);
+                if (vol == vol_overlaps) return;
+                if (vol_overlaps != 0)
+                    throw std::runtime_error(
+                        "Ups! Unsupported the addition of blocks with partial support "
+                        "on the sparse tensor");
+
+                // Add the faces of the given range as hyperplanes on the grid
+                for (std::size_t i = 0; i < N; ++i) {
+                    add_hyperplane(from[i], i);
+                    add_hyperplane(from[i] + size[i], i);
+                }
+
+                // Add the new block
+                BlockIndex new_block_index = blocks.size();
+                blocks.push_back({from, size});
+                values.push_back(key);
+
+                // Add new block on the grid
+                Unsorted_Grid g = grid_intersection(from, size);
+                Grid_range<N, std::vector<IndexType>> git(&g[0]);
+                Coor<N> dim_strides = get_strides(dim, SlowToFast);
+                for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
+                    Coor<N> g_coor;
+                    for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
+                    std::size_t new_grid_index = coor2index(g_coor, dim, dim_strides);
+                    gridToBlocks.insert(std::make_pair(new_grid_index, new_block_index));
+                }
+            }
+
+            /// Return a list of the blocks, the intersection relative to the blocks, and the
+            /// associated keys of blocks with non-empty overlap with the given range.
+            std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>>
+            intersection(Coor<N> from, Coor<N> size) const {
+                // Shortcut for empty ranges
+                if (volume(size) == 0) return {};
+
+                // Compute the intersections between the given range the grid
+                Unsorted_Grid g = grid_intersection(from, size);
+
+                // Compute the return
+                std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>> r;
+                Grid_range<N, std::vector<IndexType>> git(&g[0]);
+                Coor<N> dim_strides = get_strides(dim, SlowToFast);
+                std::set<BlockIndex> visited;
+                for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
+                    Coor<N> g_coor;
+                    for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
+                    std::size_t grid_index = coor2index(g_coor, dim, dim_strides);
+                    auto range = gridToBlocks.equal_range(grid_index);
+                    for (auto it = range.first; it != range.second; ++it) {
+                        BlockIndex bidx = it->second;
+
+                        // Skip if already visited
+                        if (visited.count(bidx) > 0) continue;
+
+                        // Do intersection between the block and the given range
+                        Coor<N> rfrom, rsize;
+                        detail::intersection(blocks[bidx][0], blocks[bidx][1], from, size, dim,
+                                             rfrom, rsize);
+                        if (volume(rsize) == 0) continue;
+                        rfrom = normalize_coor(rfrom - blocks[bidx][0], dim);
+                        r.push_back({{blocks[bidx], {rfrom, rsize}}, values[bidx]});
+
+                        // Note the visited block
+                        visited.insert(bidx);
+                    }
+                }
+
+                return r;
+            }
+
+            /// Return the overlap volume of the given range on this tensor
+            std::size_t get_overlap_volume(Coor<N> from, Coor<N> size) {
+                auto overlaps = intersection(from, size);
+                std::size_t vol_overlaps = 0;
+                for (const auto &i : overlaps) vol_overlaps += volume(i.first[1][1]);
+                return vol_overlaps;
+            }
+
+        private:
+            /// Return the first hyperplane whose slice contains the point
+            ordered_list<IndexType>::iterator get_hyperslice(IndexType from, std::size_t n) const {
+                if (grid[n].size() == 0) return grid[n].end();
+
+                Grid_range<1, std::set<IndexType>> git(&grid[n]);
+                git.it[0] = grid[n].lower_bound(from);
+                if (git.it[0] == grid[n].end()) return --grid[n].end();
+                if (*git.it[0] != from) --git;
+                return git.it[0];
+            }
+
+            /// Return the subgrid with overlaps with the given range
+            Unsorted_Grid grid_intersection(Coor<N> from, Coor<N> size) const {
+                // Normalize from when being the whole dimension
+                from = normalize_from(from, size);
+
+                Unsorted_Grid r{};
+                for (std::size_t i = 0; i < N; ++i) {
+                    if (grid[i].size() == 0) continue;
+                    if (grid[i].size() == 1) {
+                        r[i].push_back(*grid[i].begin());
+                        continue;
+                    }
+
+                    Grid_range<1, std::set<IndexType>> git(&grid[i]);
+                    git.it[0] = get_hyperslice(from[i], i);
+                    IndexType gFrom = *git.it[0];
+                    ++git;
+                    for (std::size_t j = 0, vol = git.volume();
+                         j < vol && has_overlap(from[i], size[i], gFrom,
+                                                normalize_coor(*git.it[0] - gFrom, dim[i]), dim[i]);
+                         gFrom = *git.it[0], ++git, ++j)
+                        r[i].push_back(gFrom);
+                }
+                return r;
+            }
+
+            void add_hyperplane(IndexType from, std::size_t n) {
+		// Normalize
+		from = detail::normalize_coor(from, dim[n]);
+
+                // Skip if the hyperplane is already in the grid
+                if (grid[n].count(from) > 0) return;
+
+                if (grid[n].size() > 0) {
+                    // Figure out the hyperplanes that contain `from`
+                    IndexType gFrom = *get_hyperslice(from, n);
+
+                    // Insert the new hyperplanes
+                    Coor<N> dim_strides = get_strides(dim, SlowToFast);
+                    Grid_range<N, std::set<IndexType>> git(&grid[0], n);
+                    for (std::size_t i = 0, vol = git.volume(); i < vol; ++git, ++i) {
+                        // Get the coordinates of an old cell
+                        Coor<N> g_coor;
+                        for (std::size_t j = 0; j < N; ++j)
+                            if (j != n) g_coor[j] = *git.it[j];
+                        g_coor[n] = gFrom;
+                        std::size_t grid_index = coor2index(g_coor, dim, dim_strides);
+
+                        // Get the coordinates of the new cell
+                        g_coor[n] = from;
+                        std::size_t new_grid_index = coor2index(g_coor, dim, dim_strides);
+
+                        // Insert all subtensors on the old cell also on the new cell
+                        auto range = gridToBlocks.equal_range(grid_index);
+                        for (auto it = range.first; it != range.second; ++it)
+                            gridToBlocks.insert(std::make_pair(new_grid_index, it->second));
+                    }
+                }
+
+                // Add hyperplanes
+                grid[n].insert(from);
+            }
+
+            /// Return whether the given ranges overlap
+            /// NOTE: the first range can refer to a periodic lattice, but not the second
+            static bool has_overlap(IndexType from0, IndexType size0, IndexType from1,
+                                    IndexType size1, IndexType dim) {
+
+                if (size0 <= 0 || size1 <= 0) throw std::runtime_error("This shouldn't happen");
+                if (from0 + size0 > from1 && from0 < from1 + size1) return true;
+                from1 += dim;
+                if (from0 + size0 > from1 && from0 < from1 + size1) return true;
+                return false;
+            }
+
+            // Normalize from when being the whole dimension
+            Coor<N> normalize_from(Coor<N> from, const Coor<N> &size) const {
+                for (std::size_t i = 0; i < N; ++i)
+                    if (size[i] == dim[i]) from[i] = 0;
+                return normalize_coor(from, dim);
+            }
+        };
+
         template <typename T> void change_endianness(T *v, std::size_t n) {
             for (std::size_t i = 0; i < n; ++i) {
                 char *c = (char *)&v[i];
@@ -307,16 +568,16 @@ namespace superbblas {
         };
 
         template <std::size_t N, typename Comm> struct Storage_context : Storage_context_abstract {
-            values_datatype values_type;           ///< type of the nonzero values
-            std::size_t header_size;               ///< number of bytes before the field num_chunks
-            std::size_t disp;                      ///< number of bytes before the current chunk
-            typename File<Comm>::type fh;          ///< file descriptor
-            Coor<N> dim;                           ///< global tensor dimensions
-            bool change_endianness;                ///< whether to change endianness
-            bool modified;                         ///< whether the storage content changed
-            std::size_t num_chunks;                ///< number of chunks written
-            std::vector<From_size_item<N>> blocks; ///< list of blocks already written
-            std::vector<std::size_t> disps;        ///< displacements of the chunks in bytes
+            values_datatype values_type;  ///< type of the nonzero values
+            std::size_t header_size;      ///< number of bytes before the field num_chunks
+            std::size_t disp;             ///< number of bytes before the current chunk
+            typename File<Comm>::type fh; ///< file descriptor
+            Coor<N> dim;                  ///< global tensor dimensions
+            bool change_endianness;       ///< whether to change endianness
+            bool modified;                ///< whether the storage content changed
+            std::size_t num_chunks;       ///< number of chunks written
+            GridHash<N, std::size_t>
+                blocks; ///< list of blocks already written and their displacements in bytes
 
             Storage_context(values_datatype values_type, std::size_t header_size,
                             typename File<Comm>::type fh, Coor<N> dim, bool change_endianness)
@@ -327,7 +588,8 @@ namespace superbblas {
                   dim(dim),
                   change_endianness(change_endianness),
                   modified(false),
-                  num_chunks(0) {}
+                  num_chunks(0),
+                  blocks(dim) {}
 
             std::size_t getNdim() override { return N; }
             CommType getCommType() override { return File<Comm>::value; }
@@ -347,68 +609,66 @@ namespace superbblas {
             return sto_ctx;
         }
 
+        template <std::size_t Nd0, std::size_t Nd1> struct Op {
+            From_size_item<Nd0> first_tensor;
+            From_size_item<Nd0> first_subtensor;
+            From_size_item<Nd1> second_tensor;
+            From_size_item<Nd1> second_subtensor;
+            std::size_t disp;
+        };
+
         /// Return the ranges involved in the source and destination tensors
         /// \param dim0: dimension size for the origin tensor
         /// \param p0: partitioning of the origin tensor in consecutive ranges
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of elements to copy in each dimension
-        /// \param dim1: dimension size for the destination tensor
-        /// \param p1: partitioning of the destination tensor in consecutive ranges
         /// \param o1: dimension labels for the destination tensor
+        /// \param grid: sparse tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
 
-        template <std::size_t Nd0, std::size_t Nd1, typename From_size0, typename From_size1>
-        std::tuple<std::vector<From_size_out<Nd0>>, std::vector<From_size_out<Nd1>>>
-        get_ranges_to_send_receive(Coor<Nd0> dim0, const From_size0 &p0, const Order<Nd0> &o0,
-                                   const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                                   const Coor<Nd1> dim1, const From_size1 &p1, const Order<Nd1> &o1,
-                                   const Coor<Nd1> &from1) {
+        template <std::size_t Nd0, std::size_t Nd1, typename From_size0>
+        std::vector<std::vector<Op<Nd0, Nd1>>>
+        get_overlap_ranges(Coor<Nd0> dim0, const From_size0 &p0, const Order<Nd0> &o0,
+                           const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                           const GridHash<Nd1, std::size_t> &grid, const Order<Nd1> &o1,
+                           const Coor<Nd1> &from1) {
 
             Cpu cpu{0};
             tracker<Cpu> _t("comp. tensor overlaps on storage", cpu);
 
             // Check the compatibility of the tensors
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, grid.dim)));
 
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            std::vector<From_size_out<Nd0>> send_out(p1.size());
-            std::vector<From_size_out<Nd1>> receive_out(p1.size());
-#ifdef _OPENMP
-#    pragma omp parallel for
-#endif
-            for (unsigned int j = 0; j < p1.size(); ++j) {
-                From_size_out<Nd0> s(p0.size(), cpu); // ranges to send
-                From_size_out<Nd1> r(p0.size(), cpu); // ranges to receive
-                for (unsigned int i = 0; i < p0.size(); ++i) {
-                    // Restrict the local range in v0 to the range from0, size0
-                    Coor<Nd0> rlocal_from0, rlocal_size0;
-                    intersection<Nd0>(from0, size0, p0[i][0], p0[i][1], dim0, rlocal_from0,
-                                      rlocal_size0);
+            std::vector<std::vector<Op<Nd0, Nd1>>> r(p0.size());
+            for (unsigned int i = 0; i < p0.size(); ++i) {
+                // Restrict the local range in v0 to the range from0, size0
+                Coor<Nd0> rlocal_from0, rlocal_size0;
+                intersection<Nd0>(from0, size0, p0[i][0], p0[i][1], dim0, rlocal_from0,
+                                  rlocal_size0);
 
-                    // Translate the restricted range to the destination lattice
-                    Coor<Nd1> rfrom1, rsize1;
-                    translate_range(rlocal_from0, rlocal_size0, from0, dim0, from1, dim1, perm0,
-                                    rfrom1, rsize1);
+                // Translate the restricted range to the destination lattice
+                Coor<Nd1> rfrom1, rsize1;
+                translate_range(rlocal_from0, rlocal_size0, from0, dim0, from1, grid.dim, perm0,
+                                rfrom1, rsize1);
 
-                    // Compute the range to receive
-                    intersection<Nd1>(rfrom1, rsize1, p1[j][0], p1[j][1], dim1, r[i][0], r[i][1]);
+                // Compute the range to receive
+                auto overlaps = grid.intersection(rfrom1, rsize1);
 
-                    // Compute the range to send
-                    translate_range(r[i][0], r[i][1], from1, dim1, from0, dim0, perm1, s[i][0],
-                                    s[i][1]);
+                for (const auto &o : overlaps) {
+                    // Compute the range to left tensor
+                    Coor<Nd0> rfrom0, rsize0;
+                    translate_range(o.first[0][0] + o.first[1][0], o.first[1][1], from1, grid.dim,
+                                    from0, dim0, perm1, rfrom0, rsize0);
+                    rfrom0 = normalize_coor(rfrom0 - p0[i][0], dim0);
 
-                    // Normalize coordinates
-                    s[i][0] = normalize_coor(s[i][0] - p0[i][0], dim0);
-                    r[i][0] = normalize_coor(r[i][0] - p1[j][0], dim1);
+                    r[i].push_back({p0[i], {rfrom0, rsize0}, o.first[0], o.first[1], o.second});
                 }
-                send_out[j] = s;
-                receive_out[j] = r;
             }
 
-            return std::tuple<std::vector<From_size_out<Nd0>>, std::vector<From_size_out<Nd1>>>{
-                send_out, receive_out};
+            return r;
         }
 
         /// Copy the content of tensor v0 into the storage
@@ -569,27 +829,27 @@ namespace superbblas {
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            auto send_receive = get_ranges_to_send_receive(
+            auto overlaps = get_overlap_ranges(
                 dim0, to_vector(p0.data() + comm.rank * ncomponents0, ncomponents0, p0.ctx()), o0,
-                from0, size0, sto.dim, sto.blocks, o1, from1);
+                from0, size0, sto.blocks, o1, from1);
 
             // Do the local file modifications
-            for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
-                const From_size<Nd0> &toSend = std::get<0>(send_receive)[j];
-                const From_size<Nd1> &toReceive = std::get<1>(send_receive)[j];
-                for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
-                    int i = c0.componentId;
-                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
-                    local_save<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1], c0.dim, c0.it,
-                                               o1, toReceive[i][0], sto.blocks[j][1], sto.fh,
-                                               sto.disps[j], co, sto.change_endianness);
+            for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
+                for (const auto &o : overlaps[c0.componentId]) {
+                    assert(check_equivalence(o0, o.first_subtensor[1], o1, o.second_subtensor[1]));
+                    local_save<Nd0, Nd1, T, Q>(alpha, o0, o.first_subtensor[0],
+                                               o.first_subtensor[1], c0.dim, c0.it, o1,
+                                               o.second_subtensor[0], o.second_tensor[1], sto.fh,
+                                               o.disp, co, sto.change_endianness);
                 }
-                for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
-                    int i = c0.componentId;
-                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
-                    local_save<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1], c0.dim, c0.it,
-                                               o1, toReceive[i][0], sto.blocks[j][1], sto.fh,
-                                               sto.disps[j], co, sto.change_endianness);
+            }
+            for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
+                for (const auto &o : overlaps[c0.componentId]) {
+                    assert(check_equivalence(o0, o.first_subtensor[1], o1, o.second_subtensor[1]));
+                    local_save<Nd0, Nd1, T, Q>(alpha, o0, o.first_subtensor[0],
+                                               o.first_subtensor[1], c0.dim, c0.it, o1,
+                                               o.second_subtensor[0], o.second_tensor[1], sto.fh,
+                                               o.disp, co, sto.change_endianness);
                 }
             }
 
@@ -631,9 +891,9 @@ namespace superbblas {
             unsigned int ncomponents1 = v1.first.size() + v1.second.size();
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            auto send_receive = get_ranges_to_send_receive(
+            auto overlaps = get_overlap_ranges(
                 dim1, to_vector(p1.data() + comm.rank * ncomponents1, ncomponents1, p1.ctx()), o1,
-                from1, size1, sto.dim, sto.blocks, o0, from0);
+                from1, size1, sto.blocks, o0, from0);
 
             // Synchronize the content of the storage before reading from it
             if (sto.modified) {
@@ -642,24 +902,21 @@ namespace superbblas {
             }
 
             // Do the local file modifications
-            for (unsigned int j = 0; j < sto.blocks.size(); ++j) {
-                const From_size<Nd0> &toSend = std::get<1>(send_receive)[j];
-                const From_size<Nd1> &toReceive = std::get<0>(send_receive)[j];
-                for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
-                    int i = c1.componentId;
-                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
-                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
-                                               sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[i][0], c1.dim, c1.it, EWOP{}, co,
-                                               sto.change_endianness);
+            for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
+                for (const auto &o : overlaps[c1.componentId]) {
+                    assert(check_equivalence(o0, o.second_subtensor[1], o1, o.first_subtensor[1]));
+                    local_load<Nd0, Nd1, T, Q>(alpha, o0, o.second_subtensor[0],
+                                               o.second_subtensor[1], o.second_tensor[1], sto.fh,
+                                               o.disp, o1, o.first_subtensor[0], c1.dim, c1.it,
+                                               EWOP{}, co, sto.change_endianness);
                 }
-                for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
-                    int i = c1.componentId;
-                    assert(check_equivalence(o0, toSend[i][1], o1, toReceive[i][1]));
-                    local_load<Nd0, Nd1, T, Q>(alpha, o0, toSend[i][0], toSend[i][1],
-                                               sto.blocks[j][1], sto.fh, sto.disps[j], o1,
-                                               toReceive[i][0], c1.dim, c1.it, EWOP{}, co,
-                                               sto.change_endianness);
+            }
+            for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
+                for (const auto &o : overlaps[c1.componentId]) {
+                    local_load<Nd0, Nd1, T, Q>(alpha, o0, o.second_subtensor[0],
+                                               o.second_subtensor[1], o.second_tensor[1], sto.fh,
+                                               o.disp, o1, o.first_subtensor[0], c1.dim, c1.it,
+                                               EWOP{}, co, sto.change_endianness);
                 }
             }
         }
@@ -804,6 +1061,45 @@ namespace superbblas {
             header_size = sizeof(int) * 5 + metadata_length + padding.size() + sizeof(double) * Nd;
         }
 
+        /// Return the ranges involved in the source and destination tensors
+        /// \param dim0: dimension size for the origin tensor
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param dim1: dimension size for the destination tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+
+        template <std::size_t Nd0, std::size_t Nd1, typename From_size0>
+        std::vector<From_size_item<Nd1>>
+        translate_ranges(Coor<Nd0> dim0, const From_size0 &p0, const Order<Nd0> &o0,
+                         const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd1> dim1,
+                         const Order<Nd1> &o1, const Coor<Nd1> &from1) {
+
+            Cpu cpu{0};
+            tracker<Cpu> _t("comp. tensor overlaps on storage", cpu);
+
+            // Check the compatibility of the tensors
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            std::vector<From_size_item<Nd1>> r(p0.size());
+            for (unsigned int i = 0; i < p0.size(); ++i) {
+                // Restrict the local range in v0 to the range from0, size0
+                Coor<Nd0> rlocal_from0, rlocal_size0;
+                intersection<Nd0>(from0, size0, p0[i][0], p0[i][1], dim0, rlocal_from0,
+                                  rlocal_size0);
+
+                // Translate the restricted range to the destination lattice
+                translate_range(rlocal_from0, rlocal_size0, from0, dim0, from1, dim1, perm0,
+                                r[i][0], r[i][1]);
+            }
+
+            return r;
+        }
+
         /// Add blocks to storage after restricted the range indicated by from0, size0, and from1
         /// \param p0: blocks to add
         /// \param num_blocks: number of items in p0
@@ -827,49 +1123,46 @@ namespace superbblas {
             // Generate the list of subranges to add
             Coor<Nd0> dim0 = get_dim<Nd0>(p0, num_blocks);
             auto p0_ = to_vector(p0, num_blocks, Cpu{0});
-            PartitionItem<Nd1> fs{Coor<Nd1>{}, sto.dim};
-            auto p1_ = to_vector(&fs, 1, Cpu{0});
-            auto p = std::get<1>(get_ranges_to_send_receive(dim0, p0_, o0, from0, size0, sto.dim,
-                                                            p1_, o1, from1))[0];
+            if (co == FastToSlow) o1 = reverse(o1);
+            auto p = translate_ranges(dim0, p0_, o0, from0, size0, sto.dim, o1, from1);
 
             // Write the coordinates for all non-empty blocks
-            sto.blocks.reserve(sto.blocks.size() + num_blocks);
+            std::vector<From_size_item<Nd1>> new_blocks;
+            new_blocks.reserve(num_blocks);
 
-            if (comm.rank == 0) seek(sto.fh, sto.disp + sizeof(double)); // skip num_blocks
+            if (comm.rank == 0)
+                seek(sto.fh, sto.disp + sizeof(double)); // skip the field `num_blocks`
 
             std::vector<std::size_t> num_values; ///< number of values for each block
             num_values.reserve(num_blocks);
             std::size_t num_nonempty_blocks = 0; ///< number of non-empty blocks
             for (std::size_t i = 0; i < num_blocks; ++i) {
+                // Skip if the range is empty or fully included on the blocks
                 std::size_t vol = volume(p[i][1]);
-                if (vol > 0) {
-                    From_size_item<Nd1> fs =
-                        (co == SlowToFast ? p[i]
-                                          : From_size_item<Nd1>{detail::reverse(p[i][0]),
-                                                                detail::reverse(p[i][1])});
-                    num_nonempty_blocks++;
-                    num_values.push_back(vol);
-                    sto.blocks.push_back(fs);
+                if (vol == 0 || vol == sto.blocks.get_overlap_volume(p[i][0], p[i][1])) continue;
 
-                    // Root process writes the "from" and "size" for each block
-                    if (comm.rank == 0) {
-                        std::array<double, Nd1> from, size;
-                        std::copy_n(fs[0].begin(), Nd1, from.begin());
-                        std::copy_n(fs[1].begin(), Nd1, size.begin());
-                        if (sto.change_endianness) change_endianness(&from[0], Nd1);
-                        if (sto.change_endianness) change_endianness(&size[0], Nd1);
-                        write(sto.fh, &from[0], Nd1);
-                        write(sto.fh, &size[0], Nd1);
-                    }
+                const From_size_item<Nd1> &fs = p[i];
+                num_nonempty_blocks++;
+                num_values.push_back(vol);
+                new_blocks.push_back(fs);
+
+                // Root process writes the "from" and "size" for each block
+                if (comm.rank == 0) {
+                    std::array<double, Nd1> from, size;
+                    std::copy_n(fs[0].begin(), Nd1, from.begin());
+                    std::copy_n(fs[1].begin(), Nd1, size.begin());
+                    if (sto.change_endianness) change_endianness(&from[0], Nd1);
+                    if (sto.change_endianness) change_endianness(&size[0], Nd1);
+                    write(sto.fh, &from[0], Nd1);
+                    write(sto.fh, &size[0], Nd1);
                 }
             }
 
             // Annotate where the nonzero values start for the new blocks
-            sto.disps.reserve(sto.blocks.size());
             std::size_t values_start =
                 sto.disp + sizeof(double) + num_nonempty_blocks * Nd1 * sizeof(double) * 2;
             for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
-                sto.disps.push_back(values_start);
+                sto.blocks.append_block(new_blocks[i][0], new_blocks[i][1], values_start);
                 values_start += num_values[i] * sizeof(Q);
             }
 
@@ -911,7 +1204,6 @@ namespace superbblas {
             sto.num_chunks = num_chunks;
 
             // Read chunks
-            sto.blocks.resize(0);
             for (std::size_t chunk = 0; chunk < sto.num_chunks; chunk++) {
                 // Read the number of blocks in this chunk
                 double d;
@@ -919,11 +1211,11 @@ namespace superbblas {
                 if (sto.change_endianness) change_endianness(&d, 1);
                 std::size_t num_blocks = d;
 
-                // Write the coordinates for all non-empty blocks
-                sto.blocks.reserve(sto.blocks.size() + num_blocks);
-
-                std::vector<std::size_t> num_values; ///< number of values for each block
+                // Read blocks
+                std::vector<std::size_t> num_values;     ///< number of values for each block
+                std::vector<From_size_item<Nd1>> blocks; ///< ranges of the blocks
                 num_values.reserve(num_blocks);
+                blocks.reserve(num_blocks);
                 for (std::size_t i = 0; i < num_blocks; ++i) {
                     // Read from and size
                     std::array<double, Nd1> fromd, sized;
@@ -935,14 +1227,13 @@ namespace superbblas {
                     std::copy_n(fromd.begin(), Nd1, from.begin());
                     std::copy_n(sized.begin(), Nd1, size.begin());
                     num_values.push_back(volume(size));
-                    sto.blocks.push_back(From_size_item<Nd1>{from, size});
+                    blocks.push_back(From_size_item<Nd1>{from, size});
                 }
 
                 // Annotate where the nonzero values start for the block
                 cur += sizeof(double) + num_blocks * Nd1 * sizeof(double) * 2;
-                sto.disps.reserve(sto.blocks.size());
                 for (std::size_t i = 0; i < num_blocks; ++i) {
-                    sto.disps.push_back(cur);
+                    sto.blocks.append_block(blocks[i][0], blocks[i][1], cur);
                     cur += num_values[i] * sizeof(Q);
                 }
 

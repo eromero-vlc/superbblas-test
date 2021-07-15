@@ -419,6 +419,7 @@ namespace superbblas {
             }
 
             // Do the copy
+            tracker<XPU0> _t("local copy", v0.ctx());
             copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.value.first.begin(), v0.ctx(), vol,
                                     v1.data(), it->second.value.second.begin(), Cpu{},
                                     EWOp::Copy{});
@@ -574,6 +575,7 @@ namespace superbblas {
                                          v1ToReceive->counts.data(), v1ToReceive->displ.data(),
                                          dtype, comm.comm, &r));
             } else {
+                tracker<Cpu> _t("alltoall", toReceive.ctx());
                 MPI_check(MPI_Alltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
                                         v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
                                         v1ToReceive->counts.data(), v1ToReceive->displ.data(),
@@ -638,6 +640,14 @@ namespace superbblas {
             throw std::runtime_error("Unsupported SelfComm with nprocs > 1");
         }
 
+        /// Return coor % dim
+        /// \param coors: input coordinate
+        /// \param dim: lattice dimensions
+
+        inline IndexType normalize_coor(IndexType coor, IndexType dim) {
+            return (dim == 0 ? 0 : (coor + dim * (coor < 0 ? -coor / dim + 1 : 0)) % dim);
+        }
+
         /// Return coor[i] % dim[i]
         /// \param coors: input coordinate
         /// \param dim: lattice dimensions
@@ -645,11 +655,7 @@ namespace superbblas {
         template <std::size_t Nd>
         Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
             Coor<Nd> r;
-            for (std::size_t j = 0; j < Nd; j++)
-                r[j] =
-                    (dim[j] == 0
-                         ? 0
-                         : (coor[j] + dim[j] * (coor[j] < 0 ? -coor[j] / dim[j] + 1 : 0)) % dim[j]);
+            for (std::size_t j = 0; j < Nd; j++) r[j] = normalize_coor(coor[j], dim[j]);
             return r;
         }
 
