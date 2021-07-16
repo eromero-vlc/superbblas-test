@@ -314,7 +314,7 @@ namespace superbblas {
                     if (i == excepting) continue;
                     vol *= grid[i].size();
                 }
-		return vol;
+                return vol;
             }
 
             Grid_range<N, GRID> &operator++() {
@@ -495,8 +495,8 @@ namespace superbblas {
             }
 
             void add_hyperplane(IndexType from, std::size_t n) {
-		// Normalize
-		from = detail::normalize_coor(from, dim[n]);
+                // Normalize
+                from = detail::normalize_coor(from, dim[n]);
 
                 // Skip if the hyperplane is already in the grid
                 if (grid[n].count(from) > 0) return;
@@ -706,6 +706,7 @@ namespace superbblas {
                 o1 = reverse(o1);
                 from1 = reverse(from1);
                 dim1 = reverse(dim1);
+                co = SlowToFast;
             }
 
             // Get the permutation vectors
@@ -1123,7 +1124,10 @@ namespace superbblas {
             // Generate the list of subranges to add
             Coor<Nd0> dim0 = get_dim<Nd0>(p0, num_blocks);
             auto p0_ = to_vector(p0, num_blocks, Cpu{0});
-            if (co == FastToSlow) o1 = reverse(o1);
+            if (co == FastToSlow) {
+                o1 = reverse(o1);
+                from1 = reverse(from1);
+            }
             auto p = translate_ranges(dim0, p0_, o0, from0, size0, sto.dim, o1, from1);
 
             // Write the coordinates for all non-empty blocks
