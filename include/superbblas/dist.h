@@ -123,8 +123,16 @@ namespace superbblas {
         inline void MPI_check(int error) {
             if (error == MPI_SUCCESS) return;
 
+            char s[MPI_MAX_ERROR_STRING];
+            int len;
+            MPI_Error_string(error, s, &len);
+
 #    define CHECK_AND_THROW(ERR)                                                                   \
-        if (error == ERR) throw std::runtime_error("MPI error: " #ERR);
+        if (error == ERR) {                                                                        \
+            std::stringstream ss;                                                                  \
+            ss << "MPI error: " #ERR ": " << std::string(&s[0], &s[0] + len);                      \
+            throw std::runtime_error(ss.str());                                                    \
+        }
 
             CHECK_AND_THROW(MPI_ERR_BUFFER);
             CHECK_AND_THROW(MPI_ERR_COUNT);

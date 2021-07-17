@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <list>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -186,13 +187,31 @@ namespace superbblas {
         template <> inline unsigned int get_count_from_type<int>() { return 1; }
         template <> inline unsigned int get_count_from_type<char>() { return 1; }
 
+        struct AllocAbstract {
+            MPI_Request req;
+            AllocAbstract(MPI_Request req) : req{req} {}
+            virtual ~AllocAbstract() {}
+        };
+
+        template <typename T> struct Alloc : public AllocAbstract {
+            vector<T, Cpu> v;
+            Alloc(MPI_Request req, vector<T, Cpu> v) : AllocAbstract{req}, v{v} {}
+            ~Alloc() override {}
+        };
+
+        // MPI_File replacement
+        struct File_Requests {
+            MPI_File f;
+            std::list<AllocAbstract *> reqs;
+        };
+
         // File descriptor specialization for MpiComm
         template <> struct File<MpiComm> {
-            using type = MPI_File;
+            using type = File_Requests;
             static constexpr CommType value = MPI;
         };
 
-        inline MPI_File file_open(MpiComm comm, const char *filename, Mode mode) {
+        inline File_Requests file_open(MpiComm comm, const char *filename, Mode mode) {
             MPI_File fh;
             barrier(comm);
             switch (mode) {
@@ -206,34 +225,68 @@ namespace superbblas {
                 MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
                 break;
             }
-            return fh;
+            return File_Requests{fh, {}};
         }
 
-        inline void preallocate(MPI_File f, std::size_t n) {
-            MPI_check(MPI_File_preallocate(f, n));
+        inline void seek(File_Requests &f, std::size_t offset) {
+            MPI_check(MPI_File_seek(f.f, offset, MPI_SEEK_SET));
         }
 
-        inline void seek(MPI_File f, std::size_t offset) {
-            MPI_check(MPI_File_seek(f, offset, MPI_SEEK_SET));
-        }
-
-        template <typename T> void write(MPI_File f, const T *v, std::size_t n) {
+        template <typename T> void write(File_Requests &f, const T *v, std::size_t n) {
             MPI_Status status;
-            MPI_check(MPI_File_write(f, v, n * get_count_from_type<T>(),
+            MPI_check(MPI_File_write(f.f, v, n * get_count_from_type<T>(),
                                      mpi_datatype_basic_from_type<T>(), &status));
         }
 
-        template <typename T> void read(MPI_File f, T *v, std::size_t n) {
+        template <typename T> void read(File_Requests &f, T *v, std::size_t n) {
             MPI_Status status;
-            MPI_check(MPI_File_read(f, v, n * get_count_from_type<T>(),
+            MPI_check(MPI_File_read(f.f, v, n * get_count_from_type<T>(),
                                     mpi_datatype_basic_from_type<T>(), &status));
         }
 
-        inline void flush(MPI_File f) { MPI_check(MPI_File_sync(f)); }
+        template <typename T>
+        void iwrite(File_Requests &f, const T *v, std::size_t n, vector<T, Cpu> w) {
+            MPI_Request req;
+            MPI_check(MPI_File_iwrite(f.f, v, n * get_count_from_type<T>(),
+                                      mpi_datatype_basic_from_type<T>(), &req));
+            f.reqs.push_back(new Alloc<T>{req, w});
+        }
 
-        inline void close(MPI_File &f) {
+        template <typename T> void iwrite(File_Requests &f, const T *v, std::size_t n) {
+            vector<T, Cpu> w(n, Cpu{0});
+            std::copy_n(v, n, w.data());
+            iwrite(f, w.data(), n, w);
+        }
+
+        inline void flush(File_Requests &f) {
+            for (AllocAbstract *r : f.reqs) {
+                MPI_check(MPI_Wait(&r->req, MPI_STATUS_IGNORE));
+                delete r;
+            }
+            f.reqs.clear();
+            MPI_check(MPI_File_sync(f.f));
+        }
+
+        inline void check_pending_requests(File_Requests &f) {
+            f.reqs.remove_if([](AllocAbstract *r) {
+                int finished = 0;
+                MPI_check(MPI_Test(&r->req, &finished, MPI_STATUS_IGNORE));
+                if (finished) {
+                    delete r;
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        inline void preallocate(File_Requests &f, std::size_t n) {
             flush(f);
-            MPI_check(MPI_File_close(&f));
+            MPI_check(MPI_File_preallocate(f.f, n));
+        }
+
+        inline void close(File_Requests &f) {
+            flush(f);
+            MPI_check(MPI_File_close(&f.f));
         }
 
 #    else  // SUPERBBLAS_USE_MPIIO
@@ -275,12 +328,22 @@ namespace superbblas {
             write(f.f, v, n);
         }
 
+        template <typename T> void iwrite(File_Comm f, const T *v, std::size_t n) {
+            write(f.f, v, n);
+        }
+
+        template <typename T> void iwrite(File_Comm f, const T *v, std::size_t n, vector<T, Cpu>) {
+            write(f.f, v, n);
+        }
+
         template <typename T> void read(File_Comm f, T *v, std::size_t n) { read(f.f, v, n); }
 
         inline void flush(File_Comm f) {
             flush(f.f);
             barrier(f.comm);
         }
+
+        inline void check_pending_requests(File_Comm) {}
 
         inline void close(File_Comm &f) {
             close(f.f);
@@ -508,6 +571,7 @@ namespace superbblas {
                     // Insert the new hyperplanes
                     Coor<N> dim_strides = get_strides(dim, SlowToFast);
                     Grid_range<N, std::set<IndexType>> git(&grid[0], n);
+                    std::vector<BlockIndex> affected_blocks;
                     for (std::size_t i = 0, vol = git.volume(); i < vol; ++git, ++i) {
                         // Get the coordinates of an old cell
                         Coor<N> g_coor;
@@ -522,8 +586,11 @@ namespace superbblas {
 
                         // Insert all subtensors on the old cell also on the new cell
                         auto range = gridToBlocks.equal_range(grid_index);
+                        affected_blocks.resize(0);
                         for (auto it = range.first; it != range.second; ++it)
-                            gridToBlocks.insert(std::make_pair(new_grid_index, it->second));
+                            affected_blocks.push_back(it->second);
+                        for (BlockIndex b : affected_blocks)
+                            gridToBlocks.insert(std::make_pair(new_grid_index, b));
                     }
                 }
 
@@ -693,7 +760,7 @@ namespace superbblas {
                   typename FileT>
         void local_save(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        Order<Nd1> o1, Coor<Nd1> from1, Coor<Nd1> dim1, FileT fh, std::size_t disp,
+                        Order<Nd1> o1, Coor<Nd1> from1, Coor<Nd1> dim1, FileT &fh, std::size_t disp,
                         CoorOrder co, bool do_change_endianness) {
 
             tracker<XPU0> _t("local save", v0.ctx());
@@ -733,7 +800,7 @@ namespace superbblas {
                 for (; i + n < indices1.size() && indices1[i + n - 1] + 1 == indices1[i + n]; ++n)
                     ;
                 seek(fh, disp + (disp1 + indices1[i]) * sizeof(Q));
-                write(fh, v0_host.data() + i, n);
+                iwrite(fh, v0_host.data() + i, n, v0_host);
                 i += n;
             }
         }
@@ -755,7 +822,7 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU1,
                   typename EWOP, typename FileT>
         void local_load(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, FileT fh, std::size_t disp,
+                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, FileT& fh, std::size_t disp,
                         Order<Nd1> o1, Coor<Nd1> from1, Coor<Nd1> dim1, vector<Q, XPU1> v1, EWOP,
                         CoorOrder co, bool do_change_endianness) {
 
@@ -856,6 +923,9 @@ namespace superbblas {
 
             // Mark the storage as modified
             sto.modified = true;
+
+            // Release resources on finished requests
+            check_pending_requests(sto.fh);
         }
 
         /// Copy a range from a storage into a plural tensor v0
@@ -1134,12 +1204,11 @@ namespace superbblas {
             std::vector<From_size_item<Nd1>> new_blocks;
             new_blocks.reserve(num_blocks);
 
-            if (comm.rank == 0)
-                seek(sto.fh, sto.disp + sizeof(double)); // skip the field `num_blocks`
-
             std::vector<std::size_t> num_values; ///< number of values for each block
             num_values.reserve(num_blocks);
             std::size_t num_nonempty_blocks = 0; ///< number of non-empty blocks
+            std::vector<double> chunk_header(1); ///< header of the chunk
+            chunk_header.reserve(1 + num_blocks * Nd1 * 2);
             for (std::size_t i = 0; i < num_blocks; ++i) {
                 // Skip if the range is empty or fully included on the blocks
                 std::size_t vol = volume(p[i][1]);
@@ -1152,15 +1221,13 @@ namespace superbblas {
 
                 // Root process writes the "from" and "size" for each block
                 if (comm.rank == 0) {
-                    std::array<double, Nd1> from, size;
-                    std::copy_n(fs[0].begin(), Nd1, from.begin());
-                    std::copy_n(fs[1].begin(), Nd1, size.begin());
-                    if (sto.change_endianness) change_endianness(&from[0], Nd1);
-                    if (sto.change_endianness) change_endianness(&size[0], Nd1);
-                    write(sto.fh, &from[0], Nd1);
-                    write(sto.fh, &size[0], Nd1);
+                    chunk_header.insert(chunk_header.end(), fs[0].begin(), fs[0].end());
+                    chunk_header.insert(chunk_header.end(), fs[1].begin(), fs[1].end());
                 }
             }
+
+            // If no new block, get out
+            if (num_nonempty_blocks == 0) return;
 
             // Annotate where the nonzero values start for the new blocks
             std::size_t values_start =
@@ -1172,12 +1239,12 @@ namespace superbblas {
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
-                double d = num_nonempty_blocks;
-                if (sto.change_endianness) change_endianness(&d, 1);
+                chunk_header[0] = num_nonempty_blocks;
+                if (sto.change_endianness)
+                    change_endianness(chunk_header.data(), chunk_header.size());
                 seek(sto.fh, sto.disp);
-                write(sto.fh, &d, 1);
+                iwrite(sto.fh, chunk_header.data(), chunk_header.size());
             }
-            preallocate(sto.fh, values_start);
 
             // Update disp
             sto.disp = values_start;
@@ -1188,7 +1255,7 @@ namespace superbblas {
                 double num_chunks = sto.num_chunks;
                 if (sto.change_endianness) change_endianness(&num_chunks, 1);
                 seek(sto.fh, sto.header_size);
-                write(sto.fh, &num_chunks, 1);
+                iwrite(sto.fh, &num_chunks, 1);
             }
         }
 
