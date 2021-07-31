@@ -175,6 +175,8 @@ namespace superbblas {
             if (std::fseek(f, old_offset, SEEK_SET) != 0) gen_error("Error setting file position");
         }
 
+        inline void truncate(std::FILE *f, std::size_t n) { ftruncate(fileno(f), n); }
+
         inline void flush(std::FILE *f) {
             if (std::fflush(f) != 0) gen_error("Error flushing file");
         }
@@ -318,6 +320,10 @@ namespace superbblas {
             MPI_check(MPI_File_preallocate(f.f, n));
         }
 
+        inline void truncate(File_Requests &f, std::size_t n) {
+            MPI_check(MPI_File_set_size(f.f, n));
+        }
+
         inline void close(File_Requests &f) {
             flush(f);
             MPI_check(MPI_File_close(&f.f));
@@ -353,6 +359,11 @@ namespace superbblas {
 
         inline void preallocate(File_Comm f, std::size_t n) {
             if (f.comm.rank == 0) preallocate(f.f, n);
+            barrier(f.comm);
+        }
+
+        inline void truncate(File_Comm f, std::size_t n) {
+            if (f.comm.rank == 0) truncate(f.f, n);
             barrier(f.comm);
         }
 
@@ -762,7 +773,12 @@ namespace superbblas {
             CommType getCommType() override { return File<Comm>::value; }
             void flush() override { detail::flush(fh); }
             void preallocate(std::size_t size) override { detail::preallocate(fh, size); }
-            ~Storage_context() override { close(fh); }
+            ~Storage_context() override {
+                detail::flush(fh);
+                std::size_t filesize = disp + (checksum == NoChecksum ? 0 : sizeof(double));
+                truncate(fh, filesize);
+                close(fh);
+            }
         };
 
         template <std::size_t N, typename T, typename Comm>
