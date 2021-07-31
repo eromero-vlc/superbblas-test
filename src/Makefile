@@ -8,6 +8,7 @@ OTHER_HEADERS := \
   ../include/superbblas/blas.h \
   ../include/superbblas/cblas.h \
   ../include/superbblas/cache.h \
+  ../include/superbblas/crc32.h \
   ../include/superbblas/dist.h \
   ../include/superbblas/performance.h \
   ../include/superbblas/platform.h \

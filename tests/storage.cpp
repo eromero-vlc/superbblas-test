@@ -49,6 +49,7 @@ int main(int argc, char **argv) {
 
     // Get options
     bool procs_was_set = false;
+    checksum_type checksum = NoChecksum;
     for (int i = 1; i < argc; ++i) {
         if (std::strncmp("--dim=", argv[i], 6) == 0) {
             if (sscanf(argv[i] + 6,
@@ -74,7 +75,17 @@ int main(int argc, char **argv) {
                 return -1;
             }
             procs_was_set = true;
-         } else if(std::strncmp("--help", argv[i], 6) == 0) {
+        } else if (std::strncmp("--checksum=", argv[i], 11) == 0) {
+            int checksum_d = 0;
+            if (sscanf(argv[i] + 11, "%d", &checksum_d) != 1 || checksum_d < 0 || checksum_d > 2) {
+                std::cerr << "--checksum= should follow 0, 1, or 2, for instance -checksum=1"
+                          << std::endl;
+                checksum = (checksum_d == 0 ? NoChecksum
+                                            : (checksum_d == 1 ? GlobalChecksum : BlockChecksum));
+                return -1;
+            }
+            dim[N1] = dim[N0];
+          } else if(std::strncmp("--help", argv[i], 6) == 0) {
              std::cout << "Commandline option:\n  " << argv[0]
                        << " [--dim='m d t g n'] [--procs=t] [--help]" << std::endl;
              return 0;
@@ -214,7 +225,7 @@ int main(int argc, char **argv) {
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Storage_handle stoh;
                 create_storage<Nd, Scalar>(dim, SlowToFast, filename, metadata.c_str(),
-                                           metadata.size(),
+                                           metadata.size(), checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                            MPI_COMM_WORLD,
 #endif
@@ -237,7 +248,12 @@ int main(int argc, char **argv) {
 #endif
                                                      SlowToFast);
                 }
-		close_storage(stoh);
+                close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                          ,
+                                          MPI_COMM_WORLD
+#endif
+                );
             }
             t = w_time() - t;
             if (rank == 0)
@@ -254,6 +270,14 @@ int main(int argc, char **argv) {
                                  MPI_COMM_WORLD,
 #endif
                                  &stoh);
+
+        // Check storage
+        check_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
 
         // Load into tensor t1
         if (dowrite) {
@@ -325,9 +349,9 @@ int main(int argc, char **argv) {
 
             if (rank == 0) {
                 // The data of the only block should contain the numbers from zero to vol
-                std::size_t padding_size = (8 - metadata.size() % 8) % 8 + 4;
+                std::size_t padding_size = (8 - metadata.size() % 8) % 8;
                 std::size_t header_size =
-                    sizeof(int) * 5 + metadata.size() + padding_size + sizeof(double) * Nd;
+                    sizeof(int) * 6 + metadata.size() + padding_size + sizeof(double) * (Nd + 1);
                 std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
                 std::ifstream f(filename, std::ios::binary);
                 f.seekg(disp);
@@ -400,9 +424,15 @@ int main(int argc, char **argv) {
             }
         }
 
-        close_storage(stoh);
+        close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
 
         create_storage<Nd, Scalar>(dim, SlowToFast, filename_sp, metadata.c_str(), metadata.size(),
+                                   checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                    MPI_COMM_WORLD,
 #endif
@@ -487,7 +517,12 @@ int main(int argc, char **argv) {
             }
         }
 
-        close_storage(stoh);
+        close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
 
 
         if (rank == 0) reportTimings(std::cout);
@@ -521,6 +556,7 @@ int main(int argc, char **argv) {
 
         Storage_handle stoh;
         create_storage<Nd, Scalar>(dim, SlowToFast, filename, metadata.c_str(), metadata.size(),
+                                   checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                    MPI_COMM_WORLD,
 #endif
@@ -565,9 +601,9 @@ int main(int argc, char **argv) {
 
             if (rank == 0) {
                 // The data of the only block should contain the numbers from zero to vol
-                std::size_t padding_size = (8 - metadata.size() % 8) % 8 + 4;
+                std::size_t padding_size = (8 - metadata.size() % 8) % 8;
                 std::size_t header_size =
-                    sizeof(int) * 5 + metadata.size() + padding_size + sizeof(double) * Nd;
+                    sizeof(int) * 6 + metadata.size() + padding_size + sizeof(double) * (Nd + 1);
                 std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
                 std::ifstream f(filename, std::ios::binary);
                 f.seekg(disp);
@@ -626,8 +662,12 @@ int main(int argc, char **argv) {
             }
         }
 
- 
-        close_storage(stoh);
+        close_storage<Nd, Scalar>(stoh
+#    ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#    endif
+        );
 
         if (rank == 0) reportTimings(std::cout);
         if (rank == 0) reportCacheUsage(std::cout);
