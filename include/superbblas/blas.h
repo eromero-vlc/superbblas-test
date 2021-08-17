@@ -1,26 +1,15 @@
 #ifndef __SUPERBBLAS_BLAS__
 #define __SUPERBBLAS_BLAS__
 
+#include "blas_cpu_tmpl.hpp"
 #include "performance.h"
 #include "platform.h"
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
-
-#ifdef SUPERBBLAS_USE_MKL
-#    include "mkl.h"
-#    ifndef SUPERBBLAS_USE_CBLAS
-#        define SUPERBBLAS_USE_CBLAS
-#    endif
-#endif // SUPERBBLAS_USE_MKL
-
-#ifndef SUPERBBLAS_USE_CBLAS
-#    include "blas_ftn_tmpl.hpp"
-#else
-#    include "blas_cblas_tmpl.hpp"
-#endif
 
 //////////////////////
 // NOTE:
@@ -67,24 +56,26 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define REPLACE_EWOP REPLACE(EWOP, EWOp::Copy, EWOp::Add)
 
-#if defined(SUPERBBLAS_USE_CUDA)
-#define XPU_GPU Cuda
-#elif defined(SUPERBBLAS_USE_HIP)	
-#define XPU_GPU Hip
-#else
-#define XPU_GPU Cpu
-#endif
+#    define REPLACE_XPU REPLACE(XPU, XPU_GPU)
+
+#    if defined(SUPERBBLAS_USE_CUDA)
+#        define XPU_GPU Cuda
+#    elif defined(SUPERBBLAS_USE_HIP)
+#        define XPU_GPU Hip
+#    else
+#        define XPU_GPU Cpu
+#    endif
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
 
 #    define DECL_COPY_T_Q_EWOP(...)                                                                \
         EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T, Q, XPU_GPU, EWOP>)          \
-            REPLACE_T_Q REPLACE_EWOP template __VA_ARGS__;
+            REPLACE_T_Q REPLACE_XPU REPLACE_EWOP template __VA_ARGS__;
 
 /// Generate template instantiations for copy_reduce_n functions with template parameters IndexType and T
 
 #    define DECL_COPY_REDUCE(...)                                                                  \
         EMIT REPLACE1(copy_reduce_n, superbblas::detail::copy_reduce_n<IndexType, T, XPU_GPU>)     \
-            REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) template __VA_ARGS__;
+            REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) REPLACE_XPU template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
@@ -96,13 +87,18 @@ namespace superbblas {
     /// elem<T>::type is T::value_type if T is an array; otherwise it is T
 
     template <typename T> struct elem { using type = T; };
-    template <typename T, std::size_t N> struct elem<std::array<T, N>> { using type = T; };
+    template <typename T, std::size_t N> struct elem<std::array<T, N>> {
+        using type = typename elem<T>::type;
+    };
+    template <typename T, std::size_t N> struct elem<const std::array<T, N>> {
+        using type = typename elem<T>::type;
+    };
 
     namespace detail {
 
         /// Check the given pointer has proper alignment
         /// \param v: ptr to check
-	/// NOTE: thrust::complex requires sizeof(complex<T>) alignment
+        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
 
         template <typename T> struct check_ptr_align {
             static void check(T *v) {
@@ -120,7 +116,7 @@ namespace superbblas {
         template <typename T> struct check_ptr_align<std::complex<T>> {
             static void check(std::complex<T> *v) {
                 using U = std::complex<T>;
-#ifdef SUPERBBLAS_USE_CUDA
+#ifdef SUPERBBLAS_USE_GPU
                 std::size_t alignment = sizeof(U);
 #else
                 std::size_t alignment = alignof(U);
@@ -136,7 +132,7 @@ namespace superbblas {
         /// \param n: number of element of type `T` to allocate
         /// \param cpu: context
 
-        template <typename T> T *allocate(std::size_t n, Cpu) {
+        template <typename T> T *allocate(std::size_t n, Cpu cpu) {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
@@ -146,8 +142,10 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
-                getAllocations()[(void *)r] = sizeof(T) * n;
-                getCpuMemUsed() += double(sizeof(T) * n);
+                if (getAllocations(cpu.session).count((void *)r) > 0)
+                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
+                getAllocations(cpu.session)[(void *)r] = sizeof(T) * n;
+                getCpuMemUsed(cpu.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>::check(r);
@@ -158,35 +156,22 @@ namespace superbblas {
         /// \param ptr: pointer to the memory to deallocate
         /// \param cpu: context
 
-        template <typename T> void deallocate(T *ptr, Cpu) {
+        template <typename T> void deallocate(T *ptr, Cpu cpu) {
             // Shortcut for zero allocations
             if (!ptr) return;
 
+            // Remove annotation
+            if (getTrackingMemory() && getAllocations(cpu.session).count((void *)ptr) > 0) {
+                const auto &it = getAllocations(cpu.session).find((void *)ptr);
+                getCpuMemUsed(cpu.session) -= double(it->second);
+                getAllocations(cpu.session).erase(it);
+            }
+
             // Deallocate the pointer
             delete[] ptr;
-
-            // Remove annotation
-            if (getTrackingMemory()) {
-                const auto &it = getAllocations().find((void *)ptr);
-                if (it == getAllocations().end())
-                    throw std::runtime_error("Unexpected pointer to deallocate");
-                getCpuMemUsed() -= double(it->second);
-                getAllocations().erase(it);
-            }
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
-
-        /// Set the current device as the one passed
-        /// \param cuda: context
-
-        inline void setDevice(Cuda cuda) {
-            int currentDevice;
-            cudaCheck(cudaGetDevice(&currentDevice));
-            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
-        }
-
-        inline void setDevice(Cpu) {}
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
@@ -208,8 +193,10 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
-                getAllocations()[(void *)r] = sizeof(T) * n;
-                getGpuMemUsed() += double(sizeof(T) * n);
+                if (getAllocations(cuda.session).count((void *)r) > 0)
+                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
+                getAllocations(cuda.session)[(void *)r] = sizeof(T) * n;
+                getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>::check(r);
@@ -224,35 +211,22 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
+            // Remove annotation
+            if (getTrackingMemory() && getAllocations(cuda.session).count((void *)ptr) > 0) {
+                const auto &it = getAllocations(cuda.session).find((void *)ptr);
+                getGpuMemUsed(cuda.session) -= double(it->second);
+                getAllocations(cuda.session).erase(it);
+            }
+
             // Deallocate the pointer
             setDevice(cuda);
             if (cuda.dealloc)
                 cuda.dealloc((void *)ptr, CUDA);
             else
                 detail::cudaCheck(cudaFree((void *)ptr));
-
-            // Remove annotation
-            if (getTrackingMemory()) {
-                const auto &it = getAllocations().find((void *)ptr);
-                if (it == getAllocations().end())
-                    throw std::runtime_error("Unexpected pointer to deallocate");
-                getGpuMemUsed() -= double(it->second);
-                getAllocations().erase(it);
-            }
         }
 
 #elif defined(SUPERBBLAS_USE_HIP)
-
-        /// Set the current device as the one passed
-        /// \param hip: context
-
-        inline void setDevice(Hip hip) {
-            int currentDevice;
-            hipCheck(hipGetDevice(&currentDevice));
-            if (currentDevice != deviceId(hip)) hipCheck(hipSetDevice(deviceId(hip)));
-        }
-
-        inline void setDevice(Cpu) {}
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
@@ -266,7 +240,7 @@ namespace superbblas {
             setDevice(hip);
             T *r = nullptr;
             if (hip.alloc) {
-                r = (T *)hip.alloc(sizeof(T) * n, CUDA);
+                r = (T *)hip.alloc(sizeof(T) * n, HIP);
             } else {
                 hipCheck(hipMalloc(&r, sizeof(T) * n));
             }
@@ -274,8 +248,10 @@ namespace superbblas {
 
             // Annotate allocation
             if (getTrackingMemory()) {
-                getAllocations()[(void *)r] = sizeof(T) * n;
-                getGpuMemUsed() += double(sizeof(T) * n);
+                if (getAllocations(hip.session).count((void *)r) > 0)
+                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
+                getAllocations(hip.session)[(void *)r] = sizeof(T) * n;
+                getGpuMemUsed(hip.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>::check(r);
@@ -290,21 +266,19 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
+            // Remove annotation
+            if (getTrackingMemory() && getAllocations(hip.session).count((void *)ptr) > 0) {
+                const auto &it = getAllocations(hip.session).find((void *)ptr);
+                getGpuMemUsed(hip.session) -= double(it->second);
+                getAllocations(hip.session).erase(it);
+            }
+
             // Deallocate the pointer
             setDevice(hip);
             if (hip.dealloc)
-                hip.dealloc((void *)ptr, CUDA);
+                hip.dealloc((void *)ptr, HIP);
             else
                 detail::hipCheck(hipFree((void *)ptr));
-
-            // Remove annotation
-            if (getTrackingMemory()) {
-                const auto &it = getAllocations().find((void *)ptr);
-                if (it == getAllocations().end())
-                    throw std::runtime_error("Unexpected pointer to deallocate");
-                getGpuMemUsed() -= double(it->second);
-                getAllocations().erase(it);
-            }
         }
 #endif
 
@@ -338,11 +312,6 @@ namespace superbblas {
 
             /// Default constructor: create an empty vector
             vector() : vector(0, XPU{}) {}
-
-            /// `Cpu` vectors can construct a `vector` without providing a device context
-            template <typename U = XPU,
-                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
-            vector(std::size_t n = 0) : vector(n, Cpu{}) {}
 
             /// Construct a vector with `n` elements a with context device `xpu_`
             vector(std::size_t n, XPU xpu_)
@@ -399,15 +368,6 @@ namespace superbblas {
                 return true;
             }
 
-            /// Clone content
-            template <typename U = XPU,
-                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
-            vector<T, Cpu> clone() const {
-                vector<T_no_const, Cpu> r(n);
-                std::copy_n(data(), n, r.data());
-                return r;
-            }
-
         private:
             std::size_t n;                   ///< Number of allocated `T` elements
             std::shared_ptr<T_no_const> ptr; ///< Pointer to the allocated memory
@@ -416,9 +376,9 @@ namespace superbblas {
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
-        template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n = 0) {
+        template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n, Cpu cpu) {
             check_ptr_align<T>::check(ptr);
-            return vector<T, Cpu>(n, ptr, Cpu{});
+            return vector<T, Cpu>(n, ptr, cpu);
         }
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
@@ -428,10 +388,10 @@ namespace superbblas {
             return vector<T, Cpu>(0, ptr, cpu);
         }
 
-#ifdef SUPERBBLAS_USE_CUDA
-        /// Construct a `vector<T, Cuda>` with the given pointer and context
+#ifdef SUPERBBLAS_USE_GPU
+        /// Construct a `vector<T, Gpu>` with the given pointer and context
 
-        template <typename T> vector<T, Cuda> to_vector(T *ptr, Cuda cuda) {
+        template <typename T> vector<T, Gpu> to_vector(T *ptr, Gpu cuda) {
             check_ptr_align<T>::check(ptr);
             return vector<T, Cuda>(0, ptr, cuda);
         }
@@ -717,7 +677,7 @@ namespace superbblas {
             }
         }
 
-#    ifdef SUPERBBLAS_USE_THRUST
+#ifdef SUPERBBLAS_USE_THRUST
         /// Addition of two values with different types
         template <typename T, typename Q> struct plus {
             typedef T first_argument_type;
@@ -795,9 +755,9 @@ namespace superbblas {
             }
         }
 
-#    endif // SUPERBBLAS_USE_THRUST
+#endif // SUPERBBLAS_USE_THRUST
 
-#if defined(SUPERBBLAS_USE_CUDA) || defined(SUPERBBLAS_USE_HIP)
+#ifdef SUPERBBLAS_USE_GPU
         /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] when v and w are on device
 
         template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
@@ -810,14 +770,16 @@ namespace superbblas {
 
             // Actions when the v and w are on the same device
             if (deviceId(xpuv) == deviceId(xpuw)) {
-                if (alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
+                if (indicesv == nullptr && indicesw == nullptr &&
+                    alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                     std::is_same<EWOP, EWOp::Copy>::value) {
                     setDevice(xpuw);
-#ifdef SUPERBBLAS_USE_CUDA
+                    if ((void *)v == (void *)w) return;
+#    ifdef SUPERBBLAS_USE_CUDA
                     cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
-#else
+#    else
                     hipCheck(hipMemcpy(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice));
-#endif
+#    endif
                 } else {
                     copy_n_same_dev_thrust(alpha, v, indicesv, n, w, indicesw, xpuw, EWOP{});
                 }
@@ -828,11 +790,11 @@ namespace superbblas {
                      alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                      std::is_same<EWOP, EWOp::Copy>::value && deviceId(xpuv) != deviceId(xpuw)) {
                 setDevice(xpuw);
-#ifdef SUPERBBLAS_USE_CUDA
+#    ifdef SUPERBBLAS_USE_CUDA
                 cudaCheck(cudaMemcpyPeer(w, deviceId(xpuw), v, deviceId(xpuv), sizeof(T) * n));
-#else
+#    else
                 hipCheck(hipMemcpyPeer(w, deviceId(xpuw), v, deviceId(xpuv), sizeof(T) * n));
-#endif
+#    endif
             }
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
@@ -848,8 +810,7 @@ namespace superbblas {
                 vector<T, XPU> v1(n, xpuw);
                 copy_n<IndexType>(T{1}, v, indicesv, xpuv, n, v1.data(), nullptr, xpuw,
                                   EWOp::Copy{});
-                copy_n<IndexType>(T{alpha}, v1.data(), nullptr, xpuw, n, w, indicesw, xpuw,
-                                  EWOP{});
+                copy_n<IndexType>(T{alpha}, v1.data(), nullptr, xpuw, n, w, indicesw, xpuw, EWOP{});
             }
         })
 
@@ -867,15 +828,15 @@ namespace superbblas {
                 indicesv == nullptr && indicesw == nullptr) {
                 setDevice(xpu0);
                 setDevice(xpu1);
-#ifdef SUPERBBLAS_USE_CUDA
+#    ifdef SUPERBBLAS_USE_CUDA
                 cudaCheck(cudaMemcpy(w, v, sizeof(T) * n,
                                      std::is_same<XPU0, Cuda>::value ? cudaMemcpyDeviceToHost
                                                                      : cudaMemcpyHostToDevice));
-#else
+#    else
                 hipCheck(hipMemcpy(w, v, sizeof(T) * n,
-                                     std::is_same<XPU0, Hip>::value ? hipMemcpyDeviceToHost
-                                                                    : hipMemcpyHostToDevice));
- #endif
+                                   std::is_same<XPU0, Hip>::value ? hipMemcpyDeviceToHost
+                                                                  : hipMemcpyHostToDevice));
+#    endif
                 // Scale by alpha
                 copy_n<IndexType>(alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
             }
@@ -959,7 +920,26 @@ namespace superbblas {
             }
         })
 
-#endif // SUPERBBLAS_USE_CUDA
+#endif // SUPERBBLAS_USE_GPU
+
+        /// Return a copy of a vector
+
+        template <typename T, typename XPU,
+                  typename std::enable_if<!std::is_same<XPU, Cpu>::value, bool>::type = true>
+        vector<T, XPU> clone(const vector<T, XPU> &v) {
+            using T_no_const = typename std::remove_const<T>::type;
+            vector<T_no_const, XPU> r(v.size(), v.ctx());
+            copy_n(typename elem<T>::type{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
+                   EWOp::Copy{});
+            return r;
+        }
+
+        template <typename T> vector<T, Cpu> clone(const vector<T, Cpu> &v) {
+            using T_no_const = typename std::remove_const<T>::type;
+            vector<T_no_const, Cpu> r(v.size(), v.ctx());
+            std::copy_n(v.data(), v.size(), r.data());
+            return r;
+        }
 
         /// Set the first `n` elements with a value
         /// \param it: first element to set
@@ -1060,85 +1040,9 @@ namespace superbblas {
             if (std::abs(alpha) == 0) {
                 zero_n(x, n, xpu);
             } else {
-                copy_n<int>(alpha, x, xpu, n, x, xpu, EWOp::Copy{});
+                copy_n<int>(1, x, xpu, n, x, xpu, EWOp::Copy{});
             }
         }
-
-        /// Template multiple GEMM
-
-        template <typename T>
-        void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
-                                 int lda, int stridea, const T *b, int ldb, int strideb, T beta,
-                                 T *c, int ldc, int stridec, int batch_size, Cpu cpu);
-
-#ifdef SUPERBBLAS_USE_MKL
-        template <>
-        void xgemm_batch_strided<float>(char transa, char transb, int m, int n, int k, float alpha,
-                                        const float *a, int lda, int stridea, const float *b,
-                                        int ldb, int strideb, float beta, float *c, int ldc,
-                                        int stridec, int batch_size, Cpu cpu) {
-
-            (void)cpu;
-            cblas_sgemm_batch_strided(CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m,
-                                      n, k, alpha, a, lda, stridea, b, ldb, strideb, beta, c, ldc,
-                                      stridec, batch_size);
-        }
-
-        template <>
-        void xgemm_batch_strided<std::complex<float>>(
-            char transa, char transb, int m, int n, int k, std::complex<float> alpha,
-            const std::complex<float> *a, int lda, int stridea, const std::complex<float> *b,
-            int ldb, int strideb, std::complex<float> beta, std::complex<float> *c, int ldc,
-            int stridec, int batch_size, Cpu cpu) {
-
-            (void)cpu;
-            cblas_cgemm_batch_strided(CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m,
-                                      n, k, &alpha, a, lda, stridea, b, ldb, strideb, &beta, c, ldc,
-                                      stridec, batch_size);
-        }
-
-        template <>
-        void xgemm_batch_strided<double>(char transa, char transb, int m, int n, int k,
-                                         double alpha, const double *a, int lda, int stridea,
-                                         const double *b, int ldb, int strideb, double beta,
-                                         double *c, int ldc, int stridec, int batch_size, Cpu cpu) {
-
-            (void)cpu;
-            cblas_dgemm_batch_strided(CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m,
-                                      n, k, alpha, a, lda, stridea, b, ldb, strideb, beta, c, ldc,
-                                      stridec, batch_size);
-        }
-
-        template <>
-        void xgemm_batch_strided<std::complex<double>>(
-            char transa, char transb, int m, int n, int k, std::complex<double> alpha,
-            const std::complex<double> *a, int lda, int stridea, const std::complex<double> *b,
-            int ldb, int strideb, std::complex<double> beta, std::complex<double> *c, int ldc,
-            int stridec, int batch_size, Cpu cpu) {
-
-            (void)cpu;
-            cblas_zgemm_batch_strided(CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m,
-                                      n, k, &alpha, a, lda, stridea, b, ldb, strideb, &beta, c, ldc,
-                                      stridec, batch_size);
-        }
-
-#else // SUPERBBLAS_USE_MKL
-
-        template <typename T>
-        void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
-                                 int lda, int stridea, const T *b, int ldb, int strideb, T beta,
-                                 T *c, int ldc, int stridec, int batch_size, Cpu cpu) {
-
-#    ifdef _OPENMP
-#        pragma omp for
-#    endif
-            for (int i = 0; i < batch_size; ++i) {
-                xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i, ldb,
-                      beta, c + stridec * i, ldc, cpu);
-            }
-        }
-
-#endif // SUPERBBLAS_USE_MKL
 
 #ifdef SUPERBBLAS_USE_CUDA
 
@@ -1180,7 +1084,7 @@ namespace superbblas {
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
                                  T *c, int ldc, int stridec, int batch_size, Cuda cuda) {
             // Quick exits
-            if (m == 0 || n == 0) return;
+            if (m == 0 || n == 0 || batch_size == 0) return;
 
             // Replace some invalid arguments when k is zero
             if (k == 0) {
@@ -1189,10 +1093,18 @@ namespace superbblas {
             }
 
             cudaDataType_t cT = toCudaDataType<T>();
-            cublasCheck(cublasGemmStridedBatchedEx(
-                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha, a,
-                cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
-                toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+            if (batch_size == 1) {
+                cublasCheck(cublasGemmEx(cuda.cublasHandle, toCublasTrans(transa),
+                                         toCublasTrans(transb), m, n, k, &alpha, a, cT, lda, b, cT,
+                                         ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
+                                         CUBLAS_GEMM_DEFAULT));
+            } else {
+
+                cublasCheck(cublasGemmStridedBatchedEx(
+                    cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                    &alpha, a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec,
+                    batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+            }
         }
 
 #elif defined(SUPERBBLAS_USE_HIP)
@@ -1227,8 +1139,8 @@ namespace superbblas {
 
             hipblasDatatype_t cT = toHipDataType<T>();
             hipblasCheck(hipblasGemmStridedBatchedEx(
-                hip.hipblasHandle, toHipblasTrans(transa), toHipblasTrans(transb), m, n, k, &alpha, a,
-                cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
+                hip.hipblasHandle, toHipblasTrans(transa), toHipblasTrans(transb), m, n, k, &alpha,
+                a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
                 toHipComputeType<T>(), HIPBLAS_GEMM_DEFAULT));
         }
 #endif // SUPERBBLAS_USE_CUDA
@@ -1240,9 +1152,11 @@ namespace superbblas {
         template <typename IndexType, typename T, typename XPU,
                   typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
         vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
-            vector<T, Cpu> r(v.size());
-            copy_n<IndexType, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
-                                 EWOp::Copy{});
+            vector<T, Cpu> r(v.size(), v.ctx().toCpu());
+            // FIXME: change int to std::size_t
+            if (v.size() > std::numeric_limits<int>::max())
+                throw std::runtime_error("Ups! Replace int by something bigger");
+            copy_n<int, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
             return r;
         }
     }
@@ -1253,9 +1167,10 @@ namespace superbblas {
 
     template <typename T> T *allocate(std::size_t n, Context ctx) {
         switch (ctx.plat) {
-        case CPU: return detail::allocate<T>(n, ctx.toCpu());
-#ifdef SUPERBBLAS_USE_CUDA
-        case CUDA: return detail::allocate<T>(n, ctx.toCuda());
+        case CPU: return detail::allocate<T>(n, ctx.toCpu(0));
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with GPUAMD
+        case GPUAMD: return detail::allocate<T>(n, ctx.toGpu(0));
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }
@@ -1267,9 +1182,10 @@ namespace superbblas {
 
     template <typename T> void deallocate(T *ptr, Context ctx) {
         switch (ctx.plat) {
-        case CPU: detail::deallocate(ptr, ctx.toCpu()); break;
-#ifdef SUPERBBLAS_USE_CUDA
-        case CUDA: detail::deallocate(ptr, ctx.toCuda()); break;
+        case CPU: detail::deallocate(ptr, ctx.toCpu(0)); break;
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with GPUAMD
+        case GPUAMD: detail::deallocate(ptr, ctx.toGpu(0)); break;
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }

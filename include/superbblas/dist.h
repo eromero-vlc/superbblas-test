@@ -123,8 +123,16 @@ namespace superbblas {
         inline void MPI_check(int error) {
             if (error == MPI_SUCCESS) return;
 
+            char s[MPI_MAX_ERROR_STRING];
+            int len;
+            MPI_Error_string(error, s, &len);
+
 #    define CHECK_AND_THROW(ERR)                                                                   \
-        if (error == ERR) throw std::runtime_error("MPI error: " #ERR);
+        if (error == ERR) {                                                                        \
+            std::stringstream ss;                                                                  \
+            ss << "MPI error: " #ERR ": " << std::string(&s[0], &s[0] + len);                      \
+            throw std::runtime_error(ss.str());                                                    \
+        }
 
             CHECK_AND_THROW(MPI_ERR_BUFFER);
             CHECK_AND_THROW(MPI_ERR_COUNT);
@@ -199,38 +207,38 @@ namespace superbblas {
         using Components_tmpl =
             std::pair<std::vector<Component<Nd, T, XPU0>>, std::vector<Component<Nd, T, XPU1>>>;
 
-#ifdef SUPERBBLAS_USE_CUDA
-        /// A tensor composed of several CPU and CUDA elements
-        template <std::size_t Nd, typename T> using Components = Components_tmpl<Nd, T, Cuda, Cpu>;
+#ifdef SUPERBBLAS_USE_GPU
+        /// A tensor composed of several CPU and GPU elements
+        template <std::size_t Nd, typename T> using Components = Components_tmpl<Nd, T, Gpu, Cpu>;
 #else
         /// A tensor composed of only of CPU components
         template <std::size_t Nd, typename T> using Components = Components_tmpl<Nd, T, Cpu, Cpu>;
-#endif // SUPERBBLAS_USE_CUDA
+#endif // SUPERBBLAS_USE_GPU
 
         template <std::size_t Nd, typename T, typename Comm>
         Components<Nd, T> get_components(T **v, const Context *ctx, unsigned int ncomponents,
-                                         From_size_iterator<Nd> p, Comm comm) {
+                                         From_size_iterator<Nd> p, Comm comm, Session session) {
             // Get components on the local process
             From_size_iterator<Nd> fs = p + comm.rank * ncomponents;
 
             Components<Nd, T> r;
             for (unsigned int i = 0; i < ncomponents; ++i) {
                 switch (ctx[i].plat) {
-#ifdef SUPERBBLAS_USE_CUDA
+#ifdef SUPERBBLAS_USE_GPU
                 case CPU:
                     r.second.push_back(
-                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
+                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
-                case CUDA:
+                case GPU:
                     r.first.push_back(
-                        Component<Nd, T, Cuda>{to_vector(v[i], ctx[i].toCuda()), fs[i][1], i});
+                        Component<Nd, T, Gpu>{to_vector(v[i], ctx[i].toGpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
-#else // SUPERBBLAS_USE_CUDA
+#else // SUPERBBLAS_USE_GPU
                 case CPU:
                     r.first.push_back(
-                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu()), fs[i][1], i});
+                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
@@ -286,6 +294,14 @@ namespace superbblas {
             std::vector<MpiInt> counts; ///< number of items send/receive for rank i
             std::vector<MpiInt> displ;  ///< index of the first element to send/receive for rank i
         };
+
+        /// Return an order with values 0, 1, 2, ..., N-1
+
+        template <std::size_t N> Order<N> trivial_order() {
+            Order<N> r;
+            for (std::size_t i = 0; i < N; i++) r[i] = (char)i;
+            return r;
+        }
 
 #ifdef SUPERBBLAS_USE_MPI
         /// Communication barrier
@@ -363,16 +379,18 @@ namespace superbblas {
             // Find indices on cache
             using pointer_perm = std::tuple<From_size<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
             using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
-            static std::unordered_map<pointer_perm, PairIndices, TupleHash<pointer_perm>> cache(16);
+            struct cache_tag {};
+            auto cache =
+                getCache<pointer_perm, PairIndices, TupleHash<pointer_perm>, cache_tag>(v0.ctx());
             pointer_perm key{fs, get_perms(o0, o1), deviceId(v0.ctx()), co};
             auto it = cache.find(key);
 
             // If they are not, compute the permutation vectors
             if (it == cache.end()) {
-                tracker _t("comp. pack permutation");
+                tracker<XPU0> _t("comp. pack permutation", v0.ctx());
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-                Indices<Cpu> indices0(vol), indices1(vol);
+                Indices<Cpu> indices0(vol, fs.ctx()), indices1(vol, fs.ctx());
                 for (std::size_t i = 0, n = 0; i < fs.size(); ++i) {
                     // Skip the communications of the local rank
                     if (i / ncomponents1 == comm.rank) continue;
@@ -399,13 +417,20 @@ namespace superbblas {
                 Indices<XPU0> indices0_xpu(indices0.size(), v0.ctx());
                 copy_n<IndexType, IndexType>(1, indices0.data(), Cpu{}, indices0.size(),
                                              indices0_xpu.data(), v0.ctx(), EWOp::Copy{});
-                cache[key] = PairIndices{indices0_xpu, indices1};
+                // The cache trackers consider that all cache entries are on the same device; so just track the
+                // indices0_xpu when using gpus
+                std::size_t size =
+                    storageSize(indices0_xpu) +
+                    (deviceId(v0.ctx()) == CPU_DEVICE_ID ? storageSize(indices1) : 0ul);
+                cache.insert(key, PairIndices{indices0_xpu, indices1}, size);
                 it = cache.find(key);
             }
 
             // Do the copy
-            copy_n<IndexType, T, Q>(T{1}, v0.data(), it->second.first.begin(), v0.ctx(), vol,
-                                    v1.data(), it->second.second.begin(), Cpu{}, EWOp::Copy{});
+            tracker<XPU0> _t("local copy", v0.ctx());
+            copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.value.first.begin(), v0.ctx(), vol,
+                                    v1.data(), it->second.value.second.begin(), Cpu{},
+                                    EWOp::Copy{});
         }
 
         /// Pack a list of ranges to be used in a MPI communication
@@ -425,21 +450,16 @@ namespace superbblas {
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm, CoorOrder co) {
             unsigned int ncomponents0 = toSend.size();
-            PackedValues<Q> r =
-                prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, ncomponents1, comm);
+            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, 1, comm);
 
-            Indices<Cpu> buf_disp(comm.nprocs);
+            Indices<Cpu> buf_disp(comm.nprocs, Cpu{});
             std::size_t n = 0; // accumulate total number of Q elements
             for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
                 std::size_t n_rank = 0;  // total number of Q elements in rank
                 if (rank != comm.rank) { // Skip the local communications
                     // Compute the total number of Q elements for rank i
                     for (unsigned int irange = 0; irange < ncomponents0; ++irange) {
-                        for (unsigned int componentId1 = 0; componentId1 < ncomponents1;
-                             ++componentId1) {
-                            n_rank +=
-                                volume<Nd0>(toSend[irange][rank * ncomponents1 + componentId1][1]);
-                        }
+                        n_rank += volume<Nd0>(toSend[irange][rank][1]);
                     }
                 }
                 buf_disp[rank] = n;
@@ -472,194 +492,6 @@ namespace superbblas {
             return r;
         }
 
-        /// Return an order with values 0, 1, 2, ..., N-1
-
-        template <std::size_t N> Order<N> trivial_order() {
-            Order<N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = (char)i;
-            return r;
-        }
-
-        /// Unpack and copy packed tensors from a MPI communication
-        /// \param r: packed subtensors
-        /// \param toReceive: list of tensor ranges to receive
-        /// \param v: data for the destination tensor
-        /// \param ncomponents0: number of components on the origin tensor
-        /// \param comm: communication
-        /// \param co: coordinate linearization order
-        /// \param alpha: factor applied to packed tensors
-
-        template <std::size_t Nd, typename T, typename XPU>
-        void unpack(const PackedValues<T> &r, const From_size<Nd> &toReceive,
-                    const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm,
-                    EWOp::Copy, CoorOrder co, typename elem<T>::type alpha) {
-
-            // Find indices on cache
-            using pointer_dev = std::tuple<From_size_iterator<Nd>, int, CoorOrder>;
-            static std::unordered_map<pointer_dev, std::array<Indices<XPU>, 2>,
-                                      TupleHash<pointer_dev>>
-                cache(16);
-            pointer_dev key{toReceive.data(), deviceId(v.it.ctx()), co};
-            auto it = cache.find(key);
-
-            // If they are not, compute the permutation vectors
-            std::size_t vol = r.buf.size();
-            if (it == cache.end()) {
-                tracker _t("comp. unpack permutation for copy");
-
-                // Check whether the packages has extra elements to fill up to MpiTypeSize
-                bool pre_index = false;
-                for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
-                    Coor<Nd> sizei = toReceive[i][1];
-                    std::size_t voli = volume(sizei);
-                    if (n != r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T)))
-                        pre_index = true;
-                    n += voli;
-                }
-                assert(!pre_index);
-
-                // Compute the destination index for all received elements
-                Indices<Cpu> indices0(pre_index ? vol : 0), indices1(vol);
-                Order<Nd> o = trivial_order<Nd>();
-                for (std::size_t i = 0, n = 0, n_pre = 0; i < comm.nprocs * ncomponents0; ++i) {
-                    if (i / ncomponents0 == comm.rank) continue;
-                    Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
-                    std::size_t voli = volume<Nd>(sizei);
-
-                    if (pre_index) {
-                        IndexType disp = r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T));
-                        if (i % ncomponents0 == 0) n_pre = 0;
-                        for (std::size_t j = 0; j < voli; ++j) indices0[n + j] = n_pre++ + disp;
-                    }
-
-                    Indices<Cpu> indices = get_permutation_destination<Nd, Nd>(
-                        o, {}, sizei, sizei, o, fromi, v.dim, Cpu{}, co);
-                    std::copy_n(indices.begin(), voli, indices1.begin() + n);
-                    n += voli;
-                    assert(n <= vol);
-                }
-
-                // Copy indices1_cmp to the same device as the destination tensor
-                Indices<XPU> indices0_xpu(indices0.size(), v.it.ctx());
-                copy_n<IndexType, IndexType>(1, indices0.data(), Cpu{}, indices0.size(),
-                                             indices0_xpu.data(), v.it.ctx(), EWOp::Copy{});
-                Indices<XPU> indices1_xpu(indices1.size(), v.it.ctx());
-                copy_n<IndexType, IndexType>(1, indices1.data(), Cpu{}, indices1.size(),
-                                             indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
-
-                // Cache this effort
-                cache[key] = {indices0_xpu, indices1_xpu};
-                it = cache.find(key);
-            }
-
-            // Do the copy
-            if (it->second[0].size() == 0)
-                copy_n<IndexType, T, T>(alpha, r.buf.data(), Cpu{}, vol, v.it.data(),
-                                        it->second[1].begin(), v.it.ctx(), EWOp::Copy{});
-            else
-                copy_n<IndexType, T, T>(alpha, r.buf.data(), it->second[0].begin(), Cpu{}, vol,
-                                        v.it.data(), it->second[1].begin(), v.it.ctx(),
-                                        EWOp::Copy{});
-        }
-
-        /// Unpack and sum-reduce packed tensors from a MPI communication
-        /// \param r: packed subtensors
-        /// \param toReceive: list of tensor ranges to receive
-        /// \param v: data for the destination tensor
-        /// \param ncomponents0: number of components on the origin tensor
-        /// \param comm: communication
-        /// \param co: coordinate linearization order
-        /// \param alpha: factor applied to packed tensors
-
-        template <std::size_t Nd, typename T, typename XPU>
-        void unpack(const PackedValues<T> &r, const From_size<Nd> &toReceive,
-                    const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm,
-                    EWOp::Add, CoorOrder co, typename elem<T>::type alpha) {
-
-            // Find indices on cache
-            using pointer_dev = std::tuple<From_size_iterator<Nd>, int, CoorOrder>;
-            using PermPermreduceIndices = std::tuple<Indices<Cpu>, Indices<Cpu>, Indices<XPU>>;
-            static std::unordered_map<pointer_dev, PermPermreduceIndices, TupleHash<pointer_dev>>
-                cache(16);
-            pointer_dev key{toReceive.data(), deviceId(v.it.ctx()), co};
-            auto it = cache.find(key);
-
-            // If they are not, compute the permutation vectors
-            std::size_t vol = r.buf.size();
-            if (it == cache.end()) {
-                tracker _t("comp. unpack permutation for add");
-
-                // Check whether the packages has extra elements to fill up to MpiTypeSize
-                bool pre_index = false;
-                for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
-                    Coor<Nd> sizei = toReceive[i][1];
-                    std::size_t voli = volume(sizei);
-                    if (n != r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T)))
-                        pre_index = true;
-                    n += voli;
-                }
-                assert(!pre_index);
-
-                // Compute the destination index for all received elements
-                Indices<Cpu> indices1(vol);
-                Order<Nd> o = trivial_order<Nd>();
-                for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
-                    if (i / ncomponents0 == comm.rank) continue;
-                    Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
-                    std::size_t voli = volume<Nd>(sizei);
-                    Indices<Cpu> indices = get_permutation_destination<Nd, Nd>(
-                        o, {}, sizei, sizei, o, fromi, v.dim, Cpu{}, co);
-                    std::copy_n(indices.begin(), voli, indices1.begin() + n);
-                    n += voli;
-                    assert(n <= vol);
-                }
-
-                // Rearrange together the received elements with the same destination
-                Indices<Cpu> perm(vol);
-                for (std::size_t i = 0; i < vol; ++i) perm[i] = i;
-                std::sort(perm.begin(), perm.end(), [&](const IndexType &a, const IndexType &b) {
-                    return (indices1[a] < indices1[b]
-                                ? true
-                                : (indices1[a] == indices1[b] ? a < b : false));
-                });
-
-                // Count how many distinct destination indices there are
-                std::size_t perm_distinct_size = (vol == 0 ? 1 : 2);
-                for (std::size_t i = 1; i < vol; ++i)
-                    if (indices1[perm[i]] != indices1[perm[i - 1]]) perm_distinct_size++;
-
-                // Compute where each distinct destination index starts
-                Indices<Cpu> perm_distinct(perm_distinct_size);
-                std::size_t perm_distinct_i = 0;
-                if (vol > 0) perm_distinct[perm_distinct_i++] = 0;
-                for (std::size_t i = 1; i < vol; ++i) {
-                    if (indices1[perm[i]] != indices1[perm[i - 1]])
-                        perm_distinct[perm_distinct_i++] = i;
-                }
-                perm_distinct[perm_distinct_i++] = vol;
-
-                // Compute the destination indices for each group
-                Indices<Cpu> indices1_cmp(perm_distinct_size - 1);
-                for (std::size_t i = 0; i < perm_distinct_size - 1; ++i)
-                    indices1_cmp[i] = indices1[perm[perm_distinct[i]]];
-
-                // Copy indices1_cmp to the same device as the destination tensor
-                Indices<XPU> indices1_xpu(perm_distinct_size - 1, v.it.ctx());
-                copy_n<IndexType>(1, indices1_cmp.data(), Cpu{}, perm_distinct_size - 1,
-                                  indices1_xpu.data(), v.it.ctx(), EWOp::Copy{});
-
-                // Cache this effort
-                cache[key] = std::make_tuple(perm, perm_distinct, indices1_xpu);
-                it = cache.find(key);
-            }
-
-            // Do the copy
-            copy_reduce_n<IndexType, T>(alpha, r.buf.data(), Cpu{}, std::get<0>(it->second).begin(),
-                                        std::get<1>(it->second).begin(),
-                                        std::get<1>(it->second).size(), Cpu{}, v.it.data(),
-                                        std::get<2>(it->second).begin(), v.it.ctx());
-        }
-
         /// Unpack and copy packed tensors from a MPI communication
         /// \param r: packed subtensors
         /// \param toReceive: list of tensor ranges to receive
@@ -670,11 +502,11 @@ namespace superbblas {
         /// \param alpha: factor applied to packed tensors
 
         template <std::size_t Nd, typename T, typename XPU, typename EWOP>
-        void unpack_alt(const PackedValues<T> &r, const From_size<Nd> &toReceive,
-                        const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm,
-                        EWOP, CoorOrder co, typename elem<T>::type alpha) {
+        void unpack(const PackedValues<T> &r, const From_size<Nd> &toReceive,
+                    const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm, EWOP,
+                    CoorOrder co, typename elem<T>::type alpha) {
 
-            tracker _t("unpack for add (alt)");
+            tracker<XPU> _t("unpack for add (alt)", v.it.ctx());
 
             // Compute the destination index for all received elements
             Order<Nd> o = trivial_order<Nd>();
@@ -682,7 +514,7 @@ namespace superbblas {
                 if (i / ncomponents0 == comm.rank) continue;
                 Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
                 std::size_t voli = volume<Nd>(sizei);
-                std::shared_ptr<Indices<XPU>> indices1;
+                Indices<XPU> indices1;
                 IndexType disp;
                 get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
                                                           v.it.ctx(), indices1, disp, co);
@@ -691,7 +523,7 @@ namespace superbblas {
                     r.buf.data() + r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T));
                 if (i % ncomponents0 == 0) n = 0;
                 copy_n<IndexType, T, T>(alpha, data, Cpu{}, voli, v.it.data() + disp,
-                                        indices1->begin(), v.it.ctx(), EWOP{});
+                                        indices1.begin(), v.it.ctx(), EWOP{});
                 n += voli;
             }
         }
@@ -716,7 +548,7 @@ namespace superbblas {
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
 
-            tracker _t("packing");
+            tracker<Cpu> _t("packing", toReceive.ctx());
 
             if (comm.nprocs <= 1) return [] {};
 
@@ -751,6 +583,7 @@ namespace superbblas {
                                          v1ToReceive->counts.data(), v1ToReceive->displ.data(),
                                          dtype, comm.comm, &r));
             } else {
+                tracker<Cpu> _t("alltoall", toReceive.ctx());
                 MPI_check(MPI_Alltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
                                         v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
                                         v1ToReceive->counts.data(), v1ToReceive->displ.data(),
@@ -762,7 +595,7 @@ namespace superbblas {
             return [=] {
                 // Wait for the MPI communication to finish
                 if (getUseAsyncAlltoall()) {
-                    tracker _t("alltoall");
+                    tracker<Cpu> _t("alltoall", toReceive.ctx());
                     MPI_Request r0 = r; // this copy avoid compiler warnings
                     MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
                 }
@@ -772,13 +605,8 @@ namespace superbblas {
                 std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
-                tracker _t("unpacking");
-                if (getUnpackAlt())
-                    unpack_alt<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co,
-                                    Q(alpha));
-                else
-                    unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co,
-                                Q(alpha));
+                tracker<Cpu> _t("unpacking", toReceive.ctx());
+                unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
             };
         }
 #else
@@ -820,6 +648,14 @@ namespace superbblas {
             throw std::runtime_error("Unsupported SelfComm with nprocs > 1");
         }
 
+        /// Return coor % dim
+        /// \param coors: input coordinate
+        /// \param dim: lattice dimensions
+
+        inline IndexType normalize_coor(IndexType coor, IndexType dim) {
+            return (dim == 0 ? 0 : (coor + dim * (coor < 0 ? -coor / dim + 1 : 0)) % dim);
+        }
+
         /// Return coor[i] % dim[i]
         /// \param coors: input coordinate
         /// \param dim: lattice dimensions
@@ -827,8 +663,7 @@ namespace superbblas {
         template <std::size_t Nd>
         Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
             Coor<Nd> r;
-            for (std::size_t j = 0; j < Nd; j++)
-                r[j] = (coor[j] + dim[j] * (coor[j] < 0 ? -coor[j] / dim[j] + 1 : 0)) % dim[j];
+            for (std::size_t j = 0; j < Nd; j++) r[j] = normalize_coor(coor[j], dim[j]);
             return r;
         }
 
@@ -842,8 +677,8 @@ namespace superbblas {
 
         inline void intersection(IndexType from0, IndexType size0, IndexType from1, IndexType size1,
                                  IndexType dim, IndexType &fromr, IndexType &sizer) {
-            fromr = from0 + std::min(std::max(from1 - from0, 0), size0);
-            sizer = from0 + std::min(std::max(from1 + size1 - from0, 0), size0) - fromr;
+            fromr = from0 + std::min(std::max(from1 - from0, IndexType{0}), size0);
+            sizer = from0 + std::min(std::max(from1 + size1 - from0, IndexType{0}), size0) - fromr;
             fromr = (fromr + dim) % dim;
             if (sizer == dim) fromr = from0;
         }
@@ -860,12 +695,12 @@ namespace superbblas {
         /// \param sizer1: size of the second resulting range
 
         template <std::size_t Nd>
-        From_size_vector<Nd> intersection(const Coor<Nd> &from0, const Coor<Nd> &size0,
-                                          const Coor<Nd> &from1, const Coor<Nd> &size1,
-                                          const Coor<Nd> &dim) {
+        std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>
+        intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
+                     const Coor<Nd> &size1, const Coor<Nd> &dim) {
 
-            From_size_vector<Nd> r;
-            r.push_back({Coor<Nd>{}, Coor<Nd>{}});
+            std::array<From_size_item<Nd>, 2> grid;
+            Coor<Nd> grid_n{};
             for (std::size_t i = 0; i < Nd; ++i) {
                 //
                 // Compute the subintervals for the dimension ith
@@ -884,25 +719,28 @@ namespace superbblas {
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
                 }
-                From_size_vector<Nd> q;
-                for (const auto &fs : r) {
-                    if (sizer0 > 0) {
-                        Coor<Nd> fromi = fs[0], sizei = fs[1];
-                        fromi[i] = fromr0;
-                        sizei[i] = sizer0;
-                        q.push_back({fromi, sizei});
-                    }
-                    if (sizer1 > 0) {
-                        Coor<Nd> fromi = fs[0], sizei = fs[1];
-                        fromi[i] = fromr1;
-                        sizei[i] = sizer1;
-                        q.push_back({fromi, sizei});
-                    }
+                if (sizer0 > 0) {
+                    grid[grid_n[i]][0][i] = fromr0;
+                    grid[grid_n[i]++][1][i] = sizer0;
                 }
-                r = q;
+                if (sizer1 > 0) {
+                    grid[grid_n[i]][0][i] = fromr1;
+                    grid[grid_n[i]++][1][i] = sizer1;
+                }
             }
+            return {grid, grid_n};
 
-            return r;
+            // std::size_t vol = volume(grid_n);
+            // From_size_vector<Nd> r(vol);
+            // Coor<Nd> strides = get_strides(grid_n, SlowToFast);
+            // for (std::size_t i = 0; i < vol; ++i) {
+            //     Coor<Nd> c = index2coor(i, grid_n, strides);
+            //     for (std::size_t j = 0; j < Nd; ++j) {
+            //         r[i][0][j] = grid[c[j]][0][j];
+            //         r[i][1][j] = grid[c[j]][1][j];
+            //     }
+            // }
+            //return r;
         }
 
         /// Return the intersection between two ranges in a periodic lattice
@@ -918,13 +756,14 @@ namespace superbblas {
         void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
                           const Coor<Nd> &size1, const Coor<Nd> &dim, Coor<Nd> &fromr,
                           Coor<Nd> &sizer) {
-            From_size_vector<Nd> fs = intersection<Nd>(from0, size0, from1, size1, dim);
-            if (fs.size() == 0) {
+            auto p = intersection<Nd>(from0, size0, from1, size1, dim);
+            std::size_t vol = volume(p.second);
+            if (vol == 0) {
                 fromr = Coor<Nd>{};
                 sizer = Coor<Nd>{};
-            } else if (fs.size() == 1) {
-                fromr = fs[0][0];
-                sizer = (volume(fs[0][1]) > 0 ? fs[0][1] : Coor<Nd>{});
+            } else if (vol == 1) {
+                fromr = p.first[0][0];
+                sizer = p.first[0][1];
             } else {
                 throw std::runtime_error("Not supported complex overlap of intervals");
             }
@@ -962,8 +801,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param indices0: coordinate in origin tensor that are going to send to each process
-        /// \param indices1: coordinate in destination tensor that are going to receive from each process
         /// \param rank: rank of the current process
         /// \param nprocs: total number of processes
         /// \param cpu: device context
@@ -975,7 +812,7 @@ namespace superbblas {
                                            unsigned int componentId1, unsigned int ncomponents1,
                                            const Order<Nd1> &o1, const Coor<Nd1> &from1) {
 
-            tracker _t("comp. tensor overlaps");
+            tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
 
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
@@ -987,10 +824,11 @@ namespace superbblas {
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, unsigned int, Coor<Nd0>, Coor<Nd0>,
                                    From_size<Nd1>, unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
-            static std::unordered_map<Key, From_size<Nd0>, TupleHash<Key>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<Key, From_size<Nd0>, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0, from_rank, from0, size0, p1, componentId1, from1, get_perms(o0, o1)};
             auto it = cache.find(key);
-            if (it != cache.end()) return it->second;
+            if (it != cache.end()) return it->second.value;
 
             // Restrict the local range in v0 to the range from0, size0
             Coor<Nd0> local_from0 = p0[from_rank][0];
@@ -1008,7 +846,7 @@ namespace superbblas {
             // Compute the indices
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             unsigned int nprocs = p1.size() / ncomponents1;
-            From_size_out<Nd0> r(nprocs);
+            From_size_out<Nd0> r(nprocs, p0.ctx());
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd1> &local_from1 = p1[i * ncomponents1 + componentId1][0];
                 const Coor<Nd1> &local_size1 = p1[i * ncomponents1 + componentId1][1];
@@ -1017,7 +855,7 @@ namespace superbblas {
                 translate_range(fromi, sizei, from1, dim1, from0, dim0, perm1, r[i][0], r[i][1]);
                 r[i][0] = normalize_coor(r[i][0] - local_from0, dim0);
             }
-            cache[key] = r;
+            cache.insert(key, r, storageSize(r));
 
             return r;
         }
@@ -1030,8 +868,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param indices0: coordinate in origin tensor that are going to send to each process
-        /// \param indices1: coordinate in destination tensor that are going to receive from each process
         /// \param rank: rank of the current process
         /// \param nprocs: total number of processes
         /// \param cpu: device context
@@ -1042,7 +878,7 @@ namespace superbblas {
                                               const From_size<Nd1> &p1, unsigned int to_rank,
                                               const Order<Nd1> &o1, const Coor<Nd1> &from1) {
 
-            tracker _t("comp. tensor overlaps");
+            tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
 
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
@@ -1054,10 +890,11 @@ namespace superbblas {
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
                                    unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
-            static std::unordered_map<Key, From_size<Nd1>, TupleHash<Key>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<Key, From_size<Nd1>, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0, from0, size0, p1, to_rank, from1, get_perms(o0, o1)};
             auto it = cache.find(key);
-            if (it != cache.end()) return it->second;
+            if (it != cache.end()) return it->second.value;
 
             // Restrict the local range in v1 to the range from1, size1
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
@@ -1076,7 +913,7 @@ namespace superbblas {
 
             // Compute the indices
             unsigned int nprocs = p0.size();
-            From_size_out<Nd1> r(nprocs);
+            From_size_out<Nd1> r(nprocs, p0.ctx());
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd0> &local_from0 = p0[i][0];
                 const Coor<Nd0> &local_size0 = p0[i][1];
@@ -1085,7 +922,7 @@ namespace superbblas {
                 translate_range(fromi, sizei, from0, dim0, from1, dim1, perm0, r[i][0], r[i][1]);
                 r[i][0] = normalize_coor(r[i][0] - local_from1, dim1);
             }
-            cache[key] = r;
+            cache.insert(key, r, storageSize(r));
 
             return r;
         }
@@ -1120,10 +957,10 @@ namespace superbblas {
 
             template <std::size_t Nd>
             vector<IndexType, Cpu> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
-                                                       const Coor<Nd> &dim, Cpu, CoorOrder co,
+                                                       const Coor<Nd> &dim, Cpu cpu, CoorOrder co,
                                                        MockFilling mf) {
                 std::size_t vol = volume(size);
-                vector<IndexType, Cpu> r(vol);
+                vector<IndexType, Cpu> r(vol, cpu);
 
                 if (mf == FillWithIndices) {
                     Coor<Nd> local_stride = get_strides(size, co);
@@ -1342,7 +1179,7 @@ namespace superbblas {
                                         EWOp{}, co);
             }
 
-            tracker _t("distributed copy");
+            tracker<Cpu> _t("distributed copy", p0.ctx());
 
             // Check the dimensions of p0 and p1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -1542,18 +1379,19 @@ namespace superbblas {
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, From_size<Nd1>, PairPerms<Nd0, Nd1>,
                                    PairPerms<Nd0, Ndo>, PairPerms<Nd1, Ndo>>;
-            static std::unordered_map<Key, From_size<Ndo>, TupleHash<Key>> cache(16);
+            struct cache_tag {};
+            auto cache = getCache<Key, From_size<Ndo>, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0, p1, get_perms(o0, o1), get_perms(o0, o_r), get_perms(o1, o_r)};
             auto it = cache.find(key);
-            if (it != cache.end()) return it->second;
+            if (it != cache.end()) return it->second.value;
 
             // Create partition
-            From_size_out<Ndo> pr(p0.size());
+            From_size_out<Ndo> pr(p0.size(), p0.ctx());
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 pr[i][0] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][0], o1, p1[i][0], o_r);
                 pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r);
             }
-            cache[key] = pr;
+            cache.insert(key, pr, storageSize(pr));
 
             return pr;
         }
@@ -1602,7 +1440,7 @@ namespace superbblas {
                 barrier(comm);
             }
 
-            tracker _t("distributed contraction");
+            tracker<Cpu> _t("distributed contraction", p0.ctx());
 
             // Check the compatibility of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
@@ -1673,12 +1511,8 @@ namespace superbblas {
         /// \return: From_size
 
         template <std::size_t Nd>
-        From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n) {
-            static std::unordered_set<From_size<Nd>, TupleHash<From_size<Nd>>> cache(16);
-            From_size<Nd> fs = to_vector(p, n);
-            auto it = cache.find(fs);
-            if (it == cache.end()) it = cache.insert(fs.clone()).first;
-            return *it;
+        From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n, Session session) {
+            return clone(to_vector(p, n, Cpu{session}));
         }
     }
 
@@ -1723,23 +1557,25 @@ namespace superbblas {
     /// \param v1: vector of data pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
               const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0,
               const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
               const Coor<Nd1> &from1, Q **v1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co,
-              CopyAdd copyadd) {
+              CopyAdd copyadd, Session session = 0) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::copy<Nd0, Nd1>(alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0,
-                               size0, detail::toArray<Nd0>(o0, "o0"),
-                               detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
-                               detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
-                               detail::toArray<Nd1>(o1, "o1"),
-                               detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), comm,
-                               copyadd, co);
+        detail::copy<Nd0, Nd1>(
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
+            detail::toArray<Nd0>(o0, "o0"),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+            detail::toArray<Nd1>(o1, "o1"),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
+            co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1759,22 +1595,25 @@ namespace superbblas {
     /// \param v1: vector of data pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
               const char *o0, const Coor<Nd0> from0, const Coor<Nd0> size0, const T **v0,
               const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
-              const Coor<Nd1> from1, Q **v1, const Context *ctx1, CoorOrder co, CopyAdd copyadd) {
+              const Coor<Nd1> from1, Q **v1, const Context *ctx1, CoorOrder co, CopyAdd copyadd,
+              Session session = 0) {
 
         detail::SelfComm comm = detail::get_comm();
 
-        detail::copy<Nd0, Nd1>(alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), from0,
-                               size0, detail::toArray<Nd0>(o0, "o0"),
-                               detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
-                               detail::get_from_size(p1, ncomponents1 * comm.nprocs), from1,
-                               detail::toArray<Nd1>(o1, "o1"),
-                               detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), comm,
-                               copyadd, co);
+        detail::copy<Nd0, Nd1>(
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
+            detail::toArray<Nd0>(o0, "o0"),
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+            detail::toArray<Nd1>(o1, "o1"),
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
+            co);
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -1799,6 +1638,7 @@ namespace superbblas {
     /// \param vr: data for the second operator
     /// \param ctxr: context for each data pointer in vr
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
     ///
     /// The order of the labels should be as following:
     ///
@@ -1812,7 +1652,8 @@ namespace superbblas {
                      bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
                      const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
-                     const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co) {
+                     const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co,
+                     Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1821,12 +1662,12 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), o0_, conj0,
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs), o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm), comm, co);
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
+            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
+            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1851,6 +1692,7 @@ namespace superbblas {
     /// \param vr: data for the second operator
     /// \param ctxr: context for each data pointer in vr
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
     ///
     /// The order of the labels should be as following:
     ///
@@ -1864,7 +1706,8 @@ namespace superbblas {
                      bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
                      const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
-                     const char *o_r, T **vr, const Context *ctxr, CoorOrder co) {
+                     const char *o_r, T **vr, const Context *ctxr, CoorOrder co,
+                     Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -1873,12 +1716,12 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs), o0_, conj0,
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs), o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm), comm, co);
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
+            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
+            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
+            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
+            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
     }
 }
 

@@ -82,19 +82,34 @@ namespace superbblas {
         return async_alltoall;
     }
 
-    /// Return whether to use a different way for unpacking
-    /// \return bool: whether to use a different way for unpacking
-    /// The accepted value in the environment variable SB_UNPACK_ALT are:
-    ///   * 0: use the regular version
-    ///   * != 0: use the alternative version (default)
+    /// Return the maximum size of the cache permutation for CPU in GiB
+    /// \return int: value
+    /// The accepted value in the environment variable SB_CACHEGB_CPU are:
+    ///   * < 0: use the 10% of the total memory (default)
+    ///   * >= 0: use that amount of GiB for cache
 
-    inline bool getUnpackAlt() {
-        static bool unpack_alt = []() {
-            const char *l = std::getenv("SB_UNPACK_ALT");
-            if (l) return (0 != std::atoi(l));
-            return true;
+    inline int getMaxCacheGiBCpu() {
+        static int size = []() {
+            const char *l = std::getenv("SB_CACHEGB_CPU");
+            if (l) return std::atoi(l);
+            return -1;
         }();
-        return unpack_alt;
+        return size;
+    }
+
+    /// Return the maximum size of the cache permutation for GPU in GiB
+    /// \return int: value
+    /// The accepted value in the environment variable SB_CACHEGB_GPU are:
+    ///   * < 0: use the 10% of the total memory of the device (default)
+    ///   * >= 0: use that amount of GiB for cache
+
+    inline int getMaxCacheGiBGpu() {
+        static int size = []() {
+            const char *l = std::getenv("SB_CACHEGB_GPU");
+            if (l) return std::atoi(l);
+            return -1;
+        }();
+        return size;
     }
 }
 

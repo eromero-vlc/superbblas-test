@@ -18,8 +18,8 @@ template <typename T, typename XPU> struct gen_dummy_vector {
 };
 
 template <typename T> struct gen_dummy_vector<T, Cpu> {
-    static vector<T, Cpu> get(std::size_t size, Cpu) {
-        vector<T, Cpu> v(size);
+    static vector<T, Cpu> get(std::size_t size, Cpu cpu) {
+        vector<T, Cpu> v(size, cpu);
         for (unsigned int i = 0; i < size; i++) v[i] = i;
         return v;
     }
@@ -34,8 +34,8 @@ Indices<XPU> gen_dummy_perm(std::size_t size, std::size_t max_size, XPU cuda) {
     return r;
 }
 
-template<> Indices<Cpu> gen_dummy_perm<Cpu>(std::size_t size, std::size_t max_size, Cpu) {
-    Indices<Cpu> v(size);
+template<> Indices<Cpu> gen_dummy_perm<Cpu>(std::size_t size, std::size_t max_size, Cpu cpu) {
+    Indices<Cpu> v(size, cpu);
     for (unsigned int i = 0; i < size; i++) v[i] = (i * 3) % max_size;
     return v;
 }
@@ -50,9 +50,10 @@ template <typename T> struct Epsilon {
     static double get(void) { return std::fabs(std::numeric_limits<T>::epsilon()); }
 };
 
-template <typename T> void check_are_equal(vector<T, Cpu> u, vector<T, Cpu> v) {
-    return;
-    if (u.size() != v.size()) throw std::runtime_error("Input vectors have different size!");
+template <typename T, typename XPU0, typename XPU1> void check_are_equal(vector<T, XPU0> u_, vector<T, XPU1> v_) {
+    if (u_.size() != v_.size()) throw std::runtime_error("Input vectors have different size!");
+    vector<T, Cpu> u = superbblas::detail::toCpu(u_);
+    vector<T, Cpu> v = superbblas::detail::toCpu(v_);
     double diff = 0, add = 0;
     for (unsigned int i = 0; i < u.size(); i++)
         diff += myabs(u[i] - v[i]), add += std::max(myabs(u[i]), myabs(v[i]));
@@ -67,11 +68,11 @@ template <typename T> void check_are_equal(vector<T, Cpu> u, vector<T, Cpu> v) {
 
 template<typename T> struct toStr;
 
-template <> struct toStr<Cpu> { static constexpr const char *get = "cpu "; };
+template <> struct toStr<Cpu> { static constexpr const char *get = "cpu"; };
 #ifdef SUPERBBLAS_USE_CUDA
 template <> struct toStr<Cuda> { static constexpr const char *get = "cuda"; };
 #elif defined(SUPERBBLAS_USE_HIP)
-template <> struct toStr<Hip> { static constexpr const char *get = "Hip"; };
+template <> struct toStr<Hip> { static constexpr const char *get = "hip"; };
 #endif
 template <> struct toStr<EWOp::Add> { static constexpr const char *get = "add"; };
 template <> struct toStr<EWOp::Copy> { static constexpr const char *get = "copy"; };
@@ -87,15 +88,18 @@ void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
     vector<T, Cpu> t0 = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
     vector<T, XPU> t0_xpu = gen_dummy_vector<T, XPU>::get(size, xpu);
     vector<T, XPU> t1_xpu = gen_dummy_vector<T, XPU>::get(size, xpu);
+    // t0_xpu = (or +=) a * t0
     copy_n<IndexType>(a, t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
+    // t1_xpu = (or +=) a * t0_xpu
     copy_n<IndexType>(a, t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
     vector<T, Cpu> t1(size, Cpu{});
+    // t1_xpu = a * t1_xpu
     copy_n<IndexType>(a, t1_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOp::Copy{});
 
     vector<T, Cpu> r = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
     copy_n<IndexType>(a, t0.data(), Cpu{}, size, r.data(), Cpu{}, EWOP{});
-    copy_n<IndexType>(a, r.data(), Cpu{}, size, r.data(), Cpu{}, EWOP{});
-    copy_n<IndexType>(a, r.data(), Cpu{}, size, r.data(), Cpu{}, EWOp::Copy{});
+    copy_n<IndexType>(a, r.data(), Cpu{}, size, t0.data(), Cpu{}, EWOP{});
+    copy_n<IndexType>(a, t0.data(), Cpu{}, size, r.data(), Cpu{}, EWOp::Copy{});
     check_are_equal<T>(t1, r);
 
     // Test with indices
@@ -104,26 +108,29 @@ void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
     zero_n<T>(t0_xpu.data(), size, xpu);
     zero_n<T>(t1_xpu.data(), size, xpu);
     zero_n<T>(t1.data(), size, Cpu{});
+    vector<T, Cpu> r0(size, Cpu{}), r1(size, Cpu{});
+    zero_n<T>(r.data(), size, Cpu{});
+    zero_n<T>(r0.data(), size, Cpu{});
+    zero_n<T>(r1.data(), size, Cpu{});
     // t0_xpu[i] = t0[i0[i]]
     copy_n<IndexType>(T{1}, t0.data(), i0.begin(), Cpu{}, size / 2, t0_xpu.data(), xpu,
-                      EWOp::Copy{});
+                            EWOp::Copy{});
+    copy_n<IndexType>(T{1}, t0.data(), i0.begin(), Cpu{}, size / 2, r0.data(), Cpu{}, EWOp::Copy{});
+    check_are_equal<T>(t0_xpu, r0);
     // t0_xpu[i0_xpu[i]] = t0[i]
     copy_n<IndexType>(T{1}, t0.data(), Cpu{}, size / 2, t0_xpu.data(), i0_xpu.begin(), xpu,
-                      EWOp::Copy{});
+                            EWOp::Copy{});
+    copy_n<IndexType>(T{1}, t0.data(), Cpu{}, size / 2, r0.data(), i0.begin(), Cpu{}, EWOp::Copy{});
+    check_are_equal<T>(t0_xpu, r0);
     // t1_xpu[i0_xpu[i]] (+)= t0_xpu[i0_xpu[i]]
     copy_n<IndexType>(T{1}, t0_xpu.data(), i0_xpu.begin(), xpu, size / 4, t1_xpu.data(),
-                      i0_xpu.begin() + size / 4, xpu, EWOP{});
+                            i0_xpu.begin() + size / 4, xpu, EWOP{});
+    copy_n<IndexType>(T{1}, r0.data(), i0.begin(), Cpu{}, size / 4, r1.data(),
+                            i0.begin() + size / 4, Cpu{}, EWOP{});
+    check_are_equal<T>(t1_xpu, r1);
     // t0[i] = t0_xpu[i0[i]]
     copy_n<IndexType>(T{1}, t1_xpu.data(), i0_xpu.begin(), xpu, size / 2, t1.data(), Cpu{},
-                      EWOp::Copy{});
-
-    vector<T, Cpu> r0(size), r1(size);
-    zero_n<T>(r.data(), size, Cpu{});
-    zero_n<T>(r1.data(), size, Cpu{});
-    copy_n<IndexType>(T{1}, t0.data(), i0.begin(), Cpu{}, size / 2, r0.data(), Cpu{}, EWOp::Copy{});
-    copy_n<IndexType>(T{1}, t0.data(), Cpu{}, size / 2, r0.data(), i0.begin(), Cpu{}, EWOp::Copy{});
-    copy_n<IndexType>(T{1}, r0.data(), i0.begin(), Cpu{}, size / 4, r1.data(),
-                      i0.begin() + size / 4, Cpu{}, EWOP{});
+                            EWOp::Copy{});
     copy_n<IndexType>(T{1}, r1.data(), i0.begin(), Cpu{}, size / 2, r.data(), Cpu{}, EWOp::Copy{});
     check_are_equal<T>(t1, r);
 
@@ -131,19 +138,19 @@ void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
     double t;
     t  = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType>(T{1}, t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
+        copy_n<IndexType, T>(1.0, t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
     }
     double t_cpu_xpu = (w_time() - t) / nrep;
 
     t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType>(T{1}, t0_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOP{});
+        copy_n<IndexType, T>(1.0, t0_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOP{});
     }
     double t_xpu_cpu = (w_time() - t) / nrep;
 
     t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType>(T{1}, t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
+        copy_n<IndexType, T>(1.0, t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
     }
     sync(xpu);
     double t_xpu_xpu = (w_time() - t) / nrep;
@@ -214,41 +221,27 @@ int main(int argc, char **argv) {
 
     {
         Context ctx = createCpuContext();
-        test_copy<float, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<float, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<double, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<double, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
-        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(), EWOp::Add{}, nrep);
+        test_copy<float, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<float, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<double, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<double, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<float>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
      }
 
-#ifdef SUPERBBLAS_USE_CUDA
+#ifdef SUPERBBLAS_USE_GPU
     {
-        Context ctx = createCudaContext();
-        test_copy<float, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<float, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-        test_copy<double, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<double, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-        test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<float>, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-        test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<double>, Cuda>(size, ctx.toCuda(), EWOp::Add{}, nrep);
-     }
-#endif
-
-#ifdef SUPERBBLAS_USE_HIP
-    {
-        Context ctx = createHipContext();
-        test_copy<float, Hip>(size, ctx.toHip(), EWOp::Copy{}, nrep);
-        test_copy<float, Hip>(size, ctx.toHip(), EWOp::Add{}, nrep);
-        test_copy<double, Hip>(size, ctx.toHip(), EWOp::Copy{}, nrep);
-        test_copy<double, Hip>(size, ctx.toHip(), EWOp::Add{}, nrep);
-        test_copy<std::complex<float>, Hip>(size, ctx.toHip(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<float>, Hip>(size, ctx.toHip(), EWOp::Add{}, nrep);
-        test_copy<std::complex<double>, Hip>(size, ctx.toHip(), EWOp::Copy{}, nrep);
-        test_copy<std::complex<double>, Hip>(size, ctx.toHip(), EWOp::Add{}, nrep);
+        Context ctx = createGpuContext();
+        test_copy<float, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy<float, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+        test_copy<double, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy<double, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<float>, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<float>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+        test_copy<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
      }
 #endif
     return 0;

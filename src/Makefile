@@ -4,14 +4,16 @@ MAIN_HEADER := ../include/superbblas.h
 OTHER_HEADERS := \
   ../include/superbblas/superbblas_flags.h \
   ../include/superbblas/superbblas_lib.h \
-  ../include/superbblas/blas_cblas_tmpl.hpp \
-  ../include/superbblas/blas_ftn_tmpl.hpp \
+  ../include/superbblas/blas_cpu_tmpl.hpp \
   ../include/superbblas/blas.h \
   ../include/superbblas/cblas.h \
+  ../include/superbblas/cache.h \
+  ../include/superbblas/crc32.h \
   ../include/superbblas/dist.h \
   ../include/superbblas/performance.h \
   ../include/superbblas/platform.h \
   ../include/superbblas/runtime_features.h \
+  ../include/superbblas/storage.h \
   ../include/superbblas/template.h \
   ../include/superbblas/template_types.h \
   ../include/superbblas/template_undef.h \
@@ -20,6 +22,10 @@ OTHER_HEADERS := \
 SOURCE := $(MAIN_HEADER) $(OTHER_HEADERS)
 
 INCLUDE := -I../include
+
+#
+# Go throw the source code and filter out generated code for superbblas_flags.h
+#
 
 $(BUILDDIR)/superbblas_flags.h: $(SOURCE)
 	echo "// This file is generated automatically. Please don't modify" > $@
@@ -36,19 +42,39 @@ ifeq ($(TARGET), hip)
 endif
 	echo "#endif // __SUPERBBLAS_SUPERBBLAS_FLAGS__" >> $@
 
-$(BUILDDIR)/superbblas_lib.cpp: $(SOURCE)
-	echo "// This file is generated automatically. Please, do not modify" > $@
-	echo "#include \"superbblas.h\"" >> $@
-	echo "using namespace superbblas; using namespace detail;" >> $@
+#
+# Go throw the source code and filter out generated code for superbblas_lib.cpp
+# The file is split in ten pieces to cut down the compilation time
+#
+
+LIB_SOURCE_STEM := $(BUILDDIR)/superbblas_lib
+SOURCE_LIB := $(patsubst %,%.cpp,$(subst %,$(LIB_SOURCE_STEM),%_0 %_1 %_2 %_3 %_4 %_5 %_6 %_7 %_8 %_9))
+OBJECT_LIB := $(patsubst %.cpp,%.o,$(SOURCE_LIB))
+
+$(LIB_SOURCE_STEM): $(SOURCE)
 ifeq ($(TARGET), cpu)
-	$(CXX) -E $(INCLUDE) ${CXXFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
+	$(CXX) -E $(INCLUDE) ${CXXFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
 ifeq ($(TARGET), cuda)
-	${NVCC} -E ${MPISBFLAG} ${NVCCFLAGS} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
+	${NVCC} -E ${MPISBFLAG} ${NVCCFLAGS} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
 ifeq ($(TARGET), hip)
 	${HIP} -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
 endif
+
+$(SOURCE_LIB): $(LIB_SOURCE_STEM).split
+
+$(LIB_SOURCE_STEM).split: $(LIB_SOURCE_STEM)
+	split -d -n l/10 -a 1 $< $(LIB_SOURCE_STEM)_
+	for i in $(LIB_SOURCE_STEM)_? ; do \
+		( \
+			echo "// This file is generated automatically. Please, do not modify"; \
+			echo "#include \"superbblas.h\""; \
+			echo "using namespace superbblas; using namespace detail;";  \
+			cat $$i \
+		) > $${i}.cpp; \
+	done
+	touch $(LIB_SOURCE_STEM).split
 
 %.o: %.cpp
 ifeq ($(TARGET), cpu)
@@ -62,15 +88,15 @@ ifeq ($(TARGET), hip)
 endif
 
 
-$(BUILDDIR)/superbblas_lib.o: $(SOURCE) $(BUILDDIR)/superbblas_flags.h
+$(OBJECT_LIB): $(BUILDDIR)/superbblas_flags.h
 
-install: $(BUILDDIR)/superbblas_lib.o install_headers 
+install: $(OBJECT_LIB) install_headers 
 	@rm -f $(LIBRARY)
 	install -d $(libdir)
 ifeq ($(UNAME), Darwin)
-	libtool -static -o $(LIBRARY) $< -no_warning_for_no_symbols
+	libtool -static -o $(LIBRARY) $(OBJECT_LIB) -no_warning_for_no_symbols
 else
-	$(AR) r $(LIBRARY) $<
+	$(AR) r $(LIBRARY) $(OBJECT_LIB)
 	$(RANLIB) $(LIBRARY)
 endif
 	install -m 644 $(LIBRARY) $(libdir)

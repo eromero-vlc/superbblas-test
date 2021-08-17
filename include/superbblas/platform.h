@@ -36,8 +36,8 @@
 #endif
 
 #ifdef SUPERBBLAS_USE_HIP
-#    include <hipblas.h>
 #    include <hip/hip_runtime_api.h>
+#    include <hipblas.h>
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
@@ -50,6 +50,10 @@ EMIT_define(SUPERBBLAS_USE_HIP)
 #    ifdef SUPERBBLAS_USE_MKL
 EMIT_define(SUPERBBLAS_USE_MKL)
 #    endif
+#endif
+
+#if defined(SUPERBBLAS_USE_CUDA) || defined(SUPERBBLAS_USE_HIP)
+#    define SUPERBBLAS_USE_GPU
 #endif
 
 namespace superbblas {
@@ -66,27 +70,61 @@ namespace superbblas {
 
     constexpr int CPU_DEVICE_ID = -1;
 
+    /// Default GPU platform
+#ifdef SUPERBBLAS_USE_CUDA
+    using GPU = platform::CUDA;
+#elif defined(SUPERBBLAS_USE_HIP)
+    using GPU = platform::GPUAMD;
+#endif
+
     /// Function to allocate memory
     using Allocator = std::function<void *(std::size_t, enum platform)>;
 
     /// Function to deallocate memory
     using Deallocator = std::function<void(void *, enum platform)>;
 
+    /// Cache session
+    using Session = unsigned int;
+
     /// Platform and device information of data
 
     namespace detail {
-        struct Cpu {};
+
+        struct Cpu {
+            /// Cache session
+            Session session;
+
+            /// Return a CPU context with the same session
+            Cpu toCpu() const { return *this; }
+        };
 
         /// Return a device identification
         inline int deviceId(Cpu) { return CPU_DEVICE_ID; }
 
+        /// Set the current device as the one passed
+        /// \param cuda: context
+        inline void setDevice(Cpu) {}
+
 #ifdef SUPERBBLAS_USE_CUDA
+
+        /// Throw exception if the given error isn't success
+        /// \param err: cuda error code
+
         inline void cudaCheck(cudaError_t err) {
             if (err != cudaSuccess) {
                 std::stringstream s;
                 s << "CUDA error: " << cudaGetErrorName(err) << ": " << cudaGetErrorString(err);
                 throw std::runtime_error(s.str());
             }
+        }
+
+        /// Set the current device as the one passed
+        /// \param cuda: context
+
+        inline void setDevice(Cuda cuda) {
+            int currentDevice;
+            cudaCheck(cudaGetDevice(&currentDevice));
+            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
         }
 
         /// Return the device in which the pointer was allocated
@@ -136,6 +174,11 @@ namespace superbblas {
             Allocator alloc;
             /// Optional function for deallocating memory on devices
             Deallocator dealloc;
+            /// Cache session
+            Session session;
+
+            /// Return a CPU context with the same session
+            Cpu toCpu() const { return Cpu{session}; }
         };
 
         /// Return a device identification
@@ -156,8 +199,7 @@ namespace superbblas {
             struct hipPointerAttribute_t ptr_attr;
             if (hipPointerGetAttributes(&ptr_attr, x) != hipSuccess) return CPU_DEVICE_ID;
 
-            if (ptr_attr.memoryType != hipMemoryTypeDevice)
-                return CPU_DEVICE_ID;
+            if (ptr_attr.memoryType != hipMemoryTypeDevice) return CPU_DEVICE_ID;
             return ptr_attr.device;
         }
 
@@ -191,12 +233,23 @@ namespace superbblas {
             Allocator alloc;
             /// Optional function for deallocating memory on devices
             Deallocator dealloc;
+            /// Cache session
+            Session session;
         };
 
         /// Return a device identification
         inline int deviceId(Hip hip) { return hip.device; }
-#else
 
+        /// Set the current device as the one passed
+        /// \param hip: context
+
+        inline void setDevice(Hip hip) {
+            int currentDevice;
+            hipCheck(hipGetDevice(&currentDevice));
+            if (currentDevice != deviceId(hip)) hipCheck(hipSetDevice(deviceId(hip)));
+        }
+
+#else
         /// Return the device in which the pointer was allocated
 
         inline int getPtrDevice(const void *) { return CPU_DEVICE_ID; }
@@ -219,6 +272,14 @@ namespace superbblas {
         template <typename T> struct supported_type<const T> {
             static constexpr bool value = supported_type<T>::value;
         };
+
+#ifdef SUPERBBLAS_USE_CUDA
+        using Gpu = Cuda;
+#elif defined(SUPERBBLAS_USE_HIP)
+        using Gpu = Hip;
+#else
+        using Gpu = void;
+#endif
     }
 
     class Context {
@@ -249,6 +310,9 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
             if (plat == CUDA) {
+                int currentDevice = -1;
+                detail::cudaCheck(cudaGetDevice(&currentDevice));
+                if (currentDevice != device) detail::cudaCheck(cudaSetDevice(device));
                 cublasHandle =
                     std::shared_ptr<cublasHandle_t>(new cublasHandle_t, [](cublasHandle_t *p) {
                         detail::cublasCheck(cublasDestroy(*p));
@@ -268,15 +332,25 @@ namespace superbblas {
 #endif
         }
 
-        detail::Cpu toCpu() const { return detail::Cpu(); }
+        detail::Cpu toCpu(Session session) const { return detail::Cpu{session}; }
 
 #ifdef SUPERBBLAS_USE_CUDA
-        detail::Cuda toCuda() const { return detail::Cuda{device, *cublasHandle, alloc, dealloc}; }
-#elif defined(SUPERBBLAS_USE_HIP)
-        detail::Hip toHip() const { return detail::Hip{device, *hipblasHandle, alloc, dealloc}; }
+        detail::Cuda toCuda(Session session) const {
+            return detail::Cuda{device, *cublasHandle, alloc, dealloc, session};
+        }
+
+        detail::Cuda toGpu(Session session) const { return toCuda(session); }
+
+#elif defined(SUPERBBLAS_USE_CUDA)
+        detail::Hip toHip(Session session) const {
+            return detail::Hip{device, *hipblasHandle, alloc, dealloc, session};
+        }
+
+        detail::Hip toGpu(Session session) const { return toHip(session); }
 #else
-        void toCuda() const { throw std::runtime_error("Cuda: unsupported platform"); }
-        void toHip() const { throw std::runtime_error("HIP: unsupported platform"); }
+        void toGpu(Session) const {
+            throw std::runtime_error("Compiled without support for Cuda or HIP");
+        }
 #endif
     };
 
@@ -293,8 +367,24 @@ namespace superbblas {
     /// Return a GPUAMD context
     /// \param device: device ID
     inline Context createHipContext(int device = 0, Allocator alloc = Allocator(),
-                                     Deallocator dealloc = Deallocator()) {
+                                    Deallocator dealloc = Deallocator()) {
         return Context{GPUAMD, device, alloc, dealloc};
+    }
+
+    /// Return a CUDA or HIP context
+    /// \param device: device ID
+    inline Context createGpuContext(int device = 0, Allocator alloc = Allocator(),
+                                    Deallocator dealloc = Deallocator()) {
+#ifdef SUPERBBLAS_USE_CUDA
+        return createCudaContext(device, alloc, dealloc);
+#elif defined(SUPERBBLAS_USE_CUDA)
+        return createHipContext(device, alloc, dealloc);
+#else
+        (void)device;
+        (void)alloc;
+        (void)dealloc;
+        throw std::runtime_error("Compiled without support for Cuda or HIP");
+#endif
     }
 
     /// Return if `T` is a supported type

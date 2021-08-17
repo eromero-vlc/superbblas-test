@@ -1,6 +1,7 @@
 #ifndef __SUPERBBLAS_PERFORMANCE__
 #define __SUPERBBLAS_PERFORMANCE__
 
+#include "platform.h"
 #include "runtime_features.h"
 #include <algorithm>
 #include <cassert>
@@ -16,32 +17,32 @@ namespace superbblas {
     using Timings = std::unordered_map<std::string, double>;
 
     /// Return the performance timings
-    inline Timings &getTimings() {
-        static Timings timings(16);
-        return timings;
+    inline Timings &getTimings(Session session) {
+        static std::vector<Timings> timings(256, Timings{16});
+        return timings[session];
     }
 
     /// Type for storing the memory usage
     using CacheUsage = std::unordered_map<std::string, double>;
 
     /// Return the performance timings
-    inline Timings &getCacheUsage() {
-        static CacheUsage cacheUsage(16);
-        return cacheUsage;
+    inline CacheUsage &getCacheUsage(Session session) {
+        static std::vector<CacheUsage> cacheUsage(256, CacheUsage{16});
+        return cacheUsage[session];
     }
 
     /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
 
-    inline double &getCpuMemUsed() {
-        static double mem = 0;
-        return mem;
+    inline double &getCpuMemUsed(Session session) {
+        static std::array<double, 256> mem{};
+        return mem[session];
     }
 
     /// Get total memory allocated on devices if tracking memory consumption (see `getTrackingMemory`)
 
-    inline double &getGpuMemUsed() {
-        static double mem = 0;
-        return mem;
+    inline double &getGpuMemUsed(Session session) {
+        static std::array<double, 256> mem{};
+        return mem[session];
     }
 
     namespace detail {
@@ -50,36 +51,37 @@ namespace superbblas {
         using CallStack = std::vector<std::string>;
 
         /// Return the current function call stack begin tracked
-        inline CallStack &getCallStackWithPath() {
-            static CallStack callStack{};
-            return callStack;
+        inline CallStack &getCallStackWithPath(Session session) {
+            static std::vector<CallStack> callStack(256, CallStack{});
+            return callStack[session];
         }
 
         /// Return the current function call stack begin tracked
-        inline CallStack &getCallStack() {
-            static CallStack callStack{};
-            return callStack;
+        inline CallStack &getCallStack(Session session) {
+            static std::vector<CallStack> callStack(256, CallStack{});
+            return callStack[session];
         }
 
         /// Push function call to be tracked
-        inline void pushCall(std::string funcName) {
-            getCallStack().push_back(funcName);
+        inline void pushCall(std::string funcName, Session session) {
+            getCallStack(session).push_back(funcName);
 
-            if (getCallStackWithPath().empty()) {
+            if (getCallStackWithPath(session).empty()) {
                 // If the stack is empty, just append the function name
-                getCallStackWithPath().push_back(funcName);
+                getCallStackWithPath(session).push_back(funcName);
             } else {
                 // Otherwise, push the previous one appending "/`funcName`"
-                getCallStackWithPath().push_back(getCallStackWithPath().back() + "/" + funcName);
+                getCallStackWithPath(session).push_back(getCallStackWithPath(session).back() + "/" +
+                                                        funcName);
             }
         }
 
         /// Pop function call from the stack
-        inline std::string popCall() {
-            assert(getCallStack().size() > 0);
-            std::string back = getCallStackWithPath().back();
-            getCallStack().pop_back();
-            getCallStackWithPath().pop_back();
+        inline std::string popCall(Session session) {
+            assert(getCallStack(session).size() > 0);
+            std::string back = getCallStackWithPath(session).back();
+            getCallStack(session).pop_back();
+            getCallStackWithPath(session).pop_back();
             return back;
         }
 
@@ -91,7 +93,7 @@ namespace superbblas {
         }
 
         /// Track time between creation and destruction of the object
-        struct tracker {
+        template <typename XPU> struct tracker {
             /// Whether the tacker has been stopped
             bool stopped;
             /// Name of the function being tracked
@@ -100,16 +102,19 @@ namespace superbblas {
             const double mem_cpu, mem_gpu;
             /// Instant of the construction
             const std::chrono::time_point<std::chrono::system_clock> start;
+            /// Session
+            const Session session;
 
             /// Start a tracker
-            tracker(std::string funcName)
+            tracker(std::string funcName, XPU xpu)
                 : stopped(!getTrackingTime()),
                   funcName(!stopped ? funcName : std::string()),
-                  mem_cpu(getTrackingMemory() ? getCpuMemUsed() : 0),
-                  mem_gpu(getTrackingMemory() ? getGpuMemUsed() : 0),
+                  mem_cpu(getTrackingMemory() ? getCpuMemUsed(xpu.session) : 0),
+                  mem_gpu(getTrackingMemory() ? getGpuMemUsed(xpu.session) : 0),
                   start(!stopped ? std::chrono::system_clock::now()
-                                 : std::chrono::time_point<std::chrono::system_clock>{}) {
-                if (!stopped) pushCall(funcName); // NOTE: well this is timed...
+                                 : std::chrono::time_point<std::chrono::system_clock>{}),
+                  session(xpu.session) {
+                if (!stopped) pushCall(funcName, session); // NOTE: well this is timed...
             }
 
             ~tracker() { stop(); }
@@ -124,27 +129,29 @@ namespace superbblas {
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
 
                 // Pop out this call
-                std::string category = popCall();
+                std::string category = popCall(session);
 
                 // If this function is not recursive, store the timings in the category with its name only
-                const auto &stack = getCallStack();
+                const auto &stack = getCallStack(session);
                 if (std::find(stack.begin(), stack.end(), funcName) == stack.end())
-                    getTimings()[funcName] += elapsedTime;
+                    getTimings(session)[funcName] += elapsedTime;
 
                 // If this is not the first function being tracked, store the timings in the
                 // category with its path name
-                if (category != funcName) getTimings()[category] += elapsedTime;
+                if (category != funcName) getTimings(session)[category] += elapsedTime;
 
                 // Record memory not released
                 if (getTrackingMemory())
-                    getCacheUsage()[funcName] +=
-                        getCpuMemUsed() - mem_cpu + getGpuMemUsed() - mem_gpu;
+                    getCacheUsage(session)[funcName] +=
+                        getCpuMemUsed(session) - mem_cpu + getGpuMemUsed(session) - mem_gpu;
             }
         };
     }
 
     /// Reset all tracked timings
-    inline void resetTimings() { getTimings().clear(); }
+    inline void resetTimings() {
+        for (Session session = 0; session < 256; ++session) getTimings(session).clear();
+    }
 
     /// Report all tracked timings
     /// \param s: stream to write the report
@@ -156,9 +163,17 @@ namespace superbblas {
         s << "Timing of superbblas kernels:" << std::endl;
         s << "-----------------------------" << std::endl;
         std::vector<std::string> names;
-        for (const auto &it : getTimings()) names.push_back(it.first);
+        for (Session session = 0; session < 256; ++session)
+            for (const auto &it : getTimings(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
-        for (const auto &name : names) s << name << " : " << getTimings()[name] << std::endl;
+        for (const auto &name : names) {
+            double total = 0;
+            for (Session session = 0; session < 256; ++session) {
+                auto it = getTimings(session).find(name);
+                if (it != getTimings(session).end()) total += it->second;
+            }
+            s << name << " : " << total << std::endl;
+        }
     }
 
     /// Report all tracked cache memory usage
@@ -171,10 +186,17 @@ namespace superbblas {
         s << "Cache usage of superbblas kernels:" << std::endl;
         s << "-----------------------------" << std::endl;
         std::vector<std::string> names;
-        for (const auto &it : getCacheUsage()) names.push_back(it.first);
+        for (Session session = 0; session < 256; ++session)
+            for (const auto &it : getCacheUsage(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
-        for (const auto &name : names)
-            s << name << " : " << getCacheUsage()[name] / 1024 / 1024 / 1024 << " GiB" << std::endl;
+        for (const auto &name : names) {
+            double total = 0;
+            for (Session session = 0; session < 256; ++session) {
+                auto it = getCacheUsage(session).find(name);
+                if (it != getCacheUsage(session).end()) total += it->second;
+            }
+            s << name << " : " << total / 1024 / 1024 / 1024 << " GiB" << std::endl;
+        }
     }
 
     namespace detail {
@@ -190,9 +212,9 @@ namespace superbblas {
 
         /// Return all current allocations
 
-        inline Allocations &getAllocations() {
-            static Allocations allocs(16);
-            return allocs;
+        inline Allocations &getAllocations(Session session) {
+            static std::vector<Allocations> allocs(256, Allocations{16});
+            return allocs[session];
         }
     }
 }
