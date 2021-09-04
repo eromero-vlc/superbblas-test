@@ -393,7 +393,7 @@ namespace superbblas {
 
         template <typename T> vector<T, Gpu> to_vector(T *ptr, Gpu cuda) {
             check_ptr_align<T>::check(ptr);
-            return vector<T, Cuda>(0, ptr, cuda);
+            return vector<T, Gpu>(0, ptr, cuda);
         }
 #endif
 
@@ -1169,8 +1169,8 @@ namespace superbblas {
         switch (ctx.plat) {
         case CPU: return detail::allocate<T>(n, ctx.toCpu(0));
 #ifdef SUPERBBLAS_USE_GPU
-        case CUDA: // Do the same as with GPUAMD
-        case GPUAMD: return detail::allocate<T>(n, ctx.toGpu(0));
+        case CUDA: // Do the same as with HIP
+        case HIP: return detail::allocate<T>(n, ctx.toGpu(0));
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }
@@ -1184,8 +1184,8 @@ namespace superbblas {
         switch (ctx.plat) {
         case CPU: detail::deallocate(ptr, ctx.toCpu(0)); break;
 #ifdef SUPERBBLAS_USE_GPU
-        case CUDA: // Do the same as with GPUAMD
-        case GPUAMD: detail::deallocate(ptr, ctx.toGpu(0)); break;
+        case CUDA: // Do the same as with HIP
+        case HIP: detail::deallocate(ptr, ctx.toGpu(0)); break;
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }

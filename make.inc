@@ -28,10 +28,12 @@ NVCCLDFLAGS ?= -lcublas -lcudart
 #
 # Compiler for rocm target, compiler flags, and linking flags
 #
+PRIM ?= 
+THRUST ?= 
 HIP ?= $(shell which hipcc)
 ROCMDIR ?= $(shell hipconfig -R)
-HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I/home/eromero/local/include
-HIPLDFLAGS ?= -L$(ROCMDIR)/hipblas/lib -L/home/eromero/local/lib -lhipblas
+HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I$(PRIM) -I$(THRUST)
+HIPLDFLAGS ?= -L$(ROCMDIR)/hipblas/lib -lhipblas
 
 #
 # Building directory

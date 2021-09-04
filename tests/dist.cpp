@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
         if (rank == 0) reportTimings(std::cout);
         if (rank == 0) reportCacheUsage(std::cout);
     }
-#ifdef SUPERBBLAS_USE_CUDA
+#ifdef SUPERBBLAS_USE_GPU
     {
 	resetTimings();
 
@@ -314,7 +314,7 @@ int main(int argc, char **argv) {
         t0 = t0_host;
 
         // Create a context in which the vectors live
-        Context ctx = createCudaContext();
+        Context ctx = createGpuContext();
 
         if (rank == 0)
             std::cout << ">>> GPU tests with " << num_threads << " threads" << std::endl;
@@ -328,7 +328,7 @@ int main(int argc, char **argv) {
                     thrust::copy_n(t0.begin(), vol0, t1.begin() + n * vol0);
                 }
             }
-            cudaDeviceSynchronize();
+		superbblas::detail::sync(ctx.toGpu(0));
             t = w_time() - t;
             if (rank == 0)
                 std::cout << "Time in dummy copying from xyzts to tnsxyzc " << t / nrep
@@ -353,7 +353,7 @@ int main(int argc, char **argv) {
                          SlowToFast, Copy);
                 }
             }
-            cudaDeviceSynchronize();
+		superbblas::detail::sync(ctx.toGpu(0));
             t = w_time() - t;
             if (rank == 0)
               std::cout << "Time in copying/permuting from xyztsc to tnsxyzc "
@@ -424,7 +424,7 @@ int main(int argc, char **argv) {
 #endif
                      SlowToFast, Copy);
             }
-            cudaDeviceSynchronize();
+		superbblas::detail::sync(ctx.toGpu(0));
             t = w_time() - t;
             if (rank == 0) std::cout << "Time in shifting " << t / nrep << std::endl;
         }
@@ -447,7 +447,7 @@ int main(int argc, char **argv) {
 #endif
                             SlowToFast);
             }
-            cudaDeviceSynchronize();
+		superbblas::detail::sync(ctx.toGpu(0));
             t = w_time() - t;
             if (rank == 0) std::cout << "Time in contracting xyzs " << t / nrep << std::endl;
         }

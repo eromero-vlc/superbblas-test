@@ -722,7 +722,6 @@ namespace superbblas {
             // Compute the indices
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            std::size_t vol0 = volume<Nd0>(dim0);
             std::size_t vol = volume<Nd0>(size0);
 
             Indices<Gpu> indices0(vol, gpu);

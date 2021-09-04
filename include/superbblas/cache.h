@@ -247,13 +247,21 @@ namespace superbblas {
                             cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu()) * 1024 * 1024 * 1024;
                         } else {
                             std::size_t free = 0, total = 0;
+#    ifdef SUPERBBLAS_USE_CUDA
                             cudaCheck(cudaMemGetInfo(&free, &total));
+#    else
+                            hipCheck(hipMemGetInfo(&free, &total));
+#    endif
                             cacheMaxSizeGpu = total / 10;
                         }
 
                         // Create the caches for the gpu objects and set the maximum size
                         int numDevices = 0;
+#    ifdef SUPERBBLAS_USE_CUDA
                         cudaCheck(cudaGetDeviceCount(&numDevices));
+#    else
+                        hipCheck(hipGetDeviceCount(&numDevices));
+#    endif
                         cache_s.resize(numDevices + 1);
                         for (int d = 0; d < numDevices; ++d)
                             cache_s[d + 1].setMaxCacheSize(cacheMaxSizeGpu);

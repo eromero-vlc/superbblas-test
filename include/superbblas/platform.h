@@ -61,9 +61,9 @@ namespace superbblas {
     /// Where the data is
 
     enum platform {
-        CPU,   ///< tradicional CPUs
-        CUDA,  ///< NVIDIA CUDA
-        GPUAMD ///< AMD GPU
+        CPU,  ///< tradicional CPUs
+        CUDA, ///< NVIDIA CUDA
+        HIP   ///< AMD GPU
     };
 
     /// Default value in `Context`
@@ -72,9 +72,9 @@ namespace superbblas {
 
     /// Default GPU platform
 #ifdef SUPERBBLAS_USE_CUDA
-    using GPU = platform::CUDA;
+    const platform GPU = platform::CUDA;
 #elif defined(SUPERBBLAS_USE_HIP)
-    using GPU = platform::GPUAMD;
+    const platform GPU = platform::HIP;
 #endif
 
     /// Function to allocate memory
@@ -235,6 +235,9 @@ namespace superbblas {
             Deallocator dealloc;
             /// Cache session
             Session session;
+
+            /// Return a CPU context with the same session
+            Cpu toCpu() const { return Cpu{session}; }
         };
 
         /// Return a device identification
@@ -287,7 +290,7 @@ namespace superbblas {
         enum platform plat; ///< platform where the data is
 
         /// If `plat` is `CPU`, then `DEFAULT_DEVICE` means to use all the threads on an OpenMP
-        /// fashion. If `plat` is `CUDA` and `GPUAMD`, the value is the device identification.
+        /// fashion. If `plat` is `CUDA` and `HIP`, the value is the device identification.
         int device;
 
     private:
@@ -321,7 +324,7 @@ namespace superbblas {
                 detail::cublasCheck(cublasCreate(cublasHandle.get()));
             }
 #elif defined(SUPERBBLAS_USE_HIP)
-            if (plat == GPUAMD) {
+            if (plat == HIP) {
                 hipblasHandle =
                     std::shared_ptr<hipblasHandle_t>(new hipblasHandle_t, [](hipblasHandle_t *p) {
                         detail::hipblasCheck(hipblasDestroy(*p));
@@ -341,7 +344,7 @@ namespace superbblas {
 
         detail::Cuda toGpu(Session session) const { return toCuda(session); }
 
-#elif defined(SUPERBBLAS_USE_CUDA)
+#elif defined(SUPERBBLAS_USE_HIP)
         detail::Hip toHip(Session session) const {
             return detail::Hip{device, *hipblasHandle, alloc, dealloc, session};
         }
@@ -364,11 +367,11 @@ namespace superbblas {
         return Context{CUDA, device, alloc, dealloc};
     }
 
-    /// Return a GPUAMD context
+    /// Return a HIP context
     /// \param device: device ID
     inline Context createHipContext(int device = 0, Allocator alloc = Allocator(),
                                     Deallocator dealloc = Deallocator()) {
-        return Context{GPUAMD, device, alloc, dealloc};
+        return Context{HIP, device, alloc, dealloc};
     }
 
     /// Return a CUDA or HIP context
@@ -377,7 +380,7 @@ namespace superbblas {
                                     Deallocator dealloc = Deallocator()) {
 #ifdef SUPERBBLAS_USE_CUDA
         return createCudaContext(device, alloc, dealloc);
-#elif defined(SUPERBBLAS_USE_CUDA)
+#elif defined(SUPERBBLAS_USE_HIP)
         return createHipContext(device, alloc, dealloc);
 #else
         (void)device;

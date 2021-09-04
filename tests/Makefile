@@ -12,7 +12,7 @@
 #                             # and linking information for MPI
 
 BUILDDIR ?= ..
-SB_LDFLAGS ?= 
+SB_LDFLAGS ?=
 
 include ../make.inc
 
