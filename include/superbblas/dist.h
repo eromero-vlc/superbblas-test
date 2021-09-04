@@ -648,25 +648,6 @@ namespace superbblas {
             throw std::runtime_error("Unsupported SelfComm with nprocs > 1");
         }
 
-        /// Return coor % dim
-        /// \param coors: input coordinate
-        /// \param dim: lattice dimensions
-
-        inline IndexType normalize_coor(IndexType coor, IndexType dim) {
-            return (dim == 0 ? 0 : (coor + dim * (coor < 0 ? -coor / dim + 1 : 0)) % dim);
-        }
-
-        /// Return coor[i] % dim[i]
-        /// \param coors: input coordinate
-        /// \param dim: lattice dimensions
-
-        template <std::size_t Nd>
-        Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
-            Coor<Nd> r;
-            for (std::size_t j = 0; j < Nd; j++) r[j] = normalize_coor(coor[j], dim[j]);
-            return r;
-        }
-
         /// Return the intersection of two 1D ranges for a NOT toroidal lattice
         /// \param from0: first coordinate of the first range
         /// \param size0: size of the first range

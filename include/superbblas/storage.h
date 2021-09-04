@@ -126,7 +126,7 @@ namespace superbblas {
         }
 
         inline void seek(std::FILE *f, std::size_t offset) {
-            if (offset >= std::numeric_limits<long>::max())
+            if (offset >= (std::size_t)std::numeric_limits<long>::max())
                 gen_error("Too small type to represent the displacement");
             if (std::fseek(f, offset, SEEK_SET) != 0) gen_error("Error setting file position");
         }
@@ -149,7 +149,7 @@ namespace superbblas {
 
         inline void preallocate(std::FILE *f, std::size_t n) {
             off_t old_offset = 0, end_of_file;
-            if (n >= std::numeric_limits<long>::max())
+            if (n >= (std::size_t)std::numeric_limits<long>::max())
                 throw std::runtime_error("Too small type to represent the displacement");
 
             // Save the current position on the file

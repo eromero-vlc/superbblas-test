@@ -344,6 +344,9 @@ namespace superbblas {
             /// Return the device context
             XPU ctx() const { return xpu; }
 
+            /// Conversion to bool
+            operator bool() const { return size() > 0; }
+
             /// Return a reference to i-th allocated element, for Cpu `vector`
             template <typename U = XPU,
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
@@ -1145,20 +1148,59 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_CUDA
 
+        /// Return a copy of the given vector stored on cpu if it was not on cpu already
+        /// \param v: input vector
+
         template <typename IndexType, typename T> vector<T, Cpu> toCpu(const vector<T, Cpu> &v) {
             return v;
         }
+
+        /// Return a copy of the given vector stored on cpu if it was not on cpu already
+        /// \param v: input vector
 
         template <typename IndexType, typename T, typename XPU,
                   typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
         vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
             vector<T, Cpu> r(v.size(), v.ctx().toCpu());
-            // FIXME: change int to std::size_t
-            if (v.size() > std::numeric_limits<int>::max())
-                throw std::runtime_error("Ups! Replace int by something bigger");
-            copy_n<int, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
+            if (v.size() > std::numeric_limits<IndexType>::max())
+                throw std::runtime_error("Ups! Replace `IndexType` by something bigger");
+            copy_n<IndexType, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
+                                 EWOp::Copy{});
             return r;
         }
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return a copy of the given vector stored on the given context if it was not on that device
+        /// \param v: input vector
+        /// \param gpu: context
+
+        template <typename IndexType, typename T>
+        vector<T, Gpu> toGpu(const vector<T, Gpu> &v, Gpu gpu) {
+            if (deviceId(v.ctx()) == deviceId(gpu)) return v;
+            vector<T, Gpu> r(v.size(), gpu);
+            if (v.size() > std::numeric_limits<IndexType>::max())
+                throw std::runtime_error("Ups! Replace `IndexType` by something bigger");
+            copy_n<IndexType, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
+                                 EWOp::Copy{});
+            return r;
+        }
+
+        /// Return a copy of the given vector stored on the given context if it was not on that device
+        /// \param v: input vector
+        /// \param gpu: context
+
+        template <typename IndexType, typename T>
+        vector<T, Gpu> toGpu(const vector<T, Cpu> &v, Gpu gpu) {
+            vector<T, Gpu> r(v.size(), gpu);
+            if (v.size() > std::numeric_limits<IndexType>::max())
+                throw std::runtime_error("Ups! Replace `IndexType` by something bigger");
+            copy_n<IndexType, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(),
+                                 EWOp::Copy{});
+            return r;
+        }
+
+#endif // SUPERBBLAS_USE_GPU
+
     }
 
     /// Allocate memory on a device

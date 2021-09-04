@@ -62,6 +62,8 @@ namespace superbblas {
     template <std::size_t Nd> using Coor = std::array<IndexType, Nd>;
     /// Vector of dimension labels
     template <std::size_t Nd> using Order = std::array<char, Nd>;
+    /// Permutation of the elements in a dimension
+    template <std::size_t Nd> using DimPerm = std::array<IndexType *, Nd>;
 
     /// How the coordinates are translates into positions in the tensor
     enum CoorOrder {
@@ -189,6 +191,14 @@ namespace superbblas {
         bool all_less_or_equal(const std::array<T, N> &a, const std::array<T, N> &b) {
             for (std::size_t i = 0; i < N; i++)
                 if (a[i] > b[i]) return false;
+            return true;
+        }
+
+        template <std::size_t N, typename DIMPERM>
+        bool all_less_or_equal_for_empty_perm(const Coor<N> &a, const Coor<N> &b,
+                                              const DIMPERM &c) {
+            for (std::size_t i = 0; i < N; i++)
+                if (!(bool)c[i] && a[i] > b[i]) return false;
             return true;
         }
 
@@ -510,20 +520,39 @@ namespace superbblas {
             return all_less_or_equal({}, from);
         }
 
+        /// Return coor % dim
+        /// \param coors: input coordinate
+        /// \param dim: lattice dimensions
+
+        inline IndexType normalize_coor(IndexType coor, IndexType dim) {
+            return (dim == 0 ? 0 : (coor + dim * (coor < 0 ? -coor / dim + 1 : 0)) % dim);
+        }
+
+        /// Return coor[i] % dim[i]
+        /// \param coors: input coordinate
+        /// \param dim: lattice dimensions
+
+        template <std::size_t Nd>
+        Coor<Nd> normalize_coor(const Coor<Nd> &coor, const Coor<Nd> &dim) {
+            Coor<Nd> r;
+            for (std::size_t j = 0; j < Nd; j++) r[j] = normalize_coor(coor[j], dim[j]);
+            return r;
+        }
+
         /// Check that the copy operation is possible
         /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: first coordinate not to copy from the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                              const Order<Nd1> &o1, const Coor<Nd1> dim1) {
+        template <std::size_t Nd0, std::size_t Nd1, typename DIMPERM>
+        bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0, const DIMPERM &dperm0,
+                              const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> dim1) {
 
             if (!(check_order(o0) && check_order(o1) && check_positive<Nd0>(size0) &&
-                  all_less_or_equal(size0, dim0) && is_a_subset_of<Nd0, Nd1>(o0, size0, o1)))
+                  all_less_or_equal_for_empty_perm(size0, dim0, dperm0) &&
+                  is_a_subset_of<Nd0, Nd1>(o0, size0, o1)))
                 return false;
             if (volume(size0) == 0) return true;
 
@@ -532,30 +561,223 @@ namespace superbblas {
             return all_less_or_equal(size1, dim1);
         }
 
+        /// Normalized permutation of the elements in a dimension
+        template <std::size_t Nd, typename XPU = Cpu> using DimPermN = std::array<Indices<XPU>, Nd>;
+
+        /// Normalized permutation of the elements in a dimension
+        template <std::size_t Nd> using DimPermS = std::array<IndexType *, Nd>;
+#ifdef SUPERBBLAS_USE_THRUST
+        template <std::size_t Nd> using TDimPermS = tarray<IndexType *, Nd>;
+#endif // SUPERBBLAS_USE_THRUST
+
+        /// Return whether the dimension permutation is 0, 1, 2... for all dimensions
+        /// \param size: first coordinate not to copy
+        /// \param dperm: permutation of the dimensions
+        /// \param dim: dimension size for the tensor
+
+        template <std::size_t Nd> bool is_trivial(const Coor<Nd> &size, const DimPerm<Nd> &dperm) {
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (dperm[i] == nullptr) continue;
+                for (std::size_t j = 0; j < (std::size_t)size[i]; ++j)
+                    if ((std::size_t)dperm[i][j] != j) return false;
+            }
+            return true;
+        }
+
+        /// Return whether the dimension permutation is 0, 1, 2... for all dimensions
+        /// \param dperm: permutation of the dimensions
+
+        template <std::size_t Nd> bool is_trivial(const DimPermN<Nd> &dperm) {
+            for (std::size_t i = 0; i < Nd; ++i) {
+                for (std::size_t j = 0; j < dperm[i].size(); ++j)
+                    if ((std::size_t)dperm[i][j] != j) return false;
+            }
+            return true;
+        }
+
+        /// Check the dimension permutation
+        /// \param size: first coordinate not to copy
+        /// \param dperm: permutation of the dimensions
+        /// \param dim: dimension size for the tensor
+
+        template <std::size_t Nd>
+        bool check_dperm(const Coor<Nd> &size, const DimPerm<Nd> &dperm, const Coor<Nd> &dim) {
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (dperm[i] == nullptr) continue;
+                for (std::size_t j = 0; j < (std::size_t)size[i]; ++j)
+                    if (dperm[i][j] < 0 || dperm[i][j] >= dim[i]) return false;
+            }
+            return true;
+        }
+
+        /// Return a normalize permutation
+        /// \param from: first coordinate to copy
+        /// \param size: first coordinate not to copy
+        /// \param dperm: permutation of the dimensions
+        /// \param dim: dimension size for the tensor
+
+        template <std::size_t Nd>
+        DimPermN<Nd> normalize_from_dperm(Coor<Nd> &from, const Coor<Nd> &size,
+                                          const DimPerm<Nd> &dperm, const Coor<Nd> &dim) {
+            DimPermN<Nd> r{};
+
+            // Quick exit
+            if (is_trivial(size, dperm)) return r;
+
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (dperm[i] == nullptr) continue;
+
+                // Create a vector from the given pointers and add `from` to the permutation
+                Indices<Cpu> dpermi(size[i], Cpu{});
+                for (std::size_t j = 0; j < (std::size_t)size[i]; ++j)
+                    dpermi[j] = normalize_coor(from[j] + dperm[i][j], dim[i]);
+                r[i] = dpermi;
+                from[i] = 0;
+            }
+
+            return r;
+        }
+
+        /// Return normalized dimension permutation but efficient
+        /// \param dperm: permutation of the dimensions
+
+        template <std::size_t Nd> DimPermS<Nd> get_dperm_eff(const DimPermN<Nd> &dperm) {
+            DimPermS<Nd> r;
+            for (std::size_t i = 0; i < Nd; ++i) r[i] = dperm[i].data();
+            return r;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        template <std::size_t Nd> DimPermN<Nd, Gpu> toGpu(const DimPermN<Nd> &dperm, Gpu gpu) {
+            DimPermN<Nd, Gpu> r{};
+            for (std::size_t i = 0; i < Nd; ++i) r[i] = toGpu(dperm[i], gpu);
+            return r;
+        }
+
+        template <std::size_t Nd> TDimPermS<Nd> get_dperm_eff(const DimPermN<Nd, Gpu> &dperm) {
+            TDimPermS<Nd> r;
+            for (std::size_t i = 0; i < Nd; ++i) r[i] = dperm[i].data();
+            return r;
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+        /// Apply normalized dimension permutation
+        /// \param coor: coordinate
+        /// \param dperm: permutation of the dimensions
+
+        template <std::size_t Nd>
+        Coor<Nd> apply_dperm(const Coor<Nd> &coor, const DimPermS<Nd> &dperm) {
+            Coor<Nd> r;
+            for (std::size_t i = 0; i < Nd; ++i) r[i] = dperm[i][coor[i]];
+            return r;
+        }
+
+#ifdef SUPERBBLAS_USE_THRUST
+        namespace ns_apply_dperm_aux {
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I >= Nd), bool>::type = true>
+            __HOST__ __DEVICE__ inline void apply_dperm(const TCoor<Nd> &, const TDimPermN<Nd> &,
+                                                        TCoor<Nd> &) {}
+
+            template <std::size_t Nd, std::size_t I = 0,
+                      typename std::enable_if<(I < Nd1), bool>::type = true>
+            __HOST__ __DEVICE__ inline void apply_dperm(const TCoor<Nd> &coor,
+                                                        const TDimPermN<Nd> &dperm, TCoor<Nd> &r) {
+                tget<I, IndexType, Nd>(r) =
+                    tget<I, IndexType *, Nd>(dperm)[tget<I, IndexType, Nd>(coor)];
+                apply_dperm<Nd, I + 1>(coor, dperm, r);
+            }
+        }
+
+        template <std::size_t Nd>
+        __HOST__ __DEVICE__ inline TCoor<Nd> apply_dperm(const TCoor<Nd> &coor,
+                                                         const TDimPerm<Nd> &dperm) {
+            TCoor<Nd> r;
+            ns_apply_dperm_aux::apply_dperm<Nd>(coor, dperm, r);
+            return r;
+        }
+#endif
+
+        /// Report incorrect arguments for the copy operation
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: first coordinate not to copy from the origin tensor
+        /// \param dperm0: permutation of the dimensions for the origin tensor
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        void check_copy(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                        const DimPerm<Nd0> &dperm0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                        const Coor<Nd1> &from1, const DimPerm<Nd1> &dperm1, const Coor<Nd1> dim1) {
+
+            // Check that from0, from1, size0, size1, dim0, dim1 are all positive
+
+            if (!check_positive<Nd0>(from0))
+                throw std::runtime_error("All values in `from0` should be non-negative");
+
+            if (!check_positive<Nd0>(size0))
+                throw std::runtime_error("All values in `size0` should be non-negative");
+
+            if (!check_positive<Nd0>(dim0))
+                throw std::runtime_error("All values in `dim0` should be non-negative");
+
+            if (!check_positive<Nd1>(from1))
+                throw std::runtime_error("All values in `from1` should be non-negative");
+
+            if (!check_positive<Nd1>(dim1))
+                throw std::runtime_error("All values in `dim1` should be non-negative");
+
+            // Check the permutations
+
+            if (!check_dperm(size0, dperm0, dim0))
+                throw std::runtime_error(
+                    "All vectors in `dperm0` should be either empty or valid dimension indices");
+
+            Coor<Nd1> perm0 = detail::find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = detail::reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+            if (!check_dperm(size1, dperm1, dim1))
+                throw std::runtime_error(
+                    "All vectors in `dperm1` should be either empty or valid dimension indices");
+
+            // Check the validity of the operation
+
+            if (!check_isomorphic(o0, size0, dperm0, dim0, o1, dim1))
+                throw std::runtime_error("The orders and dimensions of the origin tensor are not "
+                                         "compatible with the destination tensor");
+        }
+
         /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cpu> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                            const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                            const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                            const Coor<Nd0> &size0, const DimPermN<Nd0> &dperm0,
+                                            const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                                            const Coor<Nd1> &from1, const DimPermN<Nd1> &dperm1,
                                             const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from1;
+            (void)dperm1;
             (void)dim1;
 
             tracker<Cpu> _t("comp. permutations", cpu);
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dperm0, dim0, o1, dim1)));
 
             // Quick exit
             if (volume<Nd0>(size0) == 0) { return Indices<Cpu>(); }
@@ -567,22 +789,37 @@ namespace superbblas {
             std::size_t vol = volume<Nd0>(size0);
 
             // Check that IndexType is big enough
-            if (std::numeric_limits<IndexType>::max() <= vol0)
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol0)
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
             Indices<Cpu> indices0(vol, cpu);
             Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+
+            if (is_trivial(dperm0)) {
 #ifdef _OPENMP
 #    pragma omp parallel for
 #endif
-            for (std::size_t i = 0; i < vol; ++i) {
-                Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
-                indices0[i] =
-                    coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm1) + from0, dim0, stride0);
-                assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
-                (void)vol0;
+                for (std::size_t i = 0; i < vol; ++i) {
+                    Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
+                    indices0[i] =
+                        coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm1) + from0, dim0, stride0);
+                    assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
+                    (void)vol0;
+                }
+            } else {
+                DimPermS<Nd0> dperm0_ = get_dperm_eff(dperm0);
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
+                for (std::size_t i = 0; i < vol; ++i) {
+                    Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
+                    indices0[i] = coor2index<Nd0>(
+                        apply_dperm(reorder_coor<Nd1, Nd0>(c1, perm1), dperm0_), dim0, stride0);
+                    assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
+                    (void)vol0;
+                }
             }
 
             return indices0;
@@ -592,18 +829,22 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1>
         Indices<Cpu> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                                 const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                                 const Coor<Nd0> &size0,
+                                                 const DimPermN<Nd0> &dperm0, const Coor<Nd0> &dim0,
                                                  const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                                 const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
+                                                 const DimPermN<Nd1> &dperm1, const Coor<Nd1> &dim1,
+                                                 Cpu cpu, CoorOrder co) {
             (void)from0;
             (void)dim0;
 
@@ -611,7 +852,7 @@ namespace superbblas {
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dperm0, dim0, o1, dim1)));
 
             // Quick exit
             if (volume<Nd0>(size0) == 0) { return Indices<Cpu>(); }
@@ -623,20 +864,33 @@ namespace superbblas {
             std::size_t vol = volume<Nd0>(size0);
 
             // Check that IndexType is big enough
-            if (std::numeric_limits<IndexType>::max() <= vol1)
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol1)
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
             Indices<Cpu> indices1(vol, cpu);
             Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
+            if (is_trivial(dperm1)) {
 #ifdef _OPENMP
 #    pragma omp parallel for
 #endif
-            for (std::size_t i = 0; i < vol; ++i) {
-                Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
-                indices1[i] = coor2index<Nd1>(c1 + from1, dim1, stride1);
-                assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
-                (void)vol1;
+                for (std::size_t i = 0; i < vol; ++i) {
+                    Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
+                    indices1[i] = coor2index<Nd1>(c1 + from1, dim1, stride1);
+                    assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
+                    (void)vol1;
+                }
+            } else {
+                DimPermS<Nd1> dperm1_ = get_dperm_eff(dperm1);
+#ifdef _OPENMP
+#    pragma omp parallel for
+#endif
+                for (std::size_t i = 0; i < vol; ++i) {
+                    Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
+                    indices1[i] = coor2index<Nd1>(apply_dperm(c1, dperm1_), dim1, stride1);
+                    assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
+                    (void)vol1;
+                }
             }
 
             return indices1;
@@ -688,15 +942,65 @@ namespace superbblas {
                                        dim1, stride1);
             }
         };
+
+        /// Class that compute the origin permutation with dimension permutation
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        struct perm_orig_elem_dperm : public thrust::unary_function<IndexType, IndexType> {
+            const TCoor<Nd0> dim0, stride0;
+            const TCoor<Nd1> new_stride1, size1;
+            const TCoor<Nd0> perm1;
+            const TDimPermS<Nd0> dperm0;
+            perm_orig_elem(TDimPermS<Nd0> dperm0, TCoor<Nd0> dim0, TCoor<Nd0> stride0,
+                           TCoor<Nd1> new_stride1, TCoor<Nd1> size1, TCoor<Nd0> perm1)
+                : dim0(dim0),
+                  stride0(stride0),
+                  new_stride1(new_stride1),
+                  size1(size1),
+                  perm1(perm1),
+                  dperm0(dperm0) {}
+
+            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+                return coor2index<Nd0>(
+                    apply_dperm<Nd0>(
+                        reorder_coor<Nd1, Nd0>(index2coor<Nd1>(i, size1, new_stride1), perm1),
+                        dperm0),
+                    dim0, stride0);
+            }
+        };
+
+        /// Class that compute the destination permutation with dimension permutation
+
+        template <std::size_t Nd1>
+        struct perm_dest_elem_dperm : public thrust::unary_function<IndexType, IndexType> {
+            const TCoor<Nd1> dim1, stride1, new_stride1, size1;
+            const TDimPerm<Nd1> dperm1;
+            perm_dest_elem(TDimPermS<Nd1> dperm1, TCoor<Nd1> dim1, TCoor<Nd1> stride1,
+                           TCoor<Nd1> new_stride1, TCoor<Nd1> size1)
+                : from1(from1),
+                  dim1(dim1),
+                  stride1(stride1),
+                  new_stride1(new_stride1),
+                  size1(size1),
+                  dperm1(dperm1) {}
+
+            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+                return coor2index<Nd1>(
+                    apply_dperm<Nd1>(index2coor<Nd1>(i, size1, new_stride1), dperm1), dim1,
+                    stride1);
+            }
+        };
 #    endif
 
         /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
@@ -704,8 +1008,9 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1>
         DECL_ORIG_PERM(Indices<Gpu> get_permutation_origin(
             const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-            const Coor<Nd1> &dim1, Gpu gpu, CoorOrder co))
+            const DimPermN<Nd0> &dperm0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+            const Coor<Nd1> &from1, const DimPermN<Nd1> &dperm1, const Coor<Nd1> &dim1, Gpu gpu,
+            CoorOrder co))
         IMPL({
             (void)from1;
             (void)dim1;
@@ -714,7 +1019,7 @@ namespace superbblas {
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dperm0, dim0, o1, dim1)));
 
             // Quick exit
             if (volume<Nd0>(size0) == 0) { return Indices<Gpu>(0, gpu); }
@@ -729,12 +1034,22 @@ namespace superbblas {
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
 
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
-                              thrust::make_counting_iterator(IndexType(vol)),
-                              encapsulate_pointer(indices0.data()),
-                              perm_orig_elem<Nd0, Nd1>(toTCoor(from0), toTCoor(dim0),
-                                                       toTCoor(stride0), toTCoor(new_stride1),
-                                                       toTCoor(size1), toTCoor(perm1)));
+            if (is_trivial(dperm0)) {
+                thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                                  thrust::make_counting_iterator(IndexType(vol)),
+                                  encapsulate_pointer(indices0.data()),
+                                  perm_orig_elem<Nd0, Nd1>(toTCoor(from0), toTCoor(dim0),
+                                                           toTCoor(stride0), toTCoor(new_stride1),
+                                                           toTCoor(size1), toTCoor(perm1)));
+            } else {
+                DimPermN<Nd0, Gpu> dperm0_ = toGpu(dperm0, gpu);
+                thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                                  thrust::make_counting_iterator(IndexType(vol)),
+                                  encapsulate_pointer(indices0.data()),
+                                  perm_orig_elem_dperm<Nd0, Nd1>(
+                                      get_dperm_eff(dperm0_), toTCoor(dim0), toTCoor(stride0),
+                                      toTCoor(new_stride1), toTCoor(size1), toTCoor(perm1)));
+            }
 
             return indices0;
         })
@@ -743,9 +1058,11 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
@@ -753,8 +1070,9 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1>
         DECL_DEST_PERM(Indices<Gpu> get_permutation_destination(
             const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-            const Coor<Nd1> &dim1, Gpu gpu, CoorOrder co))
+            const DimPermN<Nd0> &dperm0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+            const Coor<Nd1> &from1, const DimPermN<Nd1> &dperm1, const Coor<Nd1> &dim1, Gpu gpu,
+            CoorOrder co))
         IMPL({
             (void)from0;
             (void)dim0;
@@ -763,7 +1081,7 @@ namespace superbblas {
 
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dperm0, dim0, o1, dim1)));
 
             // Quick exit
             if (volume<Nd0>(size0) == 0) { return Indices<Gpu>(); }
@@ -777,11 +1095,22 @@ namespace superbblas {
             Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
 
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
-                              thrust::make_counting_iterator(IndexType(vol)),
-                              encapsulate_pointer(indices1.data()),
-                              perm_dest_elem<Nd1>(toTCoor(from1), toTCoor(dim1), toTCoor(stride1),
-                                                  toTCoor(new_stride1), toTCoor(size1)));
+            if (is_trivial(dperm1)) {
+                thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                                  thrust::make_counting_iterator(IndexType(vol)),
+                                  encapsulate_pointer(indices1.data()),
+                                  perm_dest_elem<Nd1>(toTCoor(from1), toTCoor(dim1),
+                                                      toTCoor(stride1), toTCoor(new_stride1),
+                                                      toTCoor(size1)));
+            } else {
+                DimPermN<Nd1, Gpu> dperm1_ = toGpu(dperm1, gpu);
+                thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                                  thrust::make_counting_iterator(IndexType(vol)),
+                                  encapsulate_pointer(indices1.data()),
+                                  perm_dest_elem_dperm<Nd1>(get_dperm_eff(dperm1_), toTCoor(dim1),
+                                                            toTCoor(stride1), toTCoor(new_stride1),
+                                                            toTCoor(size1)));
+            }
 
             return indices1;
         })
@@ -877,9 +1206,11 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
         /// \param indices_out: returned permutation
@@ -891,14 +1222,15 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename XPU>
         void get_permutation_destination_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                               const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                               const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                               const Coor<Nd0> &size0, const DimPermN<Nd0> &dperm0,
+                                               const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                                               const Coor<Nd1> &from1, const DimPermN<Nd1> &dperm1,
                                                const Coor<Nd1> &dim1, XPU xpu,
                                                Indices<XPU> &indices_out, IndexType &disp,
                                                CoorOrder co) {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dperm0, dim0, o1, dim1)));
 
             // Quick exit
             if (volume<Nd0>(size0) == 0) {
@@ -912,7 +1244,8 @@ namespace superbblas {
 
             // Check in the storage
             using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
-            using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
+            using from_size_dim =
+                std::tuple<Coor<Nd1>, Coor<Nd1>, DimPermN<Nd1>, Coor<Nd1>, int, CoorOrder>;
             struct size_dim_map_tag {};
             auto size_dim_map =
                 getCache<size_dim, Indices<XPU>, TupleHash<size_dim>, size_dim_map_tag>(xpu);
@@ -920,15 +1253,15 @@ namespace superbblas {
             auto from_size_dim_map = getCache<from_size_dim, Indices<XPU>, TupleHash<from_size_dim>,
                                               from_size_dim_map_tag>(xpu);
             {
-                auto it =
-                    from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
+                auto it = from_size_dim_map.find(
+                    from_size_dim{from1, size1, dperm1, dim1, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
                     indices_out = it->second.value;
                     disp = 0;
                     return;
                 }
             }
-            if (all_less_or_equal(from1 + size1, dim1)) {
+            if (is_trivial(dperm1) && all_less_or_equal(from1 + size1, dim1)) {
                 auto it = size_dim_map.find(size_dim{size1, dim1, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second.value;
@@ -939,9 +1272,9 @@ namespace superbblas {
             }
 
             // Get the permutation independent of 'from1' and store it in cache
-            if (all_less_or_equal(from1 + size1, dim1)) {
+            if (is_trivial(dperm1) && all_less_or_equal(from1 + size1, dim1)) {
                 Indices<XPU> indices1_sd = get_permutation_destination<Nd0, Nd1>(
-                    o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
+                    o0, {}, size0, dperm0, dim0, o1, {}, {}, dim1, xpu, co);
                 size_dim_map.insert(size_dim{size1, dim1, deviceId(xpu), co}, indices1_sd,
                                     storageSize(indices1_sd));
                 Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
@@ -951,10 +1284,10 @@ namespace superbblas {
             }
 
             // Get the permutation and store it in cache
-            Indices<XPU> indices1 = get_permutation_destination<Nd0, Nd1>(o0, from0, size0, dim0,
-                                                                          o1, from1, dim1, xpu, co);
-            from_size_dim_map.insert(from_size_dim{from1, size1, dim1, deviceId(xpu), co}, indices1,
-                                     storageSize(indices1));
+            Indices<XPU> indices1 = get_permutation_destination<Nd0, Nd1>(
+                o0, from0, size0, dperm0, dim0, o1, from1, dperm1, dim1, xpu, co);
+            from_size_dim_map.insert(from_size_dim{from1, size1, dperm1, dim1, deviceId(xpu), co},
+                                     indices1, storageSize(indices1));
 
             // Return the permutation
             indices_out = indices1;
@@ -965,9 +1298,11 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param cpu: device context for the returned vector
         /// \param indices_out: returned permutation
@@ -979,13 +1314,14 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename XPU>
         void get_permutation_origin_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                          const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                          const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                          const Coor<Nd0> &size0, const DimPermN<Nd0> &dperm0,
+                                          const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                                          const Coor<Nd1> &from1, const DimPermN<Nd1> &dperm1,
                                           const Coor<Nd1> &dim1, XPU xpu, Indices<XPU> &indices_out,
                                           IndexType &disp, CoorOrder co) {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dperm0, dim0, o1, dim1)));
 
             // Quick exit
             if (volume<Nd0>(size0) == 0) {
@@ -996,8 +1332,8 @@ namespace superbblas {
 
             // Check in the storage
             using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
-            using perm_from_size_dim =
-                std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
+            using perm_from_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, DimPermN<Nd0>,
+                                                  Coor<Nd0>, int, CoorOrder>;
             struct size_dim_map_tag {};
             auto size_dim_map =
                 getCache<perm_size_dim, Indices<XPU>, TupleHash<perm_size_dim>, size_dim_map_tag>(
@@ -1009,14 +1345,14 @@ namespace superbblas {
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             {
                 auto it = from_size_dim_map.find(
-                    perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co});
+                    perm_from_size_dim{perm1, from0, size0, dperm0, dim0, deviceId(xpu), co});
                 if (it != from_size_dim_map.end()) {
                     indices_out = it->second.value;
                     disp = 0;
                     return;
                 }
             }
-            if (all_less_or_equal(from0 + size0, dim0)) {
+            if (is_trivial(dperm0) && all_less_or_equal(from0 + size0, dim0)) {
                 auto it = size_dim_map.find(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second.value;
@@ -1027,9 +1363,9 @@ namespace superbblas {
             }
 
             // Get the permutation independent of 'from1' and store it in cache
-            if (all_less_or_equal(from0 + size0, dim0)) {
-                Indices<XPU> indices0_sd =
-                    get_permutation_origin<Nd0, Nd1>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
+            if (is_trivial(dperm0) && all_less_or_equal(from0 + size0, dim0)) {
+                Indices<XPU> indices0_sd = get_permutation_origin<Nd0, Nd1>(
+                    o0, {}, size0, {}, dim0, o1, {}, dperm1, dim1, xpu, co);
                 size_dim_map.insert(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co},
                                     indices0_sd, storageSize(indices0_sd));
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
@@ -1039,10 +1375,10 @@ namespace superbblas {
             }
 
             // Get the permutation and store it in cache
-            Indices<XPU> indices0 =
-                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co);
+            Indices<XPU> indices0 = get_permutation_origin<Nd0, Nd1>(
+                o0, from0, size0, dperm0, dim0, o1, from1, dperm1, dim1, xpu, co);
             from_size_dim_map.insert(
-                perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}, indices0,
+                perm_from_size_dim{perm1, from0, size0, dperm0, dim0, deviceId(xpu), co}, indices0,
                 storageSize(indices0));
 
             // Return the permutation
@@ -1297,10 +1633,12 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
         /// \param ewop: either to copy or to add the origin values into the destination values
@@ -1309,15 +1647,17 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
+                        const Coor<Nd0> &size0, const DimPermN<Nd0> &dperm0, const Coor<Nd0> &dim0,
+                        vector<const T, XPU0> v0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                        const DimPermN<Nd1> &dperm1, const Coor<Nd1> &dim1, vector<Q, XPU1> v1,
+                        EWOP ewop, CoorOrder co) {
 
             tracker<XPU1> _t("local copy", v1.ctx());
 
             // Shortcut to scale or zero out a tensor
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
-                from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
+                from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 &&
+                is_trivial(dperm0) && dim0 == dim1 && is_trivial(dperm1) &&
                 std::is_same<EWOP, detail::EWOp::Copy>::value) {
                 copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
                                         v1.ctx(), ewop);
@@ -1328,10 +1668,11 @@ namespace superbblas {
             Indices<XPU0> indices0;
             Indices<XPU1> indices1;
             IndexType disp0, disp1;
-            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                   v0.ctx(), indices0, disp0, co);
-            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        v1.ctx(), indices1, disp1, co);
+            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dperm0, dim0, o1, from1,
+                                                   dperm1, dim1, v0.ctx(), indices0, disp0, co);
+            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dperm0, dim0, o1, from1,
+                                                        dperm1, dim1, v1.ctx(), indices1, disp1,
+                                                        co);
 
             // Do the copy
             copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
@@ -1344,10 +1685,12 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of coordinates to copy in each direction
+        /// \param dperm0: permutation of the dimensions for the origin tensor
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dperm1: permutation of the dimensions for the destination tensor
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
         /// \param copyadd: either to copy or to add the origin values into the destination tensor
@@ -1356,17 +1699,18 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        vector<Q, XPU1> v1, CopyAdd copyadd, CoorOrder co) {
+                        const Coor<Nd0> &size0, const DimPermN<Nd0> &dperm0, const Coor<Nd0> &dim0,
+                        vector<const T, XPU0> v0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                        const DimPermN<Nd1> &dperm1, const Coor<Nd1> &dim1, vector<Q, XPU1> v1,
+                        CopyAdd copyadd, CoorOrder co) {
             switch (copyadd) {
             case Copy:
-                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, o1, from1, dim1, v1,
-                                     EWOp::Copy{}, co);
+                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dperm0, dim0, v0, o1, from1, dperm1,
+                                     dim1, v1, EWOp::Copy{}, co);
                 break;
             case Add:
-                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, o1, from1, dim1, v1,
-                                     EWOp::Add{}, co);
+                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dperm0, dim0, v0, o1, from1, dperm1,
+                                     dim1, v1, EWOp::Add{}, co);
                 break;
             }
         }
@@ -1377,11 +1721,13 @@ namespace superbblas {
     /// \param o0: dimension labels for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
     /// \param size0: number of coordinates to copy in each direction
+    /// \param dperm0: permutation of the dimensions for the origin tensor
     /// \param dim0: dimension size for the origin tensor
     /// \param v0: data for the origin tensor
     /// \param ctx0: device context for v0
     /// \param o1: dimension labels for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    /// \param dperm1: permutation of the dimensions for the destination tensor
     /// \param dim1: dimension size for the destination tensor
     /// \param v1: data for the destination tensor
     /// \param ctx1: device context for v1
@@ -1390,47 +1736,45 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void local_copy(typename elem<T>::type alpha, const char *o0, const Coor<Nd0> &from0,
-                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0, const Context ctx0,
-                    const char *o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1,
-                    const Context ctx1, CoorOrder co, CopyAdd copyadd, Session session = 0) {
+    void local_copy(typename elem<T>::type alpha, const char *o0, Coor<Nd0> from0,
+                    const Coor<Nd0> &size0, const DimPerm<Nd0> &dperm0, const Coor<Nd0> &dim0,
+                    const T *v0, const Context ctx0, const char *o1, Coor<Nd1> from1,
+                    const DimPerm<Nd1> &dperm1, const Coor<Nd1> &dim1, Q *v1, const Context ctx1,
+                    CoorOrder co, CopyAdd copyadd, Session session = 0) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
 
         // Check the validity of the operation
-        if (!detail::check_positive<Nd0>(from0))
-            throw std::runtime_error("All values in `from0` should be non-negative");
+        detail::check_copy(o0_, from0, size0, dperm0, dim0, o1_, from1, dperm1, dim1);
 
-        if (!detail::check_positive<Nd0>(size0))
-            throw std::runtime_error("All values in `size0` should be non-negative");
-
-        if (!detail::check_positive<Nd1>(from1))
-            throw std::runtime_error("All values in `from1` should be non-negative");
-
-        if (!detail::check_isomorphic<Nd0, Nd1>(o0_, size0, dim0, o1_, dim1))
-            throw std::runtime_error("The orders and dimensions of the origin tensor are not "
-                                     "compatible with the destination tensor");
+        // Get the normalized permutations
+        Coor<Nd1> perm0 = detail::find_permutation<Nd0, Nd1>(o0_, o1_);
+        Coor<Nd1> size1 = detail::reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+        const detail::DimPermN<Nd0> dperm0_ =
+            detail::normalize_from_dperm(from0, size0, dperm0, dim0);
+        const detail::DimPermN<Nd1> dperm1_ =
+            detail::normalize_from_dperm(from1, size1, dperm1, dim1);
 
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dperm0_, dim0, detail::to_vector(v0, ctx0.toCpu(session)),
+                o1_, from1, dperm1_, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
         }
 #ifdef SUPERBBLAS_USE_GPU
         else if (ctx0.plat == CPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toGpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dperm0_, dim0, detail::to_vector(v0, ctx0.toCpu(session)),
+                o1_, from1, dperm1_, dim1, detail::to_vector(v1, ctx1.toGpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toGpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dperm0_, dim0, detail::to_vector(v0, ctx0.toGpu(session)),
+                o1_, from1, dperm1_, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toGpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toGpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dperm0_, dim0, detail::to_vector(v0, ctx0.toGpu(session)),
+                o1_, from1, dperm1_, dim1, detail::to_vector(v1, ctx1.toGpu(session)), copyadd, co);
         }
 #endif
         else {

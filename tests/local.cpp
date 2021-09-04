@@ -94,8 +94,8 @@ int main(int argc, char **argv) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
-                    local_copy(Scalar{1.0}, "xyztsc", from0, dim0, dim0, t0.data(), ctx, "tnsxyzc",
-                               from1, dim1, t1.data(), ctx, SlowToFast, Copy);
+                    local_copy(Scalar{1.0}, "xyztsc", from0, dim0, {}, dim0, t0.data(), ctx,
+                               "tnsxyzc", from1, {}, dim1, t1.data(), ctx, SlowToFast, Copy);
                 }
             }
             t = w_time() - t;
@@ -132,8 +132,8 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc",
-                           from1, dim1, t2.data(), ctx, SlowToFast, Copy);
+                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, {}, dim1, t1.data(), ctx, "tnsxyzc",
+                           from1, {}, dim1, t2.data(), ctx, SlowToFast, Copy);
             }
             t = w_time() - t;
             std::cout << "Time in shifting " << t / nrep << std::endl;
@@ -147,8 +147,8 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, dim1, t1.data(), ctx, "tnsxyzc",
-                           from1, dim1, t2d.data(), ctx, SlowToFast, Copy);
+                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, {}, dim1, t1.data(), ctx, "tnsxyzc",
+                           from1, {}, dim1, t2d.data(), ctx, SlowToFast, Copy);
             }
             t = w_time() - t;
             std::cout << "Time in shifting and converting to double " << t / nrep << std::endl;
@@ -218,8 +218,8 @@ int main(int argc, char **argv) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
-                    local_copy(Scalar{1.0}, "xyztsc", from0, dim0, dim0, t0.data().get(), ctx,
-                               "tnsxyzc", from1, dim1, t1.data().get(), ctx, SlowToFast, Copy);
+                    local_copy(Scalar{1.0}, "xyztsc", from0, dim0, {}, dim0, t0.data().get(), ctx,
+                               "tnsxyzc", from1, {}, dim1, t1.data().get(), ctx, SlowToFast, Copy);
                 }
             }
             cudaDeviceSynchronize();
@@ -244,8 +244,8 @@ int main(int argc, char **argv) {
                 for (int n = 0; n < dim[N]; ++n) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
-                    local_copy<Nd - 1, Nd>(Scalar{1.0}, "xyztsc", from0, dim0, dim0, t0_cpu.data(),
-                                           cpuctx, "tnsxyzc", from1, dim1, t1.data().get(), ctx,
+                    local_copy<Nd - 1, Nd>(Scalar{1.0}, "xyztsc", from0, dim0, {}, dim0, t0_cpu.data(),
+                                           cpuctx, "tnsxyzc", from1, {}, dim1, t1.data().get(), ctx,
                                            SlowToFast, Copy);
                 }
             }
@@ -291,8 +291,8 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, dim1, t1.data().get(), ctx,
-                           "tnsxyzc", from1, dim1, t2.data().get(), ctx, SlowToFast, Copy);
+                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, {}, dim1, t1.data().get(), ctx,
+                           "tnsxyzc", from1, {}, dim1, t2.data().get(), ctx, SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
             t = w_time() - t;
@@ -307,8 +307,8 @@ int main(int argc, char **argv) {
                 const Coor<Nd> from0 = {0};
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
-                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, dim1, t1.data().get(), ctx,
-                           "tnsxyzc", from1, dim1, t2d.data().get(), ctx, SlowToFast, Copy);
+                local_copy(Scalar{1.0}, "tnsxyzc", from0, dim1, {}, dim1, t1.data().get(), ctx,
+                           "tnsxyzc", from1, {}, dim1, t2d.data().get(), ctx, SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
             t = w_time() - t;
@@ -340,8 +340,8 @@ int main(int argc, char **argv) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                     const Coor<5> from0 = {0};
-                    local_copy(Scalar{1.0}, "tnsNS", from0, dimc, dimc, tc.data().get(), ctx,
-                               "tnsNS", from0, dimc, tc_cpu.data(), cpuctx, SlowToFast, Copy);
+                    local_copy(Scalar{1.0}, "tnsNS", from0, dimc, {}, dimc, tc.data().get(), ctx,
+                               "tnsNS", from0, {}, dimc, tc_cpu.data(), cpuctx, SlowToFast, Copy);
             }
             cudaDeviceSynchronize();
             t = w_time() - t;
