@@ -38,7 +38,7 @@ ifeq ($(TARGET), cuda)
 	${NVCC} -E ${MPISBFLAG} ${NVCCFLAGS} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' -DSUPERBBLAS_CREATING_FLAGS ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
 endif
 ifeq ($(TARGET), hip)
-	${HIP} -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_FLAGS ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
+	${HIP} -x c++ -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_FLAGS ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
 endif
 	echo "#endif // __SUPERBBLAS_SUPERBBLAS_FLAGS__" >> $@
 
@@ -59,7 +59,7 @@ ifeq ($(TARGET), cuda)
 	${NVCC} -E ${MPISBFLAG} ${NVCCFLAGS} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
 ifeq ($(TARGET), hip)
-	${HIP} -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
+	${HIP} -x c++ -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
 endif
 
 $(SOURCE_LIB): $(LIB_SOURCE_STEM).split

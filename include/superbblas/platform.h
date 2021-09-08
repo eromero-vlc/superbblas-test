@@ -15,7 +15,7 @@
 #    ifndef SUPERBBLAS_USE_CUDA
 #        define SUPERBBLAS_USE_CUDA
 #    endif
-#elif defined(__HIPCC__)
+#elif defined(__HIPCC__) || defined(__HIP_PLATFORM_HCC__)
 #    define __HOST__ __host__
 #    define __DEVICE__ __device__
 #    ifndef SUPERBBLAS_USE_HIP

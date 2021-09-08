@@ -18,7 +18,8 @@
 // the definition of functions using `thrust` and use DECL_... macros to generate template
 // instantiations to be included in the library.
 
-#if defined(SUPERBBLAS_USE_CUDA) || defined(SUPERBBLAS_USE_HIP)
+#if (defined(SUPERBBLAS_USE_CUDA) || defined(SUPERBBLAS_USE_HIP)) &&                               \
+    !defined(SUPERBBLAS_CREATING_FLAGS) && !defined(SUPERBBLAS_CREATING_LIB)
 #    define SUPERBBLAS_USE_THRUST
 #endif
 #ifdef SUPERBBLAS_USE_THRUST
