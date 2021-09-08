@@ -103,10 +103,13 @@ namespace superbblas {
 
         template <typename T> struct check_ptr_align {
             static void check(T *v) {
+                // std::align isn't is old versions of gcc
+#if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
                 std::size_t size = sizeof(T);
                 void *ptr = (void *)v;
                 if (v != nullptr && std::align(alignof(T), sizeof(T), ptr, size) == nullptr)
                     throw std::runtime_error("Ups! Unaligned pointer");
+#endif
             }
         };
 
@@ -116,16 +119,19 @@ namespace superbblas {
 
         template <typename T> struct check_ptr_align<std::complex<T>> {
             static void check(std::complex<T> *v) {
+                // std::align isn't is old versions of gcc
+#if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
                 using U = std::complex<T>;
 #ifdef SUPERBBLAS_USE_GPU
                 std::size_t alignment = sizeof(U);
-#else
+#    else
                 std::size_t alignment = alignof(U);
-#endif
+#    endif
                 std::size_t size = sizeof(U);
                 void *ptr = (void *)v;
                 if (v != nullptr && std::align(alignment, sizeof(U), ptr, size) == nullptr)
                     throw std::runtime_error("Ups! Unaligned pointer");
+#endif
             }
         };
 
