@@ -118,15 +118,6 @@ namespace superbblas {
             }
         }
 
-        /// Set the current device as the one passed
-        /// \param cuda: context
-
-        inline void setDevice(Cuda cuda) {
-            int currentDevice;
-            cudaCheck(cudaGetDevice(&currentDevice));
-            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
-        }
-
         /// Return the device in which the pointer was allocated
 
         inline int getPtrDevice(const void *x) {
@@ -183,6 +174,15 @@ namespace superbblas {
 
         /// Return a device identification
         inline int deviceId(Cuda cuda) { return cuda.device; }
+
+        /// Set the current device as the one passed
+        /// \param cuda: context
+
+        inline void setDevice(Cuda cuda) {
+            int currentDevice;
+            cudaCheck(cudaGetDevice(&currentDevice));
+            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
+        }
 
 #elif defined(SUPERBBLAS_USE_HIP)
         inline void hipCheck(hipError_t err) {

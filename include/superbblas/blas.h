@@ -122,7 +122,7 @@ namespace superbblas {
                 // std::align isn't is old versions of gcc
 #if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
                 using U = std::complex<T>;
-#ifdef SUPERBBLAS_USE_GPU
+#    ifdef SUPERBBLAS_USE_GPU
                 std::size_t alignment = sizeof(U);
 #    else
                 std::size_t alignment = alignof(U);
