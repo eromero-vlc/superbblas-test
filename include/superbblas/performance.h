@@ -145,6 +145,10 @@ namespace superbblas {
                     getCacheUsage(session)[funcName] +=
                         getCpuMemUsed(session) - mem_cpu + getGpuMemUsed(session) - mem_gpu;
             }
+
+            // Forbid copy constructor and assignment operator
+            tracker(const tracker &) = delete;
+            tracker &operator=(tracker const &) = delete;
         };
     }
 
