@@ -98,43 +98,49 @@ namespace superbblas {
 
     namespace detail {
 
-        /// Check the given pointer has proper alignment
-        /// \param v: ptr to check
-        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
+        /// Return a pointer aligned or nullptr if it isn't possible
+        /// \param alignment: desired alignment of the returned pointer
+        /// \param size: desired allocated size
+        /// \param ptr: given pointer to align
+        /// \param space: storage of the given pointer
 
-        template <typename T> struct check_ptr_align {
-            static void check(T *v) {
+        template <typename T>
+        T *align(std::size_t alignment, std::size_t size, T *ptr, std::size_t space) {
+            if (alignment == 0) return ptr;
+
                 // std::align isn't is old versions of gcc
 #if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
-                std::size_t size = sizeof(T);
-                void *ptr = (void *)v;
-                if (v != nullptr && std::align(alignof(T), sizeof(T), ptr, size) == nullptr)
-                    throw std::runtime_error("Ups! Unaligned pointer");
+            void *ptr0 = (void *)ptr;
+            return (T *)std::align(alignment, size, ptr0, space);
+#else
+            uintptr_t new_ptr = ((uintptr_t(ptr) + (alignment - 1)) & ~(alignment - 1));
+            if (new_ptr + size - uintptr_t(ptr) > space) return nullptr;
+            return (T *)new_ptr;
 #endif
-            }
+        }
+
+        /// Set default alignment, which is alignof(T) excepting when supporting GPUs that complex
+        /// types need special alignment
+
+        template <typename T> struct default_alignment {
+            constexpr static std::size_t alignment = 0;
         };
+
+        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
+#ifdef SUPERBBLAS_USE_GPU
+        template <typename T> struct default_alignment<std::complex<T>> {
+            constexpr static std::size_t alignment = sizeof(std::complex<T>);
+        };
+#endif
 
         /// Check the given pointer has proper alignment
         /// \param v: ptr to check
-        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
 
-        template <typename T> struct check_ptr_align<std::complex<T>> {
-            static void check(std::complex<T> *v) {
-                // std::align isn't is old versions of gcc
-#if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
-                using U = std::complex<T>;
-#    ifdef SUPERBBLAS_USE_GPU
-                std::size_t alignment = sizeof(U);
-#    else
-                std::size_t alignment = alignof(U);
-#    endif
-                std::size_t size = sizeof(U);
-                void *ptr = (void *)v;
-                if (v != nullptr && std::align(alignment, sizeof(U), ptr, size) == nullptr)
-                    throw std::runtime_error("Ups! Unaligned pointer");
-#endif
-            }
-        };
+        template <typename T> void check_ptr_align(const void *ptr) {
+            if (ptr != nullptr &&
+                align(default_alignment<T>::alignment, sizeof(T), ptr, sizeof(T)) == nullptr)
+                throw std::runtime_error("Ups! Unaligned pointer");
+        }
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
@@ -156,7 +162,7 @@ namespace superbblas {
                 getCpuMemUsed(cpu.session) += double(sizeof(T) * n);
             }
 
-            check_ptr_align<T>::check(r);
+            check_ptr_align<T>(r);
             return r;
         }
 
@@ -207,7 +213,7 @@ namespace superbblas {
                 getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
             }
 
-            check_ptr_align<T>::check(r);
+            check_ptr_align<T>(r);
             return r;
         }
 
@@ -262,7 +268,7 @@ namespace superbblas {
                 getGpuMemUsed(hip.session) += double(sizeof(T) * n);
             }
 
-            check_ptr_align<T>::check(r);
+            check_ptr_align<T>(r);
             return r;
         }
 
@@ -322,32 +328,39 @@ namespace superbblas {
             vector() : vector(0, XPU{}) {}
 
             /// Construct a vector with `n` elements a with context device `xpu_`
-            vector(std::size_t n, XPU xpu_)
+            vector(std::size_t n, XPU xpu_,
+                   std::size_t alignment = default_alignment<T_no_const>::alignment)
                 : n(n),
-                  ptr(allocate<T_no_const>(n, xpu_),
+                  ptr(allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu_),
                       [=](const T_no_const *ptr) { deallocate(ptr, xpu_); }),
-                  xpu(xpu_) {}
+                  xpu(xpu_) {
+                std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
+                ptr_aligned = (T *)align(alignment, sizeof(T) * n, ptr.get(), size);
+            }
 
             /// Construct a vector from a given pointer `ptr` with `n` elements and with context
             /// device `xpu`. `ptr` is not deallocated after the destruction of the `vector`.
             vector(std::size_t n, T *ptr, XPU xpu)
-                : n(n), ptr((T_no_const *)ptr, [&](const T_no_const *) {}), xpu(xpu) {}
+                : n(n),
+                  ptr_aligned(ptr),
+                  ptr((T_no_const *)ptr, [&](const T_no_const *) {}),
+                  xpu(xpu) {}
 
             /// Low-level constructor
-            vector(std::size_t n, std::shared_ptr<T_no_const> ptr, XPU xpu)
-                : n(n), ptr(ptr), xpu(xpu) {}
+            vector(std::size_t n, T *ptr_aligned, std::shared_ptr<T_no_const> ptr, XPU xpu)
+                : n(n), ptr_aligned(ptr_aligned), ptr(ptr), xpu(xpu) {}
 
             /// Return the number of allocated elements
             std::size_t size() const { return n; }
 
             /// Return a pointer to the allocated space
-            T *data() const { return ptr.get(); }
+            T *data() const { return ptr_aligned; }
 
             /// Return a pointer to the first element allocated
-            T *begin() const { return ptr.get(); }
+            T *begin() const { return ptr_aligned; }
 
             /// Return a pointer to the first element non-allocated after an allocated element
-            T *end() const { return ptr.get() + n; }
+            T *end() const { return begin() + n; }
 
             /// Return the device context
             XPU ctx() const { return xpu; }
@@ -356,14 +369,14 @@ namespace superbblas {
             template <typename U = XPU,
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
             T &operator[](std::size_t i) const {
-                return ptr.get()[i];
+                return ptr_aligned[i];
             }
 
             /// Conversion from `vector<T, XPU>` to `vector<const T, XPU>`
             template <typename U = T, typename std::enable_if<std::is_same<U, T_no_const>::value,
                                                               bool>::type = true>
             operator vector<const T, XPU>() const {
-                return {n, ptr, xpu};
+                return {n, (const T *)ptr_aligned, ptr, xpu};
             }
 
             /// Operator == compares size and content
@@ -378,6 +391,7 @@ namespace superbblas {
 
         private:
             std::size_t n;                   ///< Number of allocated `T` elements
+            T *ptr_aligned;                  ///< Pointer aligned
             std::shared_ptr<T_no_const> ptr; ///< Pointer to the allocated memory
             XPU xpu;                         ///< Context
         };
@@ -385,14 +399,14 @@ namespace superbblas {
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
         template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n, Cpu cpu) {
-            check_ptr_align<T>::check(ptr);
+            check_ptr_align<T>(ptr);
             return vector<T, Cpu>(n, ptr, cpu);
         }
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
 
         template <typename T> vector<T, Cpu> to_vector(T *ptr, Cpu cpu) {
-            check_ptr_align<T>::check(ptr);
+            check_ptr_align<T>(ptr);
             return vector<T, Cpu>(0, ptr, cpu);
         }
 
@@ -400,7 +414,7 @@ namespace superbblas {
         /// Construct a `vector<T, Gpu>` with the given pointer and context
 
         template <typename T> vector<T, Gpu> to_vector(T *ptr, Gpu cuda) {
-            check_ptr_align<T>::check(ptr);
+            check_ptr_align<T>(ptr);
             return vector<T, Gpu>(0, ptr, cuda);
         }
 #endif

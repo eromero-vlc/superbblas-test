@@ -290,7 +290,7 @@ namespace superbblas {
 
         /// Vectors used in MPI communications
         template <typename T> struct PackedValues {
-            std::vector<T> buf;         ///< pointer to data
+            vector<T, Cpu> buf;         ///< pointer to data
             std::vector<MpiInt> counts; ///< number of items send/receive for rank i
             std::vector<MpiInt> displ;  ///< index of the first element to send/receive for rank i
         };
@@ -321,7 +321,7 @@ namespace superbblas {
             // Allocate PackedValues
             static_assert(MpiTypeSize % sizeof(T) == 0,
                           "Please change MpiTypeSize to be a power of two!");
-            PackedValues<T> r{std::vector<T>(), std::vector<MpiInt>(comm.nprocs),
+            PackedValues<T> r{vector<T, Cpu>(), std::vector<MpiInt>(comm.nprocs),
                               std::vector<MpiInt>(comm.nprocs)};
 
             // Prepare counts and displ
@@ -348,7 +348,7 @@ namespace superbblas {
             if (d * MpiTypeSize != n * sizeof(T))
                 throw std::runtime_error(
                     "Exceeded the maximum package size: increase `MpiTypeSize`");
-            r.buf.resize(n);
+            r.buf = vector<T, Cpu>(n, Cpu{}, MpiTypeSize);
 
             return r;
         }
@@ -367,7 +367,7 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0>
         void pack(const Order<Nd0> &o0, const From_size<Nd0> &fs, const Coor<Nd0> &dim0,
                   vector<const T, XPU0> v0, const Order<Nd1> &o1,
-                  typename Indices<Cpu>::iterator disp1, std::vector<Q> &v1,
+                  typename Indices<Cpu>::iterator disp1, vector<Q, Cpu> &v1,
                   unsigned int ncomponents1, MpiComm comm, CoorOrder co) {
 
             assert(fs.size() == comm.nprocs * ncomponents1);
@@ -429,7 +429,7 @@ namespace superbblas {
             // Do the copy
             tracker<XPU0> _t("local copy", v0.ctx());
             copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.value.first.begin(), v0.ctx(), vol,
-                                    v1.data(), it->second.value.second.begin(), Cpu{},
+                                    v1.data(), it->second.value.second.begin(), v1.ctx(),
                                     EWOp::Copy{});
         }
 
@@ -463,7 +463,7 @@ namespace superbblas {
                     }
                 }
                 buf_disp[rank] = n;
-                n += n_rank;
+                n += (n_rank * sizeof(Q) + MpiTypeSize - 1) / MpiTypeSize * MpiTypeSize / sizeof(Q);
             }
             assert(r.buf.size() == n);
 
