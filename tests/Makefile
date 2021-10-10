@@ -61,5 +61,6 @@ clean:
 known_issues:
 	# MPI_Ialltoallv hungs
 	mpirun -np 4 ./dist_cpu --dim='2 1 1 2 1' --procs='2 1 1 2'
+	mpirun -np 6 ./dist_cpu  --procs='1 1 2 3' --dim='4 4 4 4 64'
 
 .PHONY: clean ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS}

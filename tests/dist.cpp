@@ -137,8 +137,8 @@ int main(int argc, char **argv) {
 #ifdef _OPENMP
 #    pragma omp parallel for
 #endif
-                    for (unsigned int i = 0; i < (unsigned int)vol0; ++i)
-                        t1[i + n * (unsigned int)vol0] = t0[i];
+                    for (unsigned int i = 0; i < (unsigned int)std::min(vol1 / dim[N], vol0); ++i)
+                        t1[i + n * (unsigned int)(vol1 / dim[N])] = t0[i];
                 }
             }
             t = w_time() - t;
@@ -325,7 +325,8 @@ int main(int argc, char **argv) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (int n = 0; n < dim[N]; ++n) {
-                    thrust::copy_n(t0.begin(), vol0, t1.begin() + n * vol0);
+                    thrust::copy_n(t0.begin(), std::min(vol1 / dim[N], vol0),
+                                   t1.begin() + n * (vol1 / dim[N]));
                 }
             }
 		superbblas::detail::sync(ctx.toGpu(0));
