@@ -284,7 +284,7 @@ namespace superbblas {
 
         template <std::size_t Nd, typename T>
         std::array<T, Nd> toArray(const T *v, const char *name) {
-            if (std::strlen(v) != Nd) {
+            if ((v == nullptr && Nd > 0) || std::strlen(v) != Nd) {
                 std::stringstream ss;
                 ss << "The length of the order should match the template argument; argument `"
                    << name << "` should have length " << Nd;
@@ -567,7 +567,7 @@ namespace superbblas {
             std::size_t vol = volume<Nd0>(size0);
 
             // Check that IndexType is big enough
-            if (std::numeric_limits<IndexType>::max() <= vol0)
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol0)
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
             Indices<Cpu> indices0(vol, cpu);
@@ -623,7 +623,7 @@ namespace superbblas {
             std::size_t vol = volume<Nd0>(size0);
 
             // Check that IndexType is big enough
-            if (std::numeric_limits<IndexType>::max() <= vol1)
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol1)
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
             Indices<Cpu> indices1(vol, cpu);
@@ -1133,6 +1133,175 @@ namespace superbblas {
             return true;
         }
 
+        /// Copy the content of tensor v0 into v1
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename EWOP>
+        void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
+                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                        vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
+
+            tracker<XPU1> _t("local copy", v1.ctx());
+
+            // Shortcut to scale or zero out a tensor
+            if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
+                from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
+                std::is_same<EWOP, detail::EWOp::Copy>::value) {
+                copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
+                                        v1.ctx(), ewop);
+                return;
+            }
+
+            // Get the permutation vectors
+            Indices<XPU0> indices0;
+            Indices<XPU1> indices1;
+            IndexType disp0, disp1;
+            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
+                                                   v0.ctx(), indices0, disp0, co);
+            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
+                                                        v1.ctx(), indices1, disp1, co);
+
+            // Do the copy
+            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
+                                    indices0.size(), v1.data() + disp1, indices1.begin(), v1.ctx(),
+                                    ewop);
+        }
+
+        /// Recommended orderings for contracting two tensors
+        /// \param o0: dimension labels for the first operator
+        /// \param dim0: dimension size for the first operator
+        /// \param conj0: whether element-wise conjugate the first operator
+        /// \param o1: dimension labels for the second operator
+        /// \param dim1: dimension size for the second operator
+        /// \param conj1: whether element-wise conjugate the second operator
+        /// \param o_r: dimension labels for the output operator
+        /// \param dimr: dimension size for the output operator
+        /// \param sug_o0: (out) suggested dimension labels for the first operator
+        /// \param sug_o1: (out) suggested dimension labels for the second operator
+        /// \param sug_or: (out) suggested dimension labels for the output operator
+        /// \param swap_operands: (out) suggest to swap the first and the second operator
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        void
+        suggested_orders_for_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
+                                         const Order<Nd1> &o1, const Coor<Nd1> &dim1, bool conj1,
+                                         const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
+                                         Order<Nd0> &sug_o0, Order<Nd1> &sug_o1, Order<Ndo> &sug_or,
+                                         bool &swap_operands, CoorOrder co) {
+
+            // TODO: not consider dimensions with a single element
+            (void)dim0;
+            (void)dim1;
+            (void)dimr;
+
+            // The rest of the code is for SlowToFast; so reverse if that is the case
+            if (co == FastToSlow) {
+                suggested_orders_for_contraction<Nd0, Nd1, Ndo>(
+                    reverse(o0), reverse(dim0), conj0, reverse(o1), reverse(dim1), conj1,
+                    reverse(o_r), reverse(dimr), sug_o0, sug_o1, sug_or, swap_operands, SlowToFast);
+                sug_o0 = reverse(sug_o0);
+                sug_o1 = reverse(sug_o1);
+                sug_or = reverse(sug_or);
+                return;
+            }
+
+            // Find all common labels in o0, o1, and o_r
+            Order<Nd0> oT;
+            std::size_t nT = 0;
+            for (char c : o0)
+                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
+                    std::find(o_r.begin(), o_r.end(), c) != o_r.end())
+                    oT[nT++] = c;
+
+            // Find all common labels in o0 and o1 but not in oT
+            Order<Nd0> oA;
+            std::size_t nA = 0;
+            for (char c : o0)
+                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
+                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
+                    oA[nA++] = c;
+
+            // Find all common labels in o0 and o_r but not in oT
+            Order<Nd0> oB;
+            std::size_t nB = 0;
+            for (char c : o0)
+                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
+                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
+                    oB[nB++] = c;
+
+            // Find all common labels in o1 and o_r but not in oT
+            Order<Nd1> oC;
+            std::size_t nC = 0;
+            for (char c : o1)
+                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
+                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
+                    oC[nC++] = c;
+
+            // Check that o0 is made of the pieces T, A and B
+            if (o0.size() != nT + nA + nB) throw std::runtime_error("o0 has unmatched dimensions");
+            // Check that o1 is made of the pieces T, C and A
+            if (o1.size() != nT + nA + nC) throw std::runtime_error("o1 has unmatched directions");
+            // Check that o_r is made of the pieces T, C and B
+            if (o_r.size() != nT + nB + nC)
+                throw std::runtime_error("o_r has unmatched dimensions");
+
+            // If oT, oA, or oB aren't found as either oT+oA+oB or oA+oT+oB or oT+oB+oA or oB+oT+oA for !conj,
+            // and oT+oB+oA or oB+oT+oA for conj, then reorder the labels appropriately
+            auto sT0 = std::search(o0.begin(), o0.end(), oT.begin(), oT.begin() + nT);
+            auto sA0 = std::search(o0.begin(), o0.end(), oA.begin(), oA.begin() + nA);
+            auto sB0 = std::search(o0.begin(), o0.end(), oB.begin(), oB.begin() + nB);
+            if (sT0 == o0.end() || sA0 == o0.end() || sB0 == o0.end() ||
+                (!conj0 && nT > 0 && nA > 0 && nB > 0 && sA0 < sT0 && sB0 < sT0) ||
+                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0)))) {
+                std::copy_n(oT.begin(), nT, sug_o0.begin());
+                std::copy_n(oA.begin(), nA, sug_o0.begin() + nT + (!conj0 ? 0 : nB));
+                std::copy_n(oB.begin(), nB, sug_o0.begin() + nT + (!conj0 ? nA : 0));
+            } else
+                sug_o0 = o0;
+
+            // If oT, oA, or oC aren't found as either oT+oC+oA or oC+oT+oA or oT+oA+oC or oA+oT+oC for !conj,
+            // and oT+oA+oC or oA+oT+oC for conj, then reorder the labels appropriately
+            auto sT1 = std::search(o1.begin(), o1.end(), oT.begin(), oT.begin() + nT);
+            auto sA1 = std::search(o1.begin(), o1.end(), oA.begin(), oA.begin() + nA);
+            auto sC1 = std::search(o1.begin(), o1.end(), oC.begin(), oC.begin() + nC);
+            if (sT1 == o1.end() || sA1 == o1.end() || sC1 == o1.end() ||
+                (!conj1 && nT > 0 && nA > 0 && nC > 0 && sA1 < sT1 && sC1 < sT1) ||
+                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1)))) {
+                std::copy_n(oT.begin(), nT, sug_o1.begin());
+                std::copy_n(oC.begin(), nC, sug_o1.begin() + nT + (!conj1 ? 0 : nA));
+                std::copy_n(oA.begin(), nA, sug_o1.begin() + nT + (!conj1 ? nC : 0));
+            } else
+                sug_o1 = o1;
+
+            // If oT, oB, or oC aren't found as either oT+oC+oB or oC+oT+oB, then reorder the labels appropriately
+            auto sTr = std::search(o_r.begin(), o_r.end(), oT.begin(), oT.begin() + nT);
+            auto sBr = std::search(o_r.begin(), o_r.end(), oB.begin(), oB.begin() + nB);
+            auto sCr = std::search(o_r.begin(), o_r.end(), oC.begin(), oC.begin() + nC);
+            swap_operands = false;
+            if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
+                (nT > 0 && nB > 0 && sBr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
+                swap_operands = (nB > 0 && nC > 0 && sBr < sCr);
+                std::copy_n(oT.begin(), nT, sug_or.begin());
+                std::copy_n(oC.begin(), nC, sug_or.begin() + nT);
+                std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
+            } else
+                sug_or = o_r;
+        }
+
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
         /// \param alpha: factor on the contraction
         /// \param o0: dimension labels for the first operator
@@ -1148,13 +1317,6 @@ namespace superbblas {
         /// \param dimr: dimension size for the output operator
         /// \param vr: data for the second operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
-        ///
-        /// The order of the labels should be as following:
-        ///
-        /// - if !conj0 && !conj1, then (T,A,B) x (T,C,A) -> (T,C,B)
-        /// - if conj0 && !conj1,  then (T,B,A) x (T,C,A) -> (T,C,B)
-        /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
-        /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
         void local_contraction(T alpha, const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
@@ -1183,6 +1345,64 @@ namespace superbblas {
                     alpha, reverse(o0), reverse(dim0), conj0, v0, reverse(o1), reverse(dim1), conj1,
                     v1, beta, reverse(o_r), reverse(dimr), vr, SlowToFast);
                 return;
+            }
+
+            // If o0, o1, and o_r aren't appropriate, permute the input operands and the output
+            {
+                Order<Nd0> sug_o0;
+                Order<Nd1> sug_o1;
+                Order<Ndo> sug_or;
+                bool swap_operands;
+                suggested_orders_for_contraction(o0, dim0, conj0, o1, dim1, conj1, o_r, dimr,
+                                                 sug_o0, sug_o1, sug_or, swap_operands, co);
+                if (swap_operands) {
+                    local_contraction<Nd1, Nd0, Ndo, T, XPU>(alpha, o1, dim1, conj1, v1, o0, dim0,
+                                                             conj0, v0, beta, o_r, dimr, vr,
+                                                             SlowToFast);
+                    return;
+                }
+                if (sug_o0 != o0 || sug_o1 != o1 || sug_or != o_r) {
+                    Coor<Nd0> sug_dim0 = dim0;
+                    vector<const T, XPU> sug_v0 = v0;
+                    if (sug_o0 != o0) {
+                        sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
+                        vector<T, XPU> sug_v0_(v0.size(), v0.ctx());
+                        local_copy<Nd0, Nd0>(T{1}, o0, {}, dim0, dim0, v0, sug_o0, {}, sug_dim0,
+                                             sug_v0_, EWOp::Copy{}, SlowToFast);
+                        sug_v0 = sug_v0_;
+                    }
+
+                    Coor<Nd1> sug_dim1 = dim1;
+                    vector<const T, XPU> sug_v1 = v1;
+                    if (sug_o1 != o1) {
+                        sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
+                        vector<T, XPU> sug_v1_(v1.size(), v1.ctx());
+                        local_copy<Nd1, Nd1>(T{1}, o1, {}, dim1, dim1, v1, sug_o1, {}, sug_dim1,
+                                             sug_v1_, EWOp::Copy{}, SlowToFast);
+                        sug_v1 = sug_v1_;
+                    }
+
+                    Coor<Ndo> sug_dimr = dimr;
+                    vector<T, XPU> sug_vr = vr;
+                    if (sug_or != o_r) {
+                        sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
+                        sug_vr = vector<T, XPU>(vr.size(), vr.ctx());
+                        if (std::fabs(beta) != 0)
+                            local_copy<Ndo, Ndo, T, T>(T{1}, o_r, {}, dimr, dimr,
+                                                       vector<const T, XPU>(vr), sug_or, {},
+                                                       sug_dimr, sug_vr, EWOp::Copy{}, SlowToFast);
+                    }
+
+                    local_contraction<Nd0, Nd1, Ndo, T, XPU>(alpha, sug_o0, sug_dim0, conj0, sug_v0,
+                                                             sug_o1, sug_dim1, conj1, sug_v1, beta,
+                                                             sug_or, sug_dimr, sug_vr, SlowToFast);
+
+                    if (sug_or != o_r)
+                        local_copy<Ndo, Ndo>(T{1}, sug_or, {}, sug_dimr, sug_dimr,
+                                             vector<const T, XPU>(sug_vr), o_r, {}, dimr, vr,
+                                             EWOp::Copy{}, SlowToFast);
+                    return;
+                }
             }
 
             // Find T, the common labels between o0, o1, and o_r
@@ -1247,14 +1467,16 @@ namespace superbblas {
             // Check if o0 and o1 need transpose
             bool o0_trans = (o0.size() > nT && o0[o0_starts_with_T ? nT : 0] == sB);
             bool o1_trans = (o1.size() > nT && o1[o1_starts_with_T ? nT : 0] == sA);
-            bool or_trans = (o_r.size() > nT && nC > 0 && o_r[o0_starts_with_T ? nT : 0] == sB);
+            bool or_trans = (o_r.size() > nT && nC > 0 && o_r[or_starts_with_T ? nT : 0] == sB);
             if (or_trans)
-                throw std::runtime_error(
-                    "Unsupported contraction: on the output labels, put the labels from the second "
-                    "tensor before the labels from the first tensor.");
+                throw std::runtime_error("Unsupported contraction: on the output labels, put "
+                                         "the labels from the second "
+                                         "tensor before the labels from the first tensor.");
+            if (!o0_trans && conj0 && Nd0 <= 1) o0_trans = true;
             if (!o0_trans && conj0)
                 throw std::runtime_error("Unsupported contraction: reorder the labels on the first "
                                          "tensor to use conjugation");
+            if (!o1_trans && conj1 && Nd1 <= 1) o1_trans = true;
             if (!o1_trans && conj1)
                 throw std::runtime_error("Unsupported contraction: reorder the labels on the "
                                          "second tensor to use conjugation");
@@ -1277,66 +1499,17 @@ namespace superbblas {
             if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
 
             // Let's do (A, B) x (C, A) -> (C, B)
-            char transab = o0_trans ? (conj0 ? 'C' : 'T') : 'N';
-            char transca = o1_trans ? (conj1 ? 'C' : 'T') : 'N';
+            char transab = (o0_trans ? (conj0 ? 'C' : 'T') : 'N');
+            char transca = (o1_trans ? (conj1 ? 'C' : 'T') : 'N');
             int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volA);
-            int strideab =
-                (o0_starts_with_T ? volume<Nd0>(dim0) / volT : (!o0_trans ? volB : volA));
+            int strideab = (o0_starts_with_T ? volA * volB : (!o0_trans ? volB : volA));
             int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volA : volC);
-            int strideca =
-                (o1_starts_with_T ? volume<Nd1>(dim1) / volT : (!o1_trans ? volA : volC));
+            int strideca = (o1_starts_with_T ? volA * volC : (!o1_trans ? volA : volC));
             int ldcb = (or_starts_with_T ? 1 : volT) * volB;
-            int stridecb = (or_starts_with_T ? volume<Ndo>(dimr) / volT : volC);
+            int stridecb = (or_starts_with_T ? volB * volC : volB);
             xgemm_batch_strided(transab, transca, volB, volC, volA, alpha, v0.data(), ldab,
                                 strideab, v1.data(), ldca, strideca, beta, vr.data(), ldcb,
                                 stridecb, volT, vr.ctx());
-        }
-
-        /// Copy the content of tensor v0 into v1
-        /// \param alpha: factor on the copy
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param v0: data for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param v1: data for the destination tensor
-        /// \param ewop: either to copy or to add the origin values into the destination values
-        /// \param co: coordinate linearization order
-
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1, typename EWOP>
-        void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
-
-            tracker<XPU1> _t("local copy", v1.ctx());
-
-            // Shortcut to scale or zero out a tensor
-            if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
-                from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
-                std::is_same<EWOP, detail::EWOp::Copy>::value) {
-                copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
-                                        v1.ctx(), ewop);
-                return;
-            }
-
-            // Get the permutation vectors
-            Indices<XPU0> indices0;
-            Indices<XPU1> indices1;
-            IndexType disp0, disp1;
-            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                   v0.ctx(), indices0, disp0, co);
-            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        v1.ctx(), indices1, disp1, co);
-
-            // Do the copy
-            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
-                                    indices0.size(), v1.data() + disp1, indices1.begin(), v1.ctx(),
-                                    ewop);
         }
 
         /// Copy the content of tensor o0 into o1
@@ -1415,22 +1588,26 @@ namespace superbblas {
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0,
+                detail::to_vector(v0, detail::volume(dim0), ctx0.toCpu(session)), o1_, from1, dim1,
+                detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)), copyadd, co);
         }
 #ifdef SUPERBBLAS_USE_GPU
         else if (ctx0.plat == CPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toCpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toGpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0,
+                detail::to_vector(v0, detail::volume(dim0), ctx0.toCpu(session)), o1_, from1, dim1,
+                detail::to_vector(v1, detail::volume(dim1), ctx1.toGpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toGpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toCpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0,
+                detail::to_vector(v0, detail::volume(dim0), ctx0.toGpu(session)), o1_, from1, dim1,
+                detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, ctx0.toGpu(session)), o1_,
-                from1, dim1, detail::to_vector(v1, ctx1.toGpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0,
+                detail::to_vector(v0, detail::volume(dim0), ctx0.toGpu(session)), o1_, from1, dim1,
+                detail::to_vector(v1, detail::volume(dim1), ctx1.toGpu(session)), copyadd, co);
         }
 #endif
         else {
@@ -1454,13 +1631,6 @@ namespace superbblas {
     /// \param vr: data for the second operator
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
-    ///
-    /// The order of the labels should be as following:
-    ///
-    /// - if !conj0 && !conj1, then (T,A,B) x (T,C,A) -> (T,C,B)
-    /// - if conj0 && !conj1,  then (T,B,A) x (T,C,A) -> (T,C,B)
-    /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
-    /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void local_contraction(T alpha, const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
@@ -1475,16 +1645,18 @@ namespace superbblas {
         switch (ctx.plat) {
         case CPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toCpu(session)), o1_, dim1,
-                conj1, detail::to_vector(v1, ctx.toCpu(session)), beta, o_r_, dimr,
-                detail::to_vector(vr, ctx.toCpu(session)), co);
+                alpha, o0_, dim0, conj0,
+                detail::to_vector(v0, detail::volume(dim0), ctx.toCpu(session)), o1_, dim1, conj1,
+                detail::to_vector(v1, detail::volume(dim1), ctx.toCpu(session)), beta, o_r_, dimr,
+                detail::to_vector(vr, detail::volume(dimr), ctx.toCpu(session)), co);
             break;
 #ifdef SUPERBBLAS_USE_GPU
         case GPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0, detail::to_vector(v0, ctx.toGpu(session)), o1_, dim1,
-                conj1, detail::to_vector(v1, ctx.toGpu(session)), beta, o_r_, dimr,
-                detail::to_vector(vr, ctx.toGpu(session)), co);
+                alpha, o0_, dim0, conj0,
+                detail::to_vector(v0, detail::volume(dim0), ctx.toGpu(session)), o1_, dim1, conj1,
+                detail::to_vector(v1, detail::volume(dim1), ctx.toGpu(session)), beta, o_r_, dimr,
+                detail::to_vector(vr, detail::volume(dimr), ctx.toGpu(session)), co);
             break;
 #endif
         default: throw std::runtime_error("Unsupported platform");

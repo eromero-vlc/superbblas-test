@@ -226,19 +226,19 @@ namespace superbblas {
                 switch (ctx[i].plat) {
 #ifdef SUPERBBLAS_USE_GPU
                 case CPU:
-                    r.second.push_back(
-                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu(session)), fs[i][1], i});
+                    r.second.push_back(Component<Nd, T, Cpu>{
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case GPU:
-                    r.first.push_back(
-                        Component<Nd, T, Gpu>{to_vector(v[i], ctx[i].toGpu(session)), fs[i][1], i});
+                    r.first.push_back(Component<Nd, T, Gpu>{
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toGpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_GPU
                 case CPU:
-                    r.first.push_back(
-                        Component<Nd, T, Cpu>{to_vector(v[i], ctx[i].toCpu(session)), fs[i][1], i});
+                    r.first.push_back(Component<Nd, T, Cpu>{
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
@@ -1363,6 +1363,47 @@ namespace superbblas {
             return r;
         }
 
+        /// Return value for the dimensions in o_r matching the given for o0 and o1
+
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        From_size_item<Ndo> get_dimensions(const Order<Nd0> &o0, From_size_item<Nd0> fs0,
+                                           const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                                           From_size_item<Nd1> fs1, const Order<Ndo> &o_r) {
+
+            for (std::size_t i0 = 0; i0 < Nd0; ++i0) {
+                auto s1 = std::find(o1.begin(), o1.end(), o0[i0]);
+                if (s1 != o1.end()) {
+                    unsigned int i1 = s1 - o1.begin();
+                    intersection(fs0[0][i0], fs0[1][i0], fs1[0][i1], fs1[1][i1], dim0[i0],
+                                 fs0[0][i0], fs0[1][i0]);
+                    fs1[0][i1] = fs0[0][i0];
+                    fs1[1][i1] = fs0[1][i0];
+                }
+            }
+
+            From_size_item<Ndo> fsr;
+
+            for (std::size_t i0 = 0; i0 < Nd0; ++i0) {
+                auto sr = std::find(o_r.begin(), o_r.end(), o0[i0]);
+                if (sr != o_r.end()) {
+                    unsigned int ir = sr - o_r.begin();
+                    fsr[0][ir] = fs0[0][i0];
+                    fsr[1][ir] = fs0[1][i0];
+                }
+            }
+
+            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+                auto sr = std::find(o_r.begin(), o_r.end(), o1[i1]);
+                if (sr != o_r.end()) {
+                    unsigned int ir = sr - o_r.begin();
+                    fsr[0][ir] = fs1[0][i1];
+                    fsr[1][ir] = fs1[1][i1];
+                }
+            }
+
+            return fsr;
+        }
+
         /// Get the output partition
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
         /// \param o0: dimension labels for the first operator
@@ -1396,6 +1437,49 @@ namespace superbblas {
             return pr;
         }
 
+        /// Zeroed repeated results
+        /// \param p0: partitioning of the first origin tensor in consecutive ranges
+        /// \param dim0: dimension size for the operator
+        /// \param o0: dimension labels for the first operator
+        /// \param p1: partitioning of the second origin tensor in consecutive ranges
+        /// \param dim1: dimension size for the second operator
+        /// \param o1: dimension labels for the second operator
+        /// \param pr: partitioning of the output tensor in consecutive ranges
+        /// \param dimr: dimension size for the output operator
+        /// \param o_r: dimension labels for the output operator
+	/// \param componentId: component to process
+	/// \param v: data of the component on the output operator
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
+        void zeroed_repated_tensor(From_size<Nd0> p0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                                   From_size<Nd1> p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                                   From_size<Ndo> pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
+                                   unsigned int componentId, vector<T, XPU> v, CoorOrder co) {
+
+            assert(p0.size() == p1.size() && p1.size() == pr.size());
+
+            for (unsigned int i = 0; i < componentId; ++i) {
+                // Intersection of first, second, and output tensors of ith and componentId
+                Coor<Nd0> from0, size0;
+                intersection(p0[i][0], p0[i][1], p0[componentId][0], p0[componentId][1], dim0,
+                             from0, size0);
+                Coor<Nd1> from1, size1;
+                intersection(p1[i][0], p1[i][1], p1[componentId][0], p1[componentId][1], dim1,
+                             from1, size1);
+                From_size_item<Ndo> fsr =
+                    get_dimensions(o0, {from0, size0}, dim0, o1, {from1, size1}, o_r);
+                Coor<Ndo> fromr, sizer;
+                intersection(pr[i][0], pr[i][1], fsr[0], fsr[1], dimr, fromr, sizer);
+                if (volume(sizer) == 0) continue;
+
+                fromr = normalize_coor(fromr - pr[componentId][0], dimr);
+                local_copy<Ndo, Ndo, T, T>(0, o_r, fromr, sizer, pr[componentId][1],
+                                           (vector<const T, XPU>)v, o_r, fromr, pr[componentId][1],
+                                           v, EWOp::Copy{}, co);
+            }
+        }
+
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
         /// \param alpha: factor on the contraction
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
@@ -1417,13 +1501,6 @@ namespace superbblas {
         /// \param vr: data for the second operator
         /// \param ctxr: context for each data pointer in vr
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
-        ///
-        /// The order of the labels should be as following:
-        ///
-        /// - if !conj0 && !conj1, then (T,A,B) x (T,C,A) -> (T,C,B)
-        /// - if conj0 && !conj1,  then (T,B,A) x (T,C,A) -> (T,C,B)
-        /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
-        /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename Comm,
                   typename XPU0, typename XPU1>
@@ -1464,9 +1541,20 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Each component of the input tensors should be on the same device");
 
+            // Get the optimal ordering for the output tensor pr_
+            Order<Ndo> sug_or;
+            {
+                Order<Nd0> sug_o0;
+                Order<Nd1> sug_o1;
+                bool swap_operands;
+                suggested_orders_for_contraction(o0, dim0, conj0, o1, dim1, conj1, o_r, dimr,
+                                                 sug_o0, sug_o1, sug_or, swap_operands, co);
+            }
+            Coor<Ndo> sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
+
             // Generate the partitioning and the storage for the output tensor
             unsigned int ncomponents = v0.first.size() + v1.second.size();
-            From_size<Ndo> pr_ = get_output_partition<Nd0, Nd1, Ndo>(p0, o0, p1, o1, o_r);
+            From_size<Ndo> pr_ = get_output_partition<Nd0, Nd1, Ndo>(p0, o0, p1, o1, sug_or);
             Components_tmpl<Ndo, const T, XPU0, XPU1> vr_;
             std::vector<vector<T, XPU0>> vr0(v0.first.size());
             for (unsigned int i = 0; i < v0.first.size(); ++i) {
@@ -1476,8 +1564,10 @@ namespace superbblas {
                 vr0[i] = vector<T, XPU0>(volume<Ndo>(dimi), v0.first[i].it.ctx());
                 vr_.first.push_back(Component<Ndo, T, XPU0>{vr0[i], dimi, componentId});
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.first[i].it, o1,
-                                                    p1[pi][1], conj1, v1.first[i].it, T{0.0}, o_r,
-                                                    dimi, vr0[i], co);
+                                                    p1[pi][1], conj1, v1.first[i].it, T{0.0},
+                                                    sug_or, dimi, vr0[i], co);
+                zeroed_repated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi, vr0[i],
+                                      co);
             }
             std::vector<vector<T, XPU1>> vr1(v0.second.size());
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
@@ -1488,15 +1578,18 @@ namespace superbblas {
                 vr_.second.push_back(Component<Ndo, T, XPU1>{vr1[i], dimi, componentId});
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.second[i].it,
                                                     o1, p1[pi][1], conj1, v1.second[i].it, T{0.0},
-                                                    o_r, dimi, vr1[i], co);
+                                                    sug_or, dimi, vr1[i], co);
+                zeroed_repated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi, vr1[i],
+                                      co);
             }
 
             // Scale the output tensor by beta
             copy<Ndo, Ndo, T>(beta, pr, {}, dimr, o_r, toConst(vr), pr, {}, o_r, vr, comm,
                               EWOp::Copy{}, co);
 
-            // Reduce all the subtensors to the final tensor
-            copy<Ndo, Ndo, T>(1.0, pr_, {}, dimr, o_r, vr_, pr, {}, o_r, vr, comm, EWOp::Add{}, co);
+            // Scale the output tensor by beta and reduce all the subtensors to the final tensor
+            copy<Ndo, Ndo, T>(1, pr_, {}, sug_dimr, sug_or, vr_, pr, {}, o_r, vr, comm, EWOp::Add{},
+                              co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -1512,19 +1605,27 @@ namespace superbblas {
 
         template <std::size_t Nd>
         From_size<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n, Session session) {
+            if (Nd == 0) return to_vector(p = nullptr, n, Cpu{session});
             return clone(to_vector(p, n, Cpu{session}));
         }
     }
 
     /// Return a partitioning for a tensor of `dim` dimension onto a grid of processes
     /// \param dim1: dimension size for the tensor
-    /// \param procs: number of processes on each dimension; the total number of processes is the
-    ///               product of all the elements.
+    /// \param procs: number of processes on each dimension
+    /// \param nprocs: (optional) total number of processes; if not given or it is less than the zero,
+    ///                it will be the product of all elements in `procs`
+    /// \param replicate: (optional) if true and the total processes of `procs` is one, then replicate
+    ///                   the support of the tensor on every process
 
     template <std::size_t Nd>
-    std::vector<PartitionItem<Nd>> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs) {
+    std::vector<PartitionItem<Nd>> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs, int nprocs = -1,
+                                                      bool replicate = false) {
         int vol_procs = (int)detail::volume<Nd>(procs);
-        std::vector<PartitionItem<Nd>> fs(vol_procs);
+        if (nprocs >= 0 && vol_procs > nprocs)
+            std::runtime_error(
+                "The total number of processes from `procs` is greater than `nprocs`");
+        std::vector<PartitionItem<Nd>> fs(nprocs < 0 ? vol_procs : nprocs);
         Coor<Nd> stride = detail::get_strides<Nd>(procs, SlowToFast);
         for (int rank = 0; rank < vol_procs; ++rank) {
             Coor<Nd> cproc = detail::index2coor<Nd>(rank, procs, stride);
@@ -1536,6 +1637,8 @@ namespace superbblas {
                 fs[rank][1][i] = dim[i] / procs[i] + (dim[i] % procs[i] > cproc[i] ? 1 : 0);
             }
         }
+        if (replicate && vol_procs == 1)
+            for (auto &fsi : fs) fsi = fs[0];
         return fs;
     }
 
@@ -1639,13 +1742,6 @@ namespace superbblas {
     /// \param ctxr: context for each data pointer in vr
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
-    ///
-    /// The order of the labels should be as following:
-    ///
-    /// - if !conj0 && !conj1, then (T,A,B) x (T,C,A) -> (T,C,B)
-    /// - if conj0 && !conj1,  then (T,B,A) x (T,C,A) -> (T,C,B)
-    /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
-    /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
@@ -1693,13 +1789,6 @@ namespace superbblas {
     /// \param ctxr: context for each data pointer in vr
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
-    ///
-    /// The order of the labels should be as following:
-    ///
-    /// - if !conj0 && !conj1, then (T,A,B) x (T,C,A) -> (T,C,B)
-    /// - if conj0 && !conj1,  then (T,B,A) x (T,C,A) -> (T,C,B)
-    /// - if !conj0 && conj1,  then (T,A,B) x (T,A,C) -> (T,C,B)
-    /// - if conj0 && conj1,   then (T,B,A) x (T,A,C) -> (T,C,B)
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
     void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,

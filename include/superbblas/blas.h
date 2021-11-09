@@ -403,19 +403,12 @@ namespace superbblas {
             return vector<T, Cpu>(n, ptr, cpu);
         }
 
-        /// Construct a `vector<T, Cpu>` with the given pointer and context
-
-        template <typename T> vector<T, Cpu> to_vector(T *ptr, Cpu cpu) {
-            check_ptr_align<T>(ptr);
-            return vector<T, Cpu>(0, ptr, cpu);
-        }
-
 #ifdef SUPERBBLAS_USE_GPU
         /// Construct a `vector<T, Gpu>` with the given pointer and context
 
-        template <typename T> vector<T, Gpu> to_vector(T *ptr, Gpu cuda) {
+        template <typename T> vector<T, Gpu> to_vector(T *ptr, std::size_t n, Gpu cuda) {
             check_ptr_align<T>(ptr);
-            return vector<T, Gpu>(0, ptr, cuda);
+            return vector<T, Gpu>(n, ptr, cuda);
         }
 #endif
 
