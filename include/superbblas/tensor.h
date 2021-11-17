@@ -33,7 +33,7 @@
 
 #ifdef SUPERBBLAS_CREATING_LIB
 
-#    define COOR_DIMS 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+#    define COOR_DIMS 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
 #    define REPLACE_Nd0_Nd1 REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS)
 
 /// Generate template instantiations for get_permutation_origin and get_permutation_destination functions
@@ -80,83 +80,44 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_THRUST
         /// Thrust does not support std::array container; here we implement a quick-and-dirty array container based on tuples
 
-        template <typename T, std::size_t N> struct tarray_aux;
-        template <typename T, std::size_t N> struct tarray_aux {
-            using type =
-                thrust::tuple<T, T, T, T, T, T, T, T, T, typename tarray_aux<T, N - 9>::type>;
+        template <typename T, std::size_t N> struct tarray;
+        template <typename T, std::size_t N> struct tarray {
+            T head;
+            typename std::enable_if<(N > 0), tarray<T, N - 1>>::type tail;
         };
-
-        template <typename T> struct tarray_aux<T, 0ul> { using type = thrust::tuple<>; };
-        template <typename T> struct tarray_aux<T, 1ul> { using type = thrust::tuple<T>; };
-        template <typename T> struct tarray_aux<T, 2ul> { using type = thrust::tuple<T, T>; };
-        template <typename T> struct tarray_aux<T, 3ul> { using type = thrust::tuple<T, T, T>; };
-        template <typename T> struct tarray_aux<T, 4ul> { using type = thrust::tuple<T, T, T, T>; };
-        template <typename T> struct tarray_aux<T, 5ul> {
-            using type = thrust::tuple<T, T, T, T, T>;
-        };
-        template <typename T> struct tarray_aux<T, 6ul> {
-            using type = thrust::tuple<T, T, T, T, T, T>;
-        };
-        template <typename T> struct tarray_aux<T, 7ul> {
-            using type = thrust::tuple<T, T, T, T, T, T, T>;
-        };
-        template <typename T> struct tarray_aux<T, 8ul> {
-            using type = thrust::tuple<T, T, T, T, T, T, T, T>;
-        };
-        template <typename T> struct tarray_aux<T, 9ul> {
-            using type = thrust::tuple<T, T, T, T, T, T, T, T, T>;
-        };
-        // template <typename T> struct tarray_aux<T, 10ul> {
-        //     using type = thrust::tuple<T, T, T, T, T, T, T, T, T, thrust::tuple<T>>;
-        // };
-        // template <typename T> struct tarray_aux<T, 11ul> {
-        //     using type = thrust::tuple<T, T, T, T, T, T, T, T, T, thrust::tuple<T, T>>;
-        // };
-        /// array container implementation based on tuples
-
-        template <typename T, std::size_t N> using tarray = typename tarray_aux<T, N>::type;
+        template <typename T> struct tarray<T, 0ul> {};
+        template <typename T> struct tarray<T, 1ul> { T head; };
 
         /// Return the I-th element on a tarray
         /// \tparam I: index of the element to return
         /// \param t: input array
 
         template <std::size_t I, typename T, std::size_t N,
-                  typename std::enable_if<(I < 9 && I < N), bool>::type = true>
+                  typename std::enable_if<(I > 0 && I < N), bool>::type = true>
         inline __HOST__ __DEVICE__ T &tget(tarray<T, N> &t) {
-            return thrust::get<I>(t);
+            return tget<I - 1>(t.tail);
         }
 
         template <std::size_t I, typename T, std::size_t N,
-                  typename std::enable_if<(I < 9 && I < N), bool>::type = true>
-        inline __HOST__ __DEVICE__ const T &tget(const tarray<T, N> &t) {
-            return thrust::get<I>(t);
-        }
-
-        template <std::size_t I, typename T, std::size_t N,
-                  typename std::enable_if<(I >= 9 && I < N), bool>::type = true>
+                  typename std::enable_if<(I == 0 && I < N), bool>::type = true>
         inline __HOST__ __DEVICE__ T &tget(tarray<T, N> &t) {
-            return tget<I - 9, T, N - 9>(thrust::get<9>(t));
-        }
-
-        template <std::size_t I, typename T, std::size_t N,
-                  typename std::enable_if<(I >= 9 && I < N), bool>::type = true>
-        inline __HOST__ __DEVICE__ const T &tget(const tarray<T, N> &t) {
-            return tget<I - 9, T, N - 9>(thrust::get<9>(t));
+            return t.head;
         }
 
         /// Return the i-th element on a tarray
         /// \param i: index of the element to return
         /// \param t: input array
-        template <typename T, typename Indx, std::size_t N, std::size_t I = 0,
-                  typename std::enable_if<(I >= N), bool>::type = true>
-        inline __HOST__ __DEVICE__ T tget(Indx, const tarray<T, N> &) {
-            return T{0};
+
+        template <typename T, typename Indx, std::size_t N,
+                  typename std::enable_if<(N > 1), bool>::type = true>
+        inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &t) {
+            return (i == 0 ? t.head : tget<T, Indx>(i - 1, t.tail));
         }
 
-        template <typename T, typename Indx, std::size_t N, std::size_t I = 0,
-                  typename std::enable_if<(I < N), bool>::type = true>
-        inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &a) {
-            return ((std::size_t)i == I ? tget<I, T, N>(a) : tget<T, Indx, N, I + 1>(i, a));
+        template <typename T, typename Indx, std::size_t N,
+                  typename std::enable_if<(N == 1), bool>::type = true>
+        inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &t) {
+            return (i == 0 ? t.head : T{0});
         }
 
         /// Coordinate based on tarray
@@ -213,20 +174,19 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_THRUST
-        namespace ns_plus_aux {
-            template <std::size_t Nd, std::size_t I = 0,
-                      typename std::enable_if<(I >= Nd), bool>::type = true>
-            __HOST__ __DEVICE__ inline void plus_aux(const TCoor<Nd> &, const TCoor<Nd> &,
-                                                     TCoor<Nd> &) {}
-
-            template <std::size_t Nd, std::size_t I = 0,
-                      typename std::enable_if<(I < Nd), bool>::type = true>
-            __HOST__ __DEVICE__ inline void plus_aux(const TCoor<Nd> &a, const TCoor<Nd> &b,
-                                                     TCoor<Nd> &r) {
-                tget<I, IndexType, Nd>(r) = tget<I, IndexType, Nd>(a) + tget<I, IndexType, Nd>(b);
-                plus_aux<Nd, I + 1>(a, b, r);
+        struct ns_plus_aux {
+            template <std::size_t Nd, typename std::enable_if<(Nd > 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd> plus_aux(const TCoor<Nd> &a,
+                                                                 const TCoor<Nd> &b) {
+                return {a.head + b.head, plus_aux(a.tail, b.tail)};
             }
-        }
+
+            template <std::size_t Nd, typename std::enable_if<(Nd == 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd> plus_aux(const TCoor<Nd> &a,
+                                                                 const TCoor<Nd> &b) {
+                return {a.head + b.head};
+            }
+        };
 
         /// Add two arrays
         /// \param a: first array to add
@@ -234,31 +194,28 @@ namespace superbblas {
 
         template <std::size_t Nd>
         __HOST__ __DEVICE__ inline TCoor<Nd> tplus(TCoor<Nd> a, TCoor<Nd> b) {
-            TCoor<Nd> r;
-            ns_plus_aux::plus_aux<Nd>(a, b, r);
-            return r;
+            return ns_plus_aux::plus_aux(a, b);
         }
 
-        namespace ns_toTCoor_aux {
-            template <std::size_t Nd, std::size_t I = 0,
-                      typename std::enable_if<(I >= Nd), bool>::type = true>
-            inline void toTCoor_aux(const Coor<Nd> &, TCoor<Nd> &) {}
-
-            template <std::size_t Nd, std::size_t I = 0,
-                      typename std::enable_if<(I < Nd), bool>::type = true>
-            inline void toTCoor_aux(const Coor<Nd> &a, TCoor<Nd> &r) {
-                tget<I, IndexType, Nd>(r) = a[I];
-                toTCoor_aux<Nd, I + 1>(a, r);
+        struct ns_toTCoor_aux {
+            template <std::size_t I, std::size_t N,
+                      typename std::enable_if<(I + 1 < N), bool>::type = true>
+            static inline TCoor<N - I> toTCoor_aux(const Coor<N> &a) {
+                return {a[I], toTCoor_aux<I + 1>(a)};
             }
-        }
+
+            template <std::size_t I, std::size_t N,
+                      typename std::enable_if<(I + 1 == N), bool>::type = true>
+            static inline TCoor<N - I> toTCoor_aux(const Coor<N> &a) {
+                return {a[I]};
+            }
+        };
 
         /// Convert from Coor to TCoor
         /// \param a: input coordinate
 
         template <std::size_t Nd> inline TCoor<Nd> toTCoor(const Coor<Nd> &a) {
-            TCoor<Nd> r;
-            ns_toTCoor_aux::toTCoor_aux<Nd>(a, r);
-            return r;
+            return ns_toTCoor_aux::toTCoor_aux<0>(a);
         }
 #endif
 
@@ -328,20 +285,17 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_THRUST
-        template <std::size_t Nd, std::size_t I = 0,
-                  typename std::enable_if<(I >= Nd), bool>::type = true>
-        __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &, const TCoor<Nd> &,
-                                                 const TCoor<Nd> &) {
-            return 0;
-        }
-
-        template <std::size_t Nd, std::size_t I = 0,
-                  typename std::enable_if<(I < Nd), bool>::type = true>
+        template <std::size_t Nd, typename std::enable_if<(Nd > 1), bool>::type = true>
         __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &coor, const TCoor<Nd> &dim,
                                                  const TCoor<Nd> &stride) {
-            return (tget<I, IndexType, Nd>(coor) % tget<I, IndexType, Nd>(dim)) *
-                       tget<I, IndexType, Nd>(stride) +
-                   coor2index<Nd, I + 1>(coor, dim, stride);
+            return (coor.head % dim.head) * stride.head +
+                   coor2index(coor.tail, dim.tail, stride.tail);
+        }
+
+        template <std::size_t Nd, typename std::enable_if<(Nd == 1), bool>::type = true>
+        __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &coor, const TCoor<Nd> &dim,
+                                                 const TCoor<Nd> &stride) {
+            return (coor.head % dim.head) * stride.head;
         }
 #endif
 
@@ -359,28 +313,24 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_THRUST
-        namespace ns_index2coor_aux {
-            template <std::size_t Nd, std::size_t I = 0,
-                      typename std::enable_if<(I >= Nd), bool>::type = true>
-            __HOST__ __DEVICE__ inline void index2coor(IndexType, const TCoor<Nd> &,
-                                                       const TCoor<Nd> &, TCoor<Nd> &) {}
-
-            template <std::size_t Nd, std::size_t I = 0,
-                      typename std::enable_if<(I < Nd), bool>::type = true>
-            __HOST__ __DEVICE__ inline void index2coor(IndexType index, const TCoor<Nd> &dim,
-                                                       const TCoor<Nd> &stride, TCoor<Nd> &r) {
-                tget<I, IndexType, Nd>(r) =
-                    (index / tget<I, IndexType, Nd>(stride)) % tget<I, IndexType, Nd>(dim);
-                index2coor<Nd, I + 1>(index, dim, stride, r);
+        struct ns_index2coor_aux {
+            template <std::size_t Nd, typename std::enable_if<(Nd > 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd>
+            index2coor(IndexType index, const TCoor<Nd> &dim, const TCoor<Nd> &stride) {
+                return {(index / stride.head) % dim.head, index2coor(index, dim.tail, stride.tail)};
             }
-        }
+
+            template <std::size_t Nd, typename std::enable_if<(Nd == 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd>
+            index2coor(IndexType index, const TCoor<Nd> &dim, const TCoor<Nd> &stride) {
+                return {(index / stride.head) % dim.head};
+            }
+        };
 
         template <std::size_t Nd>
         __HOST__ __DEVICE__ inline TCoor<Nd> index2coor(IndexType index, const TCoor<Nd> &dim,
                                                         const TCoor<Nd> &stride) {
-            TCoor<Nd> r;
-            ns_index2coor_aux::index2coor<Nd>(index, dim, stride, r);
-            return r;
+            return ns_index2coor_aux::index2coor(index, dim, stride);
         }
 #endif
 
@@ -444,31 +394,27 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_THRUST
-        namespace ns_reorder_coor_aux {
-            template <std::size_t Nd0, std::size_t Nd1, std::size_t I = 0,
-                      typename std::enable_if<(I >= Nd1), bool>::type = true>
-            __HOST__ __DEVICE__ inline void reorder_coor(const TCoor<Nd0> &, const TCoor<Nd1> &,
-                                                         IndexType, TCoor<Nd1> &) {}
-
-            template <std::size_t Nd0, std::size_t Nd1, std::size_t I = 0,
-                      typename std::enable_if<(I < Nd1), bool>::type = true>
-            __HOST__ __DEVICE__ inline void reorder_coor(const TCoor<Nd0> &coor,
-                                                         const TCoor<Nd1> &perm, IndexType blanck,
-                                                         TCoor<Nd1> &r) {
-                tget<I, IndexType, Nd1>(r) =
-                    (tget<I, IndexType, Nd1>(perm) >= 0
-                         ? tget<IndexType, IndexType, Nd0>(tget<I, IndexType, Nd1>(perm), coor)
-                         : blanck);
-                reorder_coor<Nd0, Nd1, I + 1>(coor, perm, blanck, r);
+        struct ns_reorder_coor_aux {
+            template <std::size_t Nd0, std::size_t Nd1,
+                      typename std::enable_if<(Nd1 > 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd1>
+            reorder_coor(const TCoor<Nd0> &coor, const TCoor<Nd1> &perm, IndexType blanck) {
+                return {(perm.head >= 0 ? tget(perm.head, coor) : blanck),
+                        reorder_coor(coor, perm.tail, blanck)};
             }
-        }
+
+            template <std::size_t Nd0, std::size_t Nd1,
+                      typename std::enable_if<(Nd1 == 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd1>
+            reorder_coor(const TCoor<Nd0> &coor, const TCoor<Nd1> &perm, IndexType blanck) {
+                return {(perm.head >= 0 ? tget(perm.head, coor) : blanck)};
+            }
+        };
 
         template <std::size_t Nd0, std::size_t Nd1>
         __HOST__ __DEVICE__ inline TCoor<Nd1>
         reorder_coor(const TCoor<Nd0> &coor, const TCoor<Nd1> &perm, IndexType blanck = 0) {
-            TCoor<Nd1> r;
-            ns_reorder_coor_aux::reorder_coor<Nd0, Nd1>(coor, perm, blanck, r);
-            return r;
+            return ns_reorder_coor_aux::reorder_coor(coor, perm, blanck);
         }
 #endif
 
@@ -662,11 +608,9 @@ namespace superbblas {
                   perm1(perm1) {}
 
             __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
-                return coor2index<Nd0>(
-                    tplus<Nd0>(
-                        reorder_coor<Nd1, Nd0>(index2coor<Nd1>(i, size1, new_stride1), perm1),
-                        from0),
-                    dim0, stride0);
+                return coor2index(
+                    tplus(reorder_coor(index2coor(i, size1, new_stride1), perm1), from0), dim0,
+                    stride0);
             }
         };
 
@@ -684,8 +628,7 @@ namespace superbblas {
                   size1(size1) {}
 
             __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
-                return coor2index<Nd1>(tplus<Nd1>(index2coor<Nd1>(i, size1, new_stride1), from1),
-                                       dim1, stride1);
+                return coor2index(tplus(index2coor(i, size1, new_stride1), from1), dim1, stride1);
             }
         };
 #    endif
