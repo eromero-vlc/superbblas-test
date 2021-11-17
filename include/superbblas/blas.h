@@ -53,6 +53,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         REPLACE(TREAL, SUPERBBLAS_REAL_TYPES)                                                      \
         REPLACE(QREAL, SUPERBBLAS_REAL_TYPES)                                                      \
         REPLACE(TCOMPLEX, SUPERBBLAS_COMPLEX_TYPES) REPLACE(QCOMPLEX, SUPERBBLAS_COMPLEX_TYPES)
+#    define REPLACE_T REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES)
 #    define REPLACE_T_Q                                                                            \
         REPLACE(T Q, IndexType IndexType, T Q) REPLACE(T Q, META_TYPES) REPLACE_META_TYPES
 
@@ -77,11 +78,18 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define DECL_COPY_REDUCE(...)                                                                  \
         EMIT REPLACE1(copy_reduce_n, superbblas::detail::copy_reduce_n<IndexType, T, XPU_GPU>)     \
-            REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES) REPLACE_XPU template __VA_ARGS__;
+            REPLACE_T REPLACE_XPU template __VA_ARGS__;
+
+/// Generate template instantiations for zero?n functions with template parameters IndexType and T
+
+#    define DECL_ZERO_T(...)                                                                       \
+        EMIT REPLACE1(zero_n, superbblas::detail::zero_n<IndexType, T, XPU_GPU>)                   \
+            REPLACE_T REPLACE_XPU template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
 #    define DECL_COPY_REDUCE(...) __VA_ARGS__
+#    define DECL_ZERO_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -465,6 +473,58 @@ namespace superbblas {
             struct Add {};
         }
 
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param n: number of elements to set
+        /// \param cpu: device context
+
+        template <typename T> void zero_n(T *v, std::size_t n, Cpu) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) v[i] = T{0};
+        }
+
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param indices: indices of the elements to set
+        /// \param n: number of elements to set
+        /// \param cpu: device context
+
+        template <typename IndexType, typename T>
+        void zero_n(T *v, const IndexType *indices, std::size_t n, Cpu) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+            for (std::size_t i = 0; i < n; ++i) v[indices[i]] = T{0};
+        }
+
+#ifdef SUPERBBLAS_USE_CUDA
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param n: number of elements to set
+        /// \param cuda: device context
+
+        template <typename T> void zero_n(T *v, std::size_t n, Cuda cuda) {
+            if (n == 0) return;
+            setDevice(cuda);
+            cudaCheck(cudaMemset(v, 0, sizeof(T) * n));
+        }
+
+#elif defined(SUPERBBLAS_USE_HIP)
+        /// Set the first `n` elements with a zero value
+        /// \param v: first element to set
+        /// \param n: number of elements to set
+        /// \param hip: device context
+
+        template <typename T> void zero_n(T *v, std::size_t n, Hip hip) {
+            if (n == 0) return;
+            setDevice(hip);
+            hipCheck(hipMemset(v, 0, sizeof(T) * n));
+        }
+
+#endif // SUPERBBLAS_USE_CUDA
+
         /// Copy n values, w[i] = v[i]
 
         template <typename IndexType, typename T, typename Q>
@@ -477,6 +537,11 @@ namespace superbblas {
 #    pragma omp for
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+            } else if (std::norm(alpha) == 0) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                for (std::size_t i = 0; i < n; ++i) w[i] = T{0};
             } else {
                 if (std::is_same<T, Q>::value && (void *)v == (void *)w) {
 #ifdef _OPENMP
@@ -503,6 +568,8 @@ namespace superbblas {
 #    pragma omp for
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+            } else if (std::norm(alpha) == 0) {
+                // Do nothing
             } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -525,6 +592,11 @@ namespace superbblas {
 #    pragma omp for
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+                } else if (std::norm(alpha) == 0) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[i] = T{0};
                 } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -548,6 +620,8 @@ namespace superbblas {
 #    pragma omp for
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] += v[indices[i]];
+                } else if (alpha == typename elem<T>::type{1}) {
+                    // Do nothing
                 } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -571,6 +645,11 @@ namespace superbblas {
 #    pragma omp for
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+                } else if (std::norm(alpha) == 0) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = T{0};
                 } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -594,6 +673,8 @@ namespace superbblas {
 #    pragma omp for
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
+                } else if (std::norm(alpha) == 0) {
+                    // Do nothing
                 } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -618,6 +699,11 @@ namespace superbblas {
 #    pragma omp for
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+                } else if (std::norm(alpha) == 0) {
+#ifdef _OPENMP
+#    pragma omp for
+#endif
+                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = T{0};
                 } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -642,6 +728,8 @@ namespace superbblas {
 #    pragma omp for
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+                } else if (std::norm(alpha) == 0) {
+                    // Do nothing
                 } else {
 #ifdef _OPENMP
 #    pragma omp for
@@ -770,9 +858,38 @@ namespace superbblas {
             }
         }
 
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param indices: indices of the elements to set
+        /// \param n: number of elements to set
+        /// \param xpu: device context
+
+        template <typename IndexType, typename T, typename XPU>
+        void zero_n_thrust(T *v, const IndexType *indices, std::size_t n, XPU xpu) {
+            if (indices == nullptr) {
+                zero_n(v, n, xpu);
+            } else {
+                setDevice(xpu);
+                auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
+                                                             encapsulate_pointer(indices));
+                thrust::fill_n(itv, n, T{0});
+            }
+        }
+
 #endif // SUPERBBLAS_USE_THRUST
 
 #ifdef SUPERBBLAS_USE_GPU
+
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param indices: indices of the elements to set
+        /// \param n: number of elements to set
+        /// \param xpu: device context
+
+        template <typename IndexType, typename T, typename XPU>
+        DECL_ZERO_T(void zero_n(T *v, const IndexType *indices, std::size_t n, XPU xpu))
+        IMPL({ zero_n_thrust<IndexType, T, XPU>(v, indices, n, xpu); })
+
         /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] when v and w are on device
 
         template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
@@ -783,8 +900,14 @@ namespace superbblas {
             assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
             if (n == 0) return;
 
+            // Treat zero case
+            if (std::norm(alpha) == 0) {
+                if (std::is_same<EWOP, EWOp::Copy>::value)
+                    zero_n<IndexType, Q, XPU>(w, indicesw, n, xpuw);
+            }
+
             // Actions when the v and w are on the same device
-            if (deviceId(xpuv) == deviceId(xpuw)) {
+            else if (deviceId(xpuv) == deviceId(xpuw)) {
                 if (indicesv == nullptr && indicesw == nullptr &&
                     alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                     std::is_same<EWOP, EWOp::Copy>::value) {
@@ -838,9 +961,14 @@ namespace superbblas {
                     std::size_t n, Q *w, const IndexType *indicesw, XPU1 xpu1, EWOP) {
             if (n == 0) return;
 
+            // Treat zero case
+            if (std::norm(alpha) == 0) {
+                if (std::is_same<EWOP, EWOp::Copy>::value) zero_n(w, indicesw, n, xpu1);
+            }
+
             // Base case
-            if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
-                indicesv == nullptr && indicesw == nullptr) {
+            else if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
+                     indicesv == nullptr && indicesw == nullptr) {
                 setDevice(xpu0);
                 setDevice(xpu1);
 #    ifdef SUPERBBLAS_USE_CUDA
@@ -956,32 +1084,7 @@ namespace superbblas {
             return r;
         }
 
-        /// Set the first `n` elements with a value
-        /// \param it: first element to set
-        /// \param n: number of elements to set
-        /// \param v: value to set
-        /// \param cpu: device context
-
-        template <typename T> void zero_n(T *v, std::size_t n, Cpu) {
-#ifdef _OPENMP
-#    pragma omp for
-#endif
-            for (std::size_t i = 0; i < n; ++i) v[i] = T{0};
-        }
-
 #ifdef SUPERBBLAS_USE_CUDA
-        /// Set the first `n` elements with a zero value
-        /// \param it: first element to set
-        /// \param n: number of elements to set
-        /// \param v: value to set
-        /// \param cuda: device context
-
-        template <typename T> void zero_n(T *v, std::size_t n, Cuda cuda) {
-            if (n == 0) return;
-            setDevice(cuda);
-            cudaCheck(cudaMemset(v, 0, sizeof(T) * n));
-        }
-
         template <typename T> inline cudaDataType_t toCudaDataType(void);
 
         template <> inline cudaDataType_t toCudaDataType<float>(void) { return CUDA_R_32F; }
@@ -1009,18 +1112,6 @@ namespace superbblas {
         }
 
 #elif defined(SUPERBBLAS_USE_HIP)
-        /// Set the first `n` elements with a zero value
-        /// \param it: first element to set
-        /// \param n: number of elements to set
-        /// \param v: value to set
-        /// \param hip: device context
-
-        template <typename T> void zero_n(T *v, std::size_t n, Hip hip) {
-            if (n == 0) return;
-            setDevice(hip);
-            hipCheck(hipMemset(v, 0, sizeof(T) * n));
-        }
-
         template <typename T> inline hipblasDatatype_t toHipDataType(void);
 
         template <> inline hipblasDatatype_t toHipDataType<float>(void) { return HIPBLAS_R_32F; }

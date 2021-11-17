@@ -1447,8 +1447,8 @@ namespace superbblas {
         /// \param pr: partitioning of the output tensor in consecutive ranges
         /// \param dimr: dimension size for the output operator
         /// \param o_r: dimension labels for the output operator
-	/// \param componentId: component to process
-	/// \param v: data of the component on the output operator
+        /// \param componentId: component to process
+        /// \param v: data of the component on the output operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>

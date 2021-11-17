@@ -175,7 +175,9 @@ namespace superbblas {
             if (std::fseek(f, old_offset, SEEK_SET) != 0) gen_error("Error setting file position");
         }
 
-        inline void truncate(std::FILE *f, std::size_t n) { ftruncate(fileno(f), n); }
+        inline void truncate(std::FILE *f, std::size_t n) {
+            if (ftruncate(fileno(f), n) != 0) gen_error("Error truncating file");
+        }
 
         inline void flush(std::FILE *f) {
             if (std::fflush(f) != 0) gen_error("Error flushing file");
