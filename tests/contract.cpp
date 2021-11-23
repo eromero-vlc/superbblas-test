@@ -230,16 +230,19 @@ void test_first_operator() {
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, typename T> void test_for_C() {
+    test_first_operator<NT, NA, NB, 0, T>();
     test_first_operator<NT, NA, NB, 1, T>();
     test_first_operator<NT, NA, NB, 2, T>();
 }
 
 template <std::size_t NT, std::size_t NA, typename T> void test_for_B() {
+    test_for_C<NT, NA, 0, T>();
     test_for_C<NT, NA, 1, T>();
     test_for_C<NT, NA, 2, T>();
 }
 
 template <std::size_t NT, typename T> void test_for_A() {
+    test_for_B<NT, 0, T>();
     test_for_B<NT, 1, T>();
     test_for_B<NT, 2, T>();
 }

@@ -1397,7 +1397,7 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the second tensor");
-            if (!(nT == 0 || nB + nC == 0 || o_r.size() == 0 || o_r.back() != eT))
+            if (!(nT == 0 || nB == 0 || nC == 0 || o_r.size() == 0 || o_r.back() != eT))
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the output tensor");
@@ -1421,11 +1421,11 @@ namespace superbblas {
                 throw std::runtime_error("Unsupported contraction: on the output labels, put "
                                          "the labels from the second "
                                          "tensor before the labels from the first tensor.");
-            if (!o0_trans && conj0 && Nd0 <= 1) o0_trans = true;
+            if (!o0_trans && conj0 && (nA == 0 || nB == 0)) o0_trans = true;
             if (!o0_trans && conj0)
                 throw std::runtime_error("Unsupported contraction: reorder the labels on the first "
                                          "tensor to use conjugation");
-            if (!o1_trans && conj1 && Nd1 <= 1) o1_trans = true;
+            if (!o1_trans && conj1 && (nA == 0 || nC == 0)) o1_trans = true;
             if (!o1_trans && conj1)
                 throw std::runtime_error("Unsupported contraction: reorder the labels on the "
                                          "second tensor to use conjugation");

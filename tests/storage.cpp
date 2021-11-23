@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
         } else if (std::strncmp("--checksum=", argv[i], 11) == 0) {
             int checksum_d = 0;
             if (sscanf(argv[i] + 11, "%d", &checksum_d) != 1 || checksum_d < 0 || checksum_d > 2) {
-                std::cerr << "--checksum= should follow 0, 1, or 2, for instance -checksum=1"
+                std::cerr << "--checksum= should follow 0, 1, or 2, for instance --checksum=1"
                           << std::endl;
                 checksum = (checksum_d == 0 ? NoChecksum
                                             : (checksum_d == 1 ? GlobalChecksum : BlockChecksum));
