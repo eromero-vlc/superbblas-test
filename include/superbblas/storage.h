@@ -1189,8 +1189,9 @@ namespace superbblas {
 
                 // Write metadata
                 write(fh, &metadata_length, 1);
-                write(fh, metadata, metadata_length);
                 checksum_val = do_checksum(&metadata_length, 1, 0, checksum_val);
+                write(fh, metadata, metadata_length);
+                checksum_val = do_checksum(metadata, metadata_length, 0, checksum_val);
 
                 // Write padding
                 std::vector<char> padding(padding_size);

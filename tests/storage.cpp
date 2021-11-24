@@ -22,6 +22,19 @@ template <std::size_t Nd> PartitionStored<Nd> dist_tensor_on_root(Coor<Nd> dim, 
     return fs;
 }
 
+void test_checksum() {
+    const char *data = "Quixote was a great guy";
+    const int n = std::strlen(data);
+    checksum_t checksum_val0 = do_checksum(data, n);
+    checksum_t checksum_val1 = 0;
+    for (int i = 0; i < n; ++i) checksum_val1 = do_checksum(&data[i], 1, 0, checksum_val1);
+    checksum_t checksum_val2 = 0;
+    for (int i = 0; i < n; i += 2)
+        checksum_val2 = do_checksum(&data[i], std::min(n - i, 2), 0, checksum_val2);
+    if (checksum_val0 != checksum_val1 || checksum_val0 != checksum_val2)
+        throw std::runtime_error("Checksum isn't associative");
+}
+
 int main(int argc, char **argv) {
     int nprocs, rank;
 #ifdef SUPERBBLAS_USE_MPI
@@ -34,6 +47,8 @@ int main(int argc, char **argv) {
     nprocs = 1;
     rank = 0;
 #endif
+
+    test_checksum();
 
     constexpr std::size_t Nd = 8; // mdtgsSnN
     constexpr unsigned int nS = 4, nG = 16; // length of dimension spin and number of gammas
@@ -80,10 +95,10 @@ int main(int argc, char **argv) {
             if (sscanf(argv[i] + 11, "%d", &checksum_d) != 1 || checksum_d < 0 || checksum_d > 2) {
                 std::cerr << "--checksum= should follow 0, 1, or 2, for instance --checksum=1"
                           << std::endl;
-                checksum = (checksum_d == 0 ? NoChecksum
-                                            : (checksum_d == 1 ? GlobalChecksum : BlockChecksum));
                 return -1;
             }
+            checksum =
+                (checksum_d == 0 ? NoChecksum : (checksum_d == 1 ? GlobalChecksum : BlockChecksum));
             dim[N1] = dim[N0];
           } else if(std::strncmp("--help", argv[i], 6) == 0) {
              std::cout << "Commandline option:\n  " << argv[0]
