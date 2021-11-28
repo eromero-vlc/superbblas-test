@@ -25,11 +25,13 @@ template <std::size_t N> Order<N + 1> toStr(Order<N> o) {
 }
 
 template <std::size_t NA, std::size_t NB, std::size_t NC, typename T>
-Operator<NA + NB + NC, T> generate_tensor(char a, char b, char c) {
+Operator<NA + NB + NC, T> generate_tensor(char a, char b, char c, const std::map<char, int> &dims) {
     // Build the operator with A,B,C
     constexpr std::size_t N = NA + NB + NC;
     Coor<N> dim{};
-    for (IndexType &c : dim) c = 2;
+    for (std::size_t i = 0; i < NA; ++i) dim[i] = dims.at(a);
+    for (std::size_t i = 0; i < NB; ++i) dim[i + NA] = dims.at(b);
+    for (std::size_t i = 0; i < NC; ++i) dim[i + NA + NB] = dims.at(c);
     std::size_t vol = detail::volume(dim);
     std::vector<T> v(vol);
     for (std::size_t i = 0; i < vol; ++i) v[i] = make_complex<T>(i, i);
@@ -131,9 +133,20 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
             diff_fn += std::norm(v2_[i] - vr[i]), fn += std::norm(v2_[i]);
         diff_fn = std::sqrt(diff_fn);
         fn = std::sqrt(fn);
-        if (diff_fn > fn * 1e-4)
+        if (diff_fn > fn * 1e-4) {
+            // Contract the distributed matrices
+
+            contraction(T{1}, p0.data(), 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(), 1,
+                        &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), 1, &o2[0], &ptrv2,
+                        &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                        MPI_COMM_WORLD,
+#endif
+                        SlowToFast);
+
             throw std::runtime_error(
                 "Result of contraction does not match with the correct answer");
+        }
     }
 }
 
@@ -200,56 +213,78 @@ void test_contraction(Operator<N0, T> p0, Operator<N1, T> p1, Operator<N2, T> p2
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T>
-void test_third_operator(Operator<NT + NA + NB, T> p0, Operator<NT + NA + NC, T> p1) {
-    test_contraction(p0, p1, generate_tensor<NT, NB, NC, T>(sT, sB, sC));
-    test_contraction(p0, p1, generate_tensor<NT, NC, NB, T>(sT, sC, sB));
-    test_contraction(p0, p1, generate_tensor<NB, NC, NT, T>(sB, sC, sT));
-    test_contraction(p0, p1, generate_tensor<NB, NT, NC, T>(sB, sT, sC));
-    test_contraction(p0, p1, generate_tensor<NC, NB, NT, T>(sC, sB, sT));
-    test_contraction(p0, p1, generate_tensor<NC, NT, NB, T>(sC, sT, sB));
+void test_third_operator(Operator<NT + NA + NB, T> p0, Operator<NT + NA + NC, T> p1,
+                         const std::map<char, int> &dims) {
+    test_contraction(p0, p1, generate_tensor<NT, NB, NC, T>(sT, sB, sC, dims));
+    test_contraction(p0, p1, generate_tensor<NT, NC, NB, T>(sT, sC, sB, dims));
+    test_contraction(p0, p1, generate_tensor<NB, NC, NT, T>(sB, sC, sT, dims));
+    test_contraction(p0, p1, generate_tensor<NB, NT, NC, T>(sB, sT, sC, dims));
+    test_contraction(p0, p1, generate_tensor<NC, NB, NT, T>(sC, sB, sT, dims));
+    test_contraction(p0, p1, generate_tensor<NC, NT, NB, T>(sC, sT, sB, dims));
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T>
-void test_second_operator(Operator<NT + NA + NB, T> p0) {
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NT, NA, NC, T>(sT, sA, sC));
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NT, NC, NA, T>(sT, sC, sA));
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NA, NC, NT, T>(sA, sC, sT));
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NA, NT, NC, T>(sA, sT, sC));
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NC, NA, NT, T>(sC, sA, sT));
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NC, NT, NA, T>(sC, sT, sA));
+void test_second_operator(Operator<NT + NA + NB, T> p0, const std::map<char, int> &dims) {
+    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NT, NA, NC, T>(sT, sA, sC, dims),
+                                           dims);
+    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NT, NC, NA, T>(sT, sC, sA, dims),
+                                           dims);
+    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NA, NC, NT, T>(sA, sC, sT, dims),
+                                           dims);
+    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NA, NT, NC, T>(sA, sT, sC, dims),
+                                           dims);
+    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NC, NA, NT, T>(sC, sA, sT, dims),
+                                           dims);
+    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NC, NT, NA, T>(sC, sT, sA, dims),
+                                           dims);
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T>
-void test_first_operator() {
-    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NT, NA, NB, T>(sT, sA, sB));
-    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NT, NB, NA, T>(sT, sB, sA));
-    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NA, NB, NT, T>(sA, sB, sT));
-    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NA, NT, NB, T>(sA, sT, sB));
-    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NB, NA, NT, T>(sB, sA, sT));
-    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NB, NT, NA, T>(sB, sT, sA));
+void test_first_operator(const std::map<char, int> &dims) {
+    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NT, NA, NB, T>(sT, sA, sB, dims), dims);
+    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NT, NB, NA, T>(sT, sB, sA, dims), dims);
+    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NA, NB, NT, T>(sA, sB, sT, dims), dims);
+    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NA, NT, NB, T>(sA, sT, sB, dims), dims);
+    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NB, NA, NT, T>(sB, sA, sT, dims), dims);
+    test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NB, NT, NA, T>(sB, sT, sA, dims), dims);
 }
+
+template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T,
+          typename std::enable_if<!(NT + NA + NB == 0 || NT + NA + NC == 0 || NT + NC + NB == 0),
+                                  bool>::type = true>
+void test_sizes() {
+    if (NT + NA + NB == 0 || NT + NA + NC == 0 || NT + NC + NB == 0) return;
+    for (int dimT = 1; dimT < 3; ++dimT)
+        for (int dimA = 1; dimA < 3; ++dimA)
+            for (int dimB = 1; dimB < 3; ++dimB)
+                for (int dimC = 1; dimC < 3; ++dimC)
+                    test_first_operator<NT, NA, NB, NC, T>(
+                        {{sT, dimT}, {sA, dimA}, {sB, dimB}, {sC, dimC}});
+}
+
+template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T,
+          typename std::enable_if<(NT + NA + NB == 0 || NT + NA + NC == 0 || NT + NC + NB == 0),
+                                  bool>::type = true>
+void test_sizes() {}
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, typename T> void test_for_C() {
-    test_first_operator<NT, NA, NB, 0, T>();
-    test_first_operator<NT, NA, NB, 1, T>();
-    test_first_operator<NT, NA, NB, 2, T>();
+    test_sizes<NT, NA, NB, 0, T>();
+    test_sizes<NT, NA, NB, 1, T>();
 }
 
 template <std::size_t NT, std::size_t NA, typename T> void test_for_B() {
     test_for_C<NT, NA, 0, T>();
     test_for_C<NT, NA, 1, T>();
-    test_for_C<NT, NA, 2, T>();
 }
 
 template <std::size_t NT, typename T> void test_for_A() {
     test_for_B<NT, 0, T>();
     test_for_B<NT, 1, T>();
-    test_for_B<NT, 2, T>();
 }
 
 template <typename T> void test() {
+    test_for_A<0, T>();
     test_for_A<1, T>();
-    test_for_A<2, T>();
 }
 
 int main(int argc, char **argv) {
