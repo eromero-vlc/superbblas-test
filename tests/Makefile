@@ -16,7 +16,7 @@ SB_LDFLAGS ?=
 
 include ../make.inc
 
-SOURCES := blas.cpp local.cpp dist.cpp contract.cpp storage.cpp
+SOURCES := blas.cpp local.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
@@ -42,6 +42,9 @@ all_cuda_lib: $(CUDA_LIB_TARGETS)
 all_hip: $(HIP_TARGETS)
 
 $(CPU_TARGETS): %_cpu: %.cpp
+	${CXX} ${SB_INCLUDE} ${MPISBFLAG} ${CXXFLAGS} $< -o $@ ${SB_LDFLAGS} ${LDFLAGS}
+
+storage_details: storage_details.cpp
 	${CXX} ${SB_INCLUDE} ${MPISBFLAG} ${CXXFLAGS} $< -o $@ ${SB_LDFLAGS} ${LDFLAGS}
 
 $(CUDA_TARGETS): %_cuda: %.cpp
