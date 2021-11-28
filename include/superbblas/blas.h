@@ -981,7 +981,7 @@ namespace superbblas {
                                                                   : hipMemcpyHostToDevice));
 #    endif
                 // Scale by alpha
-                copy_n<IndexType>(alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
+                copy_n<IndexType>((Q)alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
             }
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
