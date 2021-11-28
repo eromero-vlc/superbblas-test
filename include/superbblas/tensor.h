@@ -370,17 +370,15 @@ namespace superbblas {
         /// \param size: number of consecutive dimension of the sublattice
 
         template <std::size_t Nd>
-        std::size_t volume(const Order<Nd> &order, const Coor<Nd> &dim, char starts_with,
-                           std::size_t size) {
-            assert(size <= order.size());
-
-            if (size <= 0) return 0;
+        std::size_t volume(typename Coor<Nd>::const_iterator begin,
+                           typename Coor<Nd>::const_iterator end) {
+            if (begin == end) return 0;
 
             std::size_t vol = 1;
-            for (std::size_t n = 0,
-                             i = std::find(order.begin(), order.end(), starts_with) - order.begin();
-                 n < size; ++n, ++i)
-                vol *= dim[i];
+            while (begin != end) {
+                vol *= *begin;
+                ++begin;
+            }
 
             return vol;
         }
@@ -999,64 +997,6 @@ namespace superbblas {
             disp = 0;
         }
 
-        /// Find common largest substring
-        /// \param o0: dimension labels
-        /// \param o1: dimension labels
-        /// \param starts_with: (out) the first label of the common substring
-        /// \param size: the number of common labels
-        ///
-        /// Return the largest common substring in o0 and o1 assuming that each
-        /// dimension has different labels on each vector
-
-        template <typename Vector0, typename Vector1, typename ConstIterator,
-                  typename value_type = typename Vector0::value_type>
-        void largest_common_substring_order(const Vector0 &o0, const Vector1 &o1,
-                                            ConstIterator avoid, std::size_t nAvoid,
-                                            value_type &starts_with, std::size_t &size) {
-            size = 0;
-            for (std::size_t i = 0; i < o0.size(); ++i) {
-                if (nAvoid > 0 && std::find(avoid, avoid + nAvoid, o0[i]) != avoid + nAvoid)
-                    continue;
-                auto j = std::find(o1.begin(), o1.end(), o0[i]);
-                if (j == o1.end()) continue;
-                starts_with = o0[i];
-                for (std::size_t i0 = i; i0 < o0.size() && j != o1.end() && o0[i0] == *j &&
-                                         (nAvoid == 0 || *j != *avoid);
-                     ++i0, ++j, ++size)
-                    ;
-                break;
-            }
-        }
-
-        /// Find common largest substring
-        /// \param o0: dimension labels
-        /// \param o1: dimension labels
-        /// \param o2: dimension labels
-        /// \param starts_with: (out) the first label of the common substring
-        /// \param size: the number of common labels
-        ///
-        /// Return the largest common substring in o0, o1 and o2 assuming that each dimension has
-        /// different labels on each vector.
-
-        template <typename Vector0, typename Vector1, typename Vector2,
-                  typename value_type = typename Vector0::value_type>
-        void largest_common_substring_order(const Vector0 &o0, const Vector1 &o1, const Vector2 &o2,
-                                            value_type &starts_with, std::size_t &size) {
-            size = 0;
-            for (std::size_t i = 0; i < o0.size(); ++i) {
-                auto j = std::find(o1.begin(), o1.end(), o0[i]);
-                if (j == o1.end()) continue;
-                auto k = std::find(o2.begin(), o2.end(), o0[i]);
-                if (k == o2.end()) continue;
-                starts_with = o0[i];
-                for (std::size_t i0 = i; i0 < o0.size() && j != o1.end() && k != o2.end() &&
-                                         o0[i0] == *j && o0[i0] == *k;
-                     ++i0, ++j, ++k, ++size)
-                    ;
-                break;
-            }
-        }
-
         /// Check that all dimensions with the same label has the same size
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
         bool check_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
@@ -1145,12 +1085,14 @@ namespace superbblas {
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
-        void
-        suggested_orders_for_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
-                                         const Order<Nd1> &o1, const Coor<Nd1> &dim1, bool conj1,
-                                         const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
-                                         Order<Nd0> &sug_o0, Order<Nd1> &sug_o1, Order<Ndo> &sug_or,
-                                         bool &swap_operands, CoorOrder co) {
+        void suggested_orders_for_contraction(
+            const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0, const Order<Nd1> &o1,
+            const Coor<Nd1> &dim1, bool conj1, const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
+            Order<Nd0> &sug_o0, Order<Nd1> &sug_o1, Order<Ndo> &sug_or, bool &swap_operands,
+            unsigned int &nT, unsigned int &posT0, unsigned int &posT1, unsigned int &posTr,
+            unsigned int &nA, unsigned int &posA0, unsigned int &posA1, unsigned int &nB,
+            unsigned int &posB0, unsigned int &posBr, unsigned int &nC, unsigned int &posC1,
+            unsigned int &posCr, CoorOrder co) {
 
             // TODO: not consider dimensions with a single element
             (void)dim0;
@@ -1161,16 +1103,26 @@ namespace superbblas {
             if (co == FastToSlow) {
                 suggested_orders_for_contraction<Nd0, Nd1, Ndo>(
                     reverse(o0), reverse(dim0), conj0, reverse(o1), reverse(dim1), conj1,
-                    reverse(o_r), reverse(dimr), sug_o0, sug_o1, sug_or, swap_operands, SlowToFast);
+                    reverse(o_r), reverse(dimr), sug_o0, sug_o1, sug_or, swap_operands, nT, posT0,
+                    posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1, posCr, SlowToFast);
                 sug_o0 = reverse(sug_o0);
                 sug_o1 = reverse(sug_o1);
                 sug_or = reverse(sug_or);
+                posT0 = o0.size() - (posT0 + nT);
+                posT1 = o1.size() - (posT1 + nT); 
+                posTr = o_r.size() - (posTr + nT); 
+                posA0 = o0.size() - (posA0 + nA); 
+                posA1 = o1.size() - (posA1 + nA); 
+                posB0 = o0.size() - (posB0 + nB); 
+                posBr = o_r.size() - (posBr + nB); 
+                posC1 = o1.size() - (posC1 + nC); 
+                posCr = o_r.size() - (posCr + nC); 
                 return;
             }
 
             // Find all common labels in o0, o1, and o_r
             Order<Nd0> oT;
-            std::size_t nT = 0;
+            nT = 0;
             for (char c : o0)
                 if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
                     std::find(o_r.begin(), o_r.end(), c) != o_r.end())
@@ -1178,7 +1130,7 @@ namespace superbblas {
 
             // Find all common labels in o0 and o1 but not in oT
             Order<Nd0> oA;
-            std::size_t nA = 0;
+            nA = 0;
             for (char c : o0)
                 if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
                     std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
@@ -1186,7 +1138,7 @@ namespace superbblas {
 
             // Find all common labels in o0 and o_r but not in oT
             Order<Nd0> oB;
-            std::size_t nB = 0;
+            nB = 0;
             for (char c : o0)
                 if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
                     std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
@@ -1194,7 +1146,7 @@ namespace superbblas {
 
             // Find all common labels in o1 and o_r but not in oT
             Order<Nd1> oC;
-            std::size_t nC = 0;
+            nC = 0;
             for (char c : o1)
                 if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
                     std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
@@ -1249,6 +1201,47 @@ namespace superbblas {
                 std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
             } else
                 sug_or = o_r;
+
+            // Return positions
+            posT0 = sT0 - o0.begin();
+            posT1 = sT1 - o1.begin();
+            posTr = sTr - o_r.begin();
+            posA0 = sA0 - o0.begin();
+            posA1 = sA1 - o1.begin();
+            posB0 = sB0 - o0.begin();
+            posBr = sBr - o_r.begin();
+            posC1 = sC1 - o1.begin();
+            posCr = sCr - o_r.begin();
+        }
+
+        /// Recommended orderings for contracting two tensors
+        /// \param o0: dimension labels for the first operator
+        /// \param dim0: dimension size for the first operator
+        /// \param conj0: whether element-wise conjugate the first operator
+        /// \param o1: dimension labels for the second operator
+        /// \param dim1: dimension size for the second operator
+        /// \param conj1: whether element-wise conjugate the second operator
+        /// \param o_r: dimension labels for the output operator
+        /// \param dimr: dimension size for the output operator
+        /// \param sug_o0: (out) suggested dimension labels for the first operator
+        /// \param sug_o1: (out) suggested dimension labels for the second operator
+        /// \param sug_or: (out) suggested dimension labels for the output operator
+        /// \param swap_operands: (out) suggest to swap the first and the second operator
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        void
+        suggested_orders_for_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
+                                         const Order<Nd1> &o1, const Coor<Nd1> &dim1, bool conj1,
+                                         const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
+                                         Order<Nd0> &sug_o0, Order<Nd1> &sug_o1, Order<Ndo> &sug_or,
+                                         bool &swap_operands, CoorOrder co) {
+
+            unsigned int nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1,
+                posCr;
+            suggested_orders_for_contraction(
+                o0, dim0, conj0, o1, dim1, conj1, o_r, dimr, sug_o0, sug_o1, sug_or, swap_operands,
+                nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1, posCr, co);
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
@@ -1297,13 +1290,17 @@ namespace superbblas {
             }
 
             // If o0, o1, and o_r aren't appropriate, permute the input operands and the output
+            unsigned int nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1,
+                posCr;
             {
                 Order<Nd0> sug_o0;
                 Order<Nd1> sug_o1;
                 Order<Ndo> sug_or;
                 bool swap_operands;
                 suggested_orders_for_contraction(o0, dim0, conj0, o1, dim1, conj1, o_r, dimr,
-                                                 sug_o0, sug_o1, sug_or, swap_operands, co);
+                                                 sug_o0, sug_o1, sug_or, swap_operands, nT, posT0,
+                                                 posT1, posTr, nA, posA0, posA1, nB, posB0, posBr,
+                                                 nC, posC1, posCr, co);
                 if (swap_operands) {
                     local_contraction<Nd1, Nd0, Ndo, T, XPU>(alpha, o1, dim1, conj1, v1, o0, dim0,
                                                              conj0, v0, beta, o_r, dimr, vr,
@@ -1354,53 +1351,36 @@ namespace superbblas {
                 }
             }
 
-            // Find T, the common labels between o0, o1, and o_r
-            std::size_t nT = 0; // size of the piece T
-            char sT = 0;        // starting letter of the piece T
-            char eT = 0;        // ending letter of the piece T
-            largest_common_substring_order(o0, o1, o_r, sT, nT);
-            auto strT = o0.begin();
-            if (nT > 0) {
-                strT = std::find(o0.begin(), o0.end(), sT);
-                eT = strT[nT - 1];
-            }
-
-            // Find A, the common labels between o0 and o1
-            std::size_t nA = 0; // size of the piece A
-            char sA = 0;        // starting letter of the piece A
-            largest_common_substring_order(o0, o1, strT, nT, sA, nA);
-
-            // Find B, the common labels between o0 and o_r
-            std::size_t nB = 0; // size of the piece B
-            char sB = 0;        // starting letter of the piece B
-            largest_common_substring_order(o0, o_r, strT, nT, sB, nB);
-
-            // Find C, the common labels between o1 and o_r
-            std::size_t nC = 0; // size of the piece C
-            char sC = 0;        // starting letter of the piece C
-            largest_common_substring_order(o1, o_r, strT, nT, sC, nC);
-
-            // Check that o0 is made of the pieces T, A and B
-            if (o0.size() != nT + nA + nB) throw std::runtime_error("o0 has unmatched dimensions");
-            // Check that o1 is made of the pieces T, C and A
-            if (o1.size() != nT + nA + nC) throw std::runtime_error("o1 has unmatched directions");
-            // Check that o_r is made of the pieces T, C and B
-            if (o_r.size() != nT + nB + nC)
-                throw std::runtime_error("o_r has unmatched dimensions");
+            // Compute the volume for each piece
+            int nonzero = ((o0.size() > 0 && o1.size() > 0 && o_r.size() > 0) ? 1 : 0);
+            int volT =
+                nT == 0 ? nonzero : volume<Nd0>(dim0.begin() + posT0, dim0.begin() + posT0 + nT);
+            int volA =
+                nA == 0 ? nonzero : volume<Nd0>(dim0.begin() + posA0, dim0.begin() + posA0 + nA);
+            int volB =
+                nB == 0 ? nonzero : volume<Nd0>(dim0.begin() + posB0, dim0.begin() + posB0 + nB);
+            int volC =
+                nC == 0 ? nonzero : volume<Nd1>(dim1.begin() + posC1, dim1.begin() + posC1 + nC);
+            if (volA == 0) volA = 1;
+            assert(volT * volA * volB == (int)volume<Nd0>(dim0));
+            assert(volT * volA * volC == (int)volume<Nd1>(dim1));
+            assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Check that no order ends with T
-            if (!(nT == 0 || o0.size() == 0 || nA == 0 || nB == 0 || o0.back() != eT))
+            if (nT > 0 && posT0 + nT == o0.size() && volA > 1 && volB > 1)
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the first tensor");
-            if (!(nT == 0 || o1.size() == 0 || nA == 0 || nC == 0 || o1.back() != eT))
+            if (nT > 0 && posT1 + nT == o1.size() && volA > 1 && volC > 1)
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the second tensor");
-            if (!(nT == 0 || nB == 0 || nC == 0 || o_r.size() == 0 || o_r.back() != eT))
+            if (nT > 0 && posTr + nT == o_r.size() && volB > 1 && volC > 1)
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the output tensor");
+
+            // We don't support empty tensors
             if ((o0.size() == 0) xor (o1.size() == 0))
                 throw std::runtime_error("Unsupported contraction: one of the input tensors is "
                                          "empty and the other is not");
@@ -1409,37 +1389,43 @@ namespace superbblas {
                                          "some of the input tensors is not");
 
             // Check whether each order starts with T
-            bool o0_starts_with_T = (nT == 0 || o0.size() == 0 || o0[0] == sT);
-            bool o1_starts_with_T = (nT == 0 || o1.size() == 0 || o1[0] == sT);
-            bool or_starts_with_T = (nT == 0 || o_r.size() == 0 || o_r[0] == sT);
+            bool o0_starts_with_T = (volT <= 1);
+            for (unsigned int i = 0; i < Nd0; ++i) {
+                if (i == posT0) o0_starts_with_T = true;
+                if (dim0[i] > 1) break;
+            }
+            bool o1_starts_with_T = (volT <= 1);
+            for (unsigned int i = 0; i < Nd1; ++i) {
+                if (i == posT1) o1_starts_with_T = true;
+                if (dim1[i] > 1) break;
+            }
+            bool or_starts_with_T = (volT <= 1);
+            for (unsigned int i = 0; i < Ndo; ++i) {
+                if (i == posTr) or_starts_with_T = true;
+                if (dimr[i] > 1) break;
+            }
 
-            // Check if o0 and o1 need transpose
-            bool o0_trans = (o0.size() > nT && o0[o0_starts_with_T ? nT : 0] == sB);
-            bool o1_trans = (o1.size() > nT && o1[o1_starts_with_T ? nT : 0] == sA);
-            bool or_trans = (o_r.size() > nT && nC > 0 && o_r[or_starts_with_T ? nT : 0] == sB);
+            // Check if o0 and o1 need transpose TAB, TCA, TCB -> BA, AC, BC
+            bool o0_trans = (volA > 1 && volB > 1 && posB0 < posA0) |              // BA
+                            (volA == 1 && volB > 1 && volT > 1 && posB0 < posT0) | // BT
+                            (conj0 && ((o0_starts_with_T && (volA == 1 || volB == 1)) ||
+                                       (!o0_starts_with_T && volA == 1 && volB == 1)));
+            bool o1_trans = (volC > 1 && volA > 1 && posA1 < posC1) |              // AC
+                            (volC == 1 && volA > 1 && volT > 1 && posA1 < posT1) | // AT
+                            (conj1 && ((o1_starts_with_T && (volC == 1 || volA == 1)) ||
+                                       (!o1_starts_with_T && volC == 1 && volA == 1)));
+            bool or_trans = (volC > 1 && volB > 1 && posBr < posCr) |             // BC
+                            (volC == 1 && volB > 1 && volT > 1 && posBr < posTr); // BT
+            if (!o0_trans && conj0)
+                throw std::runtime_error("Unsupported contraction: reorder the labels on the first "
+                                         "tensor to use conjugation");
+            if (!o1_trans && conj1)
+                throw std::runtime_error("Unsupported contraction: reorder the labels on the "
+                                         "second tensor to use conjugation");
             if (or_trans)
                 throw std::runtime_error("Unsupported contraction: on the output labels, put "
                                          "the labels from the second "
                                          "tensor before the labels from the first tensor.");
-            if (!o0_trans && conj0 && (nA == 0 || nB == 0)) o0_trans = true;
-            if (!o0_trans && conj0)
-                throw std::runtime_error("Unsupported contraction: reorder the labels on the first "
-                                         "tensor to use conjugation");
-            if (!o1_trans && conj1 && (nA == 0 || nC == 0)) o1_trans = true;
-            if (!o1_trans && conj1)
-                throw std::runtime_error("Unsupported contraction: reorder the labels on the "
-                                         "second tensor to use conjugation");
-
-            // Compute the volume for each piece
-            int nonzero = ((o0.size() > 0 && o1.size() > 0 && o_r.size() > 0) ? 1 : 0);
-            int volT = nT == 0 ? nonzero : volume<Nd0>(o0, dim0, sT, nT);
-            int volA = nA == 0 ? nonzero : volume<Nd0>(o0, dim0, sA, nA);
-            int volB = nB == 0 ? nonzero : volume<Nd0>(o0, dim0, sB, nB);
-            int volC = nC == 0 ? nonzero : volume<Nd1>(o1, dim1, sC, nC);
-            if (volA == 0) volA = 1;
-            assert(volT * volA * volB == (int)volume<Nd0>(dim0));
-            assert(volT * volA * volC == (int)volume<Nd1>(dim1));
-            assert(volT * volB * volC == (int)volume<Ndo>(dimr));
 
             // Quick exit
             if (volT == 0) return;
