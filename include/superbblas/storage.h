@@ -749,8 +749,6 @@ namespace superbblas {
             std::vector<std::size_t> disp_values;
             /// displacement in the file of the checksum of the values of a block
             std::vector<std::size_t> disp_checksum;
-            /// whether the checksum of the block has already written
-            std::vector<bool> checksum_written;
             GridHash<N, std::size_t> blocks; ///< list of blocks already written
 
             Storage_context(values_datatype values_type, std::size_t header_size,
@@ -926,21 +924,16 @@ namespace superbblas {
 
             // Compute the checksum if the block is going to be completely overwritten
             if (sto.checksum == BlockChecksum) {
+                double checksum = -1; // invalid checksum
                 if (v0_host.size() == volume(dim1)) {
                     // Compute checksum
-                    double checksum =
-                        do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
-
-                    // Write checksum
-                    if (do_change_endianness) change_endianness(&checksum, 1);
-                    seek(sto.fh, sto.disp_checksum[blockIndex]);
-                    iwrite(sto.fh, &checksum, 1);
-
-                    // Take note
-                    sto.checksum_written[blockIndex] = true;
-                } else {
-                    sto.checksum_written[blockIndex] = false;
+                    checksum = do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
                 }
+
+                // Write checksum
+                if (do_change_endianness) change_endianness(&checksum, 1);
+                seek(sto.fh, sto.disp_checksum[blockIndex]);
+                iwrite(sto.fh, &checksum, 1);
             }
         }
 
@@ -1434,15 +1427,6 @@ namespace superbblas {
                 values_start += num_values[i] * sizeof(Q);
             }
 
-            // If using checksum at the level of blocks, add the space for the checksums
-            if (sto.checksum == BlockChecksum) {
-                for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
-                    sto.disp_checksum.push_back(values_start);
-                    values_start += sizeof(double);
-                }
-                sto.checksum_written.resize(sto.disp_checksum.size());
-            }
-
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
                 chunk_header[0] = num_nonempty_blocks;
@@ -1462,6 +1446,21 @@ namespace superbblas {
                 // Write all the blocks of this chunk
                 seek(sto.fh, sto.disp);
                 iwrite(sto.fh, chunk_header.data(), chunk_header.size());
+            }
+
+            // If using checksum at the level of blocks, add the space for the checksums
+            if (sto.checksum == BlockChecksum) {
+		// Write -1 in all new checksums
+                if (comm.rank == 0) {
+                    std::vector<double> ones(num_nonempty_blocks, -1);
+                    change_endianness(ones.data(), ones.size());
+                    seek(sto.fh, values_start);
+                    iwrite(sto.fh, ones.data(), ones.size());
+                }
+                for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
+                    sto.disp_checksum.push_back(values_start);
+                    values_start += sizeof(double);
+                }
             }
 
             // Update disp
@@ -1538,7 +1537,6 @@ namespace superbblas {
                 if (sto.checksum == BlockChecksum) {
                     for (std::size_t i = 0; i < num_blocks; ++i) {
                         sto.disp_checksum.push_back(cur);
-                        sto.checksum_written.push_back(true);
                         cur += sizeof(double);
                     }
                 }
@@ -1616,7 +1614,7 @@ namespace superbblas {
         template <typename T>
         inline void gather(const T *sendbuf, std::size_t sendcount, T *recvbuf,
                            std::size_t recvcount, MpiComm comm) {
-            if (recvcount * sizeof(T) > std::numeric_limits<int>::max())
+            if (recvcount * sizeof(T) > (std::size_t)std::numeric_limits<int>::max())
                 throw std::runtime_error("Too many elements to gather");
             MPI_check(MPI_Gather(sendbuf, sendcount * sizeof(T), MPI_CHAR, recvbuf,
                                  recvcount * sizeof(T), MPI_CHAR, 0, comm.comm));
@@ -1638,8 +1636,11 @@ namespace superbblas {
             // Quick exit
             if (do_write && sto.modified_for_checksum == false) return;
 
-            // Write all pending checksums before checking the checksums
-            if (!do_write) check_or_write_checksums<Nd, T>(sto, comm, true);
+            // Synchronize the content of the storage before reading from it
+            if (sto.modified_for_flush) {
+                flush(sto.fh);
+                sto.modified_for_flush = false;
+            }
 
             switch (sto.checksum) {
             case NoChecksum: {
@@ -1710,25 +1711,28 @@ namespace superbblas {
                 std::vector<T> buffer;
                 for (std::size_t b = 0, blockIndex = first_block_to_process;
                      b < num_blocks_to_process; ++b, ++blockIndex) {
+
+                    // Read the checksum for the block
+                    double checksum;
+                    seek(sto.fh, sto.disp_checksum[blockIndex]);
+                    read(sto.fh, &checksum, 1);
+                    if (sto.change_endianness) change_endianness(&checksum, 1);
+
                     // Skip the already computed checksums
-                    if (do_write && sto.checksum_written[blockIndex]) continue;
+                    if (do_write && checksum >= 0) continue;
 
                     // Compute the checksum of the block
                     std::size_t vol = volume(sto.blocks.blocks[blockIndex][1]);
                     buffer.resize(vol);
                     seek(sto.fh, sto.disp_values[blockIndex]);
                     read(sto.fh, buffer.data(), vol);
-                    double checksum =
-                        do_checksum(buffer.data(), buffer.size(), sto.checksum_blocksize);
+                    checksum = do_checksum(buffer.data(), buffer.size(), sto.checksum_blocksize);
 
                     if (do_write) {
                         // Write the checksum for the block
                         if (sto.change_endianness) change_endianness(&checksum, 1);
                         seek(sto.fh, sto.disp_checksum[blockIndex]);
                         iwrite(sto.fh, &checksum, 1);
-
-                        // Mark the checksum as written
-                        sto.checksum_written[blockIndex] = true;
                     } else {
                         // Read the stored checksum
                         double checksum_on_disk;
