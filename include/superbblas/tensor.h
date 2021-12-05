@@ -1352,19 +1352,29 @@ namespace superbblas {
             }
 
             // Compute the volume for each piece
-            int nonzero = ((o0.size() > 0 && o1.size() > 0 && o_r.size() > 0) ? 1 : 0);
-            int volT =
-                nT == 0 ? nonzero : volume<Nd0>(dim0.begin() + posT0, dim0.begin() + posT0 + nT);
-            int volA =
-                nA == 0 ? nonzero : volume<Nd0>(dim0.begin() + posA0, dim0.begin() + posA0 + nA);
-            int volB =
-                nB == 0 ? nonzero : volume<Nd0>(dim0.begin() + posB0, dim0.begin() + posB0 + nB);
-            int volC =
-                nC == 0 ? nonzero : volume<Nd1>(dim1.begin() + posC1, dim1.begin() + posC1 + nC);
-            if (volA == 0) volA = 1;
-            assert(volT * volA * volB == (int)volume<Nd0>(dim0));
-            assert(volT * volA * volC == (int)volume<Nd1>(dim1));
-            assert(volT * volB * volC == (int)volume<Ndo>(dimr));
+            int volT = volume<Nd0>(dim0.begin() + posT0, dim0.begin() + posT0 + nT);
+            int volA = volume<Nd0>(dim0.begin() + posA0, dim0.begin() + posA0 + nA);
+            int volB = volume<Nd0>(dim0.begin() + posB0, dim0.begin() + posB0 + nB);
+            int volC = volume<Nd1>(dim1.begin() + posC1, dim1.begin() + posC1 + nC);
+            int vol0 = volume<Nd0>(dim0);
+            int vol1 = volume<Nd1>(dim1);
+            int volr = volume<Ndo>(dimr);
+
+            // Deal with zero dimensions and implicit dimensions
+            if (volr == 0) return;
+            if (volT == 0) volT = 1;
+            if ((vol0 > 0 || vol1 > 0) && volA == 0) volA = 1;
+            if ((vol0 > 0 || volr > 0) && volB == 0) volB = 1;
+            if ((vol1 > 0 || volr > 0) && volC == 0) volC = 1;
+            assert(volT * volA * volB == vol0);
+            assert(volT * volA * volC == vol1);
+            assert(volT * volB * volC == volr);
+
+            // Avoid issues with uninitialized memory by zeroing out
+            if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
+
+            // Quick exit
+            if (volA == 0) return;
 
             // Check that no order ends with T
             if (nT > 0 && posT0 + nT == o0.size() && volA > 1 && volB > 1)
@@ -1426,12 +1436,6 @@ namespace superbblas {
                 throw std::runtime_error("Unsupported contraction: on the output labels, put "
                                          "the labels from the second "
                                          "tensor before the labels from the first tensor.");
-
-            // Quick exit
-            if (volT == 0) return;
-
-            // Avoid issues with uninitialized memory by zeroing out
-            if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
 
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = (o0_trans ? (conj0 ? 'C' : 'T') : 'N');
