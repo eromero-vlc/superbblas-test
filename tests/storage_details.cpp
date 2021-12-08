@@ -40,6 +40,60 @@ template <> void check_storage<0>(const char *filename, values_datatype dtype, i
     (void)num_dims;
 }
 
+using Blocks = std::vector<std::vector<std::vector<int>>>;
+
+template <std::size_t N, typename T>
+Blocks get_blocks(const char *filename, const std::vector<IndexType> &dim) {
+    Storage_handle stoh;
+    open_storage<N, T>(filename, &stoh);
+    std::vector<char> o(N + 1);
+    for (unsigned int i = 0; i < N; ++i) o[i] = (char)(i + 1);
+    Coor<N> dimc{};
+    std::copy_n(dim.begin(), N, dimc.begin());
+    std::vector<PartitionItem<N>> blocks;
+    get_blocks<N, N, T>(stoh, o.data(), o.data(), {}, dimc, blocks, SlowToFast);
+    close_storage<N, T>(stoh);
+    Blocks blocks_out;
+    for (const auto &b : blocks)
+        blocks_out.push_back({std::vector<int>(b[0].begin(), b[0].end()),
+                              std::vector<int>(b[1].begin(), b[1].end())});
+    return blocks_out;
+}
+
+template <std::size_t N = 16>
+Blocks get_blocks(const char *filename, values_datatype dtype,
+                                         const std::vector<IndexType> &dim) {
+    if (dim.size() != N) {
+        return get_blocks<N - 1>(filename, dtype, dim);
+    } else {
+        switch (dtype) {
+        case FLOAT: return get_blocks<N, float>(filename, dim); break;
+        case DOUBLE: return get_blocks<N, double>(filename, dim); break;
+        case CFLOAT: return get_blocks<N, std::complex<float>>(filename, dim); break;
+        case CDOUBLE: return get_blocks<N, std::complex<double>>(filename, dim); break;
+        case CHAR: return get_blocks<N, char>(filename, dim); break;
+        case INT: return get_blocks<N, int>(filename, dim); break;
+        default: return {};
+        }
+    }
+}
+
+template <>
+Blocks get_blocks<0>(const char *filename, values_datatype dtype,
+                                            const std::vector<IndexType> &dim) {
+    (void)filename;
+    (void)dtype;
+    (void)dim;
+    return {};
+}
+
+template <typename T> std::string to_string(const T &c) {
+    std::stringstream ss;
+    if (c.size() > 0) ss << c[0];
+    for (std::size_t i = 1; i < c.size(); ++i) ss << " " << c[i];
+    return ss.str();
+}
+
 bool show(const char *filename, bool list_blocks, bool only_metadata) {
     values_datatype dtype;
     std::vector<char> metadata;
@@ -63,9 +117,6 @@ bool show(const char *filename, bool list_blocks, bool only_metadata) {
 
     std::string metadataS(metadata.begin(), metadata.end());
 
-    std::string dimS;
-    for (int c : dim) dimS = dimS + " " + std::to_string(c);
-
     if (only_metadata) {
         std::cout << metadataS << std::endl;
         return true;
@@ -73,15 +124,10 @@ bool show(const char *filename, bool list_blocks, bool only_metadata) {
 
     std::cout << "datatype: " << dtypeS << std::endl                 //
               << "number of dimensions: " << dim.size() << std::endl //
-              << "dimensions:" << dimS << std::endl                  //
+              << "dimensions:" << to_string(dim) << std::endl        //
               << "metadata: (begin)" << std::endl
               << metadataS << std::endl
               << "(end)" << std::endl;
-
-    if (list_blocks) {
-        std::cerr << "Ops! Functionality still not implemented!" << std::endl;
-        return false;
-    }
 
     // Check the checksums
     try {
@@ -91,6 +137,14 @@ bool show(const char *filename, bool list_blocks, bool only_metadata) {
         return false;
     }
     std::cout << "checksums: ok!" << std::endl;
+
+    // Show blocks
+    if (list_blocks) {
+        std::cout << "blocks:" << std::endl;
+        for (const auto &range : get_blocks(filename, dtype, dim))
+            std::cout << "   from: " << to_string(range[0]) << "   size: " << to_string(range[1])
+                      << std::endl;
+    }
 
     return true;
 }
@@ -118,7 +172,7 @@ int main(int argc, char **argv) {
         "  --only-metadata: don't show any information about the storage      \n"
         "    excepting its metadata.                                          \n"
         "                                                                     \n"
-        "- storage_details <file> print from <c0> ... size <s0> ...           \n"
+        "- storage_details <file> print [from <c0> ... [size <s0> ...]]       \n"
         "  Print the values of the subtensor starting at c0 ... and           \n"
         "  extending s0 ... coordinates in each dimension.                    \n"
         "                                                                     \n"

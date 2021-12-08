@@ -1124,6 +1124,44 @@ namespace superbblas {
             }
         }
 
+        /// Return the nonzero blocks stored
+        /// \param stoh: handle to a tensor storage
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param size1: size in destination tensor
+        /// \param blocks: (output) vector of from-size pairs with the nonzero blocks
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Comm>
+        void get_blocks(Storage_context<Nd0, Comm> &sto, Order<Nd0> o0, Order<Nd1> o1,
+                        const Coor<Nd1> &from1, const Coor<Nd1> &size1,
+                        std::vector<PartitionItem<Nd1>> &blocks, CoorOrder co) {
+
+            tracker<Cpu> _t("get_blocks", Cpu{0});
+
+            // Turn o0 into SlowToFast
+            if (co == FastToSlow) {
+                o0 = reverse(o0);
+            }
+
+            // Generate the list of subranges to send from each component from v0 to v1
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> dim1 = reorder_coor<Nd0, Nd1>(sto.dim, perm0, 1);
+            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+            Coor<Nd0> from0 = reorder_coor<Nd1, Nd0>(from1, perm1, 0);
+            PartitionItem<Nd1> p1{from1, size1};
+            auto overlaps = get_overlap_ranges(dim1, to_vector(&p1, 1, Cpu{}), o1, from1, size1,
+                                               sto.blocks, o0, from0);
+
+            for (const auto &o : overlaps[0]) {
+                assert(check_equivalence(o0, o.second_subtensor[1], o1, o.first_subtensor[1]));
+		blocks.push_back(o.first_subtensor);
+            }
+        }
+
         /// Create a file where to store a tensor
         /// \param dim: tensor dimensions
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
@@ -1961,6 +1999,30 @@ namespace superbblas {
                 detail::EWOp::Add{}, co);
     }
 
+    /// Return the nonzero blocks stored
+    /// \param stoh: handle to a tensor storage
+    /// \param from0: first coordinate to copy from the origin tensor
+    /// \param o0: dimension labels for the origin tensor
+    /// \param size0: number of elements to copy in each dimension
+    /// \param o1: dimension labels for the destination tensor
+    /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    /// \param size1: size in destination tensor
+    /// \param blocks: (output) vector of from-size pairs with the nonzero blocks
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+    template <std::size_t Nd0, std::size_t Nd1, typename T>
+    void get_blocks(Storage_handle stoh, const char *o0, const char *o1, const Coor<Nd1> from1,
+                    const Coor<Nd1> size1, std::vector<PartitionItem<Nd1>> &blocks,
+                    MPI_comm mpicomm, CoorOrder co) {
+
+        (void)mpicomm;
+        detail::Storage_context<Nd0, detail::MpiComm> &sto =
+            *detail::get_storage_context<Nd0, T, detail::MpiComm>(stoh);
+
+        detail::get_blocks<Nd0, Nd1, T>(sto, detail::toArray<Nd0>(o0, "o0"),
+                                        detail::toArray<Nd1>(o1, "o1"), from1, size1, blocks, co);
+    }
+
     /// Check the checksums in storage
     /// \param stoh: handle to a tensor storage
     /// \param mpicomm: MPI communicator context
@@ -2177,6 +2239,7 @@ namespace superbblas {
     /// Copy from a storage into a plural tensor v1
     /// \param alpha: factor applied to v0
     /// \param stoh: handle to a tensor storage
+    /// \param o0: dimension labels for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
     /// \param size0: number of elements to copy in each dimension
     /// \param p1: partitioning of the destination tensor in consecutive ranges
@@ -2212,6 +2275,28 @@ namespace superbblas {
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
                 detail::EWOp::Add{}, co);
+    }
+
+    /// Return the nonzero blocks stored
+    /// \param stoh: handle to a tensor storage
+    /// \param from0: first coordinate to copy from the origin tensor
+    /// \param o0: dimension labels for the origin tensor
+    /// \param size0: number of elements to copy in each dimension
+    /// \param o1: dimension labels for the destination tensor
+    /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    /// \param size1: size in destination tensor
+    /// \param blocks: (output) vector of from-size pairs with the nonzero blocks
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+    template <std::size_t Nd0, std::size_t Nd1, typename T>
+    void get_blocks(Storage_handle stoh, const char *o0, const char *o1, const Coor<Nd1> from1,
+                    const Coor<Nd1> size1, std::vector<PartitionItem<Nd1>> &blocks, CoorOrder co) {
+
+        detail::Storage_context<Nd0, detail::SelfComm> &sto =
+            *detail::get_storage_context<Nd0, T, detail::SelfComm>(stoh);
+
+        detail::get_blocks<Nd0, Nd1, T>(sto, detail::toArray<Nd0>(o0, "o0"),
+                                        detail::toArray<Nd1>(o1, "o1"), from1, size1, blocks, co);
     }
 }
 
