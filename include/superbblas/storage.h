@@ -2013,7 +2013,7 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, typename T>
     void get_blocks(Storage_handle stoh, const char *o0, const char *o1, const Coor<Nd1> from1,
                     const Coor<Nd1> size1, std::vector<PartitionItem<Nd1>> &blocks,
-                    MPI_comm mpicomm, CoorOrder co) {
+                    MPI_Comm mpicomm, CoorOrder co) {
 
         (void)mpicomm;
         detail::Storage_context<Nd0, detail::MpiComm> &sto =
