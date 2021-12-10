@@ -1265,6 +1265,53 @@ namespace superbblas {
             }
         }
 
+        /// Return whether the copy operation may need communications
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+	/// \param ncomponents: length of p0
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+
+        template <std::size_t Nd0, std::size_t Nd1, typename EWOP>
+        bool may_need_communications(const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+                                     const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                                     const From_size<Nd1> &p1, const Coor<Nd1> &from1,
+                                     const Order<Nd1> &o1, EWOP) {
+
+            if (std::is_same<EWOP, EWOp::Add>::value) return true;
+
+            // Get the global dimensions of the tensors
+            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
+            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
+
+            // Simple heuristic if 
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            unsigned int nprocs = p0.size();
+            for (unsigned int i = 0; i < nprocs; ++i) {
+		// Restrict (from0, size0) to the p0[i] range
+                Coor<Nd0> fromi0, sizei0;
+                intersection(from0, size0, p0[i][0], p0[i][1], dim0, fromi0, sizei0);
+                if (volume(sizei0) == 0) continue;
+
+		// Translate the range to the destination tensor
+                Coor<Nd1> fromi1, sizei1;
+                translate_range(fromi0, sizei0, from0, dim0, from1, dim1, perm0, fromi1, sizei1);
+
+		// Intersect the range with p1[i] range
+                Coor<Nd1> rfromi1, rsizei1;
+                intersection(p1[i][0], p1[i][1], fromi1, sizei1, dim1, rfromi1, rsizei1);
+
+		// If it is not a complete map, it means that some elements in p0[i] range
+		// will go to other processes
+		if (volume(sizei0) != volume(rsizei1)) return true;
+            }
+
+            return false;
+        }
+
         /// Copy the content of plural tensor v0 into v1
         /// \param alpha: factor applied to v0
         /// \param p0: partitioning of the origin tensor in consecutive ranges
@@ -1281,12 +1328,12 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
-                  typename XPU0, typename XPU1, typename XPU, typename EWOp>
+                  typename XPU0, typename XPU1, typename XPU, typename EWOP>
         Request copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
                      const Coor<Nd0> &size0, const Order<Nd0> &o0,
                      const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
                      unsigned int ncomponents1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
-                     const Component<Nd1, Q, XPU> &v1, Comm comm, EWOp ewop, CoorOrder co) {
+                     const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop, CoorOrder co) {
 
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
@@ -1308,8 +1355,10 @@ namespace superbblas {
                 p0, o0, from0, size0, p1, v1.componentId + comm.rank * ncomponents1, o1, from1);
 
             // Do the sending and receiving
-            Request mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1,
-                                                     ncomponents1, comm, ewop, co, alpha);
+            Request mpi_req = [] {};
+            if (may_need_communications(p0, from0, size0, o0, p1, from1, o1, EWOP{}))
+                mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
+                                                 comm, ewop, co, alpha);
 
             // Do the local copies
             Request local_req = [=] {
