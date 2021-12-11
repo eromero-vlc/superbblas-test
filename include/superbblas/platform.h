@@ -26,10 +26,6 @@
 #    define __DEVICE__
 #endif
 
-#if !defined(SUPERBBLAS_USE_CPU) && defined(SUPERBBLAS_USE_MKL)
-#    undef SUPERBBLAS_USE_MKL
-#endif
-
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
 #    include <cuda_runtime.h>

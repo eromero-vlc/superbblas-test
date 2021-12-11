@@ -1143,9 +1143,7 @@ namespace superbblas {
             tracker<Cpu> _t("get_blocks", Cpu{0});
 
             // Turn o0 into SlowToFast
-            if (co == FastToSlow) {
-                o0 = reverse(o0);
-            }
+            if (co == FastToSlow) o0 = reverse(o0);
 
             // Generate the list of subranges to send from each component from v0 to v1
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
@@ -1158,7 +1156,7 @@ namespace superbblas {
 
             for (const auto &o : overlaps[0]) {
                 assert(check_equivalence(o0, o.second_subtensor[1], o1, o.first_subtensor[1]));
-		blocks.push_back(o.first_subtensor);
+                blocks.push_back(o.first_subtensor);
             }
         }
 
@@ -1488,7 +1486,7 @@ namespace superbblas {
 
             // If using checksum at the level of blocks, add the space for the checksums
             if (sto.checksum == BlockChecksum) {
-		// Write -1 in all new checksums
+                // Write -1 in all new checksums
                 if (comm.rank == 0) {
                     std::vector<double> ones(num_nonempty_blocks, -1);
                     change_endianness(ones.data(), ones.size());

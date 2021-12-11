@@ -1109,14 +1109,14 @@ namespace superbblas {
                 sug_o1 = reverse(sug_o1);
                 sug_or = reverse(sug_or);
                 posT0 = o0.size() - (posT0 + nT);
-                posT1 = o1.size() - (posT1 + nT); 
-                posTr = o_r.size() - (posTr + nT); 
-                posA0 = o0.size() - (posA0 + nA); 
-                posA1 = o1.size() - (posA1 + nA); 
-                posB0 = o0.size() - (posB0 + nB); 
-                posBr = o_r.size() - (posBr + nB); 
-                posC1 = o1.size() - (posC1 + nC); 
-                posCr = o_r.size() - (posCr + nC); 
+                posT1 = o1.size() - (posT1 + nT);
+                posTr = o_r.size() - (posTr + nT);
+                posA0 = o0.size() - (posA0 + nA);
+                posA1 = o1.size() - (posA1 + nA);
+                posB0 = o0.size() - (posB0 + nB);
+                posBr = o_r.size() - (posBr + nB);
+                posC1 = o1.size() - (posC1 + nC);
+                posCr = o_r.size() - (posCr + nC);
                 return;
             }
 

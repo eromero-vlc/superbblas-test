@@ -11,12 +11,13 @@
 #    ifndef SUPERBBLAS_USE_CBLAS
 #        define SUPERBBLAS_USE_CBLAS
 #    endif
-#    define MKL_SCALAR ARTIH(, , float, MKL_Complex8, double, MKL_Complex16, , )
+#    define MKL_SCALAR ARITH(, , float, MKL_Complex8, double, MKL_Complex16, , )
 #elif defined(SUPERBBLAS_USE_CBLAS)
 #    include "cblas.h"
 #endif // SUPERBBLAS_USE_MKL
 
 #include <complex>
+#include <vector>
 
 #if !defined(__SUPERBBLAS_USE_HALF) && !defined(__SUPERBBLAS_USE_HALFCOMPLEX)
 
@@ -30,7 +31,7 @@ namespace superbblas {
 #        define BLASINT int
 #    endif
 
-#    define REAL ARTIH(, , float, float, double, double, , )
+#    define REAL ARITH(, , float, float, double, double, , )
 #    define SCALAR ARITH(, , float, std::complex<float>, double, std::complex<double>, , )
 
         //
@@ -84,7 +85,12 @@ namespace superbblas {
 #    else //  SUPERBBLAS_USE_CBLAS
 
 // Pass constant values by value for non-complex types, and by reference otherwise
-#        define PASS_SCALAR(X) ARTIH(X, &(X), X, &(X), X, &(X), X, &(X))
+#        define PASS_SCALAR(X) ARITH(X, &(X), X, &(X), X, &(X), X, &(X))
+#        define PASS_SCALARpp(X)                                                                   \
+            ARITH(X, (void **)(X), X, (void **)(X), X, (void **)(X), X, (void **)(X))
+#        define PASS_SCALARcpp(X)                                                                  \
+            ARITH(X, (const void **)(X), X, (const void **)(X), X, (const void **)(X), X,          \
+                  (const void **)(X))
 
 #        define CBLAS_FUNCTION(X) CONCAT(cblas_, X)
 
@@ -102,6 +108,8 @@ namespace superbblas {
 #define XDOT      CBLAS_FUNCTION(ARITH(hdot  , kdotc_sub, sdot, cdotc_sub, ddot, zdotc_sub, , ))
         // clang-format on
 
+#        ifndef __SUPERBBLAS_BLAS_CPU_PRIVATE
+#            define __SUPERBBLAS_BLAS_CPU_PRIVATE
         inline CBLAS_TRANSPOSE toCblasTrans(char trans) {
             switch (trans) {
             case 'n':
@@ -113,6 +121,37 @@ namespace superbblas {
             default: throw std::runtime_error("Not valid value of trans");
             }
         }
+
+        inline CBLAS_SIDE toCblasSide(char side) {
+            switch (side) {
+            case 'l':
+            case 'L': return CblasLeft;
+            case 'r':
+            case 'R': return CblasRight;
+            default: throw std::runtime_error("Not valid value of side");
+            }
+        }
+
+        inline CBLAS_UPLO toCblasUplo(char uplo) {
+            switch (uplo) {
+            case 'u':
+            case 'U': return CblasUpper;
+            case 'l':
+            case 'L': return CblasLower;
+            default: throw std::runtime_error("Not valid value of uplo");
+            }
+        }
+
+        inline CBLAS_DIAG toCblasDiag(char diag) {
+            switch (diag) {
+            case 'n':
+            case 'N': return CblasNonUnit;
+            case 'u':
+            case 'U': return CblasUnit;
+            default: throw std::runtime_error("Not valid value of diag");
+            }
+        }
+#        endif // __SUPERBBLAS_BLAS_CPU_PRIVATE
 
 #    endif //  SUPERBBLAS_USE_CBLAS
 
@@ -159,8 +198,8 @@ namespace superbblas {
 #    ifndef SUPERBBLAS_USE_CBLAS
             XTRMM(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 #    else
-            XTRMM(CblasColMajor, toCblasTrans(side), toCblasTrans(uplo), toCblasTrans(transa),
-                  toCblasTrans(diag), m, n, PASS_SCALAR(alpha), a, lda, b, ldb);
+            XTRMM(CblasColMajor, toCblasSide(side), toCblasUplo(uplo), toCblasTrans(transa),
+                  toCblasDiag(diag), m, n, PASS_SCALAR(alpha), a, lda, b, ldb);
 #    endif
         }
 
@@ -169,8 +208,8 @@ namespace superbblas {
 #    ifndef SUPERBBLAS_USE_CBLAS
             XTRSM(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 #    else
-            XTRSM(CblasColMajor, toCblasTrans(side), toCblasTrans(uplo), toCblasTrans(transa),
-                  toCblasTrans(diag), m, n, PASS_SCALAR(alpha), a, lda, b, ldb);
+            XTRSM(CblasColMajor, toCblasSide(side), toCblasUplo(uplo), toCblasTrans(transa),
+                  toCblasDiag(diag), m, n, PASS_SCALAR(alpha), a, lda, b, ldb);
 #    endif
         }
 
@@ -180,8 +219,8 @@ namespace superbblas {
 #    ifndef SUPERBBLAS_USE_CBLAS
             XHEMM(&side, &uplo, &m, &n, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 #    else
-            XHEMM(CblasColMajor, toCblasTrans(side), toCblasTrans(uplo), m, n, PASS_SCALAR(alpha),
-                  a, lda, b, ldb, PASS_SCALAR(beta), c, ldc);
+            XHEMM(CblasColMajor, toCblasSide(side), toCblasUplo(uplo), m, n, PASS_SCALAR(alpha), a,
+                  lda, b, ldb, PASS_SCALAR(beta), c, ldc);
 #    endif
         }
 
@@ -190,7 +229,7 @@ namespace superbblas {
 #    ifndef SUPERBBLAS_USE_CBLAS
             XHEMV(&uplo, &n, &alpha, a, &lda, x, &incx, &beta, y, &incy);
 #    else
-            XHEMV(CblasColMajor, toCblasTrans(uplo), n, PASS_SCALAR(alpha), a, lda, x, incx,
+            XHEMV(CblasColMajor, toCblasUplo(uplo), n, PASS_SCALAR(alpha), a, lda, x, incx,
                   PASS_SCALAR(beta), y, incy);
 #    endif
         }
@@ -209,9 +248,7 @@ namespace superbblas {
 #        ifndef SUPERBBLAS_USE_CBLAS
             return XDOT(&n, x, &incx, y, &incy);
 #        else
-            SCALAR r = (SCALAR)0.0;
-            XDOT(n, x, incx, y, incy, &r);
-            return r;
+            return XDOT(n, x, incx, y, incy);
 #        endif
 #    else
             SCALAR r = (SCALAR)0.0;
@@ -250,10 +287,6 @@ namespace superbblas {
 #    undef XGEMV
 #    undef XDOT
 #    undef XSCAL
-#    ifdef SUPERBBLAS_USE_CBLAS
-#        undef PASS_SCALAR
-#        undef CBLAS_FUNCTION
-#    endif
 
         //
         // Batched GEMM
@@ -261,14 +294,30 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_MKL
 
-        inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, float alpha,
+        inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
                                         const SCALAR *a, int lda, int stridea, const SCALAR *b,
                                         int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
                                         int stridec, int batch_size, Cpu) {
+#        if INTEL_MKL_VERSION >= 20210000
+            if (lda <= stridea && ldb <= strideb && ldc <= stridec) {
+                CONCAT(cblas_, CONCAT(ARITH(, , s, c, d, z, , ), gemm_batch_strided))
+                (CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m, n, k,
+                 PASS_SCALAR(alpha), a, lda, stridea, b, ldb, strideb, PASS_SCALAR(beta), c, ldc,
+                 stridec, batch_size);
+                return;
+            }
+#        endif
 
-            CONCAT(cblas_, CONCAT(ARITH(, , s, c, d, z, , ), gemm_batch_strided))
-            (CblasColMajor, toCblasTrans(transa), toCblasTrans(transb), m, n, k, alpha, a, lda,
-             stridea, b, ldb, strideb, beta, c, ldc, stridec, batch_size);
+            CBLAS_TRANSPOSE transa_ = toCblasTrans(transa), transb_ = toCblasTrans(transb);
+            std::vector<const SCALAR *> av(batch_size), bv(batch_size);
+            std::vector<SCALAR *> cv(batch_size);
+            for (int i = 0; i < batch_size; ++i) av[i] = a + i * stridea;
+            for (int i = 0; i < batch_size; ++i) bv[i] = b + i * strideb;
+            for (int i = 0; i < batch_size; ++i) cv[i] = c + i * stridec;
+            CONCAT(cblas_, CONCAT(ARITH(, , s, c, d, z, , ), gemm_batch))
+            (CblasColMajor, &transa_, &transb_, &m, &n, &k, &alpha, PASS_SCALARcpp(av.data()), &lda,
+             PASS_SCALARcpp(bv.data()), &ldb, &beta, PASS_SCALARpp(cv.data()), &ldc, 1,
+             &batch_size);
         }
 
 #    else // SUPERBBLAS_USE_MKL
@@ -289,6 +338,11 @@ namespace superbblas {
 
 #    endif // SUPERBBLAS_USE_MKL
 
+#    ifdef SUPERBBLAS_USE_CBLAS
+#        undef PASS_SCALAR
+#        undef CBLAS_FUNCTION
+#    endif
+
         //
         // MKL Sparse
         //
@@ -296,7 +350,7 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_MKL
 // Pass constant values by value for non-complex types, and by reference otherwise
 #        define PASS_SCALAR(X)                                                                     \
-            ARTIH(X, &(X), X, *(MKL_Complex8 *)&(X), X, *(MKL_Complex16 *)&(X), X, &(X))
+            ARITH(X, &(X), X, *(MKL_Complex8 *)&(X), X, *(MKL_Complex16 *)&(X), X, &(X))
 
 #        define MKL_SP_FUNCTION(X) CONCAT(mkl_sparse_, X)
 
@@ -305,24 +359,24 @@ namespace superbblas {
 #define XSPMM           MKL_SP_FUNCTION(ARITH( , , s_mm , c_mm , d_mm , z_mm , , ))
         // clang-format on
 
-        inline sparse_matrix_t mkl_sparse_create_bsr(sparse_matrix_t *A,
-                                                     sparse_index_base_t indexing,
-                                                     sparse_layout_t block_layout, MKL_INT rows,
-                                                     MKL_INT cols, MKL_INT block_size,
-                                                     MKL_INT *rows_start, MKL_INT *rows_end,
-                                                     MKL_INT *col_indx, SCALAR *values) {
-            return XSPCREATEBSR(A, indexing, block_layout, rows, cols, block_size, rows_start,
-                                rows_end, col_indx, (MKL_SCALAR *)values);
-        }
+        // inline sparse_matrix_t mkl_sparse_create_bsr(sparse_matrix_t *A,
+        //                                              sparse_index_base_t indexing,
+        //                                              sparse_layout_t block_layout, MKL_INT rows,
+        //                                              MKL_INT cols, MKL_INT block_size,
+        //                                              MKL_INT *rows_start, MKL_INT *rows_end,
+        //                                              MKL_INT *col_indx, SCALAR *values) {
+        //     return XSPCREATEBSR(A, indexing, block_layout, rows, cols, block_size, rows_start,
+        //                         rows_end, col_indx, (MKL_SCALAR *)values);
+        // }
 
-        inline sparse_status_t mkl_sparse_mm(const sparse_operation_t operation, SCALAR alpha,
-                                             sparse_matrix_t A, struct matrix_descr descr,
-                                             sparse_layout_t layout, const SCALAR *B,
-                                             MKL_INT columns, MKL_INT ldb, SCALAR beta, SCALAR *C,
-                                             MKL_INT ldc) {
-            return XSPMM(operation, PASS_SCALAR(alpha), (MKL_SCALAR *)A, descr, layout,
-                         (MKL_SCALAR *)B, columns, ldb, PASS_SCALAR(beta), (MKL_SCALAR *)C, ldc);
-        }
+        // inline sparse_status_t mkl_sparse_mm(const sparse_operation_t operation, SCALAR alpha,
+        //                                      sparse_matrix_t A, struct matrix_descr descr,
+        //                                      sparse_layout_t layout, const SCALAR *B,
+        //                                      MKL_INT columns, MKL_INT ldb, SCALAR beta, SCALAR *C,
+        //                                      MKL_INT ldc) {
+        //     return XSPMM(operation, PASS_SCALAR(alpha), (MKL_SCALAR *)A, descr, layout,
+        //                  (MKL_SCALAR *)B, columns, ldb, PASS_SCALAR(beta), (MKL_SCALAR *)C, ldc);
+        // }
 
 #        undef PASS_SCALAR
 #        undef MKL_SP_FUNCTION

@@ -12,9 +12,16 @@ endif
 # when compiling for cuda, and general linking flags for all targets
 #
 CXX ?= c++
-#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG)
-CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG)
-LDFLAGS ?= -lopenblas
+ifndef MKLROOT
+  BLAS_LDFLAGS ?= -lopenblas -DSUPERBBLAS_USE_CBLAS
+else
+  BLAS_FLAGS ?= -I${MKLROOT}/include -DSUPERBBLAS_USE_MKL
+  BLAS_LDFLAGS ?= -L${MKLROOT}/lib/intel64 -lmkl_rt -lpthread -lm -ldl
+endif
+
+#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+LDFLAGS ?= $(BLAS_LDFLAGS)
 
 #
 # Compiler for cuda target, compiler flags, and linking flags
