@@ -1265,6 +1265,40 @@ namespace superbblas {
             }
         }
 
+        /// Return whether the distribution has overlaps with itself
+        /// \param p: partitioning of the origin tensor in consecutive ranges
+        /// \param from: first coordinate to consider
+        /// \param size: number of elements to consider in each dimension
+
+        template <std::size_t Nd>
+        bool are_there_repetitions(const From_size<Nd> &p, const Coor<Nd> &from,
+                                   const Coor<Nd> &size) {
+
+            tracker<Cpu> _t("are there repetitions", p.ctx());
+
+            // Get the global dimensions of the tensors
+            Coor<Nd> dim = get_dim(p);
+
+            unsigned int nprocs = p.size();
+            for (unsigned int i0 = 0; i0 < nprocs; ++i0) {
+		// Restrict (from, size) to the p[i0] range
+                Coor<Nd> fromi0, sizei0;
+                intersection(from, size, p[i0][0], p[i0][1], dim, fromi0, sizei0);
+                if (volume(sizei0) == 0) continue;
+
+                for (unsigned int i1 = i0 + 1; i1 < nprocs; ++i1) {
+                    // Intersect the range with p[i1] range
+                    Coor<Nd> rfromi1, rsizei1;
+                    intersection(p[i1][0], p[i1][1], fromi0, sizei0, dim, rfromi1, rsizei1);
+
+                    // If it is not empty, report that an overlap exists
+                    if (volume(rsizei1) > 0) return true;
+                }
+            }
+
+            return false;
+        }
+
         /// Return whether the copy operation may need communications
         /// \param p0: partitioning of the origin tensor in consecutive ranges
 	/// \param ncomponents: length of p0
@@ -1281,7 +1315,10 @@ namespace superbblas {
                                      const From_size<Nd1> &p1, const Coor<Nd1> &from1,
                                      const Order<Nd1> &o1, EWOP) {
 
-            if (std::is_same<EWOP, EWOp::Add>::value) return true;
+            tracker<Cpu> _t("avoid communications", p0.ctx());
+
+            if (std::is_same<EWOP, EWOp::Add>::value && are_there_repetitions(p0, from0, size0))
+                return true;
 
             // Get the global dimensions of the tensors
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
