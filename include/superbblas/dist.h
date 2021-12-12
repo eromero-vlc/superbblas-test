@@ -445,7 +445,7 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1>
-        PackedValues<Q> pack(const std::vector<From_size<Nd0>> &toSend,
+        PackedValues<Q> pack(const vector<From_size<Nd0>, Cpu> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm, CoorOrder co) {
@@ -542,7 +542,7 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename XPUr, typename EWOp>
-        Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
+        Request send_receive(const Order<Nd0> &o0, const vector<From_size<Nd0>, Cpu> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, From_size<Nd1> toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
@@ -629,7 +629,7 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename XPUr, typename EWOp>
-        Request send_receive(const Order<Nd0> &o0, const std::vector<From_size<Nd0>> &toSend,
+        Request send_receive(const Order<Nd0> &o0, const vector<From_size<Nd0>, Cpu> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, From_size<Nd1> toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
@@ -821,15 +821,6 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
-            // Find partition on cache
-            using Key = std::tuple<From_size<Nd0>, unsigned int, Coor<Nd0>, Coor<Nd0>,
-                                   From_size<Nd1>, unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
-            struct cache_tag {};
-            auto cache = getCache<Key, From_size<Nd0>, TupleHash<Key>, cache_tag>(p0.ctx());
-            Key key{p0, from_rank, from0, size0, p1, componentId1, from1, get_perms(o0, o1)};
-            auto it = cache.find(key);
-            if (it != cache.end()) return it->second.value;
-
             // Restrict the local range in v0 to the range from0, size0
             Coor<Nd0> local_from0 = p0[from_rank][0];
             Coor<Nd0> local_size0 = p0[from_rank][1];
@@ -855,7 +846,6 @@ namespace superbblas {
                 translate_range(fromi, sizei, from1, dim1, from0, dim0, perm1, r[i][0], r[i][1]);
                 r[i][0] = normalize_coor(r[i][0] - local_from0, dim0);
             }
-            cache.insert(key, r, storageSize(r));
 
             return r;
         }
@@ -887,15 +877,6 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
-            // Find partition on cache
-            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
-                                   unsigned int, Coor<Nd1>, PairPerms<Nd0, Nd1>>;
-            struct cache_tag {};
-            auto cache = getCache<Key, From_size<Nd1>, TupleHash<Key>, cache_tag>(p0.ctx());
-            Key key{p0, from0, size0, p1, to_rank, from1, get_perms(o0, o1)};
-            auto it = cache.find(key);
-            if (it != cache.end()) return it->second.value;
-
             // Restrict the local range in v1 to the range from1, size1
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
@@ -922,7 +903,6 @@ namespace superbblas {
                 translate_range(fromi, sizei, from0, dim0, from1, dim1, perm0, r[i][0], r[i][1]);
                 r[i][0] = normalize_coor(r[i][0] - local_from1, dim1);
             }
-            cache.insert(key, r, storageSize(r));
 
             return r;
         }
@@ -1317,21 +1297,6 @@ namespace superbblas {
 
             tracker<Cpu> _t("avoid communications", p0.ctx());
 
-            // Find answer on cache
-            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
-                                            Coor<Nd1>, PairPerms<Nd0, Nd1>, int>;
-            struct cache_tag {};
-            auto cache = getCache<Key, bool, TupleHash<Key>, cache_tag>(p0.ctx());
-            Key key{p0,
-                    from0,
-                    size0,
-                    p1,
-                    from1,
-                    get_perms(o0, o1),
-                    std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
-            auto it = cache.find(key);
-            if (it != cache.end()) return it->second.value;
-
             if (std::is_same<EWOP, EWOp::Add>::value && are_there_repetitions(p0, from0, size0))
                 return true;
 
@@ -1342,7 +1307,6 @@ namespace superbblas {
             // Simple heuristic if 
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             unsigned int nprocs = p0.size();
-            bool answer = false;
             for (unsigned int i = 0; i < nprocs; ++i) {
 		// Restrict (from0, size0) to the p0[i] range
                 Coor<Nd0> fromi0, sizei0;
@@ -1359,14 +1323,10 @@ namespace superbblas {
 
 		// If it is not a complete map, it means that some elements in p0[i] range
 		// will go to other processes
-                if (volume(sizei0) != volume(rsizei1)) {
-                    answer = true;
-                    break;
-                };
+                if (volume(sizei0) != volume(rsizei1)) return true;
             }
-            cache.insert(key, answer, 0);
 
-            return answer;
+            return false;
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -1392,28 +1352,58 @@ namespace superbblas {
                      unsigned int ncomponents1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
                      const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop, CoorOrder co) {
 
+            // Find precomputed pieces on cache
+            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
+                                            Coor<Nd1>, PairPerms<Nd0, Nd1>, int, int>;
+            struct Value {
+                vector<From_size<Nd0>, Cpu> toSend;
+                From_size<Nd1> toReceive;
+                bool need_comms;
+            };
+            struct cache_tag {};
+            auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(p0.ctx());
+            Key key{p0,           from0,
+                    size0,        p1,
+                    from1,        get_perms(o0, o1),
+                    ncomponents1, std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
+            auto it = cache.find(key);
+
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            std::vector<From_size<Nd0>> toSend(ncomponents0);
+            vector<From_size<Nd0>, Cpu> toSend;
+            From_size<Nd1> toReceive;
+            bool need_comms;
+            if (it == cache.end()) {
+                toSend = vector<From_size<Nd0>, Cpu>(ncomponents0, p0.ctx());
+                for (unsigned int i = 0; i < v0.first.size(); ++i) {
+                    toSend[v0.first[i].componentId] = get_indices_to_send<Nd0, Nd1>(
+                        p0, comm.rank * ncomponents0 + v0.first[i].componentId, o0, from0, size0,
+                        p1, v1.componentId, ncomponents1, o1, from1);
+                }
+                for (unsigned int i = 0; i < v0.second.size(); ++i) {
+                    toSend[v0.second[i].componentId] = get_indices_to_send<Nd0, Nd1>(
+                        p0, comm.rank * ncomponents0 + v0.second[i].componentId, o0, from0, size0,
+                        p1, v1.componentId, ncomponents1, o1, from1);
+                }
 
-            for (unsigned int i = 0; i < v0.first.size(); ++i) {
-                toSend[v0.first[i].componentId] = get_indices_to_send<Nd0, Nd1>(
-                    p0, comm.rank * ncomponents0 + v0.first[i].componentId, o0, from0, size0, p1,
-                    v1.componentId, ncomponents1, o1, from1);
-            }
-            for (unsigned int i = 0; i < v0.second.size(); ++i) {
-                toSend[v0.second[i].componentId] = get_indices_to_send<Nd0, Nd1>(
-                    p0, comm.rank * ncomponents0 + v0.second[i].componentId, o0, from0, size0, p1,
-                    v1.componentId, ncomponents1, o1, from1);
-            }
+                // Generate the list of subranges to receive from each component from v0 to v1
+                toReceive = get_indices_to_receive<Nd0, Nd1>(
+                    p0, o0, from0, size0, p1, v1.componentId + comm.rank * ncomponents1, o1, from1);
 
-            // Generate the list of subranges to receive from each component from v0 to v1
-            From_size<Nd1> toReceive = get_indices_to_receive<Nd0, Nd1>(
-                p0, o0, from0, size0, p1, v1.componentId + comm.rank * ncomponents1, o1, from1);
+                // Check whether communications can be avoided
+                need_comms = may_need_communications(p0, from0, size0, o0, p1, from1, o1, EWOP{});
+
+                // Save the results
+                cache.insert(key, {toSend, toReceive, need_comms}, 0);
+            } else {
+                toSend = it->second.value.toSend;
+                toReceive = it->second.value.toReceive;
+                need_comms = it->second.value.need_comms;
+            }
 
             // Do the sending and receiving
             Request mpi_req = [] {};
-            if (may_need_communications(p0, from0, size0, o0, p1, from1, o1, EWOP{}))
+            if (need_comms)
                 mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
                                                  comm, ewop, co, alpha);
 
