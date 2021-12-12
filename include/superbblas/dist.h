@@ -1317,6 +1317,21 @@ namespace superbblas {
 
             tracker<Cpu> _t("avoid communications", p0.ctx());
 
+            // Find answer on cache
+            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
+                                            Coor<Nd1>, PairPerms<Nd0, Nd1>, int>;
+            struct cache_tag {};
+            auto cache = getCache<Key, bool, TupleHash<Key>, cache_tag>(p0.ctx());
+            Key key{p0,
+                    from0,
+                    size0,
+                    p1,
+                    from1,
+                    get_perms(o0, o1),
+                    std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second.value;
+
             if (std::is_same<EWOP, EWOp::Add>::value && are_there_repetitions(p0, from0, size0))
                 return true;
 
@@ -1327,6 +1342,7 @@ namespace superbblas {
             // Simple heuristic if 
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             unsigned int nprocs = p0.size();
+            bool answer = false;
             for (unsigned int i = 0; i < nprocs; ++i) {
 		// Restrict (from0, size0) to the p0[i] range
                 Coor<Nd0> fromi0, sizei0;
@@ -1343,10 +1359,14 @@ namespace superbblas {
 
 		// If it is not a complete map, it means that some elements in p0[i] range
 		// will go to other processes
-		if (volume(sizei0) != volume(rsizei1)) return true;
+                if (volume(sizei0) != volume(rsizei1)) {
+                    answer = true;
+                    break;
+                };
             }
+            cache.insert(key, answer, 0);
 
-            return false;
+            return answer;
         }
 
         /// Copy the content of plural tensor v0 into v1
