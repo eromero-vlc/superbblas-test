@@ -1297,7 +1297,12 @@ namespace superbblas {
 
             tracker<Cpu> _t("avoid communications", p0.ctx());
 
-            if (std::is_same<EWOP, EWOp::Add>::value && are_there_repetitions(p0, from0, size0))
+            // If the destination partitioning has repetitions, or the origin partitioning
+            // has repetitions together with an add operation, then report that communications are needed
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
+            if (are_there_repetitions(p1, from1, size1) ||
+                (std::is_same<EWOP, EWOp::Add>::value && are_there_repetitions(p0, from0, size0)))
                 return true;
 
             // Get the global dimensions of the tensors
@@ -1305,7 +1310,6 @@ namespace superbblas {
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
 
             // Simple heuristic if 
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             unsigned int nprocs = p0.size();
             for (unsigned int i = 0; i < nprocs; ++i) {
 		// Restrict (from0, size0) to the p0[i] range
