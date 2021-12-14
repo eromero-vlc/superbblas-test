@@ -150,11 +150,17 @@ namespace superbblas {
                 throw std::runtime_error("Ups! Unaligned pointer");
         }
 
+        template <typename T> struct is_complex { static const bool value = false; };
+        template <typename T> struct is_complex<std::complex<T>> {
+            static const bool value = true;
+        };
+
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param cpu: context
 
-        template <typename T> T *allocate(std::size_t n, Cpu cpu) {
+        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
+        T *allocate(std::size_t n, Cpu cpu) {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
@@ -174,11 +180,17 @@ namespace superbblas {
             return r;
         }
 
+        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
+        T *allocate(std::size_t n, Cpu cpu) {
+            return (T *)allocate<typename T::value_type>(n * 2, cpu);
+        }
+
         /// Deallocate memory on a device
         /// \param ptr: pointer to the memory to deallocate
         /// \param cpu: context
 
-        template <typename T> void deallocate(T *ptr, Cpu cpu) {
+        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
+        void deallocate(T *ptr, Cpu cpu) {
             // Shortcut for zero allocations
             if (!ptr) return;
 
@@ -191,6 +203,11 @@ namespace superbblas {
 
             // Deallocate the pointer
             delete[] ptr;
+        }
+
+        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
+        void deallocate(T *ptr, Cpu cpu) {
+            deallocate<T::value_type>((typename T::value_type *)ptr, cpu);
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
