@@ -1,8 +1,7 @@
 #ifndef __SUPERBBLAS_CACHE__
 #define __SUPERBBLAS_CACHE__
 
-#include "platform.h"
-#include "runtime_features.h"
+#include "performance.h"
 #include <limits>
 #include <map>
 #include <mutex>
@@ -200,12 +199,14 @@ namespace superbblas {
             /// \param v: value
             /// \param: size: memory footprint of the entry (in bytes)
             void insert(const K &k, const V &v, std::size_t size) {
+                tracker<Cpu> _t("cache insert", Cpu{});
                 c.insert<K, V, H, T>(k, v, size);
             }
 
             /// Return the entry given the key, it may invalidate other iterators
             /// \param k: key
             typename std::unordered_map<K, cache::Value<V>, H>::iterator find(const K &k) {
+                tracker<Cpu> _t("cache find", Cpu{});
                 return c.find<K, V, H, T>(k);
             }
 

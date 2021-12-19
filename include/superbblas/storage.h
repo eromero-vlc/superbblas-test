@@ -874,9 +874,9 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename Comm>
-        void local_save(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        Order<Nd1> o1, Coor<Nd1> from1, Coor<Nd1> dim1,
+        void local_save(typename elem<T>::type alpha, Order<Nd0> o0, Coor<Nd0> from0,
+                        Coor<Nd0> size0, Coor<Nd0> dim0, vector<const T, XPU0> v0,
+                        const Order<Nd1>& o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
                         Storage_context<Nd1, Comm> &sto, std::size_t blockIndex, CoorOrder co,
                         bool do_change_endianness) {
 
@@ -887,9 +887,10 @@ namespace superbblas {
 
             // Make agree in ordering source and destination
             if (co != SlowToFast) {
-                o1 = reverse(o1);
-                from1 = reverse(from1);
-                dim1 = reverse(dim1);
+                o0 = reverse(o0);
+                from0 = reverse(from0);
+                size0 = reverse(size0);
+                dim0 = reverse(dim0);
                 co = SlowToFast;
             }
 
@@ -1172,7 +1173,7 @@ namespace superbblas {
         /// If the file exists, its content will be lost
 
         template <std::size_t Nd, typename T, typename Comm>
-        Storage_context<Nd, Comm> create_storage(Coor<Nd> dim, CoorOrder co, const char *filename,
+        Storage_context<Nd, Comm>* create_storage(Coor<Nd> dim, CoorOrder co, const char *filename,
                                                  const char *metadata, int metadata_length,
                                                  checksum_type checksum, Comm comm) {
 
@@ -1244,15 +1245,15 @@ namespace superbblas {
             }
 
             // Create the handler
-            return Storage_context<Nd, Comm>{get_values_datatype<T>(),
-                                             header_size,
-                                             fh,
-                                             dim,
-                                             false /* don't change endianness */,
-                                             true /* new storage */,
-                                             checksum,
-                                             default_checksum_blocksize,
-                                             checksum_val};
+            return new Storage_context<Nd, Comm>{get_values_datatype<T>(),
+                                                 header_size,
+                                                 fh,
+                                                 dim,
+                                                 false /* don't change endianness */,
+                                                 true /* new storage */,
+                                                 checksum,
+                                                 default_checksum_blocksize,
+                                                 checksum_val};
         }
 
         /// Read fields in the header of a storage
@@ -1831,8 +1832,8 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        *stoh = new detail::Storage_context<Nd, detail::MpiComm>{detail::create_storage<Nd, T>(
-            dim, co, filename, metadata, metadata_length, checksum, comm)};
+        *stoh = detail::create_storage<Nd, T>(dim, co, filename, metadata, metadata_length,
+                                              checksum, comm);
     }
 
     /// Read fields in the header of a storage
@@ -2072,8 +2073,8 @@ namespace superbblas {
 
         detail::SelfComm comm = detail::get_comm();
 
-        *stoh = new detail::Storage_context<Nd, detail::SelfComm>{detail::create_storage<Nd, T>(
-            dim, co, filename, metadata, metadata_length, checksum, comm)};
+        *stoh = detail::create_storage<Nd, T>(dim, co, filename, metadata, metadata_length,
+                                              checksum, comm);
     }
 
     /// Read fields in the header of a storage
