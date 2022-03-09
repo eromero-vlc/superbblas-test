@@ -1552,10 +1552,10 @@ namespace superbblas {
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
-        void zeroed_repated_tensor(From_size<Nd0> p0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                                   From_size<Nd1> p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                                   From_size<Ndo> pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
-                                   unsigned int componentId, vector<T, XPU> v, CoorOrder co) {
+        void zeroed_repeated_tensor(From_size<Nd0> p0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                                    From_size<Nd1> p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                                    From_size<Ndo> pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
+                                    unsigned int componentId, vector<T, XPU> v, CoorOrder co) {
 
             assert(p0.size() == p1.size() && p1.size() == pr.size());
 
@@ -1666,8 +1666,8 @@ namespace superbblas {
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.first[i].it, o1,
                                                     p1[pi][1], conj1, v1.first[i].it, T{0.0},
                                                     sug_or, dimi, vr0[i], co);
-                zeroed_repated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi, vr0[i],
-                                      co);
+                zeroed_repeated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi,
+                                       vr0[i], co);
             }
             std::vector<vector<T, XPU1>> vr1(v0.second.size());
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
@@ -1679,8 +1679,8 @@ namespace superbblas {
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.second[i].it,
                                                     o1, p1[pi][1], conj1, v1.second[i].it, T{0.0},
                                                     sug_or, dimi, vr1[i], co);
-                zeroed_repated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi, vr1[i],
-                                      co);
+                zeroed_repeated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi,
+                                       vr1[i], co);
             }
 
             // Scale the output tensor by beta
