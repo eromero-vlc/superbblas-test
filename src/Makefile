@@ -90,7 +90,9 @@ endif
 
 $(OBJECT_LIB): $(BUILDDIR)/superbblas_flags.h
 
-install: $(OBJECT_LIB) install_headers 
+pkgconfig_file := $(libdir)/pkgconfig/superbblas.pc
+
+install: $(OBJECT_LIB) install_headers $(pkgconfig_file)
 	@rm -f $(LIBRARY)
 	install -d $(libdir)
 ifeq ($(UNAME), Darwin)
@@ -108,10 +110,28 @@ install_headers: $(BUILDDIR)/superbblas_flags.h
 	install -m 644 $(OTHER_HEADERS) $(includedir)/superbblas
 	install -m 644 $(BUILDDIR)/superbblas_flags.h $(includedir)/superbblas
 
+$(pkgconfig_file):
+	install -d $(libdir)/pkgconfig
+	echo prefix=$(PREFIX) > $@
+	echo libdir=$(libdir) >> $@
+	echo includedir=$(includedir) >> $@
+	echo superbblas_config=$(CXXFLAGS) $(MPISBFLAG) >> $@
+	echo "Name: superbblas" >> $@
+	echo "Description: tensor library based on BLAS" >> $@
+	echo "Version: 0.1" >> $@
+	echo "URL: https://github.com/eromero-vlc/superbblas" >> $@
+	echo "Libs: -L\$${libdir} -lsuperbblas" >> $@
+ifeq ($(TARGET), cuda)
+	echo "Libs.private: cublas" >> $@
+endif
+ifeq ($(TARGET), hip)
+	echo "Libs.private: hipblas" >> $@
+endif
+
 format:
 	clang-format -i ${MAIN_HEADER} ${OTHER_HEADERS}
 
 clean:
 	rm -f $(BUILDDIR)/superbblas_flags.h $(BUILDDIR)/superbblas_lib.cpp $(BUILDDIR)/superbblas_lib.o $(LIBRARY)
 
-.PHONY: install install_headers format clean
+.PHONY: install install_headers format clean $(pkgconfig_file)
