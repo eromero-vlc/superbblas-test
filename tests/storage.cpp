@@ -244,7 +244,7 @@ int main(int argc, char **argv) {
                                            MPI_COMM_WORLD,
 #endif
                                            &stoh);
-                std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
+                std::array<Coor<Nd>, 2> fs{{{{}}, dim}};
                 append_blocks<Nd, Scalar>(&fs, 1, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                           MPI_COMM_WORLD,
@@ -606,7 +606,7 @@ int main(int argc, char **argv) {
                                    MPI_COMM_WORLD,
 #    endif
                                    &stoh);
-        std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
+        std::array<Coor<Nd>, 2> fs{{{}}, dim}};
         append_blocks<Nd, Scalar>(&fs, 1, stoh,
 #    ifdef SUPERBBLAS_USE_MPI
                                   MPI_COMM_WORLD,

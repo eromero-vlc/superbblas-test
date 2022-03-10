@@ -74,7 +74,7 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     for (std::size_t i = 0; i < N0; ++i) procs0[i] = o0[i] == dist_dir ? nprocs : 1;
     PartitionStored<N0> p0 = basic_partitioning(dim0, procs0, nprocs, true);
     std::vector<T> v0(detail::volume(p0[rank][1]));
-    PartitionStored<N0> p0_(nprocs, {Coor<N0>{}, dim0}); // tensor replicated partitioning
+    PartitionStored<N0> p0_(nprocs, {{{{}}, dim0}}); // tensor replicated partitioning
     T const *ptrv0_ = v0_.data();
     T *ptrv0 = v0.data();
     copy(1.0, p0_.data(), 1, &o0[0], {}, dim0, (const T **)&ptrv0_, &ctx, p0.data(), 1, &o0[0], {},
@@ -88,7 +88,7 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     for (std::size_t i = 0; i < N1; ++i) procs1[i] = o1[i] == dist_dir ? nprocs : 1;
     PartitionStored<N1> p1 = basic_partitioning(dim1, procs1, nprocs, true);
     std::vector<T> v1(detail::volume(p1[rank][1]));
-    PartitionStored<N1> p1_(nprocs, {Coor<N1>{}, dim1}); // tensor replicated partitioning
+    PartitionStored<N1> p1_(nprocs, {{{{}}, dim1}}); // tensor replicated partitioning
     T const *ptrv1_ = v1_.data();
     T *ptrv1 = v1.data();
     copy(1.0, p1_.data(), 1, &o1[0], {}, dim1, (const T **)&ptrv1_, &ctx, p1.data(), 1, &o1[0], {},
@@ -114,7 +114,7 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
                 SlowToFast);
 
     // Move the result to proc 0
-    PartitionStored<N2> pr(nprocs, {Coor<N2>{}, Coor<N2>{}});
+    PartitionStored<N2> pr(nprocs, {{{{}}, {{}}}});
     pr[0][1] = dim2; // tensor only supported on proc 0
     std::vector<T> vr(detail::volume(pr[rank][1]));
     T *ptrvr = vr.data();

@@ -263,7 +263,7 @@ namespace superbblas {
                 MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
                 break;
             }
-            return File_Requests{fh, {}};
+            return {fh};
         }
 
         inline void seek(File_Requests &f, std::size_t offset) {
