@@ -876,7 +876,7 @@ namespace superbblas {
                   typename Comm>
         void local_save(typename elem<T>::type alpha, Order<Nd0> o0, Coor<Nd0> from0,
                         Coor<Nd0> size0, Coor<Nd0> dim0, vector<const T, XPU0> v0,
-                        const Order<Nd1>& o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
                         Storage_context<Nd1, Comm> &sto, std::size_t blockIndex, CoorOrder co,
                         bool do_change_endianness) {
 
@@ -1173,9 +1173,9 @@ namespace superbblas {
         /// If the file exists, its content will be lost
 
         template <std::size_t Nd, typename T, typename Comm>
-        Storage_context<Nd, Comm>* create_storage(Coor<Nd> dim, CoorOrder co, const char *filename,
-                                                 const char *metadata, int metadata_length,
-                                                 checksum_type checksum, Comm comm) {
+        Storage_context<Nd, Comm> *create_storage(Coor<Nd> dim, CoorOrder co, const char *filename,
+                                                  const char *metadata, int metadata_length,
+                                                  checksum_type checksum, Comm comm) {
 
             if (co == FastToSlow) dim = detail::reverse(dim);
 

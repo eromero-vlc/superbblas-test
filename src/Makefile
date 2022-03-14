@@ -6,6 +6,7 @@ OTHER_HEADERS := \
   ../include/superbblas/superbblas_lib.h \
   ../include/superbblas/blas_cpu_tmpl.hpp \
   ../include/superbblas/blas.h \
+  ../include/superbblas/bsr.h \
   ../include/superbblas/cblas.h \
   ../include/superbblas/cache.h \
   ../include/superbblas/crc32.h \

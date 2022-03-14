@@ -9,6 +9,7 @@
 #include "superbblas/tensor.h"
 #include "superbblas/dist.h"
 #include "superbblas/storage.h"
+#include "superbblas/bsr.h"
 // clang-format on
 
 #endif // __SUPERBBLAS_H__

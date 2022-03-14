@@ -1261,7 +1261,7 @@ namespace superbblas {
 
             unsigned int nprocs = p.size();
             for (unsigned int i0 = 0; i0 < nprocs; ++i0) {
-		// Restrict (from, size) to the p[i0] range
+                // Restrict (from, size) to the p[i0] range
                 Coor<Nd> fromi0, sizei0;
                 intersection(from, size, p[i0][0], p[i0][1], dim, fromi0, sizei0);
                 if (volume(sizei0) == 0) continue;
@@ -1281,7 +1281,7 @@ namespace superbblas {
 
         /// Return whether the copy operation may need communications
         /// \param p0: partitioning of the origin tensor in consecutive ranges
-	/// \param ncomponents: length of p0
+        /// \param ncomponents: length of p0
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
         /// \param size0: number of elements to copy in each dimension
@@ -1309,24 +1309,24 @@ namespace superbblas {
             Coor<Nd0> dim0 = get_dim<Nd0>(p0);
             Coor<Nd1> dim1 = get_dim<Nd1>(p1);
 
-            // Simple heuristic if 
+            // Simple heuristic if
             unsigned int nprocs = p0.size();
             for (unsigned int i = 0; i < nprocs; ++i) {
-		// Restrict (from0, size0) to the p0[i] range
+                // Restrict (from0, size0) to the p0[i] range
                 Coor<Nd0> fromi0, sizei0;
                 intersection(from0, size0, p0[i][0], p0[i][1], dim0, fromi0, sizei0);
                 if (volume(sizei0) == 0) continue;
 
-		// Translate the range to the destination tensor
+                // Translate the range to the destination tensor
                 Coor<Nd1> fromi1, sizei1;
                 translate_range(fromi0, sizei0, from0, dim0, from1, dim1, perm0, fromi1, sizei1);
 
-		// Intersect the range with p1[i] range
+                // Intersect the range with p1[i] range
                 Coor<Nd1> rfromi1, rsizei1;
                 intersection(p1[i][0], p1[i][1], fromi1, sizei1, dim1, rfromi1, rsizei1);
 
-		// If it is not a complete map, it means that some elements in p0[i] range
-		// will go to other processes
+                // If it is not a complete map, it means that some elements in p0[i] range
+                // will go to other processes
                 if (volume(sizei0) != volume(rsizei1)) return true;
             }
 
@@ -1357,8 +1357,8 @@ namespace superbblas {
                      const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop, CoorOrder co) {
 
             // Find precomputed pieces on cache
-            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
-                                            Coor<Nd1>, PairPerms<Nd0, Nd1>, int, int>;
+            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>, Coor<Nd1>,
+                                   PairPerms<Nd0, Nd1>, int, int>;
             struct Value {
                 vector<From_size<Nd0>, Cpu> toSend;
                 From_size<Nd1> toReceive;
