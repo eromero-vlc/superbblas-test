@@ -349,8 +349,10 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_MKL
 // Change types to MKL
+// #        define PASS_SCALAR(X) *(MKL_SCALAR *)&(X)
 #        define PASS_SCALAR(X)                                                                     \
-            ARITH(X, X, X, *(MKL_Complex8 *)&(X), X, *(MKL_Complex16 *)&(X), X, X)
+            ARITH(, , (X), (MKL_SCALAR{std::real(X), std::imag(X)}), (X),                          \
+                  (MKL_SCALAR{std::real(X), std::imag(X)}), , )
 
 #        define MKL_SP_FUNCTION(X) CONCAT(mkl_sparse_, X)
 
@@ -365,6 +367,7 @@ namespace superbblas {
                                                      BLASINT cols, BLASINT block_size,
                                                      BLASINT *rows_start, BLASINT *rows_end,
                                                      BLASINT *col_indx, SCALAR *values) {
+            static_assert(sizeof(SCALAR) == sizeof(MKL_SCALAR));
             return XSPCREATEBSR(A, indexing, block_layout, rows, cols, block_size, rows_start,
                                 rows_end, col_indx, (MKL_SCALAR *)values);
         }
@@ -374,6 +377,7 @@ namespace superbblas {
                                              sparse_layout_t layout, const SCALAR *B,
                                              BLASINT columns, BLASINT ldb, SCALAR beta, SCALAR *C,
                                              BLASINT ldc) {
+            static_assert(sizeof(SCALAR) == sizeof(MKL_SCALAR));
             return XSPMM(operation, PASS_SCALAR(alpha), A, descr, layout, (MKL_SCALAR *)B, columns,
                          ldb, PASS_SCALAR(beta), (MKL_SCALAR *)C, ldc);
         }

@@ -190,7 +190,7 @@ namespace superbblas {
                                   nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, T{1}, y + i * bi,
                                   ldy, Cpu{});
                         else
-                            xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, ncols, bd, T{1},
+                            xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, T{1},
                                   x + jj[j] * xs, ldx, nonzeros + j * bi * bd, bi, T{1},
                                   y + i * bi * ldy, ldy, Cpu{});
                     }
