@@ -29,11 +29,13 @@
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
 #    include <cuda_runtime.h>
+#    include <cusparse.h>
 #endif
 
 #ifdef SUPERBBLAS_USE_HIP
 #    include <hip/hip_runtime_api.h>
 #    include <hipblas.h>
+#    include <hipsparse.h>
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
@@ -158,9 +160,62 @@ namespace superbblas {
             }
         }
 
+#    ifdef SUPERBBLAS_USE_CUDA
+        inline void cusparseCheck(cusparseStatus_t status) {
+            if (status != CUSPARSE_STATUS_SUCCESS) {
+                std::string str = "(unknown)";
+                if (status == CUSPARSE_STATUS_NOT_INITIALIZED)
+                    str = "CUSPARSE_STATUS_NOT_INITIALIZED";
+                if (status == CUSPARSE_STATUS_ALLOC_FAILED) str = "CUSPARSE_STATUS_ALLOC_FAILED";
+                if (status == CUSPARSE_STATUS_INVALID_VALUE) str = "CUSPARSE_STATUS_INVALID_VALUE";
+                if (status == CUSPARSE_STATUS_ARCH_MISMATCH) str = "CUSPARSE_STATUS_ARCH_MISMATCH";
+                if (status == CUSPARSE_STATUS_EXECUTION_FAILED)
+                    str = "CUSPARSE_STATUS_EXECUTION_FAILED";
+                if (status == CUSPARSE_STATUS_INTERNAL_ERROR)
+                    str = "CUSPARSE_STATUS_INTERNAL_ERROR";
+                if (status == CUSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
+                    str = "CUSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+                if (status == CUSPARSE_STATUS_NOT_SUPPORTED) str = "CUSPARSE_STATUS_NOT_SUPPORTED";
+                if (status == CUSPARSE_STATUS_INSUFFICIENT_RESOURCES)
+                    str = "CUSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+
+                std::stringstream ss;
+                ss << "cuSparse function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+        }
+#    endif
+#    ifdef SUPERBBLAS_USE_HIP
+        inline void hipsparseCheck(hipsparseStatus_t status) {
+            std::string str = "(unknown)";
+            if (status == HIPSPARSE_STATUS_NOT_INITIALIZED)
+                str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
+            if (status == HIPSPARSE_STATUS_ALLOC_FAILED) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
+            if (status == HIPSPARSE_STATUS_INVALID_VALUE) str = "HIPSPARSE_STATUS_INVALID_VALUE";
+            if (status == HIPSPARSE_STATUS_ARCH_MISMATCH) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
+            if (status == HIPSPARSE_STATUS_MAPPING_ERROR) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
+            if (status == HIPSPARSE_STATUS_EXECUTION_FAILED)
+                str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
+            if (status == HIPSPARSE_STATUS_INTERNAL_ERROR) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
+            if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
+                str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+            if (status == HIPSPARSE_STATUS_ZERO_PIVOT) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
+            if (status == HIPSPARSE_STATUS_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
+            if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES)
+                str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+
+            if (status != HIPSPARSE_STATUS_SUCCESS) {
+                std::stringstream ss;
+                ss << "hipSPARSE function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+        }
+#    endif
+
         struct Cuda {
             int device;
             cublasHandle_t cublasHandle;
+            cusparseHandle_t cusparseHandle;
             /// Optional function for allocating memory on devices
             Allocator alloc;
             /// Optional function for deallocating memory on devices
@@ -229,6 +284,7 @@ namespace superbblas {
         struct Hip {
             int device;
             hipblasHandle_t hipblasHandle;
+            hipsparseHandle_t hipsparseHandle;
             /// Optional function for allocating memory on devices
             Allocator alloc;
             /// Optional function for deallocating memory on devices
@@ -302,8 +358,10 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         std::shared_ptr<cublasHandle_t> cublasHandle;
+        std::shared_ptr<cusparseHandle_t> cusparseHandle;
 #elif defined(SUPERBBLAS_USE_HIP)
         std::shared_ptr<hipblasHandle_t> hipblasHandle;
+        std::shared_ptr<hipsparseHandle_t> hipsparseHandle;
 #endif
 
     public:
@@ -322,6 +380,12 @@ namespace superbblas {
                         delete p;
                     });
                 detail::cublasCheck(cublasCreate(cublasHandle.get()));
+                cusparseHandle = std::shared_ptr<cusparseHandle_t>(
+                    new cusparseHandle_t, [](cusparseHandle_t *p) {
+                        detail::cusparseCheck(cusparseDestroy(*p));
+                        delete p;
+                    });
+                detail::cusparseCheck(cusparseCreate(cusparseHandle.get()));
             }
 #elif defined(SUPERBBLAS_USE_HIP)
             if (plat == HIP) {
@@ -331,6 +395,12 @@ namespace superbblas {
                         delete p;
                     });
                 detail::hipblasCheck(hipblasCreate(hipblasHandle.get()));
+                hipsparseHandle = std::shared_ptr<hipsparseHandle_t>(
+                    new hipsparseHandle_t, [](hipsparseHandle_t *p) {
+                        detail::hipsparseCheck(hipsparseDestroy(*p));
+                        delete p;
+                    });
+                detail::hipsparseCheck(hipsparseCreate(hipsparseHandle.get()));
             }
 #endif
         }
@@ -339,14 +409,14 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         detail::Cuda toCuda(Session session) const {
-            return detail::Cuda{device, *cublasHandle, alloc, dealloc, session};
+            return detail::Cuda{device, *cublasHandle, *cusparseHandle, alloc, dealloc, session};
         }
 
         detail::Cuda toGpu(Session session) const { return toCuda(session); }
 
 #elif defined(SUPERBBLAS_USE_HIP)
         detail::Hip toHip(Session session) const {
-            return detail::Hip{device, *hipblasHandle, alloc, dealloc, session};
+            return detail::Hip{device, *hipblasHandle, *hipsparseHandle, alloc, dealloc, session};
         }
 
         detail::Hip toGpu(Session session) const { return toHip(session); }

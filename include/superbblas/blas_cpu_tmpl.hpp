@@ -383,9 +383,51 @@ namespace superbblas {
         }
 
 #        undef PASS_SCALAR
+#        undef MKL_SCALAR
 #        undef MKL_SP_FUNCTION
 
 #    endif // SUPERBBLAS_USE_MKL
+
+#    if defined(SUPERBBLAS_USE_CUDA)
+
+#        define CUSPARSE_SCALAR ARITH(, , float, cuComplex, double, cuDoubleComplex, , )
+
+        inline cusparseStatus_t
+        cusparseXbsrmm(cusparseHandle_t handle, cusparseDirection_t dirA,
+                       cusparseOperation_t transA, cusparseOperation_t transB, int mb, int n,
+                       int kb, int nnzb, SCALAR alpha, const cusparseMatDescr_t descrA,
+                       const SCALAR *bsrValA, const int *bsrRowPtrA, const int *bsrColIndA,
+                       int blockDim, const SCALAR *B, int ldb, SCALAR beta, SCALAR *C, int ldc) {
+            return ARITH(, , cusparseSbsrmm, cusparseCbsrmm, cusparseDbsrmm, cusparseZbsrmm, , )(
+                handle, dirA, transA, transB, mb, n, kb, nnzb, (const CUSPARSE_SCALAR *)&alpha,
+                descrA, (const CUSPARSE_SCALAR *)bsrValA, bsrRowPtrA, bsrColIndA, blockDim,
+                (const CUSPARSE_SCALAR *)B, ldb, (const CUSPARSE_SCALAR *)&beta,
+                (CUSPARSE_SCALAR *)C, ldc);
+        }
+
+#        undef CUSPARSE_SCALAR
+
+#    elif defined(SUPERBBLAS_USE_HIP)
+
+#        define HIPSPARSE_SCALAR ARITH(, , float, hipComplex, double, hipDoubleComplex, , )
+
+        inline hipsparseStatus_t
+        hipsparseXbsrmm(hipsparseHandle_t handle, hipsparseDirection_t dirA,
+                        hipsparseOperation_t transA, hipsparseOperation_t transB, int mb, int n,
+                        int kb, int nnzb, SCALAR alpha, const hipsparseMatDescr_t descrA,
+                        const SCALAR *bsrValA, const int *bsrRowPtrA, const int *bsrColIndA,
+                        int blockDim, const SCALAR *B, int ldb, SCALAR beta, SCALAR *C, int ldc) {
+            return ARITH(, , hipsparseSbsrmm, hipsparseCbsrmm, hipsparseDbsrmm, hipsparseZbsrmm,
+                         , )(handle, dirA, transA, transB, mb, n, kb, nnzb,
+                             (const HIPSPARSE_SCALAR *)&alpha, descrA,
+                             (const HIPSPARSE_SCALAR *)bsrValA, bsrRowPtrA, bsrColIndA, blockDim,
+                             (const HIPSPARSE_SCALAR *)B, ldb, (const HIPSPARSE_SCALAR *)&beta,
+                             (HIPSPARSE_SCALAR *)C, ldc);
+        }
+
+#        undef HIPSPARSE_SCALAR
+
+#    endif
 
 #    undef BLASINT
 #    undef REAL

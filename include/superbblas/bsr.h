@@ -205,30 +205,63 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T> struct BSR<Nd, Ni, T, Gpu> {
             BSRComponent<Nd, Ni, T, Gpu> v; ///< BSR general information
             vector<IndexType, Gpu> ii, jj;  ///< BSR row and column nonzero indices
+#    ifdef SUPERBBLAS_USE_CUDA
+            cusparseMatDescr_t descrA; ///< cuSparse descriptor
+#    else
+            hipsparseMatDescr_t descrA; ///< hipSparse descriptor
+#    endif
 
             static const SpMMAllowedLayout allowLayout = ColumnMajorForY;
 
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
-                if (volume(v.dimi) == 0 || volume(v.dimo) == 0) return;
-                auto bsr = get_bsr_indices(v);
+                if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
+                if (volume(v.blocki) != volume(v.blockd))
+                    throw std::runtime_error(" MKL Sparse does not support non-square blocks");
+                auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
+#    ifdef SUPERBBLAS_USE_CUDA
+                cusparseCheck(cusparseCreateMatDescr(&descrA));
+                cusparseCheck(cusparseSetMatIndexBase(descrA, CUSPARSE_INDEX_BASE_ZERO));
+                cusparseCheck(cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL));
+#    else
+                hipsparseCheck(hipsparseCreateMatDescr(&descrA));
+                hipsparseCheck(hipsparseSetMatIndexBase(descrA, HIPSPARSE_INDEX_BASE_ZERO));
+                hipsparseCheck(hipsparseSetMatType(descrA, HIPSPARSE_MATRIX_TYPE_GENERAL));
+#    endif
             }
 
-            void operator()(T *x, IndexType ldx, T *y, IndexType ldy, IndexType ncols,
-                            T beta = T{0}) {
+            void operator()(bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+                            IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
+                if (ly == RowMajor)
+                    throw std::runtime_error(
+                        "Unsupported row-major on Y with cu/hipSPARSE's bsrmm");
                 IndexType block_size = volume(v.blocki);
                 IndexType block_cols = volume(v.dimd) / block_size;
                 IndexType block_rows = volume(v.dimi) / block_size;
                 IndexType num_blocks = jj.size();
-                xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T one{1};
-                cusparseMatDescr_t descrA;
-                cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL);
-                cusparseXbsrmm(ii.ctx().cusparseHandle, CUSPARSE_DIRECTION_COLUMN,
-                               CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                               block_rows, ncols, block_cols, num_blocks, &one, descrA, v.it.data(),
-                               ii.data(), jj.data(), block_size, x, ldx, &beta, y, ldy);
+#    ifdef SUPERBBLAS_USE_CUDA
+                cusparseCheck(cusparseXbsrmm(
+                    ii.ctx().cusparseHandle,
+                    v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
+                    !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                           : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                    lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                                      : CUSPARSE_OPERATION_TRANSPOSE,
+                    block_rows, ncols, block_cols, num_blocks, one, descrA, v.it.data(), ii.data(),
+                    jj.data(), block_size, x, ldx, beta, y, ldy));
+#    else
+                hipsparseCheck(hipsparseXbsrmm(
+                    ii.ctx().hipsparseHandle,
+                    v.blockImFast ? HIPSPARSE_DIRECTION_COLUMN : HIPSPARSE_DIRECTION_ROW,
+                    !conjA ? HIPSPARSE_OPERATION_NON_TRANSPOSE
+                           : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                    lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
+                                      : HIPSPARSE_OPERATION_TRANSPOSE,
+                    block_rows, ncols, block_cols, num_blocks, one, descrA, v.it.data(), ii.data(),
+                    jj.data(), block_size, x, ldx, beta, y, ldy));
+#    endif
             }
 
             ~BSR() {}
@@ -296,7 +329,14 @@ namespace superbblas {
             r.co = co;
             for (unsigned int i = 0; i < ncomponents; ++i) {
                 std::size_t nii = volume(fsi[i][1]) / volume(blocki);
-                std::size_t njj = std::accumulate(ii[i], ii[i] + nii, std::size_t{0});
+                std::size_t njj =
+                    ctx[i].plat == CPU ? sum(to_vector(ii[i], nii, ctx[i].toCpu(session))) :
+#ifdef SUPERBBLAS_USE_GPU
+                                       sum(to_vector(ii[i], nii, ctx[i].toGpu(session)))
+#else
+                                       0
+#endif
+                    ;
                 std::size_t nvalues = njj * volume(blockd) * volume(blocki);
                 switch (ctx[i].plat) {
 #ifdef SUPERBBLAS_USE_GPU
@@ -373,26 +413,29 @@ namespace superbblas {
         /// Return BSR indices for a given tensor BSR
         ///
 
-        template <std::size_t Nd, std::size_t Ni, typename T>
-        CsrIndices<Cpu> get_bsr_indices(const BSRComponent<Nd, Ni, T, Cpu> &v) {
-            Indices<Cpu> ii(v.i.size() + 1, v.i.ctx()), jj(v.j.size(), v.j.ctx());
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU>
+        CsrIndices<XPU> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
+                                        bool return_jj_blocked = false) {
+            Indices<Cpu> ii(v.i.size() + 1, Cpu{}), jj(v.j.size(), Cpu{});
+            Indices<Cpu> vi = makeSure(v.i, Cpu{});
+            vector<Coor<Nd>, Cpu> vj = makeSure(v.j, Cpu{});
 
             // Compute index for the first nonzero on the ith row
             ii[0] = 0;
-            for (std::size_t i = 0; i < v.i.size(); ++i) ii[i + 1] = ii[i] + v.i[i];
+            for (std::size_t i = 0; i < vi.size(); ++i) ii[i + 1] = ii[i] + vi[i];
 
             // Transform the domain coordinates into indices
             Coor<Nd> strided = get_strides<Nd>(v.dimd, v.co);
-            const vector<Coor<Nd>, Cpu> &vj = v.j;
             std::size_t block_nnz = v.j.size();
+            std::size_t bd = return_jj_blocked ? volume(v.blockd) : 1;
 #ifdef _OPENMP
 #    pragma omp parallel for
 #endif
             for (std::size_t i = 0; i < block_nnz; ++i) {
-                jj[i] = coor2index<Nd>(vj[i], v.dimd, strided);
+                jj[i] = coor2index<Nd>(vj[i], v.dimd, strided) / bd;
             }
 
-            return CsrIndices<Cpu>{ii, jj};
+            return {makeSure(ii, v.i.ctx()), makeSure(jj, v.j.ctx())};
         }
 
         /// Return splitting of dimension labels for the RSB operator - tensor multiplication
@@ -697,6 +740,10 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Unsupported power position: it can be at the slowest index");
 
+            // Set zero
+            local_copy<Ny, Ny, T, T>(0, oy, {}, dimy, dimy, (vector<const T, XPU>)vy, oy, {}, dimy,
+                                     vy, EWOp::Copy{}, bsr.v.co);
+
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
             IndexType ldx = lx == ColumnMajor ? (!transSp ? vold : voli) : volC;
             IndexType ldy = ly == ColumnMajor ? (!transSp ? voli : vold) : volC;
@@ -876,8 +923,8 @@ namespace superbblas {
                 const unsigned int componentId = bsr.c.second[i].v.componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ny> &dimy = py_[pi][1];
-                vy1[i] = vector<T, XPU0>(volume(dimy), bsr.c.second[i].v.it.ctx());
-                vy_.second.push_back(Component<Ny, T, XPU0>{vy1[i], dimy, componentId});
+                vy1[i] = vector<T, XPU1>(volume(dimy), bsr.c.second[i].v.it.ctx());
+                vy_.second.push_back(Component<Ny, T, XPU1>{vy1[i], dimy, componentId});
                 local_bsr_krylov<Nd, Ni, Nx, Ny, T>(bsr.c.second[i], oim, odm, vx.second[i].dim, ox,
                                                     vx.second[i].it, dimy, oy, okr,
                                                     vy_.second[i].it, EWOP{});

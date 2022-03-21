@@ -1047,7 +1047,7 @@ namespace superbblas {
                 std::size_t vol = volume(v.dim);
                 Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-                vector<IndexType, Cpu> v_host = toCpu<IndexType>(v.it);
+                vector<IndexType, Cpu> v_host = makeSure(v.it, Cpu{});
 
 #ifdef _OPENMP
 #    pragma omp parallel for

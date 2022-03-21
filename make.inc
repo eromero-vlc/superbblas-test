@@ -30,7 +30,7 @@ NVCC ?= $(shell which nvcc)
 CUDADIR ?= $(shell dirname $(NVCC))/..
 #NVCCFLAGS ?= -x cu -g -G -arch=sm_75
 NVCCFLAGS ?= -x cu -O3 -arch=sm_75
-NVCCLDFLAGS ?= -lcublas -lcudart
+NVCCLDFLAGS ?= -lcublas -lcusparse -lcudart
 
 #
 # Compiler for rocm target, compiler flags, and linking flags

@@ -5,6 +5,7 @@
 #include "performance.h"
 #include "platform.h"
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -80,16 +81,22 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         EMIT REPLACE1(copy_reduce_n, superbblas::detail::copy_reduce_n<IndexType, T, XPU_GPU>)     \
             REPLACE_T REPLACE_XPU template __VA_ARGS__;
 
-/// Generate template instantiations for zero?n functions with template parameters IndexType and T
+/// Generate template instantiations for zero_n functions with template parameters IndexType and T
 
 #    define DECL_ZERO_T(...)                                                                       \
         EMIT REPLACE1(zero_n, superbblas::detail::zero_n<IndexType, T, XPU_GPU>)                   \
             REPLACE_T REPLACE_XPU template __VA_ARGS__;
 
+/// Generate template instantiations for sum functions with template parameter T
+
+#    define DECL_SUM_T(...)                                                                        \
+        EMIT REPLACE1(sum, superbblas::detail::sum<T>) REPLACE_T template __VA_ARGS__;
+
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
 #    define DECL_COPY_REDUCE(...) __VA_ARGS__
 #    define DECL_ZERO_T(...) __VA_ARGS__
+#    define DECL_SUM_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -337,6 +344,58 @@ namespace superbblas {
             using type = std::array<typename cuda_complex<T>::type, N>;
         };
 #endif // SUPERBBLAS_USE_THRUST
+
+        /// Copy n values from v to w
+
+        template <typename T, typename XPU0, typename XPU1>
+        void copy_n(const T *v, XPU0 xpu0, std::size_t n, T *w, XPU1 xpu1) {
+            if (n == 0 || v == w) return;
+
+            constexpr bool v_is_on_cpu = std::is_same<XPU0, Cpu>::value;
+            constexpr bool w_is_on_cpu = std::is_same<XPU1, Cpu>::value;
+
+            if (v_is_on_cpu && w_is_on_cpu) {
+                // Both pointers are on cpu
+                std::memcpy(w, v, sizeof(T) * n);
+
+            } else if (v_is_on_cpu != w_is_on_cpu) {
+                // One pointer is on device and the other on host
+                setDevice(xpu0);
+                setDevice(xpu1);
+#ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(
+                    cudaMemcpy(w, v, sizeof(T) * n,
+                               !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice));
+#elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(hipMemcpy(w, v, sizeof(T) * n,
+                                   !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice));
+#else
+                throw std::runtime_error("superbblas compiled with GPU support!");
+#endif
+
+            } else if (deviceId(xpu0) == deviceId(xpu1)) {
+                // Both are on the same device
+                setDevice(xpu0);
+#ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
+#elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(hipMemcpy(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice));
+#else
+                throw std::runtime_error("superbblas compiled with GPU support!");
+#endif
+
+            } else {
+                // Each pointer is on a different device
+                setDevice(xpu1);
+#ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(cudaMemcpyPeer(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n));
+#elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(hipMemcpyPeer(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n));
+#else
+                throw std::runtime_error("superbblas compiled with GPU support!");
+#endif
+            }
+        }
 
         /// Vector type a la python, that is, operator= does a reference not a copy
         /// \param T: type of the vector's elements
@@ -928,13 +987,7 @@ namespace superbblas {
                 if (indicesv == nullptr && indicesw == nullptr &&
                     alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                     std::is_same<EWOP, EWOp::Copy>::value) {
-                    setDevice(xpuw);
-                    if ((void *)v == (void *)w) return;
-#    ifdef SUPERBBLAS_USE_CUDA
-                    cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
-#    else
-                    hipCheck(hipMemcpy(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice));
-#    endif
+                    copy_n(v, xpuv, n, w, xpuw);
                 } else {
                     copy_n_same_dev_thrust(alpha, v, indicesv, n, w, indicesw, xpuw, EWOP{});
                 }
@@ -944,12 +997,7 @@ namespace superbblas {
             else if (indicesv == nullptr && indicesw == nullptr &&
                      alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                      std::is_same<EWOP, EWOp::Copy>::value && deviceId(xpuv) != deviceId(xpuw)) {
-                setDevice(xpuw);
-#    ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaMemcpyPeer(w, deviceId(xpuw), v, deviceId(xpuv), sizeof(T) * n));
-#    else
-                hipCheck(hipMemcpyPeer(w, deviceId(xpuw), v, deviceId(xpuv), sizeof(T) * n));
-#    endif
+                copy_n(v, xpuv, n, w, xpuw);
             }
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
@@ -986,17 +1034,7 @@ namespace superbblas {
             // Base case
             else if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
                      indicesv == nullptr && indicesw == nullptr) {
-                setDevice(xpu0);
-                setDevice(xpu1);
-#    ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaMemcpy(w, v, sizeof(T) * n,
-                                     std::is_same<XPU0, Cuda>::value ? cudaMemcpyDeviceToHost
-                                                                     : cudaMemcpyHostToDevice));
-#    else
-                hipCheck(hipMemcpy(w, v, sizeof(T) * n,
-                                   std::is_same<XPU0, Hip>::value ? hipMemcpyDeviceToHost
-                                                                  : hipMemcpyHostToDevice));
-#    endif
+                copy_n(v, xpu0, n, w, xpu1);
                 // Scale by alpha
                 copy_n<IndexType>((Q)alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
             }
@@ -1268,20 +1306,57 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_CUDA
 
-        template <typename IndexType, typename T> vector<T, Cpu> toCpu(const vector<T, Cpu> &v) {
-            return v;
-        }
+        /// Return a copy of the vector in the given context, or the same vector if its context coincides
+        /// \param v: vector to return or to clone with xpu context
+        /// \param xpu: target context
+        ///
+        /// NOTE: implementation when the vector context and the given context are of the same type
 
-        template <typename IndexType, typename T, typename XPU,
-                  typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
-        vector<T, Cpu> toCpu(const vector<T, XPU> &v) {
-            vector<T, Cpu> r(v.size(), v.ctx().toCpu());
-            // FIXME: change int to std::size_t
-            if (v.size() > std::numeric_limits<int>::max())
-                throw std::runtime_error("Ups! Replace int by something bigger");
-            copy_n<int, T>(T{1}, v.data(), v.ctx(), v.size(), r.data(), r.ctx(), EWOp::Copy{});
+        template <typename T, typename XPU>
+        vector<T, XPU> makeSure(const vector<T, XPU> &v, XPU xpu) {
+            if (deviceId(v.ctx()) == deviceId(xpu)) return v;
+            vector<T, XPU> r(v.size(), xpu);
+            copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
             return r;
         }
+
+        /// Return a copy of the vector in the given context
+        /// \param v: vector to clone with xpu context
+        /// \param xpu: target context
+        ///
+        /// NOTE: implementation when the vector context and the given context are not of the same type
+
+        template <typename T, typename XPU1, typename XPU0,
+                  typename std::enable_if<!std::is_same<XPU0, XPU1>::value, bool>::type = true>
+        vector<T, XPU1> makeSure(const vector<T, XPU0> &v, XPU1 xpu1) {
+            vector<T, XPU1> r(v.size(), xpu1);
+            copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
+            return r;
+        }
+
+        /// Return the sum of all elements in a vector
+        /// \param v: vector
+        /// \return: the sum of all the elements of v
+
+        template <typename T> T sum(const vector<T, Cpu> &v) {
+            T s{0};
+            const T *p = v.data();
+            for (std::size_t i = 0, n = v.size(); i < n; ++i) s += p[i];
+            return s;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return the sum of all elements in a vector
+        /// \param v: vector
+        /// \return: the sum of all the elements of v
+
+        template <typename T>
+        DECL_SUM_T(T sum(const vector<T, Gpu> &v))
+        IMPL({
+            auto it = encapsulate_pointer(v.begin());
+            return thrust::reduce(it, it + v.size());
+        })
+#endif
     }
 
     /// Allocate memory on a device
