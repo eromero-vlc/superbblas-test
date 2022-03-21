@@ -217,9 +217,16 @@ namespace superbblas {
             }
         };
 
+        /// Return all caches
+        inline std::array<std::vector<cache>, 256> &getCaches() {
+            // 2D array of caches, caches[session][deviceId]
+            static std::array<std::vector<cache>, 256> caches{};
+            return caches;
+        }
+
         /// Return the caches associated to the devices
         inline std::vector<cache> &getCaches(Session session) {
-            static std::array<std::vector<cache>, 256> caches{};
+            auto &caches = getCaches();
             static std::mutex m;
 
             // Initialize caches
@@ -283,6 +290,12 @@ namespace superbblas {
                 throw std::runtime_error("Invalid device");
             return cacheHelper<K, V, H, T>{caches[device + 1]};
         }
+    }
+
+    /// Clear all internal caches
+    inline void clearCaches() {
+        auto &caches = detail::getCaches();
+        for (auto &i : caches) i.resize(0);
     }
 }
 
