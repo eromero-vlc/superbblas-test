@@ -1448,14 +1448,15 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
         Coor<Ndo> get_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
-                                 const Coor<Nd1> &dim1, const Order<Ndo> &o_r) {
+                                 const Coor<Nd1> &dim1, const Order<Ndo> &o_r,
+                                 bool report_inconsistencies = true) {
             std::map<char, IndexType> m;
             for (std::size_t i = 0; i < Nd0; ++i) m[o0[i]] = dim0[i];
             for (std::size_t i = 0; i < Nd1; ++i) {
                 auto it = m.find(o1[i]);
                 if (it == m.end())
                     m[o1[i]] = dim1[i];
-                else if (it->second != dim1[i])
+                else if (report_inconsistencies && it->second != dim1[i])
                     throw std::runtime_error("Incompatible distributions for contraction");
             }
             Coor<Ndo> r;

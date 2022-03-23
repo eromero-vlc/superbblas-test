@@ -473,6 +473,13 @@ namespace superbblas {
                 return true;
             }
 
+            /// Operator == compares size and content
+            template <typename U = XPU,
+                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
+            bool operator!=(const vector<T, U> &v) const {
+                return !operator==(v);
+            }
+
         private:
             std::size_t n;                   ///< Number of allocated `T` elements
             T *ptr_aligned;                  ///< Pointer aligned

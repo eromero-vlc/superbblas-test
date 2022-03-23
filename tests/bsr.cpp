@@ -65,7 +65,10 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     for (auto &i : pd) {
         for (int dim = 0; dim < 4; ++dim) {
             i[1][dim] = std::min(op_dim[dim], i[1][dim] + 2);
-            if (i[1][dim] < op_dim[dim]) i[0][dim]--;
+            if (i[1][dim] < op_dim[dim])
+                i[0][dim]--;
+            else
+                i[0][dim] = 0;
         }
         i[0] = normalize_coor(i[0], op_dim);
     }
@@ -85,11 +88,11 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     Coor<6> *jjptr = jj_xpu.data();
     T *dataptr = data_xpu.data();
     create_bsr<6, 6, T>(pi.data(), pd.data(), 1, block, block, false, &iiptr, &jjptr,
-                        (const T **)&dataptr,
+                        (const T **)&dataptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
-                        &ctx, SlowToFast, &bsrh);
+                        SlowToFast, &bsrh);
     return {bsrh, data_xpu};
 }
 
