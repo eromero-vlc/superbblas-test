@@ -118,7 +118,7 @@ namespace superbblas {
                 IndexType block_size = volume(v.blocki);
                 IndexType block_rows = volume(v.dimi) / block_size;
                 IndexType block_cols = volume(v.dimd) / block_size;
-                auto bsr = get_bsr_indices(v);
+                auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
                 A = std::shared_ptr<sparse_matrix_t>(new sparse_matrix_t, [=](sparse_matrix_t *A) {
@@ -288,6 +288,7 @@ namespace superbblas {
             bool check(std::size_t Nd_, std::size_t Ni_, detail::num_type type, const Context *ctx,
                        int ncomponents, unsigned int nprocs, unsigned int rank,
                        CoorOrder co) override {
+                (void)rank;
                 if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type ||
                     nprocs * ncomponents != pd.size())
                     return false;
@@ -718,6 +719,8 @@ namespace superbblas {
                               const Order<Nd> &odm, const Coor<Nx> &dimx, const Order<Nx> &ox,
                               vector<const T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
                               char okr, vector<T, XPU> vy, EWOP) {
+
+            tracker<XPU> _t("local BSR matvec", vx.ctx());
 
             // Check inputs and get the common dimensions
             bool transSp;

@@ -42,6 +42,19 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
         if (d > 2) neighbors++;
     }
 
+    // Compute the domain ranges
+    PartitionStored<6> pd = pi;
+    for (auto &i : pd) {
+        for (int dim = 0; dim < 4; ++dim) {
+            i[1][dim] = std::min(op_dim[dim], i[1][dim] + 2);
+            if (i[1][dim] < op_dim[dim])
+                i[0][dim]--;
+            else
+                i[0][dim] = 0;
+        }
+        i[0] = normalize_coor(i[0], op_dim);
+    }
+
     // Compute the coordinates for all nonzeros
     for (auto &i : ii) i = neighbors;
     vector<Coor<6>, Cpu> jj(neighbors * voli, Cpu{});
@@ -54,23 +67,10 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
             for (int dir = -1; dir < 2; dir += 2) {
                 Coor<6> c0 = c;
                 c0[dim] += dir;
-                jj[j++] = normalize_coor(c0, op_dim);
+                jj[j++] = normalize_coor(c0 - pd[rank][0], op_dim);
                 if (op_dim[dim] <= 2) break;
             }
         }
-    }
-
-    // Compute the domain ranges
-    PartitionStored<6> pd = pi;
-    for (auto &i : pd) {
-        for (int dim = 0; dim < 4; ++dim) {
-            i[1][dim] = std::min(op_dim[dim], i[1][dim] + 2);
-            if (i[1][dim] < op_dim[dim])
-                i[0][dim]--;
-            else
-                i[0][dim] = 0;
-        }
-        i[0] = normalize_coor(i[0], op_dim);
     }
 
     // Number of nonzeros
