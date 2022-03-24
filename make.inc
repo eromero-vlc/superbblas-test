@@ -39,8 +39,8 @@ PRIM ?=
 THRUST ?= 
 HIP ?= $(shell which hipcc)
 ROCMDIR ?= $(shell hipconfig -R)
-HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I$(PRIM) -I$(THRUST)
-HIPLDFLAGS ?= -L$(ROCMDIR)/hipblas/lib -lhipblas
+HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I$(ROCMDIR)/hipsparse/include -I$(ROCMDIR)/rocsparse/include -I$(PRIM) -I$(THRUST)
+HIPLDFLAGS ?= -L$(ROCMDIR)/hipblas/lib -L$(ROCMDIR)/hipsparse/lib -L$(ROCMDIR)/rocsparse/lib -lhipblas -lhipsparse -lrocsparse
 
 #
 # Building directory

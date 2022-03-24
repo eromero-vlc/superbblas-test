@@ -767,8 +767,7 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm, typename XPU0,
                   typename XPU1, typename std::enable_if<Nd != Ni, bool>::type = true>
         const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &
-        bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, unsigned int power,
-                   Comm comm) {
+        bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, unsigned int power, Comm) {
 
             // Cannot do powers with rectangular matrices
             if (power > 1)
@@ -780,21 +779,24 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm, typename XPU0,
                   typename XPU1, typename std::enable_if<Nd == Ni, bool>::type = true>
         const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &
-        bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, unsigned int power,
-                   Comm comm) {
+        bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, unsigned int power, Comm) {
 
             // Check if the extensions have already been computed
             if (power <= 1) return bsr;
-            if (power <= bsr.ext_power) return *bsr.ext;
 
-            while (power > bsr.ext_power) {
-                // If the image and domain spaces coincide for all components, no extra communications are required to build powers
-                const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr0 = (bsr.ext ? *bsr.ext : bsr);
-                if (bsr0.pd == bsr0.pi) return bsr0;
+            // Unsupported powers for now
+            throw std::runtime_error("Unsupported powers on BSR for now");
 
-                Coor<Nd> dimd = get_dim(bsr0.pd);
-                Coor<Ni> dimi = get_dim(bsr0.pi);
-            }
+            //if (power <= bsr.ext_power) return *bsr.ext;
+
+            //while (power > bsr.ext_power) {
+            //    // If the image and domain spaces coincide for all components, no extra communications are required to build powers
+            //    const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr0 = (bsr.ext ? *bsr.ext : bsr);
+            //    if (bsr0.pd == bsr0.pi) return bsr0;
+
+            //    Coor<Nd> dimd = get_dim(bsr0.pd);
+            //    Coor<Ni> dimi = get_dim(bsr0.pi);
+            //}
         }
 
         /// Get the partitions for the dense input and output tensors
@@ -961,8 +963,8 @@ namespace superbblas {
                 vector<T, XPU1> vyi(volume(dimy), bsr.c.second[i].v.it.ctx());
                 vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimy, componentId});
                 local_bsr_krylov<Nd, Ni, Nx, Ny, T>(bsr.c.second[i], oim, odm, dimx, ox,
-                                                    vx_.second[i].it, dimy, oy, okr, vy_.second[i].it,
-                                                    EWOP{});
+                                                    vx_.second[i].it, dimy, oy, okr,
+                                                    vy_.second[i].it, EWOP{});
             }
 
             // Scale the output tensor by beta

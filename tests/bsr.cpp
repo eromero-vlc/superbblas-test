@@ -163,6 +163,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
                     SlowToFast, Copy);
                 }
             }
+            sync(xpu);
             t = w_time() - t;
             if (rank == 0) std::cout << "Time in mavec " << t / nrep << std::endl;
         }

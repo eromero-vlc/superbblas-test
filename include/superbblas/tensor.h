@@ -114,7 +114,7 @@ namespace superbblas {
         template <typename T, typename Indx, std::size_t N,
                   typename std::enable_if<(N > 1), bool>::type = true>
         inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &t) {
-            return (i < t.size_left ? tget(i, t.left) : tget(i - (Indx)t.size_left, t.right));
+            return (i < Indx(t.size_left) ? tget(i, t.left) : tget(i - (Indx)t.size_left, t.right));
         }
 
         template <typename T, typename Indx, std::size_t N,

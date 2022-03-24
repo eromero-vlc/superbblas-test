@@ -160,7 +160,6 @@ namespace superbblas {
             }
         }
 
-#    ifdef SUPERBBLAS_USE_CUDA
         inline void cusparseCheck(cusparseStatus_t status) {
             if (status != CUSPARSE_STATUS_SUCCESS) {
                 std::string str = "(unknown)";
@@ -184,33 +183,6 @@ namespace superbblas {
                 throw std::runtime_error(ss.str());
             }
         }
-#    endif
-#    ifdef SUPERBBLAS_USE_HIP
-        inline void hipsparseCheck(hipsparseStatus_t status) {
-            std::string str = "(unknown)";
-            if (status == HIPSPARSE_STATUS_NOT_INITIALIZED)
-                str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
-            if (status == HIPSPARSE_STATUS_ALLOC_FAILED) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
-            if (status == HIPSPARSE_STATUS_INVALID_VALUE) str = "HIPSPARSE_STATUS_INVALID_VALUE";
-            if (status == HIPSPARSE_STATUS_ARCH_MISMATCH) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
-            if (status == HIPSPARSE_STATUS_MAPPING_ERROR) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
-            if (status == HIPSPARSE_STATUS_EXECUTION_FAILED)
-                str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
-            if (status == HIPSPARSE_STATUS_INTERNAL_ERROR) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
-            if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
-                str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
-            if (status == HIPSPARSE_STATUS_ZERO_PIVOT) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
-            if (status == HIPSPARSE_STATUS_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
-            if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES)
-                str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
-
-            if (status != HIPSPARSE_STATUS_SUCCESS) {
-                std::stringstream ss;
-                ss << "hipSPARSE function returned error " << str;
-                throw std::runtime_error(ss.str());
-            }
-        }
-#    endif
 
         struct Cuda {
             int device;
@@ -245,6 +217,31 @@ namespace superbblas {
                 std::stringstream s;
                 s << "HIP error: " << hipGetErrorName(err) << ": " << hipGetErrorString(err);
                 throw std::runtime_error(s.str());
+            }
+        }
+
+        inline void hipsparseCheck(hipsparseStatus_t status) {
+            std::string str = "(unknown)";
+            if (status == HIPSPARSE_STATUS_NOT_INITIALIZED)
+                str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
+            if (status == HIPSPARSE_STATUS_ALLOC_FAILED) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
+            if (status == HIPSPARSE_STATUS_INVALID_VALUE) str = "HIPSPARSE_STATUS_INVALID_VALUE";
+            if (status == HIPSPARSE_STATUS_ARCH_MISMATCH) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
+            if (status == HIPSPARSE_STATUS_MAPPING_ERROR) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
+            if (status == HIPSPARSE_STATUS_EXECUTION_FAILED)
+                str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
+            if (status == HIPSPARSE_STATUS_INTERNAL_ERROR) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
+            if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
+                str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+            if (status == HIPSPARSE_STATUS_ZERO_PIVOT) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
+            if (status == HIPSPARSE_STATUS_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
+            if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES)
+                str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+
+            if (status != HIPSPARSE_STATUS_SUCCESS) {
+                std::stringstream ss;
+                ss << "hipSPARSE function returned error " << str;
+                throw std::runtime_error(ss.str());
             }
         }
 
