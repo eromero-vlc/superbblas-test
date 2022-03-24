@@ -293,9 +293,7 @@ namespace superbblas {
                     nprocs * ncomponents != pd.size())
                     return false;
                 for (const auto &i : c.first)
-                    if (0 > i.v.componentId || i.v.componentId >= ncomponents * nprocs ||
-                        i.v.co != co)
-                        return false;
+                    if (i.v.componentId >= ncomponents * nprocs || i.v.co != co) return false;
                 /// TODO: check ctx[i].platform matches the components c
                 (void)ctx;
                 return true;
