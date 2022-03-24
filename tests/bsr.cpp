@@ -1,5 +1,6 @@
 #include "superbblas.h"
 #include <vector>
+#include <algorithm>
 #include <iostream>
 #ifdef _OPENMP
 #    include <omp.h>
@@ -59,7 +60,9 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     for (auto &i : ii) i = neighbors;
     vector<Coor<6>, Cpu> jj(neighbors * voli, Cpu{});
     Coor<6> stride = get_strides<6>(dimi, SlowToFast);
+    Coor<6> strided = get_strides<6>(pd[rank][1], SlowToFast);
     for (std::size_t i = 0, j = 0; i < voli; ++i) {
+        std::size_t j0 = j;
         Coor<6> c = index2coor(i, dimi, stride) + from;
         jj[j++] = c;
         for (int dim = 0; dim < 4; ++dim) {
@@ -71,6 +74,9 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
                 if (op_dim[dim] <= 2) break;
             }
         }
+        std::sort(&jj[j0], &jj[j], [&](const Coor<6> &a, const Coor<6> &b) {
+            return coor2index(a, pd[rank][1], strided) < coor2index(b, pd[rank][1], strided);
+        });
     }
 
     // Number of nonzeros
