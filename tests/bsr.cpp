@@ -148,7 +148,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
                   << vol1 * 1.0 * sizeof(Q) / 1024 / 1024 << " MiB)" << std::endl;
 
     // Copy tensor t0 into each of the c components of tensor 1
-    {
+    resetTimings();
+    try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             for (int n = 0; n < dim[N]; ++n) {
@@ -161,17 +162,17 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
                     MPI_COMM_WORLD,
 #endif
                     SlowToFast, Copy);
-                }
             }
-            sync(xpu);
-            t = w_time() - t;
-            if (rank == 0) std::cout << "Time in mavec " << t / nrep << std::endl;
         }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in mavec " << t / nrep << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
-        destroy_bsr(op);
+    destroy_bsr(op);
 
-        if (rank == 0) reportTimings(std::cout);
-        if (rank == 0) reportCacheUsage(std::cout);
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
 }
 
 int main(int argc, char **argv) {
