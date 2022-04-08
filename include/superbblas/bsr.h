@@ -878,12 +878,8 @@ namespace superbblas {
             tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
 
             // Check the compatibility of the tensors
-            //Coor<Nd> dimd = get_dim(bsr.pd);
-            //Coor<Ni> dimi = get_dim(bsr.pi);
             Coor<Nx> dimx = get_dim(px);
             Coor<Ny> dimy = get_dim(py);
-            //std::size_t volA, volB, volC;
-            //local_bar_krylov_check<Nd, Ni, Nx, Ny>(dimi, dimd, oim, odm, bsr.c.first[0].blocki,bsr.c.first[0].blockm  );
 
             // Check that vm and vx have the same components and on the same device
             if (bsr.c.first.size() != vx.first.size() || bsr.c.second.size() != vx.second.size())
@@ -908,7 +904,6 @@ namespace superbblas {
                     throw std::runtime_error("The dimension label `okr` wasn't found on `oy`");
                 power = dimy[it_oy - oy.begin()];
             }
-            //const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr0 = get_bsr_power(bsr, power, comm);
 
             // Generate the partitioning and the storage for the dense matrix input and output tensor
 
