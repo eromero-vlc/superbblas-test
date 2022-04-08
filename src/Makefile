@@ -10,6 +10,7 @@ OTHER_HEADERS := \
   ../include/superbblas/cblas.h \
   ../include/superbblas/cache.h \
   ../include/superbblas/crc32.h \
+  ../include/superbblas/dense.h \
   ../include/superbblas/dist.h \
   ../include/superbblas/performance.h \
   ../include/superbblas/platform.h \

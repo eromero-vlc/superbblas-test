@@ -200,7 +200,13 @@ namespace superbblas {
             operator Component<Nd, const Q, XPU>() const {
                 return {it, dim, componentId};
             }
-        };
+
+            template <typename Q = T, typename = typename std::enable_if<!std::is_same<
+                                          Q, typename std::remove_const<Q>::type>::value>::type>
+            operator Component<Nd, typename std::remove_const<Q>::type, XPU>() const {
+                return {it, dim, componentId};
+            }
+         };
 
         /// A tensor composed of several components
         template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
@@ -1581,6 +1587,49 @@ namespace superbblas {
             }
         }
 
+        /// Return a tensor with a given partitioning and ordering
+        /// \param p0: partitioning of the input tensor
+        /// \param o0: dimension labels for the input tensor
+        /// \param v0: input tensor components
+        /// \param p1: partitioning of the output tensor in consecutive ranges
+        /// \param o1: dimension labels for the output tensor
+        /// \param co: coordinate linearization order
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        Components_tmpl<N, T, XPU0, XPU1>
+        reorder_tensor(const From_size<N> &p0, const Order<N> &o0,
+                       const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
+                       const Order<N> &o1, Comm comm, CoorOrder co) {
+
+            // If the two orderings and partitions are equal, return the tensor
+            if (o0 == o1 && p0 == p1) return v0;
+
+            // Allocate the tensor
+            unsigned int ncomponents = v0.first.size() + v0.second.size();
+            using T_no_const = typename std::remove_const<T>::type;
+            Components_tmpl<N, T_no_const, XPU0, XPU1> v1;
+            for (unsigned int i = 0; i < v0.first.size(); ++i) {
+                const unsigned int componentId = v0.first[i].componentId;
+                const unsigned int pi = comm.rank * ncomponents + componentId;
+                const Coor<N> &dimi = p1[pi][1];
+                vector<T_no_const, XPU0> v1i(volume(dimi), v0.first[i].it.ctx());
+                v1.first.push_back(Component<N, T_no_const, XPU0>{v1i, dimi, componentId});
+            }
+            for (unsigned int i = 0; i < v0.second.size(); ++i) {
+                const unsigned int componentId = v0.second[i].componentId;
+                const unsigned int pi = comm.rank * ncomponents + componentId;
+                const Coor<N> &dimi = p1[pi][1];
+                vector<T_no_const, XPU1> v1i(volume(dimi), v0.second[i].it.ctx());
+                v1.second.push_back(Component<N, T_no_const, XPU1>{v1i, dimi, componentId});
+            }
+
+            // Copy the content of v0 into v1
+            Coor<N> dim0 = get_dim<N>(p0);
+            copy<N, N, T_no_const>(T_no_const{1}, p0, {}, dim0, o0, toConst(v0), p1, {}, o1, v1, comm, EWOp::Copy{}, co);
+
+            return v1;
+        }
+
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
         /// \param alpha: factor on the contraction
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
@@ -1654,7 +1703,7 @@ namespace superbblas {
             Coor<Ndo> sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
 
             // Generate the partitioning and the storage for the output tensor
-            unsigned int ncomponents = v0.first.size() + v1.second.size();
+            unsigned int ncomponents = v0.first.size() + v0.second.size();
             From_size<Ndo> pr_ = get_output_partition<Nd0, Nd1, Ndo>(p0, o0, p1, o1, sug_or);
             Components_tmpl<Ndo, const T, XPU0, XPU1> vr_;
             std::vector<vector<T, XPU0>> vr0(v0.first.size());

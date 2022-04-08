@@ -16,6 +16,12 @@
 #    include "cblas.h"
 #endif // SUPERBBLAS_USE_MKL
 
+#ifdef SUPERBBLAS_USE_MKL
+#    define LAPACK_SCALAR MKL_SCALAR
+#else
+#    define LAPACK_SCALAR SCALAR
+#endif
+
 #include <complex>
 #include <vector>
 
@@ -38,6 +44,8 @@ namespace superbblas {
         // Basic BLAS
         //
 
+        using BLASSTRING = const char *;
+
 #    ifndef SUPERBBLAS_USE_CBLAS
 
 // clang-format off
@@ -52,9 +60,8 @@ namespace superbblas {
 #define XGEMV     FORTRAN_FUNCTION(ARITH(hgemv , kgemv , sgemv , cgemv , dgemv , zgemv , , ))
 #define XDOT      FORTRAN_FUNCTION(ARITH(hdot  ,       , sdot  ,       , ddot  ,       , , ))
 #define XSCAL     FORTRAN_FUNCTION(ARITH(hscal , kscal , sscal , cscal , dscal , zscal , , ))
-        // clang-format on
+// clang-format on
 
-        using BLASSTRING = const char *;
         extern "C" {
 
         void XCOPY(BLASINT *n, const SCALAR *x, BLASINT *incx, SCALAR *y, BLASINT *incy);
@@ -154,6 +161,23 @@ namespace superbblas {
 #        endif // __SUPERBBLAS_BLAS_CPU_PRIVATE
 
 #    endif //  SUPERBBLAS_USE_CBLAS
+
+// clang-format off
+#define XPOTRF    FORTRAN_FUNCTION(ARITH(hpotrf, kpotrf, spotrf, cpotrf, dpotrf, zpotrf, , ))
+#define XGETRF    FORTRAN_FUNCTION(ARITH(hgetrf, kgetrf, sgetrf, cgetrf, dgetrf, zgetrf, , ))
+#define XGETRI    FORTRAN_FUNCTION(ARITH(hgetri, kgetri, sgetri, cgetri, dgetri, zgetri, , ))
+// clang-format on
+
+#ifndef SUPERBBLAS_USE_MKL
+        extern "C" {
+        void XPOTRF(BLASSTRING uplo, BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *info);
+        void XGETRF(BLASINT *m, BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *ipivot,
+                    BLASINT *info);
+        void XGETRI(BLASINT *n, SCALAR *a, BLASINT *lda, , BLASINT *piv, SCALAR *work,
+                    BLASINT *lwork, BLASINT *info);
+        }
+#endif // SUPERBBLAS_USE_MKL
+
 
         inline void xcopy(BLASINT n, const SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
 #    ifndef SUPERBBLAS_USE_CBLAS
@@ -276,6 +300,34 @@ namespace superbblas {
 #    endif
         }
 
+        inline BLASINT xpotrf(BLASSTRING uplo, BLASINT n, SCALAR *a, BLASINT lda) {
+            /* Zero dimension matrix may cause problems */
+            if (n == 0) return 0;
+
+            BLASINT linfo = 0;
+            XPOTRF(uplo, &n, (LAPACK_SCALAR *)a, &lda, &linfo);
+            return linfo;
+        }
+
+        int xgetrf(BLASINT m, BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot) {
+            /* Zero dimension matrix may cause problems */
+            if (m == 0 || n == 0) return 0;
+
+            BLASINT linfo = 0;
+            XGETRF(&m, &n, (LAPACK_SCALAR *)a, &lda, ipivot, &linfo);
+            return linfo;
+        }
+
+        int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work,
+                   BLASINT lwork) {
+            /* Zero dimension matrix may cause problems */
+            if (n == 0) return 0;
+
+            BLASINT info = 0;
+            XGETRI(&n, (LAPACK_SCALAR *)a, &lda, ipivot, (LAPACK_SCALAR *)work, &lwork, &info);
+            return info;
+        }
+
 #    undef XCOPY
 #    undef XSWAP
 #    undef XGEMM
@@ -287,6 +339,9 @@ namespace superbblas {
 #    undef XGEMV
 #    undef XDOT
 #    undef XSCAL
+#    undef XPOTRF
+#    undef XGETRF
+#    undef XGETRI
 
         //
         // Batched GEMM
