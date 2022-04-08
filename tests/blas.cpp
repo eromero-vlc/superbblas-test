@@ -52,8 +52,8 @@ template <typename T> struct Epsilon {
 
 template <typename T, typename XPU0, typename XPU1> void check_are_equal(vector<T, XPU0> u_, vector<T, XPU1> v_) {
     if (u_.size() != v_.size()) throw std::runtime_error("Input vectors have different size!");
-    vector<T, Cpu> u = superbblas::detail::toCpu<int>(u_);
-    vector<T, Cpu> v = superbblas::detail::toCpu<int>(v_);
+    vector<T, Cpu> u = superbblas::detail::makeSure(u_, Cpu{0});
+    vector<T, Cpu> v = superbblas::detail::makeSure(v_, Cpu{0});
     double diff = 0, add = 0;
     for (unsigned int i = 0; i < u.size(); i++)
         diff += myabs(u[i] - v[i]), add += std::max(myabs(u[i]), myabs(v[i]));
