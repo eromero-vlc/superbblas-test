@@ -15,6 +15,13 @@ constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
 template <std::size_t Nd> using PartitionStored = std::vector<PartitionItem<Nd>>;
 
 // Return a vector of all ones
+template <typename T, typename XPU> vector<T, XPU> ones(std::size_t size, XPU xpu) {
+    vector<T, Cpu> r(size, Cpu{});
+    for (std::size_t i = 0; i < size; ++i) r[i] = 1.0;
+    return makeSure(r, xpu);
+}
+
+// Return a vector of all ones
 template <typename T, typename XPU> vector<T, XPU> laplacian(std::size_t n, std::size_t size, XPU xpu) {
     vector<T, Cpu> r(size, Cpu{});
     if (size % (n * n) != 0)
@@ -33,12 +40,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
           unsigned int nrep = 10) {
 
     // Create tensor t0 of Nd dims: a lattice color vector
-    const Coor<Nd + 3> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S],
-                               dim[C], dim[N], dim[S], dim[C], dim[N]}; // xyztscnSCN
-    const Coor<Nd + 3> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1,
-                                 1,        1,        1,        1,        1}; // nxyztscn
-    PartitionStored<Nd + 3> p0 = basic_partitioning(dim0, procs0);
-    const Coor<Nd + 3> local_size0 = p0[rank][1];
+    const Coor<Nd + 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T],
+                               dim[S], dim[C], dim[S], dim[C]}; // xyztscSC
+    const Coor<Nd + 1> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1, 1}; // xyztscSC
+    PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
+    const Coor<Nd + 1> local_size0 = p0[rank][1];
     std::size_t vol0 = detail::volume(local_size0);
     vector<Q, XPU> t0 = laplacian<Q>(dim[S] * dim[C] * dim[N], vol0, xpu);
 
@@ -63,7 +69,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             for (int n = 0; n < dim[N]; ++n) {
                 Q *ptr0 = t0.data();
-                cholesky<Nd + 3, Q>(p0.data(), 1, "xyztscnSCN", (Q **)&ptr0, "scn", "SCN", &ctx,
+                cholesky<Nd + 1, Q>(p0.data(), 1, "xyztscSC", (Q **)&ptr0, "sc", "SC", &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                                     MPI_COMM_WORLD,
 #endif
@@ -73,6 +79,41 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in cholesky " << t / nrep << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
+
+    resetTimings();
+
+    // Create tensors tx and ty of Nd dims: a lattice color vector
+    const Coor<Nd> dimx = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C], dim[N]}; // xyztscn
+    const Coor<Nd> procsx = {procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // xyztscn
+    PartitionStored<Nd> px = basic_partitioning(dimx, procsx);
+    const Coor<Nd> local_sizex = px[rank][1];
+    std::size_t volx = detail::volume(local_sizex);
+    vector<Q, XPU> tx = ones<Q>(volx, xpu);
+    vector<Q, XPU> ty(volx, xpu);
+
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            for (int n = 0; n < dim[N]; ++n) {
+                Q *ptr0 = t0.data();
+                Q *ptrx = tx.data();
+                Q *ptry = ty.data();
+                trsm<Nd + 1, Nd, Nd, Q>(p0.data(), 1, "xyztscSC", (const Q **)&ptr0, "sc", "SC",
+                                        &ctx, px.data(), 1, "xyztscn", (const Q **)&ptrx, &ctx,
+                                        px.data(), 1, "xyztSCn", (Q **)&ptry, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                        MPI_COMM_WORLD,
+#endif
+                                        SlowToFast);
+            }
+        }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in trsm " << t / nrep << std::endl;
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     if (rank == 0) reportTimings(std::cout);

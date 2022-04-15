@@ -195,18 +195,22 @@ namespace superbblas {
             Coor<Nd> dim;             ///< dimension of the tensor
             unsigned int componentId; ///< Component Id
 
-            template <typename Q = T, typename = typename std::enable_if<std::is_same<
-                                          Q, typename std::remove_const<Q>::type>::value>::type>
+            template <
+                typename Q = T,
+                typename std::enable_if<std::is_same<Q, typename std::remove_const<Q>::type>::value,
+                                        bool>::type = true>
             operator Component<Nd, const Q, XPU>() const {
                 return {it, dim, componentId};
             }
 
-            template <typename Q = T, typename = typename std::enable_if<!std::is_same<
-                                          Q, typename std::remove_const<Q>::type>::value>::type>
+            template <typename Q = T,
+                      typename std::enable_if<
+                          !std::is_same<Q, typename std::remove_const<Q>::type>::value,
+                          bool>::type = true>
             operator Component<Nd, typename std::remove_const<Q>::type, XPU>() const {
                 return {it, dim, componentId};
             }
-         };
+        };
 
         /// A tensor composed of several components
         template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
@@ -261,6 +265,17 @@ namespace superbblas {
         toConst(const Components_tmpl<Nd, T, XPU0, XPU1> &c) {
             return {std::vector<Component<Nd, const T, XPU0>>(c.first.begin(), c.first.end()),
                     std::vector<Component<Nd, const T, XPU1>>(c.second.begin(), c.second.end())};
+        }
+
+        /// Return a non-const version of `Component_tmpl`
+
+        template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
+        Components_tmpl<Nd, typename std::remove_const<T>::type, XPU0, XPU1>
+        toNonConst(const Components_tmpl<Nd, T, XPU0, XPU1> &c) {
+            return {std::vector<Component<Nd, typename std::remove_const<T>::type, XPU0>>(
+                        c.first.begin(), c.first.end()),
+                    std::vector<Component<Nd, typename std::remove_const<T>::type, XPU1>>(
+                        c.second.begin(), c.second.end())};
         }
 
         /// Print a message in the standard error
@@ -1521,7 +1536,8 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
         From_size<Ndo> get_output_partition(From_size<Nd0> p0, const Order<Nd0> &o0,
                                             From_size<Nd1> p1, const Order<Nd1> &o1,
-                                            const Order<Ndo> &o_r) {
+                                            const Order<Ndo> &o_r,
+                                            bool report_inconsistencies = true) {
             assert(p0.size() == p1.size());
 
             // Find partition on cache
@@ -1536,8 +1552,10 @@ namespace superbblas {
             // Create partition
             From_size_out<Ndo> pr(p0.size(), p0.ctx());
             for (unsigned int i = 0; i < p0.size(); ++i) {
-                pr[i][0] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][0], o1, p1[i][0], o_r);
-                pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r);
+                pr[i][0] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][0], o1, p1[i][0], o_r,
+                                                         report_inconsistencies);
+                pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r,
+                                                         report_inconsistencies);
             }
             cache.insert(key, pr, storageSize(pr));
 
@@ -1599,35 +1617,59 @@ namespace superbblas {
         Components_tmpl<N, T, XPU0, XPU1>
         reorder_tensor(const From_size<N> &p0, const Order<N> &o0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
-                       const Order<N> &o1, Comm comm, CoorOrder co) {
+                       const Order<N> &o1, Comm comm, CoorOrder co, bool force_copy = false) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (o0 == o1 && p0 == p1) return v0;
+            if (!force_copy && o0 == o1 && p0 == p1) return v0;
 
             // Allocate the tensor
             unsigned int ncomponents = v0.first.size() + v0.second.size();
-            using T_no_const = typename std::remove_const<T>::type;
-            Components_tmpl<N, T_no_const, XPU0, XPU1> v1;
+            Components_tmpl<N, T, XPU0, XPU1> v1;
             for (unsigned int i = 0; i < v0.first.size(); ++i) {
                 const unsigned int componentId = v0.first[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p1[pi][1];
-                vector<T_no_const, XPU0> v1i(volume(dimi), v0.first[i].it.ctx());
-                v1.first.push_back(Component<N, T_no_const, XPU0>{v1i, dimi, componentId});
+                vector<T, XPU0> v1i(volume(dimi), v0.first[i].it.ctx());
+                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId});
             }
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
                 const unsigned int componentId = v0.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p1[pi][1];
-                vector<T_no_const, XPU1> v1i(volume(dimi), v0.second[i].it.ctx());
-                v1.second.push_back(Component<N, T_no_const, XPU1>{v1i, dimi, componentId});
+                vector<T, XPU1> v1i(volume(dimi), v0.second[i].it.ctx());
+                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId});
             }
 
             // Copy the content of v0 into v1
             Coor<N> dim0 = get_dim<N>(p0);
-            copy<N, N, T_no_const>(T_no_const{1}, p0, {}, dim0, o0, toConst(v0), p1, {}, o1, v1, comm, EWOp::Copy{}, co);
+            copy<N, N, T>(T{1}, p0, {}, dim0, o0, toConst(v0), p1, {}, o1, v1, comm, EWOp::Copy{},
+                          co);
 
             return v1;
+        }
+
+        /// Check that the given components are compatible
+        /// \param v0: components to test
+        /// \param v1: components to test
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1>
+        bool check_components_compatibility(const Components_tmpl<Nd0, T, XPU0, XPU1> &v0,
+                                            const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1) {
+
+            // Check that v0 and v1 have the same components and on the same device
+            if (v0.first.size() != v1.first.size() || v0.second.size() != v1.second.size())
+                return false;
+            bool unmatch_dev = false;
+            for (unsigned int i = 0; i < v0.first.size(); ++i)
+                if (deviceId(v0.first[i].it.ctx()) != deviceId(v1.first[i].it.ctx()))
+                    unmatch_dev = true;
+            for (unsigned int i = 0; i < v0.second.size(); ++i)
+                if (deviceId(v0.second[i].it.ctx()) != deviceId(v1.second[i].it.ctx()))
+                    unmatch_dev = true;
+            if (unmatch_dev) return false;
+
+            return true;
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
@@ -1677,19 +1719,10 @@ namespace superbblas {
                 throw std::runtime_error("some dimension does not match");
 
             // Check that v0 and v1 have the same components and on the same device
-            if (v0.first.size() != v1.first.size() || v0.second.size() != v1.second.size())
+            if (!check_components_compatibility(v0, v1))
                 throw std::runtime_error(
-                    "the two input tensors should have the same number of components");
-            bool unmatch_dev = false;
-            for (unsigned int i = 0; i < v0.first.size(); ++i)
-                if (deviceId(v0.first[i].it.ctx()) != deviceId(v1.first[i].it.ctx()))
-                    unmatch_dev = true;
-            for (unsigned int i = 0; i < v0.second.size(); ++i)
-                if (deviceId(v0.second[i].it.ctx()) != deviceId(v1.second[i].it.ctx()))
-                    unmatch_dev = true;
-            if (unmatch_dev)
-                throw std::runtime_error(
-                    "Each component of the input tensors should be on the same device");
+                    "contraction: the two input tensors don't have the same number of components "
+                    "or they don't follow the same order on the devices");
 
             // Get the optimal ordering for the output tensor pr_
             Order<Ndo> sug_or;

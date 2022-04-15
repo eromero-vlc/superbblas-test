@@ -60,7 +60,7 @@ namespace superbblas {
 #define XGEMV     FORTRAN_FUNCTION(ARITH(hgemv , kgemv , sgemv , cgemv , dgemv , zgemv , , ))
 #define XDOT      FORTRAN_FUNCTION(ARITH(hdot  ,       , sdot  ,       , ddot  ,       , , ))
 #define XSCAL     FORTRAN_FUNCTION(ARITH(hscal , kscal , sscal , cscal , dscal , zscal , , ))
-// clang-format on
+        // clang-format on
 
         extern "C" {
 
@@ -75,7 +75,8 @@ namespace superbblas {
         void XTRMM(BLASSTRING side, BLASSTRING uplo, BLASSTRING transa, BLASSTRING diag, BLASINT *m,
                    BLASINT *n, SCALAR *alpha, SCALAR *a, BLASINT *lda, SCALAR *b, BLASINT *ldb);
         void XTRSM(BLASSTRING side, BLASSTRING uplo, BLASSTRING transa, BLASSTRING diag, BLASINT *m,
-                   BLASINT *n, SCALAR *alpha, SCALAR *a, BLASINT *lda, SCALAR *b, BLASINT *ldb);
+                   BLASINT *n, SCALAR *alpha, const SCALAR *a, BLASINT *lda, SCALAR *b,
+                   BLASINT *ldb);
         void XHEMM(BLASSTRING side, BLASSTRING uplo, BLASINT *m, BLASINT *n, SCALAR *alpha,
                    SCALAR *a, BLASINT *lda, SCALAR *b, BLASINT *ldb, SCALAR *beta, SCALAR *c,
                    BLASINT *ldc);
@@ -166,18 +167,17 @@ namespace superbblas {
 #define XPOTRF    FORTRAN_FUNCTION(ARITH(hpotrf, kpotrf, spotrf, cpotrf, dpotrf, zpotrf, , ))
 #define XGETRF    FORTRAN_FUNCTION(ARITH(hgetrf, kgetrf, sgetrf, cgetrf, dgetrf, zgetrf, , ))
 #define XGETRI    FORTRAN_FUNCTION(ARITH(hgetri, kgetri, sgetri, cgetri, dgetri, zgetri, , ))
-// clang-format on
+        // clang-format on
 
-#ifndef SUPERBBLAS_USE_MKL
+#    ifndef SUPERBBLAS_USE_MKL
         extern "C" {
         void XPOTRF(BLASSTRING uplo, BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *info);
         void XGETRF(BLASINT *m, BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *ipivot,
                     BLASINT *info);
-        void XGETRI(BLASINT *n, SCALAR *a, BLASINT *lda, , BLASINT *piv, SCALAR *work,
-                    BLASINT *lwork, BLASINT *info);
+        void XGETRI(BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *piv, SCALAR *work, BLASINT *lwork,
+                    BLASINT *info);
         }
-#endif // SUPERBBLAS_USE_MKL
-
+#    endif // SUPERBBLAS_USE_MKL
 
         inline void xcopy(BLASINT n, const SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
 #    ifndef SUPERBBLAS_USE_CBLAS
@@ -228,7 +228,7 @@ namespace superbblas {
         }
 
         inline void xtrsm(char side, char uplo, char transa, char diag, BLASINT m, BLASINT n,
-                          SCALAR alpha, SCALAR *a, BLASINT lda, SCALAR *b, BLASINT ldb, Cpu) {
+                          SCALAR alpha, const SCALAR *a, BLASINT lda, SCALAR *b, BLASINT ldb, Cpu) {
 #    ifndef SUPERBBLAS_USE_CBLAS
             XTRSM(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 #    else
@@ -300,12 +300,12 @@ namespace superbblas {
 #    endif
         }
 
-        inline BLASINT xpotrf(BLASSTRING uplo, BLASINT n, SCALAR *a, BLASINT lda) {
+        inline BLASINT xpotrf(char uplo, BLASINT n, SCALAR *a, BLASINT lda) {
             /* Zero dimension matrix may cause problems */
             if (n == 0) return 0;
 
             BLASINT linfo = 0;
-            XPOTRF(uplo, &n, (LAPACK_SCALAR *)a, &lda, &linfo);
+            XPOTRF(&uplo, &n, (LAPACK_SCALAR *)a, &lda, &linfo);
             return linfo;
         }
 
