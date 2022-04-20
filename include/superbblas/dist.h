@@ -1612,6 +1612,7 @@ namespace superbblas {
         /// \param p1: partitioning of the output tensor in consecutive ranges
         /// \param o1: dimension labels for the output tensor
         /// \param co: coordinate linearization order
+        /// \param force_copy: whether to NOT avoid copy if the partition is the same
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>

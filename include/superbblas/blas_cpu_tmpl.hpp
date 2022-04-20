@@ -167,6 +167,7 @@ namespace superbblas {
 #define XPOTRF    FORTRAN_FUNCTION(ARITH(hpotrf, kpotrf, spotrf, cpotrf, dpotrf, zpotrf, , ))
 #define XGETRF    FORTRAN_FUNCTION(ARITH(hgetrf, kgetrf, sgetrf, cgetrf, dgetrf, zgetrf, , ))
 #define XGETRI    FORTRAN_FUNCTION(ARITH(hgetri, kgetri, sgetri, cgetri, dgetri, zgetri, , ))
+#define XGETRS    FORTRAN_FUNCTION(ARITH(hgetrs, kgetrs, sgetrs, cgetrs, dgetrs, zgetrs, , ))
         // clang-format on
 
 #    ifndef SUPERBBLAS_USE_MKL
@@ -174,6 +175,8 @@ namespace superbblas {
         void XPOTRF(BLASSTRING uplo, BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *info);
         void XGETRF(BLASINT *m, BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *ipivot,
                     BLASINT *info);
+        void XGETRS(BLASSTRING trans, BLASINT *n, BLASINT *m, SCALAR *a, BLASINT *lda,
+                    BLASINT *ipivot, SCALAR *b, BLASINT *ldb, BLASINT *info);
         void XGETRI(BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *piv, SCALAR *work, BLASINT *lwork,
                     BLASINT *info);
         }
@@ -300,7 +303,7 @@ namespace superbblas {
 #    endif
         }
 
-        inline BLASINT xpotrf(char uplo, BLASINT n, SCALAR *a, BLASINT lda) {
+        inline BLASINT xpotrf(char uplo, BLASINT n, SCALAR *a, BLASINT lda, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0) return 0;
 
@@ -309,22 +312,33 @@ namespace superbblas {
             return linfo;
         }
 
-        int xgetrf(BLASINT m, BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot) {
+        int xgetrf(BLASINT m, BLASINT n, SCALAR *a, BLASINT lda, std::int64_t *ipivot, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (m == 0 || n == 0) return 0;
 
             BLASINT linfo = 0;
-            XGETRF(&m, &n, (LAPACK_SCALAR *)a, &lda, ipivot, &linfo);
+            XGETRF(&m, &n, (LAPACK_SCALAR *)a, &lda, (BLASINT *)ipivot, &linfo);
             return linfo;
         }
 
-        int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work,
-                   BLASINT lwork) {
+        int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work, BLASINT lwork,
+                   Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0) return 0;
 
             BLASINT info = 0;
             XGETRI(&n, (LAPACK_SCALAR *)a, &lda, ipivot, (LAPACK_SCALAR *)work, &lwork, &info);
+            return info;
+        }
+
+        int xgetrs(char trans, BLASINT n, BLASINT nrhs, SCALAR *a, BLASINT lda,
+                   std::int64_t *ipivot, SCALAR *b, BLASINT ldb, Cpu) {
+            /* Zero dimension matrix may cause problems */
+            if (n == 0 || nrhs == 0) return 0;
+
+            BLASINT info = 0;
+            XGETRS(&trans, &n, &nrhs, (LAPACK_SCALAR *)a, &lda, (BLASINT *)ipivot,
+                   (LAPACK_SCALAR *)b, &ldb, &info);
             return info;
         }
 
@@ -342,6 +356,7 @@ namespace superbblas {
 #    undef XPOTRF
 #    undef XGETRF
 #    undef XGETRI
+#    undef XGETRS
 
         //
         // Batched GEMM

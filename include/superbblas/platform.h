@@ -9,6 +9,10 @@
 #include <stdexcept>
 #include <type_traits>
 
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
+
 #ifdef __CUDACC__
 #    define __HOST__ __host__
 #    define __DEVICE__ __device__

@@ -28,9 +28,9 @@ template <typename T, typename XPU> vector<T, XPU> laplacian(std::size_t n, std:
         throw std::runtime_error("Unsupported the creation of partial square matrices");
     for (std::size_t i = 0; i < size; ++i) r[i] = 0;
     for (std::size_t k = 0, K = size / (n * n); k < K; ++k) {
-        for (std::size_t i = 0; i < n; ++i) r[k * n * n + i * n + i] = -2;
-        for (std::size_t i = 0; i < n - 1; ++i) r[k * n * n + (i + 1) * n + i] = 1;
-        for (std::size_t i = 1; i < n; ++i) r[k * n * n + (i - 1) * n + i] = 1;
+        for (std::size_t i = 0; i < n; ++i) r[k * n * n + i * n + i] = 2;
+        for (std::size_t i = 0; i < n - 1; ++i) r[k * n * n + (i + 1) * n + i] = -1;
+        for (std::size_t i = 1; i < n; ++i) r[k * n * n + (i - 1) * n + i] = -1;
     }
     return makeSure(r, xpu);
 }
@@ -46,7 +46,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
     PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
     const Coor<Nd + 1> local_size0 = p0[rank][1];
     std::size_t vol0 = detail::volume(local_size0);
-    vector<Q, XPU> t0 = laplacian<Q>(dim[S] * dim[C] * dim[N], vol0, xpu);
+    vector<Q, XPU> t0 = laplacian<Q>(dim[S] * dim[C], vol0, xpu);
 
     const bool is_cpu = deviceId(xpu) == CPU_DEVICE_ID;
 #ifdef _OPENMP
@@ -59,7 +59,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
                   << " threads" << std::endl;
 
     if (rank == 0)
-        std::cout << "Maximum number of elements in a tested tensor per process: " << vol0 << " ( "
+        std::cout << "Number of elements in tested tensor 'A' per process: " << vol0 << " ( "
                   << vol0 * 1.0 * sizeof(Q) / 1024 / 1024 << " MiB)" << std::endl;
 
     // Copy tensor t0 into each of the c components of tensor 1
@@ -67,7 +67,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
-            for (int n = 0; n < dim[N]; ++n) {
+            for (unsigned int n = 0; n < nrep; ++n) {
                 Q *ptr0 = t0.data();
                 cholesky<Nd + 1, Q>(p0.data(), 1, "xyztscSC", (Q **)&ptr0, "sc", "SC", &ctx,
 #ifdef SUPERBBLAS_USE_MPI
@@ -95,6 +95,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
     vector<Q, XPU> tx = ones<Q>(volx, xpu);
     vector<Q, XPU> ty(volx, xpu);
 
+    if (rank == 0)
+        std::cout << "Number of elements in tested tensor 'X' per process: " << volx << " ( "
+                  << volx * 1.0 * sizeof(Q) / 1024 / 1024 << " MiB)" << std::endl;
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
@@ -114,6 +117,34 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in trsm " << t / nrep << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
+
+    // Reset the A and x
+    t0 = laplacian<Q>(dim[S] * dim[C], vol0, xpu);
+    tx = ones<Q>(volx, xpu);
+
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            for (int n = 0; n < dim[N]; ++n) {
+                Q *ptr0 = t0.data();
+                Q *ptrx = tx.data();
+                Q *ptry = ty.data();
+                gesm<Nd + 1, Nd, Nd, Q>(p0.data(), 1, "xyztscSC", (const Q **)&ptr0, "sc", "SC",
+                                        &ctx, px.data(), 1, "xyztSCn", (const Q **)&ptrx, &ctx,
+                                        px.data(), 1, "xyztscn", (Q **)&ptry, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                        MPI_COMM_WORLD,
+#endif
+                                        SlowToFast);
+            }
+        }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in gesm " << t / nrep << std::endl;
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     if (rank == 0) reportTimings(std::cout);
