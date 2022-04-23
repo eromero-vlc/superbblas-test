@@ -105,9 +105,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
                 Q *ptr0 = t0.data();
                 Q *ptrx = tx.data();
                 Q *ptry = ty.data();
-                trsm<Nd + 1, Nd, Nd, Q>(p0.data(), 1, "xyztscSC", (const Q **)&ptr0, "sc", "SC",
-                                        &ctx, px.data(), 1, "xyztscn", (const Q **)&ptrx, &ctx,
-                                        px.data(), 1, "xyztSCn", (Q **)&ptry, &ctx,
+                trsm<Nd + 1, Nd, Nd, Q>(Q{1}, p0.data(), 1, "xyztscSC", (const Q **)&ptr0, "sc",
+                                        "SC", &ctx, px.data(), 1, "xyztscn", (const Q **)&ptrx,
+                                        &ctx, px.data(), 1, "xyztSCn", (Q **)&ptry, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                                         MPI_COMM_WORLD,
 #endif
@@ -133,9 +133,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
                 Q *ptr0 = t0.data();
                 Q *ptrx = tx.data();
                 Q *ptry = ty.data();
-                gesm<Nd + 1, Nd, Nd, Q>(p0.data(), 1, "xyztscSC", (const Q **)&ptr0, "sc", "SC",
-                                        &ctx, px.data(), 1, "xyztSCn", (const Q **)&ptrx, &ctx,
-                                        px.data(), 1, "xyztscn", (Q **)&ptry, &ctx,
+                gesm<Nd + 1, Nd, Nd, Q>(Q{1}, p0.data(), 1, "xyztscSC", (const Q **)&ptr0, "sc",
+                                        "SC", &ctx, px.data(), 1, "xyztSCn", (const Q **)&ptrx,
+                                        &ctx, px.data(), 1, "xyztscn", (Q **)&ptry, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                                         MPI_COMM_WORLD,
 #endif

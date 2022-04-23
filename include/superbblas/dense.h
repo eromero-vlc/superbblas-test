@@ -86,7 +86,7 @@ namespace superbblas {
         /// \param m: number of columns (if left_side) or rows (if !left_side) that x and y have
 
         template <typename T>
-        void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m,
+        void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m, T alpha,
                         vector<T, Cpu> a, vector<T, Cpu> x) {
 
             tracker<Cpu> _t("local trsm (Cpu)", a.ctx());
@@ -99,12 +99,12 @@ namespace superbblas {
 #endif
             for (std::size_t i = 0; i < k; ++i)
                 xtrsm(left_side ? 'L' : 'R', 'U', 'N', 'N', left_side ? n : m, left_side ? m : n,
-                      T{1}, ap + n * n * i, n, xp + n * m * i, left_side ? n : m, a.ctx());
+                      alpha, ap + n * n * i, n, xp + n * m * i, left_side ? n : m, a.ctx());
         }
 
 #ifdef SUPERBBLAS_USE_GPU
         template <typename T>
-        void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m,
+        void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m, T alpha,
                         vector<T, Gpu> a, vector<T, Gpu> x) {
 
             tracker<Gpu> _t("local trsm (GPU)", a.ctx());
@@ -112,7 +112,7 @@ namespace superbblas {
             // TODO: use cudaSolverDN<t>trsmBatched
 
             vector<T, Cpu> a_cpu = makeSure(a, Cpu{0}), x_cpu = makeSure(x, Cpu{0});
-            local_trsm(left_side, n, k, m, a_cpu, x_cpu);
+            local_trsm(left_side, n, k, m, alpha, a_cpu, x_cpu);
             copy_n(x_cpu.data(), x_cpu.ctx(), x_cpu.size(), x.data(), x.ctx());
         }
 #endif // SUPERBBLAS_USE_GPU
@@ -348,7 +348,7 @@ namespace superbblas {
 
         template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void trsm(const From_size<Nc> &pc, const Order<Nc> &oc,
+        void trsm(T alpha, const From_size<Nc> &pc, const Order<Nc> &oc,
                   const Components_tmpl<Nc, T, XPU0, XPU1> &vc, const char *orows,
                   const char *ocols, const From_size<Nx> &px, const Order<Nx> &ox,
                   const Components_tmpl<Nx, T, XPU0, XPU1> &vx, const From_size<Ny> &py,
@@ -475,14 +475,14 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 std::size_t ki = volume(pcw[pi][1]) / r / r;
                 std::size_t ni = volume(pxw[pi][1]) / r / ki; // rows/columns of x and y
-                local_trsm(contract_rows, r, ki, ni, vcw.first[i].it, vxw.first[i].it);
+                local_trsm(contract_rows, r, ki, ni, alpha, vcw.first[i].it, vxw.first[i].it);
             }
             for (unsigned int i = 0; i < vcw.second.size(); ++i) {
                 const unsigned int componentId = vcw.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 std::size_t ki = volume(pcw[pi][1]) / r / r;
                 std::size_t ni = volume(pxw[pi][1]) / r / ki; // rows/columns of x and y
-                local_trsm(contract_rows, r, ki, ni, vcw.second[i].it, vxw.second[i].it);
+                local_trsm(contract_rows, r, ki, ni, alpha, vcw.second[i].it, vxw.second[i].it);
             }
 
             // Copy the working tensor into the given tensor
@@ -499,7 +499,7 @@ namespace superbblas {
 
         template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void gesm(const From_size<Nc> &pc, const Order<Nc> &oc,
+        void gesm(T alpha, const From_size<Nc> &pc, const Order<Nc> &oc,
                   const Components_tmpl<Nc, T, XPU0, XPU1> &vc, const char *orows,
                   const char *ocols, const From_size<Nx> &px, const Order<Nx> &ox,
                   const Components_tmpl<Nx, T, XPU0, XPU1> &vx, const From_size<Ny> &py,
@@ -641,7 +641,7 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<Ny, Ny, T>(T{1}, pyw, {}, dimyw, oyw, toConst(vxw), py, {}, oy, vy, comm,
+            copy<Ny, Ny, T>(alpha, pyw, {}, dimyw, oyw, toConst(vxw), py, {}, oy, vy, comm,
                             EWOp::Copy{}, co);
 
             _t.stop();
@@ -680,6 +680,7 @@ namespace superbblas {
     }
 
     /// Solve several upper triangular linear systems
+    /// \param alpha: factor on the contraction
     /// \param pc: partitioning of the first origin tensor in consecutive ranges
     /// \param ncomponentsc: number of consecutive components in each MPI rank
     /// \param oc: dimension labels for the first operator
@@ -699,7 +700,7 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void trsm(const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
+    void trsm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
               const char *orows, const char *ocols, const Context *ctxc,
               const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
               const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
@@ -712,7 +713,7 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::trsm<Nc, Nx, Ny>(
-            detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
             detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
             ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
             detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
@@ -721,6 +722,7 @@ namespace superbblas {
     }
 
     /// Solve several linear systems
+    /// \param alpha: factor on the contraction
     /// \param pc: partitioning of the first origin tensor in consecutive ranges
     /// \param ncomponentsc: number of consecutive components in each MPI rank
     /// \param oc: dimension labels for the first operator
@@ -740,7 +742,7 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void gesm(const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
+    void gesm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
               const char *orows, const char *ocols, const Context *ctxc,
               const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
               const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
@@ -753,7 +755,7 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::gesm<Nc, Nx, Ny>(
-            detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
             detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
             ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
             detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
@@ -788,6 +790,7 @@ namespace superbblas {
     }
 
     /// Solve several upper triangular linear systems
+    /// \param alpha: factor on the contraction
     /// \param pc: partitioning of the first origin tensor in consecutive ranges
     /// \param ncomponentsc: number of consecutive components in each MPI rank
     /// \param oc: dimension labels for the first operator
@@ -807,7 +810,7 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void trsm(const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
+    void trsm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
               const char *orows, const char *ocols, const Context *ctxc,
               const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
               const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
@@ -820,7 +823,7 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::trsm<Nc, Nx, Ny>(
-            detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
             detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
             ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
             detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
@@ -829,6 +832,7 @@ namespace superbblas {
     }
 
     /// Solve several linear systems
+    /// \param alpha: factor on the contraction
     /// \param pc: partitioning of the first origin tensor in consecutive ranges
     /// \param ncomponentsc: number of consecutive components in each MPI rank
     /// \param oc: dimension labels for the first operator
@@ -848,7 +852,7 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void gesm(const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
+    void gesm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
               const char *orows, const char *ocols, const Context *ctxc,
               const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
               const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
@@ -861,7 +865,7 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::gesm<Nc, Nx, Ny>(
-            detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
             detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
             ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
             detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
