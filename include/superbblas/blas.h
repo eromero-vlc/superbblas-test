@@ -92,11 +92,17 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    define DECL_SUM_T(...)                                                                        \
         EMIT REPLACE1(sum, superbblas::detail::sum<T>) REPLACE_T template __VA_ARGS__;
 
+/// Generate template instantiations for sum functions with template parameter T
+
+#    define DECL_SELECT_T(...)                                                                     \
+        EMIT REPLACE1(select, superbblas::detail::select<T>) REPLACE_T template __VA_ARGS__;
+
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
 #    define DECL_COPY_REDUCE(...) __VA_ARGS__
 #    define DECL_ZERO_T(...) __VA_ARGS__
 #    define DECL_SUM_T(...) __VA_ARGS__
+#    define DECL_SELECT_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -449,6 +455,12 @@ namespace superbblas {
             /// Return the device context
             XPU ctx() const { return xpu; }
 
+            /// Resize to a smaller size vector
+            void resize(std::size_t new_n) {
+                if (new_n > n) throw std::runtime_error("Unsupported operation");
+                n = new_n;
+            }
+
             /// Return a reference to i-th allocated element, for Cpu `vector`
             template <typename U = XPU,
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
@@ -491,7 +503,7 @@ namespace superbblas {
 
         template <typename T> vector<T, Cpu> to_vector(T *ptr, std::size_t n, Cpu cpu) {
             check_ptr_align<T>(ptr);
-            return vector<T, Cpu>(n, ptr, cpu);
+            return vector<T, Cpu>(ptr ? n : 0, ptr, cpu);
         }
 
 #ifdef SUPERBBLAS_USE_GPU
@@ -499,7 +511,7 @@ namespace superbblas {
 
         template <typename T> vector<T, Gpu> to_vector(T *ptr, std::size_t n, Gpu cuda) {
             check_ptr_align<T>(ptr);
-            return vector<T, Gpu>(n, ptr, cuda);
+            return vector<T, Gpu>(ptr ? n : 0, ptr, cuda);
         }
 #endif
 
@@ -994,7 +1006,7 @@ namespace superbblas {
                 if (indicesv == nullptr && indicesw == nullptr &&
                     alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                     std::is_same<EWOP, EWOp::Copy>::value) {
-                    copy_n(v, xpuv, n, w, xpuw);
+                    copy_n(v, xpuv, n, (T *)w, xpuw);
                 } else {
                     copy_n_same_dev_thrust(alpha, v, indicesv, n, w, indicesw, xpuw, EWOP{});
                 }
@@ -1004,7 +1016,7 @@ namespace superbblas {
             else if (indicesv == nullptr && indicesw == nullptr &&
                      alpha == typename elem<T>::type{1} && std::is_same<T, Q>::value &&
                      std::is_same<EWOP, EWOp::Copy>::value && deviceId(xpuv) != deviceId(xpuw)) {
-                copy_n(v, xpuv, n, w, xpuw);
+                copy_n(v, xpuv, n, (T *)w, xpuw);
             }
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
@@ -1041,7 +1053,7 @@ namespace superbblas {
             // Base case
             else if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
                      indicesv == nullptr && indicesw == nullptr) {
-                copy_n(v, xpu0, n, w, xpu1);
+                copy_n(v, xpu0, n, (T *)w, xpu1);
                 // Scale by alpha
                 copy_n<IndexType>((Q)alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
             }
@@ -1364,6 +1376,57 @@ namespace superbblas {
             return thrust::reduce(it, it + v.size());
         })
 #endif
+
+        /// Return a new array with only the elements w[i] that mask[v[i]] != 0
+        /// \param v: vector of indices used by the mask
+        /// \param mask: vector of size v[v.size()-1]
+        /// \param w: vector of indices to return
+        /// \return: a new vector
+
+        template <typename IndexType, typename T>
+        vector<IndexType, Cpu> select(const vector<IndexType, Cpu> &v, const T *m,
+                                      const vector<IndexType, Cpu> &w) {
+            vector<IndexType, Cpu> r{w.size(), Cpu{}};
+            const IndexType *pv = v.data();
+            const IndexType *pw = w.data();
+            IndexType *pr = r.data();
+            std::size_t n = w.size(), nr = 0;
+            for (std::size_t i = 0; i < n; ++i)
+                if (m[pv[i]] != 0) pr[nr++] = pw[i];
+            r.resize(nr);
+            return r;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+
+#    ifdef SUPERBBLAS_USE_THRUST
+        // Return whether the element isn't zero
+        template <typename T> struct not_zero : public thrust::unary_function<T, bool> {
+            __host__ __device__ bool operator()(const T &i) const { return i != 0; }
+        };
+#    endif
+
+        /// Return a new array with only the elements w[i] that mask[v[i]] != 0
+        /// \param v: vector of indices used by the mask
+        /// \param mask: vector of size v[v.size()-1]
+        /// \param w: vector of indices to return
+        /// \return: a new vector
+
+        template <typename IndexType, typename T>
+        DECL_SELECT_T(vector<IndexType, Gpu> select(const vector<IndexType, Gpu> &v, T *m,
+                                                    const vector<IndexType, Gpu> &w))
+        IMPL({
+            vector<IndexType, Gpu> r{w.size(), v.ctx()};
+            auto itv = encapsulate_pointer(v.begin());
+            auto itm = encapsulate_pointer(m);
+            auto itw = encapsulate_pointer(w.begin());
+            auto itr = encapsulate_pointer(r.begin());
+            auto itmv = thrust::make_permutation_iterator(itm, itv);
+            auto itr_end = thrust::copy_if(itw, itw + w.size(), itmv, itr, not_zero<T>{});
+            r.resize(itr_end - itr);
+            return r;
+        })
+#endif // SUPERBBLAS_USE_GPU
     }
 
     /// Allocate memory on a device

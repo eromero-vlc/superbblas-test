@@ -62,6 +62,8 @@ namespace superbblas {
     template <std::size_t Nd> using Coor = std::array<IndexType, Nd>;
     /// Vector of dimension labels
     template <std::size_t Nd> using Order = std::array<char, Nd>;
+    /// Mask/boolean element: use a type that work with BLAS
+    using MaskType = float;
 
     /// How the coordinates are translates into positions in the tensor
     enum CoorOrder {
@@ -131,6 +133,9 @@ namespace superbblas {
 
         /// Vector of `IndexType`
         template <typename XPU> using Indices = vector<IndexType, XPU>;
+
+        /// Mask vector
+        template <typename XPU> using Mask = vector<MaskType, XPU>;
 
         //
         // Auxiliary functions
@@ -1036,10 +1041,12 @@ namespace superbblas {
         /// \param size0: number of coordinates to copy in each direction
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
+        /// \param mask0: mask for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
+        /// \param mask1: mask for the destination tensor (ignored)
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
@@ -1047,8 +1054,9 @@ namespace superbblas {
                   typename XPU1, typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        vector<Q, XPU1> v1, EWOP ewop, CoorOrder co) {
+                        Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                        const Coor<Nd1> &dim1, vector<Q, XPU1> v1, Mask<XPU1>, EWOP ewop,
+                        CoorOrder co) {
 
             tracker<XPU1> _t("local copy", v1.ctx());
 
@@ -1069,6 +1077,14 @@ namespace superbblas {
                                                    v0.ctx(), indices0, disp0, co);
             get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
                                                         v1.ctx(), indices1, disp1, co);
+
+            // Apply the masks
+            if (mask0.size() > 0) {
+                indices0 = select(indices0, mask0.data() + disp0, indices0);
+                Indices<XPU1> indices0_xpu1 = makeSure(indices0, v1.ctx());
+                Mask<XPU1> mask0_xpu1 = makeSure(mask0, v1.ctx());
+                indices1 = select(indices0_xpu1, mask0_xpu1.data() + disp0, indices1);
+            }
 
             // Do the copy
             copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
@@ -1320,8 +1336,8 @@ namespace superbblas {
                     if (sug_o0 != o0) {
                         sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
                         vector<T, XPU> sug_v0_(v0.size(), v0.ctx());
-                        local_copy<Nd0, Nd0>(T{1}, o0, {}, dim0, dim0, v0, sug_o0, {}, sug_dim0,
-                                             sug_v0_, EWOp::Copy{}, SlowToFast);
+                        local_copy<Nd0, Nd0>(T{1}, o0, {}, dim0, dim0, v0, {}, sug_o0, {}, sug_dim0,
+                                             sug_v0_, {}, EWOp::Copy{}, SlowToFast);
                         sug_v0 = sug_v0_;
                     }
 
@@ -1330,8 +1346,8 @@ namespace superbblas {
                     if (sug_o1 != o1) {
                         sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
                         vector<T, XPU> sug_v1_(v1.size(), v1.ctx());
-                        local_copy<Nd1, Nd1>(T{1}, o1, {}, dim1, dim1, v1, sug_o1, {}, sug_dim1,
-                                             sug_v1_, EWOp::Copy{}, SlowToFast);
+                        local_copy<Nd1, Nd1>(T{1}, o1, {}, dim1, dim1, v1, {}, sug_o1, {}, sug_dim1,
+                                             sug_v1_, {}, EWOp::Copy{}, SlowToFast);
                         sug_v1 = sug_v1_;
                     }
 
@@ -1341,9 +1357,9 @@ namespace superbblas {
                         sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
                         sug_vr = vector<T, XPU>(vr.size(), vr.ctx());
                         if (std::fabs(beta) != 0)
-                            local_copy<Ndo, Ndo, T, T>(T{1}, o_r, {}, dimr, dimr,
-                                                       vector<const T, XPU>(vr), sug_or, {},
-                                                       sug_dimr, sug_vr, EWOp::Copy{}, SlowToFast);
+                            local_copy<Ndo, Ndo, T, T>(
+                                T{1}, o_r, {}, dimr, dimr, vector<const T, XPU>(vr), {}, sug_or, {},
+                                sug_dimr, sug_vr, {}, EWOp::Copy{}, SlowToFast);
                     }
 
                     local_contraction<Nd0, Nd1, Ndo, T, XPU>(alpha, sug_o0, sug_dim0, conj0, sug_v0,
@@ -1352,8 +1368,8 @@ namespace superbblas {
 
                     if (sug_or != o_r)
                         local_copy<Ndo, Ndo>(T{1}, sug_or, {}, sug_dimr, sug_dimr,
-                                             vector<const T, XPU>(sug_vr), o_r, {}, dimr, vr,
-                                             EWOp::Copy{}, SlowToFast);
+                                             vector<const T, XPU>(sug_vr), {}, o_r, {}, dimr, vr,
+                                             {}, EWOp::Copy{}, SlowToFast);
                     return;
                 }
             }
@@ -1465,10 +1481,12 @@ namespace superbblas {
         /// \param size0: number of coordinates to copy in each direction
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
+        /// \param mask0: mask for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param v1: data for the destination tensor
+        /// \param mask1: mask for the destination tensor
         /// \param copyadd: either to copy or to add the origin values into the destination tensor
         /// \param co: coordinate linearization order
 
@@ -1476,16 +1494,17 @@ namespace superbblas {
                   typename XPU1>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
-                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                        vector<Q, XPU1> v1, CopyAdd copyadd, CoorOrder co) {
+                        Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                        const Coor<Nd1> &dim1, vector<Q, XPU1> v1, Mask<XPU1> mask1,
+                        CopyAdd copyadd, CoorOrder co) {
             switch (copyadd) {
             case Copy:
-                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, o1, from1, dim1, v1,
-                                     EWOp::Copy{}, co);
+                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, mask0, o1, from1, dim1, v1,
+                                     mask1, EWOp::Copy{}, co);
                 break;
             case Add:
-                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, o1, from1, dim1, v1,
-                                     EWOp::Add{}, co);
+                local_copy<Nd0, Nd1>(alpha, o0, from0, size0, dim0, v0, mask0, o1, from1, dim1, v1,
+                                     mask1, EWOp::Add{}, co);
                 break;
             }
         }
@@ -1498,11 +1517,13 @@ namespace superbblas {
     /// \param size0: number of coordinates to copy in each direction
     /// \param dim0: dimension size for the origin tensor
     /// \param v0: data for the origin tensor
+    /// \param mask0: mask for the origin tensor
     /// \param ctx0: device context for v0
     /// \param o1: dimension labels for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
     /// \param dim1: dimension size for the destination tensor
     /// \param v1: data for the destination tensor
+    /// \param mask1: mask for the destination tensor
     /// \param ctx1: device context for v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param copyadd: either copy or add the origin value to the destination values
@@ -1510,8 +1531,9 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void local_copy(typename elem<T>::type alpha, const char *o0, const Coor<Nd0> &from0,
-                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0, const Context ctx0,
-                    const char *o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1,
+                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0,
+                    const MaskType *mask0, const Context ctx0, const char *o1,
+                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, const MaskType *mask1,
                     const Context ctx1, CoorOrder co, CopyAdd copyadd, Session session = 0) {
 
         const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
@@ -1531,29 +1553,38 @@ namespace superbblas {
             throw std::runtime_error("The orders and dimensions of the origin tensor are not "
                                      "compatible with the destination tensor");
 
+        std::size_t vol0 = detail::volume(dim0);
+        std::size_t vol1 = detail::volume(dim1);
+        std::size_t volmask0 = mask0 ? vol0 : 0;
+        std::size_t volmask1 = mask1 ? vol1 : 0;
+
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0,
-                detail::to_vector(v0, detail::volume(dim0), ctx0.toCpu(session)), o1_, from1, dim1,
-                detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
+                dim1, detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)),
+                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
         }
 #ifdef SUPERBBLAS_USE_GPU
         else if (ctx0.plat == CPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0,
-                detail::to_vector(v0, detail::volume(dim0), ctx0.toCpu(session)), o1_, from1, dim1,
-                detail::to_vector(v1, detail::volume(dim1), ctx1.toGpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
+                dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
+                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0,
-                detail::to_vector(v0, detail::volume(dim0), ctx0.toGpu(session)), o1_, from1, dim1,
-                detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
+                dim1, detail::to_vector(v1, vol1, ctx1.toCpu(session)),
+                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0,
-                detail::to_vector(v0, detail::volume(dim0), ctx0.toGpu(session)), o1_, from1, dim1,
-                detail::to_vector(v1, detail::volume(dim1), ctx1.toGpu(session)), copyadd, co);
+                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
+                dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
+                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
         }
 #endif
         else {

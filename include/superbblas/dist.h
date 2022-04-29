@@ -194,13 +194,14 @@ namespace superbblas {
             vector<T, XPU> it;        ///< data
             Coor<Nd> dim;             ///< dimension of the tensor
             unsigned int componentId; ///< Component Id
+            Mask<XPU> mask_it;        ///< Mask
 
             template <
                 typename Q = T,
                 typename std::enable_if<std::is_same<Q, typename std::remove_const<Q>::type>::value,
                                         bool>::type = true>
             operator Component<Nd, const Q, XPU>() const {
-                return {it, dim, componentId};
+                return {it, dim, componentId, mask_it};
             }
 
             template <typename Q = T,
@@ -208,7 +209,7 @@ namespace superbblas {
                           !std::is_same<Q, typename std::remove_const<Q>::type>::value,
                           bool>::type = true>
             operator Component<Nd, typename std::remove_const<Q>::type, XPU>() const {
-                return {it, dim, componentId};
+                return {it, dim, componentId, mask_it};
             }
         };
 
@@ -226,29 +227,34 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_GPU
 
         template <std::size_t Nd, typename T, typename Comm>
-        Components<Nd, T> get_components(T **v, const Context *ctx, unsigned int ncomponents,
-                                         From_size_iterator<Nd> p, Comm comm, Session session) {
+        Components<Nd, T> get_components(T **v, const MaskType **mask, const Context *ctx,
+                                         unsigned int ncomponents, From_size_iterator<Nd> p,
+                                         Comm comm, Session session) {
             // Get components on the local process
             From_size_iterator<Nd> fs = p + comm.rank * ncomponents;
 
             Components<Nd, T> r;
             for (unsigned int i = 0; i < ncomponents; ++i) {
+                MaskType *maski = mask ? (MaskType *)mask[i] : (MaskType *)nullptr;
                 switch (ctx[i].plat) {
 #ifdef SUPERBBLAS_USE_GPU
                 case CPU:
                     r.second.push_back(Component<Nd, T, Cpu>{
-                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i});
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i,
+                        to_vector(maski, volume(fs[i][1]), ctx[i].toCpu(session))});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case GPU:
                     r.first.push_back(Component<Nd, T, Gpu>{
-                        to_vector(v[i], volume(fs[i][1]), ctx[i].toGpu(session)), fs[i][1], i});
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toGpu(session)), fs[i][1], i,
+                        to_vector(maski, volume(fs[i][1]), ctx[i].toGpu(session))});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_GPU
                 case CPU:
                     r.first.push_back(Component<Nd, T, Cpu>{
-                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i});
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i,
+                        to_vector(maski, volume(fs[i][1]), ctx[i].toCpu(session))});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
@@ -309,13 +315,6 @@ namespace superbblas {
             std::cerr.flush();
         }
 
-        /// Vectors used in MPI communications
-        template <typename T> struct PackedValues {
-            vector<T, Cpu> buf;         ///< pointer to data
-            std::vector<MpiInt> counts; ///< number of items send/receive for rank i
-            std::vector<MpiInt> displ;  ///< index of the first element to send/receive for rank i
-        };
-
         /// Return an order with values 0, 1, 2, ..., N-1
 
         template <std::size_t N> Order<N> trivial_order() {
@@ -328,6 +327,13 @@ namespace superbblas {
         /// Communication barrier
 
         inline void barrier(MpiComm comm) { MPI_Barrier(comm.comm); }
+
+        /// Vectors used in MPI communications
+        template <typename T> struct PackedValues {
+            vector<T, Cpu> buf;         ///< pointer to data
+            std::vector<MpiInt> counts; ///< number of items send/receive for rank i
+            std::vector<MpiInt> displ;  ///< index of the first element to send/receive for rank i
+        };
 
         /// Allocate buffers and prepare arrays from a list of ranges to be used in a MPI communication
         /// \param ranges: iterator over a list of tensor ranges to be packed
@@ -387,15 +393,11 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0>
         void pack(const Order<Nd0> &o0, const From_size<Nd0> &fs, const Coor<Nd0> &dim0,
-                  vector<const T, XPU0> v0, const Order<Nd1> &o1,
+                  vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
                   typename Indices<Cpu>::iterator disp1, vector<Q, Cpu> &v1,
                   unsigned int ncomponents1, MpiComm comm, CoorOrder co) {
 
             assert(fs.size() == comm.nprocs * ncomponents1);
-
-            // Get the volume of communicated data without the local part
-            std::size_t vol = get_volume<Nd0>(fs) -
-                              get_volume<Nd0>(fs.begin() + comm.rank * ncomponents1, ncomponents1);
 
             // Find indices on cache
             using pointer_perm = std::tuple<From_size<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
@@ -404,15 +406,25 @@ namespace superbblas {
             auto cache =
                 getCache<pointer_perm, PairIndices, TupleHash<pointer_perm>, cache_tag>(v0.ctx());
             pointer_perm key{fs, get_perms(o0, o1), deviceId(v0.ctx()), co};
-            auto it = cache.find(key);
+            auto it = mask0.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
+            Indices<XPU0> indices0_xpu;
+            Indices<Cpu> indices1;
             if (it == cache.end()) {
                 tracker<XPU0> _t("comp. pack permutation", v0.ctx());
 
+                // Get the maximum volume of communicated data without the local part
+                std::size_t vol =
+                    get_volume<Nd0>(fs) -
+                    get_volume<Nd0>(fs.begin() + comm.rank * ncomponents1, ncomponents1);
+
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-                Indices<Cpu> indices0(vol, fs.ctx()), indices1(vol, fs.ctx());
-                for (std::size_t i = 0, n = 0; i < fs.size(); ++i) {
+                Indices<Cpu> indices0{vol, fs.ctx()};
+                indices1 = Indices<Cpu>{vol, fs.ctx()};
+                Mask<Cpu> mask0_cpu = makeSure(mask0, Cpu{});
+                std::size_t n = 0;
+                for (std::size_t i = 0; i < fs.size(); ++i) {
                     // Skip the communications of the local rank
                     if (i / ncomponents1 == comm.rank) continue;
 
@@ -421,36 +433,49 @@ namespace superbblas {
                     // doing the MPI call
                     Coor<Nd0> fromi = fs[i][0], sizei = fs[i][1];
                     Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
-                    Indices<Cpu> indices = get_permutation_origin<Nd0, Nd1>(
+                    Indices<Cpu> indices0i = get_permutation_origin<Nd0, Nd1>(
                         o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
-                    assert(indices.size() + n <= vol);
-                    std::copy_n(indices.begin(), indices.size(), indices0.begin() + n);
-                    indices = get_permutation_destination<Nd0, Nd1>(o0, fromi, sizei, dim0, o1, {},
-                                                                    sizei1, Cpu{}, co);
-                    assert(indices.size() + n <= vol);
-                    std::transform(indices.begin(), indices.end(), indices1.begin() + n,
-                                   [=](IndexType d) { return d + disp1[i]; });
+                    assert(indices0i.size() + n <= vol);
+                    Indices<Cpu> indices0i_mask = indices0i;
+                    if (mask0_cpu.size() > 0)
+                        indices0i_mask = select(indices0i, mask0_cpu.data(), indices0i);
+                    std::copy_n(indices0i_mask.begin(), indices0i_mask.size(),
+                                indices0.begin() + n);
 
-                    n += indices.size();
+                    Indices<Cpu> indices1i_mask = get_permutation_destination<Nd0, Nd1>(
+                        o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
+                    assert(indices0i.size() == indices1i_mask.size());
+                    if (mask0_cpu.size() > 0)
+                        indices1i_mask = select(indices0i, mask0_cpu.data(), indices1i_mask);
+                    IndexType dispi = disp1[i / ncomponents1];
+                    std::transform(indices1i_mask.begin(), indices1i_mask.end(),
+                                   indices1.begin() + n, [=](IndexType d) { return d + dispi; });
+
+                    disp1[i / ncomponents1] += indices1i_mask.size();
+                    n += indices1i_mask.size();
                     assert(n <= vol);
-                    assert(i != fs.size() - 1 || n == vol);
                 }
-                Indices<XPU0> indices0_xpu(indices0.size(), v0.ctx());
-                copy_n<IndexType, IndexType>(1, indices0.data(), Cpu{}, indices0.size(),
-                                             indices0_xpu.data(), v0.ctx(), EWOp::Copy{});
+                indices0.resize(n);
+                indices1.resize(n);
+                indices0_xpu = makeSure(indices0, v0.ctx());
+
                 // The cache trackers consider that all cache entries are on the same device; so just track the
                 // indices0_xpu when using gpus
-                std::size_t size =
-                    storageSize(indices0_xpu) +
-                    (deviceId(v0.ctx()) == CPU_DEVICE_ID ? storageSize(indices1) : 0ul);
-                cache.insert(key, PairIndices{indices0_xpu, indices1}, size);
-                it = cache.find(key);
+                if (mask0.size() == 0) {
+                    std::size_t size =
+                        storageSize(indices0_xpu) +
+                        (deviceId(v0.ctx()) == CPU_DEVICE_ID ? storageSize(indices1) : 0ul);
+                    cache.insert(key, PairIndices{indices0_xpu, indices1}, size);
+                }
+            } else {
+                indices0_xpu = it->second.value.first;
+                indices1 = it->second.value.second;
             }
 
             // Do the copy
             tracker<XPU0> _t("local copy", v0.ctx());
-            copy_n<IndexType, T, Q>(1.0, v0.data(), it->second.value.first.begin(), v0.ctx(), vol,
-                                    v1.data(), it->second.value.second.begin(), v1.ctx(),
+            copy_n<IndexType, T, Q>(1.0, v0.data(), indices0_xpu.begin(), v0.ctx(),
+                                    indices0_xpu.size(), v1.data(), indices1.begin(), v1.ctx(),
                                     EWOp::Copy{});
         }
 
@@ -470,46 +495,99 @@ namespace superbblas {
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm, CoorOrder co) {
+
+            tracker<Cpu> _t("prepare and pack", Cpu{});
+
             unsigned int ncomponents0 = toSend.size();
             PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, 1, comm);
 
             Indices<Cpu> buf_disp(comm.nprocs, Cpu{});
-            std::size_t n = 0; // accumulate total number of Q elements
-            for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
-                std::size_t n_rank = 0;  // total number of Q elements in rank
-                if (rank != comm.rank) { // Skip the local communications
-                    // Compute the total number of Q elements for rank i
-                    for (unsigned int irange = 0; irange < ncomponents0; ++irange) {
-                        n_rank += volume<Nd0>(toSend[irange][rank][1]);
-                    }
-                }
-                buf_disp[rank] = n;
-                n += (n_rank * sizeof(Q) + MpiTypeSize - 1) / MpiTypeSize * MpiTypeSize / sizeof(Q);
-            }
-            assert(r.buf.size() == n);
+            for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
+                buf_disp[rank] = r.displ[rank] * (MpiTypeSize / sizeof(Q));
 
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
-                for (const Component<Nd0, const T, XPU0> &c : v.first) {
-                    if (c.componentId == componentId0) {
-                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, o1,
+                for (const Component<Nd0, const T, XPU0> &c : v.first)
+                    if (c.componentId == componentId0)
+                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, c.mask_it, o1,
                                              buf_disp.begin(), r.buf, ncomponents1, comm, co);
-                        for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
-                            if (rank != comm.rank)
-                                buf_disp[rank] += volume<Nd0>(toSend[componentId0][rank][1]);
-                        }
-                    }
-                }
-                for (const Component<Nd0, const T, XPU1> &c : v.second) {
-                    if (c.componentId == componentId0) {
-                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, o1,
+                for (const Component<Nd0, const T, XPU1> &c : v.second)
+                    if (c.componentId == componentId0)
+                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, c.mask_it, o1,
                                              buf_disp.begin(), r.buf, ncomponents1, comm, co);
-                        for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
-                            if (rank != comm.rank)
-                                buf_disp[rank] += volume<Nd0>(toSend[componentId0][rank][1]);
-                        }
-                    }
-                }
             }
+
+            // Update the counts when using maskin
+            if (v.first.size() > 0 && v.first[0].mask_it.size() > 0)
+                for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
+                    r.counts[rank] = (buf_disp[rank] * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize -
+                                     r.displ[rank];
+            return r;
+        }
+
+        /// Vectors used in MPI communications
+        template <typename T, typename XPU> struct UnpackedValues : public PackedValues<T> {
+            std::vector<Indices<XPU>> indices;   ///< indices of the destination elements
+            std::vector<IndexType> indices_disp; ///< constant added to all indices
+            UnpackedValues(vector<T, Cpu> buf, std::vector<MpiInt> counts,
+                           std::vector<MpiInt> displ, std::vector<Indices<XPU>> indices,
+                           std::vector<IndexType> indices_disp)
+                : PackedValues<T>{buf, counts, displ},
+                  indices{indices},
+                  indices_disp{indices_disp} {}
+
+            //UnpackedValues(const UnpackedValues &u)
+            //    : UnpackedValues{u.buf, u.counts, u.displ, u.indices, u.indices_disp} {}
+        };
+
+        /// Allocate buffers for the receiving tensor pieces from a MPI communication
+        /// \param r: packed subtensors
+        /// \param toReceive: list of tensor ranges to receive
+        /// \param v: data for the destination tensor
+        /// \param ncomponents0: number of components on the origin tensor
+        /// \param comm: communication
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd, typename T, typename XPU>
+        UnpackedValues<T, XPU> prepare_unpack(const From_size<Nd> &toReceive,
+                                              const Component<Nd, T, XPU> &v, MpiComm comm,
+                                              CoorOrder co) {
+
+            tracker<XPU> _t("prepare unpack", v.it.ctx());
+
+            UnpackedValues<T, XPU> r{
+                vector<T, Cpu>(),                            // buf
+                std::vector<MpiInt>(comm.nprocs, 0),         // counts
+                std::vector<MpiInt>(comm.nprocs, 0),         // displ
+                std::vector<Indices<XPU>>(toReceive.size()), // indices
+                std::vector<IndexType>(toReceive.size())     // indices_disp
+            };
+
+            // Compute the destination indices and the total number of elements received from each process
+            Order<Nd> o = trivial_order<Nd>();
+            std::size_t ncomponents = toReceive.size() / comm.nprocs;
+            for (std::size_t i = 0; i < toReceive.size(); ++i) {
+                if (i / ncomponents == comm.rank) continue;
+                Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
+                Indices<XPU> indices1;
+                IndexType disp;
+                get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
+                                                          v.it.ctx(), indices1, disp, co);
+
+                // Apply the masks
+                if (v.mask_it.size() > 0)
+                    indices1 = select(indices1, v.mask_it.data() + disp, indices1);
+
+                // Store the number of permutation and the number of elements
+                r.counts[i / ncomponents] +=
+                    (indices1.size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                r.indices[i] = indices1;
+                r.indices_disp[i] = disp;
+            }
+
+            // Compute the displacements
+            for (std::size_t i = 1; i < toReceive.size(); ++i)
+                r.displ[i] = r.displ[i - 1] + r.counts[i - 1];
+
             return r;
         }
 
@@ -517,35 +595,26 @@ namespace superbblas {
         /// \param r: packed subtensors
         /// \param toReceive: list of tensor ranges to receive
         /// \param v: data for the destination tensor
-        /// \param ncomponents0: number of components on the origin tensor
         /// \param comm: communication
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to packed tensors
 
         template <std::size_t Nd, typename T, typename XPU, typename EWOP>
-        void unpack(const PackedValues<T> &r, const From_size<Nd> &toReceive,
-                    const Component<Nd, T, XPU> &v, unsigned int ncomponents0, MpiComm comm, EWOP,
-                    CoorOrder co, typename elem<T>::type alpha) {
+        void unpack(UnpackedValues<T, XPU> &r, const Component<Nd, T, XPU> &v, MpiComm comm, EWOP,
+                    typename elem<T>::type alpha) {
 
-            tracker<XPU> _t("unpack for add (alt)", v.it.ctx());
+            tracker<XPU> _t("unpack", v.it.ctx());
 
-            // Compute the destination index for all received elements
-            Order<Nd> o = trivial_order<Nd>();
-            for (std::size_t i = 0, n = 0; i < comm.nprocs * ncomponents0; ++i) {
-                if (i / ncomponents0 == comm.rank) continue;
-                Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
-                std::size_t voli = volume<Nd>(sizei);
-                Indices<XPU> indices1;
-                IndexType disp;
-                get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
-                                                          v.it.ctx(), indices1, disp, co);
-                // Do the addition
-                const T *data =
-                    r.buf.data() + r.displ[i / ncomponents0] * (MpiTypeSize / sizeof(T));
-                if (i % ncomponents0 == 0) n = 0;
-                copy_n<IndexType, T, T>(alpha, data, Cpu{}, voli, v.it.data() + disp,
-                                        indices1.begin(), v.it.ctx(), EWOP{});
-                n += voli;
+            // Do the addition
+            std::size_t ncomponents = r.indices.size() / comm.nprocs;
+            for (std::size_t i = 0; i < r.indices.size(); ++i) {
+                if (i / ncomponents == comm.rank) continue;
+                const T *data = r.buf.data() + r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
+                copy_n<IndexType, T, T>(alpha, data, Cpu{}, r.indices[i].size(),
+                                        v.it.data() + r.indices_disp[i], r.indices[i].begin(),
+                                        v.it.ctx(), EWOP{});
+                r.displ[i / ncomponents] +=
+                    (r.indices[i].size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
             }
         }
 
@@ -574,11 +643,10 @@ namespace superbblas {
             if (comm.nprocs <= 1) return [] {};
 
             // Pack v0 and prepare for receiving data from other processes
-            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
             std::shared_ptr<PackedValues<Q>> v0ToSend = std::make_shared<PackedValues<Q>>(
                 pack<Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co));
-            std::shared_ptr<PackedValues<Q>> v1ToReceive = std::make_shared<PackedValues<Q>>(
-                prepare_pack<Nd1, Q>(&toReceive, 1, ncomponents0, comm));
+            std::shared_ptr<UnpackedValues<Q, XPUr>> v1ToReceive =
+                std::make_shared<UnpackedValues<Q, XPUr>>(prepare_unpack(toReceive, v1, comm, co));
 
             // Do the MPI communication
             static MPI_Datatype dtype = get_mpi_datatype();
@@ -616,7 +684,7 @@ namespace superbblas {
             return [=] {
                 // Wait for the MPI communication to finish
                 if (getUseAsyncAlltoall()) {
-                    tracker<Cpu> _t("alltoall", toReceive.ctx());
+                    tracker<Cpu> _t("alltoall", Cpu{});
                     MPI_Request r0 = r; // this copy avoid compiler warnings
                     MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
                 }
@@ -626,8 +694,7 @@ namespace superbblas {
                 std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
 
                 // Copy back to v1
-                tracker<Cpu> _t("unpacking", toReceive.ctx());
-                unpack<Nd1>(*v1ToReceive, toReceive, v1, ncomponents0, comm, ewop, co, Q(alpha));
+                unpack(*v1ToReceive, v1, comm, ewop, Q(alpha));
             };
         }
 #else
@@ -1030,13 +1097,13 @@ namespace superbblas {
                     r.first.push_back(Component<Nd, IndexType, XPU0>{
                         get_mock_components(p[c.componentId + comm.rank * ncomponents][0], c.dim,
                                             dim, c.it.ctx(), co, mf),
-                        c.dim, c.componentId});
+                        c.dim, c.componentId, c.mask_it});
                 }
                 for (const Component<Nd, T, XPU1> &c : v.second) {
                     r.second.push_back(Component<Nd, IndexType, XPU1>{
                         get_mock_components(p[c.componentId + comm.rank * ncomponents][0], c.dim,
                                             dim, c.it.ctx(), co, mf),
-                        c.dim, c.componentId});
+                        c.dim, c.componentId, c.mask_it});
                 }
                 return r;
             }
@@ -1068,7 +1135,9 @@ namespace superbblas {
                 std::size_t vol = volume(v.dim);
                 Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+                Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                 vector<IndexType, Cpu> v_host = makeSure(v.it, Cpu{});
+                vector<MaskType, Cpu> m_host = makeSure(v.mask_it, Cpu{});
 
 #ifdef _OPENMP
 #    pragma omp parallel for
@@ -1088,9 +1157,13 @@ namespace superbblas {
                             true_val *= rep;
                         else if (rep == 0)
                             true_val = 0;
+                        if (m_host.size() > 0 &&
+                            m_host[coor2index(normalize_coor(c1 - from1, dim1), dim1, stride1)] ==
+                                0)
+                            true_val = 0;
                     }
                     if (v_host[i] != true_val)
-                        throw std::runtime_error("test_copy_check do not pass!");
+                        throw std::runtime_error("test_copy_check does not pass!");
                 }
             }
 
@@ -1443,8 +1516,9 @@ namespace superbblas {
                         alpha, o0,
                         toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
                         toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        c0.dim, c0.it, o1, toReceive[c0.componentId + comm.rank * ncomponents0][0],
-                        v1.dim, v1.it, ewop, co);
+                        c0.dim, c0.it, c0.mask_it, o1,
+                        toReceive[c0.componentId + comm.rank * ncomponents0][0], v1.dim, v1.it,
+                        v1.mask_it, ewop, co);
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
                     assert(check_equivalence(
@@ -1454,8 +1528,9 @@ namespace superbblas {
                         alpha, o0,
                         toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
                         toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        c0.dim, c0.it, o1, toReceive[c0.componentId + comm.rank * ncomponents0][0],
-                        v1.dim, v1.it, ewop, co);
+                        c0.dim, c0.it, c0.mask_it, o1,
+                        toReceive[c0.componentId + comm.rank * ncomponents0][0], v1.dim, v1.it,
+                        v1.mask_it, ewop, co);
                 }
             };
 
@@ -1600,8 +1675,8 @@ namespace superbblas {
 
                 fromr = normalize_coor(fromr - pr[componentId][0], dimr);
                 local_copy<Ndo, Ndo, T, T>(0, o_r, fromr, sizer, pr[componentId][1],
-                                           (vector<const T, XPU>)v, o_r, fromr, pr[componentId][1],
-                                           v, EWOp::Copy{}, co);
+                                           (vector<const T, XPU>)v, {}, o_r, fromr,
+                                           pr[componentId][1], v, {}, EWOp::Copy{}, co);
             }
         }
 
@@ -1631,14 +1706,14 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p1[pi][1];
                 vector<T, XPU0> v1i(volume(dimi), v0.first[i].it.ctx());
-                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId});
+                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId, {}});
             }
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
                 const unsigned int componentId = v0.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p1[pi][1];
                 vector<T, XPU1> v1i(volume(dimi), v0.second[i].it.ctx());
-                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId});
+                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId, {}});
             }
 
             // Copy the content of v0 into v1
@@ -1746,7 +1821,7 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
                 vr0[i] = vector<T, XPU0>(volume<Ndo>(dimi), v0.first[i].it.ctx());
-                vr_.first.push_back(Component<Ndo, T, XPU0>{vr0[i], dimi, componentId});
+                vr_.first.push_back(Component<Ndo, T, XPU0>{vr0[i], dimi, componentId, {}});
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.first[i].it, o1,
                                                     p1[pi][1], conj1, v1.first[i].it, T{0.0},
                                                     sug_or, dimi, vr0[i], co);
@@ -1759,7 +1834,7 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
                 vr1[i] = vector<T, XPU1>(volume<Ndo>(dimi), v0.second[i].it.ctx());
-                vr_.second.push_back(Component<Ndo, T, XPU1>{vr1[i], dimi, componentId});
+                vr_.second.push_back(Component<Ndo, T, XPU1>{vr1[i], dimi, componentId, {}});
                 local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.second[i].it,
                                                     o1, p1[pi][1], conj1, v1.second[i].it, T{0.0},
                                                     sug_or, dimi, vr1[i], co);
@@ -1836,12 +1911,14 @@ namespace superbblas {
     /// \param from0: first coordinate to copy from the origin tensor
     /// \param size0: number of elements to copy in each dimension
     /// \param v0: vector of data pointers for the origin tensor
+    /// \param mask0: vector of mask pointers for the origin tensor
     /// \param ctx0: context for each data pointer in v0
     /// \param p1: partitioning of the destination tensor in consecutive ranges
     /// \param o1: dimension labels for the destination tensor
     /// \param dim1: dimension size for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
     /// \param v1: vector of data pointers for the origin tensor
+    /// \param mask1: vector of mask pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
@@ -1849,8 +1926,9 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
               const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0,
-              const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
-              const Coor<Nd1> &from1, Q **v1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co,
+              const MaskType **mask0, const Context *ctx0, const PartitionItem<Nd1> *p1,
+              int ncomponents1, const char *o1, const Coor<Nd1> &from1, Q **v1,
+              const MaskType **mask1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co,
               CopyAdd copyadd, Session session = 0) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
@@ -1858,11 +1936,11 @@ namespace superbblas {
         detail::copy<Nd0, Nd1>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>(v0, mask0, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
             detail::toArray<Nd1>(o1, "o1"),
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
-            co);
+            detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
+            copyadd, co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1874,12 +1952,14 @@ namespace superbblas {
     /// \param from0: first coordinate to copy from the origin tensor
     /// \param size0: number of elements to copy in each dimension
     /// \param v0: vector of data pointers for the origin tensor
+    /// \param data0: vector of mask pointers for the origin tensor
     /// \param ctx0: context for each data pointer in v0
     /// \param p1: partitioning of the destination tensor in consecutive ranges
     /// \param o1: dimension labels for the destination tensor
     /// \param dim1: dimension size for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
     /// \param v1: vector of data pointers for the origin tensor
+    /// \param mask1: vector of mask pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
@@ -1887,8 +1967,9 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
               const char *o0, const Coor<Nd0> from0, const Coor<Nd0> size0, const T **v0,
-              const Context *ctx0, const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
-              const Coor<Nd1> from1, Q **v1, const Context *ctx1, CoorOrder co, CopyAdd copyadd,
+              const MaskType **mask0, const Context *ctx0, const PartitionItem<Nd1> *p1,
+              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1,
+              const MaskType **mask1, const Context *ctx1, CoorOrder co, CopyAdd copyadd,
               Session session = 0) {
 
         detail::SelfComm comm = detail::get_comm();
@@ -1896,11 +1977,11 @@ namespace superbblas {
         detail::copy<Nd0, Nd1>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>(v0, mask0, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
             detail::toArray<Nd1>(o1, "o1"),
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm, copyadd,
-            co);
+            detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
+            copyadd, co);
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -1943,11 +2024,12 @@ namespace superbblas {
 
         detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
+            detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session), beta,
             detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
+            detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
+            co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1990,11 +2072,12 @@ namespace superbblas {
 
         detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
-            detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), beta,
+            detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session), beta,
             detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
-            detail::get_components<Ndo>(vr, ctxr, ncomponentsr, pr, comm, session), comm, co);
+            detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
+            co);
     }
 }
 

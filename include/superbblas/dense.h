@@ -674,9 +674,10 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::cholesky<N>(detail::get_from_size(p, ncomponents * comm.nprocs, session), o_,
-                            detail::get_components<N>(v, ctx, ncomponents, p, comm, session), orows,
-                            ocols, comm, co);
+        detail::cholesky<N>(
+            detail::get_from_size(p, ncomponents * comm.nprocs, session), o_,
+            detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
+            comm, co);
     }
 
     /// Solve several upper triangular linear systems
@@ -714,11 +715,12 @@ namespace superbblas {
 
         detail::trsm<Nc, Nx, Ny>(
             alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
-            detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
-            ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
-            detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
+            detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
             detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
-            detail::get_components<Ny>(vy, ctxy, ncomponentsx, py, comm, session), comm, co);
+            detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
+            co);
     }
 
     /// Solve several linear systems
@@ -756,11 +758,12 @@ namespace superbblas {
 
         detail::gesm<Nc, Nx, Ny>(
             alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
-            detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
-            ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
-            detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
+            detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
             detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
-            detail::get_components<Ny>(vy, ctxy, ncomponentsx, py, comm, session), comm, co);
+            detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
+            co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -784,9 +787,10 @@ namespace superbblas {
 
         detail::SelfComm comm = detail::get_comm();
 
-        detail::cholesky<N>(detail::get_from_size(p, ncomponents * comm.nprocs, session), o_,
-                            detail::get_components<N>(v, ctx, ncomponents, p, comm, session), orows,
-                            ocols, comm, co);
+        detail::cholesky<N>(
+            detail::get_from_size(p, ncomponents * comm.nprocs, session), o_,
+            detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
+            comm, co);
     }
 
     /// Solve several upper triangular linear systems
@@ -824,11 +828,12 @@ namespace superbblas {
 
         detail::trsm<Nc, Nx, Ny>(
             alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
-            detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
-            ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
-            detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
+            detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
             detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
-            detail::get_components<Ny>(vy, ctxy, ncomponentsx, py, comm, session), comm, co);
+            detail::get_components<Ny>(vy, ctxy, nullptr, ncomponentsx, py, comm, session), comm,
+            co);
     }
 
     /// Solve several linear systems
@@ -866,11 +871,12 @@ namespace superbblas {
 
         detail::gesm<Nc, Nx, Ny>(
             alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
-            detail::get_components<Nc>((T **)vc, ctxc, ncomponentsc, pc, comm, session), orows,
-            ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
-            detail::get_components<Nx>((T **)vx, ctxx, ncomponentsx, px, comm, session),
+            detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
             detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
-            detail::get_components<Ny>(vy, ctxy, ncomponentsx, py, comm, session), comm, co);
+            detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
+            co);
     }
 }
 

@@ -1954,7 +1954,7 @@ namespace superbblas {
         detail::save<Nd0, Nd1, T, Q>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
 
@@ -1987,15 +1987,15 @@ namespace superbblas {
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
                 detail::toArray<Nd1>(o1, "o1"),
-                detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
-                detail::EWOp::Copy{}, co);
+                detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
+                comm, detail::EWOp::Copy{}, co);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
                 detail::toArray<Nd1>(o1, "o1"),
-                detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
-                detail::EWOp::Add{}, co);
+                detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
+                comm, detail::EWOp::Add{}, co);
     }
 
     /// Return the nonzero blocks stored
@@ -2231,7 +2231,7 @@ namespace superbblas {
         detail::save<Nd0, Nd1, T, Q>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             detail::toArray<Nd0>(o0, "o0"),
-            detail::get_components<Nd0>(v0, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
 
@@ -2265,15 +2265,15 @@ namespace superbblas {
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
                 detail::toArray<Nd1>(o1, "o1"),
-                detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
-                detail::EWOp::Copy{}, co);
+                detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
+                comm, detail::EWOp::Copy{}, co);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
                 detail::toArray<Nd1>(o1, "o1"),
-                detail::get_components<Nd1>(v1, ctx1, ncomponents1, p1, comm, session), comm,
-                detail::EWOp::Add{}, co);
+                detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
+                comm, detail::EWOp::Add{}, co);
     }
 
     /// Return the nonzero blocks stored

@@ -360,7 +360,6 @@ int main(int argc, char **argv) {
                 Tensor t0(vol0);
 
                 Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, co);
-                Coor<Nd - 1> strides0 = detail::get_strides(dim0, co);
                 Coor<Nd> strides1 = detail::get_strides(dim, co);
                 for (int m = 0; m < dim[M]; ++m) {
                     const Coor<Nd - 1> from0{};
@@ -422,7 +421,6 @@ int main(int argc, char **argv) {
                 const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
                 Coor<Nd - 2> stridesr = detail::get_strides(dimr, co);
                 Coor<2> dimNN{dim[N0], dim[N1]};
-                Coor<2> stridesNN = detail::get_strides(dimNN, co);
                 Coor<Nd> strides = detail::get_strides(dim, co);
 
                 for (auto n : nn) {
@@ -485,7 +483,6 @@ int main(int argc, char **argv) {
                 Tensor t0(vol0);
 
                 Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, co);
-                Coor<Nd - 1> strides0 = detail::get_strides(dim0, co);
                 Coor<Nd> strides1 = detail::get_strides(dim, co);
                 for (int m = 0; m < dim[M]; ++m) {
                     const Coor<Nd - 1> from0{};
@@ -520,7 +517,6 @@ int main(int argc, char **argv) {
                 const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
                 Coor<Nd - 2> stridesr = detail::get_strides(dimr, co);
                 Coor<2> dimNN{dim[N0], dim[N1]};
-                Coor<2> stridesNN = detail::get_strides(dimNN, co);
                 Coor<Nd> strides = detail::get_strides(dim, co);
 
                 for (auto n : nn) {

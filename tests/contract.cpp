@@ -77,8 +77,8 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     PartitionStored<N0> p0_(nprocs, {Coor<N0>{}, dim0}); // tensor replicated partitioning
     T const *ptrv0_ = v0_.data();
     T *ptrv0 = v0.data();
-    copy(1.0, p0_.data(), 1, &o0[0], {}, dim0, (const T **)&ptrv0_, &ctx, p0.data(), 1, &o0[0], {},
-         &ptrv0, &ctx,
+    copy(1.0, p0_.data(), 1, &o0[0], {}, dim0, (const T **)&ptrv0_, nullptr, &ctx, p0.data(), 1,
+         &o0[0], {}, &ptrv0, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -91,8 +91,8 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     PartitionStored<N1> p1_(nprocs, {Coor<N1>{}, dim1}); // tensor replicated partitioning
     T const *ptrv1_ = v1_.data();
     T *ptrv1 = v1.data();
-    copy(1.0, p1_.data(), 1, &o1[0], {}, dim1, (const T **)&ptrv1_, &ctx, p1.data(), 1, &o1[0], {},
-         &ptrv1, &ctx,
+    copy(1.0, p1_.data(), 1, &o1[0], {}, dim1, (const T **)&ptrv1_, nullptr, &ctx, p1.data(), 1,
+         &o1[0], {}, &ptrv1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -118,8 +118,8 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     pr[0][1] = dim2; // tensor only supported on proc 0
     std::vector<T> vr(detail::volume(pr[rank][1]));
     T *ptrvr = vr.data();
-    copy(1, p2.data(), 1, &o2[0], {}, dim2, (const T **)&ptrv2, &ctx, pr.data(), 1, &o2[0], {},
-         &ptrvr, &ctx,
+    copy(1, p2.data(), 1, &o2[0], {}, dim2, (const T **)&ptrv2, nullptr, &ctx, pr.data(), 1, &o2[0],
+         {}, &ptrvr, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif

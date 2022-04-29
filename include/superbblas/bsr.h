@@ -742,8 +742,8 @@ namespace superbblas {
                     "Unsupported power position: it can be at the slowest index");
 
             // Set zero
-            local_copy<Ny, Ny, T, T>(0, oy, {}, dimy, dimy, (vector<const T, XPU>)vy, oy, {}, dimy,
-                                     vy, EWOp::Copy{}, bsr.v.co);
+            local_copy<Ny, Ny, T, T>(0, oy, {}, dimy, dimy, (vector<const T, XPU>)vy, {}, oy, {},
+                                     dimy, vy, {}, EWOp::Copy{}, bsr.v.co);
 
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
             IndexType ldx = lx == ColumnMajor ? (!transSp ? vold : voli) : volC;
@@ -920,14 +920,14 @@ namespace superbblas {
                     const unsigned int pi = comm.rank * ncomponents + componentId;
                     const Coor<Nx> &dimx = px_[pi][1];
                     vector<T, XPU0> vxi(volume(dimx), bsr.c.first[i].v.it.ctx());
-                    vx0_.first.push_back(Component<Nx, T, XPU0>{vxi, dimx, componentId});
+                    vx0_.first.push_back(Component<Nx, T, XPU0>{vxi, dimx, componentId, {}});
                 }
                 for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                     const unsigned int componentId = bsr.c.second[i].v.componentId;
                     const unsigned int pi = comm.rank * ncomponents + componentId;
                     const Coor<Nx> &dimx = px_[pi][1];
                     vector<T, XPU1> vxi(volume(dimx), bsr.c.second[i].v.it.ctx());
-                    vx0_.second.push_back(Component<Nx, T, XPU1>{vxi, dimx, componentId});
+                    vx0_.second.push_back(Component<Nx, T, XPU1>{vxi, dimx, componentId, {}});
                 }
                 copy<Nx, Nx, T>(T{1}, px, {}, dimx, ox, vx, px_, {}, ox, vx0_, comm, EWOp::Copy{},
                                 co);
@@ -945,7 +945,7 @@ namespace superbblas {
                 const Coor<Nx> &dimx = px_[pi][1];
                 const Coor<Ny> &dimy = py_[pi][1];
                 vector<T, XPU0> vyi(volume(dimy), bsr.c.first[i].v.it.ctx());
-                vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimy, componentId});
+                vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimy, componentId, {}});
                 local_bsr_krylov<Nd, Ni, Nx, Ny, T>(bsr.c.first[i], oim, odm, dimx, ox,
                                                     vx_.first[i].it, dimy, oy, okr, vy_.first[i].it,
                                                     EWOP{});
@@ -956,7 +956,7 @@ namespace superbblas {
                 const Coor<Nx> &dimx = px_[pi][1];
                 const Coor<Ny> &dimy = py_[pi][1];
                 vector<T, XPU1> vyi(volume(dimy), bsr.c.second[i].v.it.ctx());
-                vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimy, componentId});
+                vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimy, componentId, {}});
                 local_bsr_krylov<Nd, Ni, Nx, Ny, T>(bsr.c.second[i], oim, odm, dimx, ox,
                                                     vx_.second[i].it, dimy, oy, okr,
                                                     vy_.second[i].it, EWOP{});
@@ -1078,9 +1078,10 @@ namespace superbblas {
 
         detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
             *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session), ox_,
-            detail::get_components<Nx>(vx, ctx, ncomponents, px, comm, session),
+            detail::get_components<Nx>(vx, nullptr, ctx, ncomponents, px, comm, session),
             detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, okr,
-            detail::get_components<Ny>(vy, ctx, ncomponents, py, comm, session), comm, co, copyadd);
+            detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session), comm, co,
+            copyadd);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1151,9 +1152,10 @@ namespace superbblas {
 
         detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
             *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session), ox_,
-            detail::get_components<Nx>(vx, ctx, ncomponents, px, comm, session),
+            detail::get_components<Nx>(vx, nullptr, ctx, ncomponents, px, comm, session),
             detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, okr,
-            detail::get_components<Ny>(vy, ctx, ncomponents, py, comm, session), comm, co, copyadd);
+            detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session), comm, co,
+            copyadd);
     }
 }
 #endif // __SUPERBBLAS_BSR__
