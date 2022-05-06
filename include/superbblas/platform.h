@@ -319,6 +319,7 @@ namespace superbblas {
 
         /// Return if `T` is a supported type
         template <typename T> struct supported_type { static constexpr bool value = false; };
+        template <> struct supported_type<int> { static constexpr bool value = true; };
         template <> struct supported_type<float> { static constexpr bool value = true; };
         template <> struct supported_type<double> { static constexpr bool value = true; };
         template <> struct supported_type<std::complex<float>> {

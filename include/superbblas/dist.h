@@ -57,6 +57,14 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1>
         using PairPerms = std::tuple<Coor<Nd0>, Coor<Nd1>>;
 
+        // Supported types for contractions: the ones supported by superbblas excepting int
+        template <typename T> struct supported_type_for_contractions {
+            static constexpr bool value = supported_type<T>::value;
+        };
+        template <> struct supported_type_for_contractions<int> {
+            static constexpr bool value = false;
+        };
+
         //
         // Auxiliary functions
         //
@@ -2008,7 +2016,9 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
 
-    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
+    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
+              typename std::enable_if<detail::supported_type_for_contractions<T>::value,
+                                      bool>::type = true>
     void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
                      bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
@@ -2030,6 +2040,16 @@ namespace superbblas {
             detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
             detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
             co);
+    }
+
+    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
+              typename std::enable_if<!detail::supported_type_for_contractions<T>::value,
+                                      bool>::type = true>
+    void contraction(T, const PartitionItem<Nd0> *, int, const char *, bool, const T **,
+                     const Context *, const PartitionItem<Nd1> *, int, const char *, bool,
+                     const T **, const Context *, T, const PartitionItem<Ndo> *, int,
+                     const char o_r, T **, const Context *, MPI_Comm, CoorOrder, Session = 0) {
+        throw std::runtime_error("contraction: unsupported type");
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -2056,7 +2076,9 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
 
-    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
+    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
+              typename std::enable_if<detail::supported_type_for_contractions<T>::value,
+                                      bool>::type = true>
     void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
                      bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
                      int ncomponents1, const char *o1, bool conj1, const T **v1,
@@ -2078,6 +2100,16 @@ namespace superbblas {
             detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
             detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
             co);
+    }
+
+    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
+              typename std::enable_if<!detail::supported_type_for_contractions<T>::value,
+                                      bool>::type = true>
+    void contraction(T, const PartitionItem<Nd0> *, int, const char *, bool, const T **,
+                     const Context *, const PartitionItem<Nd1> *, int, const char *, bool,
+                     const T **, const Context *, T, const PartitionItem<Ndo> *, int,
+                     const char o_r, T **, const Context *, CoorOrder, Session = 0) {
+        throw std::runtime_error("contraction: unsupported type");
     }
 }
 
