@@ -1119,7 +1119,7 @@ namespace superbblas {
     /// Destroy RSB sparse operator
     /// \param bsrh: origin RSB handle to copy from
 
-    void destroy_bsr(BSR_handle *bsrh) { delete bsrh; }
+    inline void destroy_bsr(BSR_handle *bsrh) { delete bsrh; }
 
     /// BSR sparse operator - tensor multiplication
     /// \param bsrh: BSR handle

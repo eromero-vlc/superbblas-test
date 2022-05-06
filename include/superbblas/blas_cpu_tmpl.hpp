@@ -312,7 +312,7 @@ namespace superbblas {
             return linfo;
         }
 
-        int xgetrf(BLASINT m, BLASINT n, SCALAR *a, BLASINT lda, std::int64_t *ipivot, Cpu) {
+        inline int xgetrf(BLASINT m, BLASINT n, SCALAR *a, BLASINT lda, std::int64_t *ipivot, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (m == 0 || n == 0) return 0;
 
@@ -321,7 +321,7 @@ namespace superbblas {
             return linfo;
         }
 
-        int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work, BLASINT lwork,
+        inline int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work, BLASINT lwork,
                    Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0) return 0;
@@ -331,7 +331,7 @@ namespace superbblas {
             return info;
         }
 
-        int xgetrs(char trans, BLASINT n, BLASINT nrhs, SCALAR *a, BLASINT lda,
+        inline int xgetrs(char trans, BLASINT n, BLASINT nrhs, SCALAR *a, BLASINT lda,
                    std::int64_t *ipivot, SCALAR *b, BLASINT ldb, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0 || nrhs == 0) return 0;
