@@ -593,8 +593,13 @@ namespace superbblas {
             }
 
             // Compute the displacements
+            r.displ[0] = 0;
             for (std::size_t i = 1; i < toReceive.size(); ++i)
                 r.displ[i] = r.displ[i - 1] + r.counts[i - 1];
+
+            // Allocate the buffer
+            r.buf =
+                vector<T, Cpu>((r.displ.back() + r.counts.back()) * MpiTypeSize / sizeof(T), Cpu{});
 
             return r;
         }
