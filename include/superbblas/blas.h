@@ -788,7 +788,7 @@ namespace superbblas {
             } else if (indicesw == nullptr) {
                 copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
-                assert(n == 0 || (void *)v != (void *)w);
+                //assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp for

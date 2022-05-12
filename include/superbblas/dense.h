@@ -629,6 +629,7 @@ namespace superbblas {
                 const unsigned int componentId = vcw.first[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 std::size_t ki = volume(pcw[pi][1]) / r / r;
+                if (ki == 0) continue;
                 std::size_t ni = volume(pxw[pi][1]) / r / ki; // rows/columns of x and y
                 local_gesm('N', r, ki, ni, vcw.first[i].it, vxw.first[i].it);
             }
@@ -636,6 +637,7 @@ namespace superbblas {
                 const unsigned int componentId = vcw.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 std::size_t ki = volume(pcw[pi][1]) / r / r;
+                if (ki == 0) continue;
                 std::size_t ni = volume(pxw[pi][1]) / r / ki; // rows/columns of x and y
                 local_gesm('N', r, ki, ni, vcw.second[i].it, vxw.second[i].it);
             }

@@ -1080,8 +1080,8 @@ namespace superbblas {
 
             // Apply the masks
             if (mask0.size() > 0) {
-                indices0 = select(indices0, mask0.data() + disp0, indices0);
                 Indices<XPU1> indices0_xpu1 = makeSure(indices0, v1.ctx());
+                indices0 = select(indices0, mask0.data() + disp0, indices0);
                 Mask<XPU1> mask0_xpu1 = makeSure(mask0, v1.ctx());
                 indices1 = select(indices0_xpu1, mask0_xpu1.data() + disp0, indices1);
             }
