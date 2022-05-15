@@ -527,7 +527,7 @@ namespace superbblas {
             // Update the counts when using maskin
             if (v.first.size() > 0 && v.first[0].mask_it.size() > 0)
                 for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
-                    r.counts[rank] = (buf_disp[rank] * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize -
+                    r.counts[rank] = (buf_disp[rank] * sizeof(Q) + MpiTypeSize - 1) / MpiTypeSize -
                                      r.displ[rank];
             return r;
         }
@@ -594,12 +594,12 @@ namespace superbblas {
 
             // Compute the displacements
             r.displ[0] = 0;
-            for (std::size_t i = 1; i < toReceive.size(); ++i)
+            for (std::size_t i = 1; i < comm.nprocs; ++i)
                 r.displ[i] = r.displ[i - 1] + r.counts[i - 1];
 
             // Allocate the buffer
-            r.buf =
-                vector<T, Cpu>((r.displ.back() + r.counts.back()) * MpiTypeSize / sizeof(T), Cpu{});
+            r.buf = vector<T, Cpu>((r.displ.back() + r.counts.back()) * (MpiTypeSize / sizeof(T)),
+                                   Cpu{});
 
             return r;
         }
@@ -1148,7 +1148,6 @@ namespace superbblas {
                 std::size_t vol = volume(v.dim);
                 Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
                 Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-                Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
                 vector<IndexType, Cpu> v_host = makeSure(v.it, Cpu{});
                 vector<MaskType, Cpu> m_host = makeSure(v.mask_it, Cpu{});
 
@@ -1170,10 +1169,7 @@ namespace superbblas {
                             true_val *= rep;
                         else if (rep == 0)
                             true_val = 0;
-                        if (m_host.size() > 0 &&
-                            m_host[coor2index(normalize_coor(c1 - from1, dim1), dim1, stride1)] ==
-                                0)
-                            true_val = 0;
+                        if (m_host.size() > 0 && m_host[i] == 0) true_val = 0;
                     }
                     if (v_host[i] != true_val)
                         throw std::runtime_error("test_copy_check does not pass!");
