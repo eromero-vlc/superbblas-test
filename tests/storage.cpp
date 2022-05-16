@@ -245,7 +245,7 @@ int main(int argc, char **argv) {
 #endif
                                            &stoh);
                 std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
-                append_blocks<Nd, Scalar>(&fs, 1, stoh,
+                append_blocks<Nd, Scalar>(&fs, 1, dim, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                           MPI_COMM_WORLD,
 #endif
@@ -255,7 +255,7 @@ int main(int argc, char **argv) {
                     const Coor<Nd> from1{m};
                     Scalar *ptr0 = t0.data();
                     save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
-                                                     (const Scalar **)&ptr0, &ctx, "mdtgsSnN",
+                                                     dim0, (const Scalar **)&ptr0, &ctx, "mdtgsSnN",
                                                      from1, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                                      MPI_COMM_WORLD,
@@ -298,8 +298,9 @@ int main(int argc, char **argv) {
             for (std::size_t nni = 0; nni < nn.size(); ++nni) {
                 int n = nn[nni];
                 // Create tensor t1 for reading the genprop on root process
+                Coor<2> dim1{{n, n}};
                 PartitionStored<2> p1(nprocs);
-                p1[0][1] = Coor<2>{n, n};
+                p1[0][1] = dim1;
                 std::size_t vol1 = detail::volume(p1[rank][1]);
                 Tensor t1(vol1);
 
@@ -315,7 +316,7 @@ int main(int argc, char **argv) {
                         const Coor<2> from1{};
                         Scalar *ptr1 = t1.data();
                         load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(),
-                                                    1, "nN", from1, &ptr1, &ctx,
+                                                    1, "nN", from1, dim1, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                                                     MPI_COMM_WORLD,
 #endif
@@ -346,7 +347,7 @@ int main(int argc, char **argv) {
 #endif
                                        &stoh);
             std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
-            append_blocks<Nd, Scalar>(&fs, 1, stoh,
+            append_blocks<Nd, Scalar>(&fs, 1, dim, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                       MPI_COMM_WORLD,
 #endif
@@ -372,7 +373,7 @@ int main(int argc, char **argv) {
                         t0[i] = coor2index(c, dim, strides1);
                     }
                     save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
-                                                     (const Scalar **)&ptr0, &ctx, "mdtgsSnN",
+                                                     dim0, (const Scalar **)&ptr0, &ctx, "mdtgsSnN",
                                                      from1, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                                      MPI_COMM_WORLD,
@@ -420,7 +421,6 @@ int main(int argc, char **argv) {
             {
                 const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
                 Coor<Nd - 2> stridesr = detail::get_strides(dimr, co);
-                Coor<2> dimNN{dim[N0], dim[N1]};
                 Coor<Nd> strides = detail::get_strides(dim, co);
 
                 for (auto n : nn) {
@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
 
                     // Create tensor t1 for reading the genprop on root process
                     PartitionStored<2> p1(nprocs);
-                    p1[0][1] = Coor<2>{n, n};
+                    p1[0][1] = dimnn;
                     std::size_t vol1 = detail::volume(p1[rank][1]);
                     Tensor t1(vol1);
 
@@ -444,7 +444,7 @@ int main(int argc, char **argv) {
                         Scalar *ptr1 = t1.data();
                         for (std::size_t i = 0; i < vol1; ++i) t1[i] = -1;
                         load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(),
-                                                    1, "nN", from1, &ptr1, &ctx,
+                                                    1, "nN", from1, dimnn, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                                                     MPI_COMM_WORLD,
 #endif
@@ -488,7 +488,7 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0{};
                     const Coor<Nd> from1{m};
 
-                    append_blocks<Nd - 1, Nd, Scalar>(p0.data(), nprocs, "dtgsSnN", {}, dim0,
+                    append_blocks<Nd - 1, Nd, Scalar>(p0.data(), nprocs, "dtgsSnN", {}, dim0, dim0,
                                                       "mdtgsSnN", from1, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                                       MPI_COMM_WORLD,
@@ -503,7 +503,7 @@ int main(int argc, char **argv) {
                         t0[i] = coor2index(c, dim, strides1);
                     }
                     save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
-                                                     (const Scalar **)&ptr0, &ctx, "mdtgsSnN",
+                                                     dim0, (const Scalar **)&ptr0, &ctx, "mdtgsSnN",
                                                      from1, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                                      MPI_COMM_WORLD,
@@ -516,7 +516,6 @@ int main(int argc, char **argv) {
             {
                 const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
                 Coor<Nd - 2> stridesr = detail::get_strides(dimr, co);
-                Coor<2> dimNN{dim[N0], dim[N1]};
                 Coor<Nd> strides = detail::get_strides(dim, co);
 
                 for (auto n : nn) {
@@ -525,7 +524,7 @@ int main(int argc, char **argv) {
 
                     // Create tensor t1 for reading the genprop on root process
                     PartitionStored<2> p1(nprocs);
-                    p1[0][1] = Coor<2>{n, n};
+                    p1[0][1] = dimnn;
                     std::size_t vol1 = detail::volume(p1[rank][1]);
                     Tensor t1(vol1);
 
@@ -540,7 +539,7 @@ int main(int argc, char **argv) {
                         Scalar *ptr1 = t1.data();
                         for (std::size_t i = 0; i < vol1; ++i) t1[i] = -1;
                         load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(),
-                                                    1, "nN", from1, &ptr1, &ctx,
+                                                    1, "nN", from1, dimnn, &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                                                     MPI_COMM_WORLD,
 #endif
@@ -603,7 +602,7 @@ int main(int argc, char **argv) {
 #    endif
                                    &stoh);
         std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
-        append_blocks<Nd, Scalar>(&fs, 1, stoh,
+        append_blocks<Nd, Scalar>(&fs, 1, dim, stoh,
 #    ifdef SUPERBBLAS_USE_MPI
                                   MPI_COMM_WORLD,
 #    endif
@@ -629,7 +628,7 @@ int main(int argc, char **argv) {
                         m * vol / dim[M];
                 t0 = t0_host;
                 Scalar *ptr0 = t0.data().get();
-                save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0,
+                save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0, dim0,
                                                  (const Scalar **)&ptr0, &ctx, "mdtgsSnN", from1,
                                                  stoh,
 #    ifdef SUPERBBLAS_USE_MPI
@@ -671,7 +670,7 @@ int main(int argc, char **argv) {
 
                 // Create tensor t1 for reading the genprop on root process
                 PartitionStored<2> p1(nprocs);
-                p1[0][1] = Coor<2>{n, n};
+                p1[0][1] = dimnn;
                 std::size_t vol1 = detail::volume(p1[rank][1]);
                 Tensor t1(vol1);
                 std::vector<Scalar> t1_host(vol1);
@@ -687,7 +686,7 @@ int main(int argc, char **argv) {
                     Scalar *ptr1 = t1.data().get();
                     for (std::size_t i = 0; i < vol1; ++i) t1[i] = -1;
                     load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
-                                                "nN", from1, &ptr1, &ctx,
+                                                "nN", from1, dimnn, &ptr1, &ctx,
 #    ifdef SUPERBBLAS_USE_MPI
                                                 MPI_COMM_WORLD,
 #    endif

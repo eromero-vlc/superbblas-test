@@ -1015,7 +1015,7 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1>
         void save(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                  const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, Order<Nd1> o1,
                   Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, Comm comm, CoorOrder co) {
 
@@ -1029,7 +1029,6 @@ namespace superbblas {
 
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
             auto overlaps = get_overlap_ranges(
                 dim0, to_vector(p0.data() + comm.rank * ncomponents0, ncomponents0, p0.ctx()), o0,
                 from0, size0, sto.blocks, o1, from1);
@@ -1078,8 +1077,8 @@ namespace superbblas {
                   typename XPU0, typename XPU1, typename EWOP>
         void load(typename elem<T>::type alpha, Storage_context<Nd0, Comm> &sto, Coor<Nd0> from0,
                   Coor<Nd0> size0, Order<Nd0> o0, const From_size<Nd1> &p1, const Coor<Nd1> &from1,
-                  const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
-                  EWOP, CoorOrder co) {
+                  const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP, CoorOrder co) {
 
             tracker<XPU1> _t("load", p1.ctx());
 
@@ -1091,7 +1090,6 @@ namespace superbblas {
             }
 
             // Generate the list of subranges to send from each component from v0 to v1
-            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
             unsigned int ncomponents1 = v1.first.size() + v1.second.size();
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
@@ -1411,14 +1409,13 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename Q, typename Comm>
         void append_blocks(const PartitionItem<Nd0> *p0, std::size_t num_blocks,
-                           const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Order<Nd0> &o0,
-                           Order<Nd1> o1, Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1,
-                           Comm comm, CoorOrder co) {
+                           const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                           const Order<Nd0> &o0, Order<Nd1> o1, Storage_context<Nd1, Comm> &sto,
+                           Coor<Nd1> from1, Comm comm, CoorOrder co) {
 
             tracker<Cpu> _t("append blocks", Cpu{0});
 
             // Generate the list of subranges to add
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0, num_blocks);
             auto p0_ = to_vector(p0, num_blocks, Cpu{0});
             if (co == FastToSlow) {
                 o1 = reverse(o1);
@@ -1885,14 +1882,14 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd1, typename Q>
-    void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, Storage_handle stoh,
-                       MPI_Comm mpicomm, CoorOrder co) {
+    void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, const Coor<Nd1> &dim,
+                       Storage_handle stoh, MPI_Comm mpicomm, CoorOrder co) {
 
         detail::Storage_context<Nd1, detail::MpiComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::append_blocks<Nd1, Nd1, Q>(p, num_blocks, {}, detail::get_dim(p, num_blocks),
+        detail::append_blocks<Nd1, Nd1, Q>(p, num_blocks, {}, dim, dim,
                                            detail::trivial_order<Nd1>(),
                                            detail::trivial_order<Nd1>(), sto, {}, comm, co);
     }
@@ -1912,15 +1909,15 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename Q>
     void append_blocks(const PartitionItem<Nd0> *p0, int num_blocks, const char *o0,
-                       const Coor<Nd0> &from0, const Coor<Nd0> &size0, const char *o1,
-                       const Coor<Nd1> &from1, Storage_handle stoh, MPI_Comm mpicomm,
-                       CoorOrder co) {
+                       const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                       const char *o1, const Coor<Nd1> &from1, Storage_handle stoh,
+                       MPI_Comm mpicomm, CoorOrder co) {
 
         detail::Storage_context<Nd1, detail::MpiComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::append_blocks<Nd0, Nd1, Q>(p0, num_blocks, from0, size0,
+        detail::append_blocks<Nd0, Nd1, Q>(p0, num_blocks, from0, size0, dim0,
                                            detail::toArray<Nd0>(o0, "o0"),
                                            detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
@@ -1943,16 +1940,16 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void save(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
-              const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0,
-              const Context *ctx0, const char *o1, const Coor<Nd1> &from1, Storage_handle stoh,
-              MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
+              const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+              const T **v0, const Context *ctx0, const char *o1, const Coor<Nd1> &from1,
+              Storage_handle stoh, MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
 
         detail::Storage_context<Nd1, detail::MpiComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0, dim0,
             detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
@@ -1974,9 +1971,10 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void load(typename elem<T>::type alpha, Storage_handle stoh, const char *o0,
-              const Coor<Nd0> from0, const Coor<Nd0> size0, const PartitionItem<Nd1> *p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, const Context *ctx1,
-              MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd, Session session = 0) {
+              const Coor<Nd0> &from0, const Coor<Nd0> &size0, const PartitionItem<Nd1> *p1,
+              int ncomponents1, const char *o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+              Q **v1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd,
+              Session session = 0) {
 
         detail::Storage_context<Nd0, detail::MpiComm> &sto =
             *detail::get_storage_context<Nd0, T, detail::MpiComm>(stoh);
@@ -1985,14 +1983,14 @@ namespace superbblas {
         if (copyadd == Copy)
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
                 comm, detail::EWOp::Copy{}, co);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
                 comm, detail::EWOp::Add{}, co);
@@ -2164,16 +2162,16 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
     template <std::size_t Nd1, typename Q>
-    void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, Storage_handle stoh,
-                       CoorOrder co) {
+    void append_blocks(const PartitionItem<Nd1> *p, int num_blocks, const Coor<Nd1> &dim,
+                       Storage_handle stoh, CoorOrder co) {
 
         detail::Storage_context<Nd1, detail::SelfComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
         detail::append_blocks<Nd1, Nd1, Q>(
-            p, num_blocks, Coor<Nd1>{}, detail::get_dim(p, num_blocks),
-            detail::trivial_order<Nd1>(), detail::trivial_order<Nd1>(), sto, Coor<Nd1>{}, comm, co);
+            p, num_blocks, Coor<Nd1>{}, dim, detail::trivial_order<Nd1>(),
+            detail::trivial_order<Nd1>(), sto, Coor<Nd1>{}, comm, co);
     }
 
     /// Add blocks to storage
@@ -2190,14 +2188,14 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename Q>
     void append_blocks(const PartitionItem<Nd0> *p0, int num_blocks, const char *o0,
-                       const Coor<Nd0> &from0, const Coor<Nd0> &size0, const char *o1,
-                       const Coor<Nd1> &from1, Storage_handle stoh, CoorOrder co) {
+                       const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> dim0,
+                       const char *o1, const Coor<Nd1> &from1, Storage_handle stoh, CoorOrder co) {
 
         detail::Storage_context<Nd1, detail::SelfComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::append_blocks<Nd0, Nd1, Q>(p0, num_blocks, from0, size0,
+        detail::append_blocks<Nd0, Nd1, Q>(p0, num_blocks, from0, size0, dim0,
                                            detail::toArray<Nd0>(o0, "o0"),
                                            detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
@@ -2220,9 +2218,9 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void save(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
-              const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0,
-              const Context *ctx0, const char *o1, const Coor<Nd1> &from1, Storage_handle stoh,
-              CoorOrder co, Session session = 0) {
+              const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+              const T **v0, const Context *ctx0, const char *o1, const Coor<Nd1> &from1,
+              Storage_handle stoh, CoorOrder co, Session session = 0) {
 
         detail::Storage_context<Nd1, detail::SelfComm> &sto =
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
@@ -2230,7 +2228,7 @@ namespace superbblas {
 
         detail::save<Nd0, Nd1, T, Q>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
-            detail::toArray<Nd0>(o0, "o0"),
+            dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }
@@ -2253,8 +2251,8 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void load(typename elem<T>::type alpha, Storage_handle stoh, const char *o0,
               const Coor<Nd0> from0, const Coor<Nd0> size0, const PartitionItem<Nd1> *p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1, const Context *ctx1,
-              CoorOrder co, CopyAdd copyadd, Session session = 0) {
+              int ncomponents1, const char *o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+              Q **v1, const Context *ctx1, CoorOrder co, CopyAdd copyadd, Session session = 0) {
 
         detail::Storage_context<Nd0, detail::SelfComm> &sto =
             *detail::get_storage_context<Nd0, T, detail::SelfComm>(stoh);
@@ -2263,14 +2261,14 @@ namespace superbblas {
         if (copyadd == Copy)
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
                 comm, detail::EWOp::Copy{}, co);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
                 comm, detail::EWOp::Add{}, co);

@@ -69,22 +69,6 @@ namespace superbblas {
         // Auxiliary functions
         //
 
-        /// Return the global dimensions of a tensor from its partitioning
-        /// \param p: partitioning of the tensor in consecutive ranges
-
-        template <std::size_t N> Coor<N> get_dim(From_size_iterator<N> p, std::size_t n) {
-            Coor<N> r = {};
-            for (std::size_t j = 0; j < n; j++) r = max_each(r, p[j][0] + p[j][1]);
-            return r;
-        }
-
-        /// Return the global dimensions of a tensor from its partitioning
-        /// \param p: partitioning of the tensor in consecutive ranges
-
-        template <std::size_t N> Coor<N> get_dim(const From_size<N> &p) {
-            return get_dim<N>(p.begin(), p.size());
-        }
-
         /// Return the total volume in a partition
         /// \param p: partitioning of the tensor in consecutive ranges
 
@@ -819,6 +803,9 @@ namespace superbblas {
                     intersection(from0[i], size0[i], from1[i], size1[i], dim[i], fromr0, sizer0);
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
+                    if (sizer1 == 0)
+                        intersection(from0[i] + dim[i], size0[i], from1[i], size1[i], dim[i],
+                                     fromr1, sizer1);
                 }
                 if (sizer0 > 0) {
                     grid[grid_n[i]][0][i] = fromr0;
@@ -907,17 +894,13 @@ namespace superbblas {
         /// \param cpu: device context
 
         template <std::size_t Nd0, std::size_t Nd1>
-        From_size<Nd0> get_indices_to_send(From_size<Nd0> p0, unsigned int from_rank,
-                                           const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                           const Coor<Nd0> &size0, From_size<Nd1> p1,
-                                           unsigned int componentId1, unsigned int ncomponents1,
-                                           const Order<Nd1> &o1, const Coor<Nd1> &from1) {
+        From_size<Nd0>
+        get_indices_to_send(From_size<Nd0> p0, unsigned int from_rank, const Order<Nd0> &o0,
+                            const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                            From_size<Nd1> p1, unsigned int componentId1, unsigned int ncomponents1,
+                            const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1) {
 
             tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
-
-            // Get the global dimensions of the tensors
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
 
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
@@ -966,14 +949,11 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1>
         From_size<Nd1> get_indices_to_receive(const From_size<Nd0> &p0, const Order<Nd0> &o0,
                                               const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                                              const From_size<Nd1> &p1, unsigned int to_rank,
-                                              const Order<Nd1> &o1, const Coor<Nd1> &from1) {
+                                              const Coor<Nd0> &dim0, const From_size<Nd1> &p1,
+                                              unsigned int to_rank, const Order<Nd1> &o1,
+                                              const Coor<Nd1> &from1, const Coor<Nd1> &dim1) {
 
             tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
-
-            // Get the global dimensions of the tensors
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
 
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
@@ -1101,10 +1081,10 @@ namespace superbblas {
 
             template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1>
             Components_tmpl<Nd, mockIndexType<T>, XPU0, XPU1>
-            get_mock_components(const From_size<Nd> &p, const Components_tmpl<Nd, T, XPU0, XPU1> &v,
-                                CoorOrder co, MockFilling mf, Comm comm) {
+            get_mock_components(const From_size<Nd> &p, const Coor<Nd> &dim,
+                                const Components_tmpl<Nd, T, XPU0, XPU1> &v, CoorOrder co,
+                                MockFilling mf, Comm comm) {
                 Components_tmpl<Nd, mockIndexType<T>, XPU0, XPU1> r;
-                Coor<Nd> dim = get_dim(p);
                 unsigned int ncomponents = v.first.size() + v.second.size();
                 for (const Component<Nd, T, XPU0> &c : v.first) {
                     r.first.push_back(Component<Nd, IndexType, XPU0>{
@@ -1195,28 +1175,27 @@ namespace superbblas {
             template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                       typename XPU0, typename XPU1, typename EWOP>
             void test_copy(typename elem<T>::type, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                           const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                           const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                           const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
-                           const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP,
-                           CoorOrder co) {
+                           const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                           const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1,
+                           Comm comm, EWOP, CoorOrder co) {
 
                 bool trackingTime = getTrackingTime();
                 getTrackingTime() = false;
 
                 // Fill the mock input and output tensors
                 const Components_tmpl<Nd0, const IndexType, XPU0, XPU1> v0_ =
-                    get_mock_components(p0, v0, co, FillWithIndices, comm);
+                    get_mock_components(p0, dim0, v0, co, FillWithIndices, comm);
                 const Components_tmpl<Nd1, IndexType, XPU0, XPU1> v1_ =
-                    get_mock_components(p1, v1, co, FillWithZeros, comm);
+                    get_mock_components(p1, dim1, v1, co, FillWithZeros, comm);
 
                 // Copy the indices
-                copy(1, p0, from0, size0, o0, v0_, p1, from1, o1, v1_, comm, EWOP{}, co, false);
+                copy(1, p0, from0, size0, dim0, o0, v0_, p1, from1, dim1, o1, v1_, comm, EWOP{}, co,
+                     false);
 
                 // Check that the modified elements on v1_ are what they should be
                 unsigned int ncomponents1 = v1.first.size() + v1.second.size();
-                Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-                Coor<Nd1> dim1 = get_dim<Nd1>(p1);
                 for (const Component<Nd1, IndexType, XPU0> &c : v1_.first) {
                     test_copy_check<Nd0, Nd1>(p0, from0, size0, dim0, o0, from1, dim1, o1, c,
                                               p1[c.componentId + comm.rank * ncomponents1][0],
@@ -1251,15 +1230,15 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOp>
         void copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                  const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                  const Coor<Nd1> &from1, const Order<Nd1> &o1,
+                  const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
                   bool do_test = true) {
 
             if (getDebugLevel() >= 2 && do_test) {
-                ns_copy_test::test_copy(alpha, p0, from0, size0, o0, v0, p1, from1, o1, v1, comm,
-                                        EWOp{}, co);
+                ns_copy_test::test_copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
+                                        v1, comm, EWOp{}, co);
             }
 
             tracker<Cpu> _t("distributed copy", p0.ctx());
@@ -1275,8 +1254,6 @@ namespace superbblas {
                 throw std::runtime_error("Invalid number of elements in the tensor distribution");
 
             // Check the compatibility of the tensors
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
             if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
                 throw std::runtime_error("Invalid copy operation");
 
@@ -1285,15 +1262,15 @@ namespace superbblas {
             for (unsigned int i = 0; i < ncomponents1; ++i) {
                 for (const Component<Nd1, Q, XPU0> &c : v1.first) {
                     if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, o0, v0, p1,
-                                                            ncomponents1, from1, o1, c, comm, ewop,
-                                                            co));
+                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
+                                                            p1, ncomponents1, from1, dim1, o1, c,
+                                                            comm, ewop, co));
                 }
                 for (const Component<Nd1, Q, XPU1> &c : v1.second) {
                     if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, o0, v0, p1,
-                                                            ncomponents1, from1, o1, c, comm, ewop,
-                                                            co));
+                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
+                                                            p1, ncomponents1, from1, dim1, o1, c,
+                                                            comm, ewop, co));
                 }
             }
 
@@ -1320,9 +1297,9 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1>
         void copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                  const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                  const Coor<Nd1> &from1, const Order<Nd1> &o1,
+                  const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, CopyAdd copyadd,
                   CoorOrder co) {
 
@@ -1334,10 +1311,12 @@ namespace superbblas {
 
             switch (copyadd) {
             case Copy:
-                copy(alpha, p0, from0, size0, o0, v0, p1, from1, o1, v1, comm, EWOp::Copy{}, co);
+                copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1, comm,
+                     EWOp::Copy{}, co);
                 break;
             case Add:
-                copy(alpha, p0, from0, size0, o0, v0, p1, from1, o1, v1, comm, EWOp::Add{}, co);
+                copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1, comm,
+                     EWOp::Add{}, co);
                 break;
             }
 
@@ -1355,12 +1334,9 @@ namespace superbblas {
 
         template <std::size_t Nd>
         bool are_there_repetitions(const From_size<Nd> &p, const Coor<Nd> &from,
-                                   const Coor<Nd> &size) {
+                                   const Coor<Nd> &size, const Coor<Nd> &dim) {
 
             tracker<Cpu> _t("are there repetitions", p.ctx());
-
-            // Get the global dimensions of the tensors
-            Coor<Nd> dim = get_dim(p);
 
             unsigned int nprocs = p.size();
             for (unsigned int i0 = 0; i0 < nprocs; ++i0) {
@@ -1394,8 +1370,9 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename EWOP>
         bool may_need_communications(const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                                     const Coor<Nd0> &size0, const Order<Nd0> &o0,
-                                     const From_size<Nd1> &p1, const Coor<Nd1> &from1,
+                                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                     const Order<Nd0> &o0, const From_size<Nd1> &p1,
+                                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
                                      const Order<Nd1> &o1, EWOP) {
 
             tracker<Cpu> _t("avoid communications", p0.ctx());
@@ -1404,13 +1381,10 @@ namespace superbblas {
             // has repetitions together with an add operation, then report that communications are needed
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
-            if (are_there_repetitions(p1, from1, size1) ||
-                (std::is_same<EWOP, EWOp::Add>::value && are_there_repetitions(p0, from0, size0)))
+            if (are_there_repetitions(p1, from1, size1, dim1) ||
+                (std::is_same<EWOP, EWOp::Add>::value &&
+                 are_there_repetitions(p0, from0, size0, dim0)))
                 return true;
-
-            // Get the global dimensions of the tensors
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
 
             // Simple heuristic if
             unsigned int nprocs = p0.size();
@@ -1454,10 +1428,11 @@ namespace superbblas {
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename XPU, typename EWOP>
         Request copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                     const Coor<Nd0> &size0, const Order<Nd0> &o0,
+                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                      const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                     unsigned int ncomponents1, const Coor<Nd1> &from1, const Order<Nd1> &o1,
-                     const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop, CoorOrder co) {
+                     unsigned int ncomponents1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                     const Order<Nd1> &o1, const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop,
+                     CoorOrder co) {
 
             // Find precomputed pieces on cache
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>, Coor<Nd1>,
@@ -1485,20 +1460,22 @@ namespace superbblas {
                 for (unsigned int i = 0; i < v0.first.size(); ++i) {
                     toSend[v0.first[i].componentId] = get_indices_to_send<Nd0, Nd1>(
                         p0, comm.rank * ncomponents0 + v0.first[i].componentId, o0, from0, size0,
-                        p1, v1.componentId, ncomponents1, o1, from1);
+                        dim0, p1, v1.componentId, ncomponents1, o1, from1, dim1);
                 }
                 for (unsigned int i = 0; i < v0.second.size(); ++i) {
                     toSend[v0.second[i].componentId] = get_indices_to_send<Nd0, Nd1>(
                         p0, comm.rank * ncomponents0 + v0.second[i].componentId, o0, from0, size0,
-                        p1, v1.componentId, ncomponents1, o1, from1);
+                        dim0, p1, v1.componentId, ncomponents1, o1, from1, dim1);
                 }
 
                 // Generate the list of subranges to receive from each component from v0 to v1
                 toReceive = get_indices_to_receive<Nd0, Nd1>(
-                    p0, o0, from0, size0, p1, v1.componentId + comm.rank * ncomponents1, o1, from1);
+                    p0, o0, from0, size0, dim0, p1, v1.componentId + comm.rank * ncomponents1, o1,
+                    from1, dim1);
 
                 // Check whether communications can be avoided
-                need_comms = may_need_communications(p0, from0, size0, o0, p1, from1, o1, EWOP{});
+                need_comms = may_need_communications(p0, from0, size0, dim0, o0, p1, from1, dim1,
+                                                     o1, EWOP{});
 
                 // Save the results
                 cache.insert(key, {toSend, toReceive, need_comms}, 0);
@@ -1618,17 +1595,19 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
-        From_size<Ndo> get_output_partition(From_size<Nd0> p0, const Order<Nd0> &o0,
-                                            From_size<Nd1> p1, const Order<Nd1> &o1,
-                                            const Order<Ndo> &o_r,
-                                            bool report_inconsistencies = true) {
+        std::pair<From_size<Ndo>, Coor<Ndo>>
+        get_output_partition(From_size<Nd0> p0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                             From_size<Nd1> p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                             const Order<Ndo> &o_r, bool report_inconsistencies = true) {
             assert(p0.size() == p1.size());
 
             // Find partition on cache
             using Key = std::tuple<From_size<Nd0>, From_size<Nd1>, PairPerms<Nd0, Nd1>,
                                    PairPerms<Nd0, Ndo>, PairPerms<Nd1, Ndo>>;
             struct cache_tag {};
-            auto cache = getCache<Key, From_size<Ndo>, TupleHash<Key>, cache_tag>(p0.ctx());
+            auto cache =
+                getCache<Key, std::pair<From_size<Ndo>, Coor<Ndo>>, TupleHash<Key>, cache_tag>(
+                    p0.ctx());
             Key key{p0, p1, get_perms(o0, o1), get_perms(o0, o_r), get_perms(o1, o_r)};
             auto it = cache.find(key);
             if (it != cache.end()) return it->second.value;
@@ -1641,9 +1620,11 @@ namespace superbblas {
                 pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r,
                                                          report_inconsistencies);
             }
-            cache.insert(key, pr, storageSize(pr));
+            Coor<Ndo> dimr =
+                get_dimensions<Nd0, Nd1, Ndo>(o0, dim0, o1, dim1, o_r, report_inconsistencies);
+            cache.insert(key, {pr, dimr}, storageSize(pr));
 
-            return pr;
+            return {pr, dimr};
         }
 
         /// Zeroed repeated results
@@ -1700,9 +1681,10 @@ namespace superbblas {
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
-        reorder_tensor(const From_size<N> &p0, const Order<N> &o0,
+        reorder_tensor(const From_size<N> &p0, const Coor<N> &dim0, const Order<N> &o0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
-                       const Order<N> &o1, Comm comm, CoorOrder co, bool force_copy = false) {
+                       const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
+                       bool force_copy = false) {
 
             // If the two orderings and partitions are equal, return the tensor
             if (!force_copy && o0 == o1 && p0 == p1) return v0;
@@ -1726,9 +1708,8 @@ namespace superbblas {
             }
 
             // Copy the content of v0 into v1
-            Coor<N> dim0 = get_dim<N>(p0);
-            copy<N, N, T>(T{1}, p0, {}, dim0, o0, toConst(v0), p1, {}, o1, v1, comm, EWOp::Copy{},
-                          co);
+            copy<N, N, T>(T{1}, p0, {}, dim0, dim0, o0, toConst(v0), p1, {}, dim1, o1, v1, comm,
+                          EWOp::Copy{}, co);
 
             return v1;
         }
@@ -1781,11 +1762,12 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void contraction(T alpha, const From_size<Nd0> &p0, const Order<Nd0> &o0, bool conj0,
+        void contraction(T alpha, const From_size<Nd0> &p0, const Coor<Nd0> &dim0,
+                         const Order<Nd0> &o0, bool conj0,
                          const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                         const From_size<Nd1> &p1, const Order<Nd1> &o1, bool conj1,
-                         const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1, T beta,
-                         const From_size<Ndo> &pr, const Order<Ndo> &o_r,
+                         const From_size<Nd1> &p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                         bool conj1, const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1, T beta,
+                         const From_size<Ndo> &pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
                          const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
 
             if (getDebugLevel() >= 1) {
@@ -1797,9 +1779,6 @@ namespace superbblas {
             tracker<Cpu> _t("distributed contraction", p0.ctx());
 
             // Check the compatibility of the tensors
-            Coor<Nd0> dim0 = get_dim<Nd0>(p0);
-            Coor<Nd1> dim1 = get_dim<Nd1>(p1);
-            Coor<Ndo> dimr = get_dim<Ndo>(pr);
             if (!check_dimensions<Nd0, Nd1, Ndo>(o0, dim0, o1, dim1, o_r, dimr))
                 throw std::runtime_error("some dimension does not match");
 
@@ -1822,7 +1801,8 @@ namespace superbblas {
 
             // Generate the partitioning and the storage for the output tensor
             unsigned int ncomponents = v0.first.size() + v0.second.size();
-            From_size<Ndo> pr_ = get_output_partition<Nd0, Nd1, Ndo>(p0, o0, p1, o1, sug_or);
+            From_size<Ndo> pr_ =
+                get_output_partition<Nd0, Nd1, Ndo>(p0, dim0, o0, p1, dim1, o1, sug_or).first;
             Components_tmpl<Ndo, const T, XPU0, XPU1> vr_;
             std::vector<vector<T, XPU0>> vr0(v0.first.size());
             for (unsigned int i = 0; i < v0.first.size(); ++i) {
@@ -1852,12 +1832,12 @@ namespace superbblas {
             }
 
             // Scale the output tensor by beta
-            copy<Ndo, Ndo, T>(beta, pr, {}, dimr, o_r, toConst(vr), pr, {}, o_r, vr, comm,
-                              EWOp::Copy{}, co);
+            copy<Ndo, Ndo, T>(beta, pr, {}, dimr, dimr, o_r, toConst(vr), pr, {}, dimr, o_r, vr,
+                              comm, EWOp::Copy{}, co);
 
             // Scale the output tensor by beta and reduce all the subtensors to the final tensor
-            copy<Ndo, Ndo, T>(1, pr_, {}, sug_dimr, sug_or, vr_, pr, {}, o_r, vr, comm, EWOp::Add{},
-                              co);
+            copy<Ndo, Ndo, T>(1, pr_, {}, sug_dimr, sug_dimr, sug_or, vr_, pr, {}, dimr, o_r, vr,
+                              comm, EWOp::Add{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -1934,19 +1914,20 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
-              const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const T **v0,
-              const MaskType **mask0, const Context *ctx0, const PartitionItem<Nd1> *p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> &from1, Q **v1,
-              const MaskType **mask1, const Context *ctx1, MPI_Comm mpicomm, CoorOrder co,
-              CopyAdd copyadd, Session session = 0) {
+              const char *o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+              const T **v0, const MaskType **mask0, const Context *ctx0,
+              const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
+              const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q **v1, const MaskType **mask1,
+              const Context *ctx1, MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd,
+              Session session = 0) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::copy<Nd0, Nd1>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
-            detail::toArray<Nd0>(o0, "o0"),
+            dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, mask0, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
             copyadd, co);
@@ -1975,19 +1956,19 @@ namespace superbblas {
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
-              const char *o0, const Coor<Nd0> from0, const Coor<Nd0> size0, const T **v0,
-              const MaskType **mask0, const Context *ctx0, const PartitionItem<Nd1> *p1,
-              int ncomponents1, const char *o1, const Coor<Nd1> from1, Q **v1,
-              const MaskType **mask1, const Context *ctx1, CoorOrder co, CopyAdd copyadd,
-              Session session = 0) {
+              const char *o0, const Coor<Nd0> from0, const Coor<Nd0> size0, const Coor<Nd0> dim0,
+              const T **v0, const MaskType **mask0, const Context *ctx0,
+              const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1, const Coor<Nd1> from1,
+              const Coor<Nd1> dim1, Q **v1, const MaskType **mask1, const Context *ctx1,
+              CoorOrder co, CopyAdd copyadd, Session session = 0) {
 
         detail::SelfComm comm = detail::get_comm();
 
         detail::copy<Nd0, Nd1>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
-            detail::toArray<Nd0>(o0, "o0"),
+            dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, mask0, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
             copyadd, co);
@@ -2020,10 +2001,11 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
               typename std::enable_if<detail::supported_type_for_contractions<T>::value,
                                       bool>::type = true>
-    void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
-                     bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
-                     int ncomponents1, const char *o1, bool conj1, const T **v1,
-                     const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
+    void contraction(T alpha, const PartitionItem<Nd0> *p0, const Coor<Nd0> &dim0, int ncomponents0,
+                     const char *o0, bool conj0, const T **v0, const Context *ctx0,
+                     const PartitionItem<Nd1> *p1, const Coor<Nd1> &dim1, int ncomponents1,
+                     const char *o1, bool conj1, const T **v1, const Context *ctx1, T beta,
+                     const PartitionItem<Ndo> *pr, const Coor<Ndo> &dimr, int ncomponentsr,
                      const char *o_r, T **vr, const Context *ctxr, MPI_Comm mpicomm, CoorOrder co,
                      Session session = 0) {
 
@@ -2034,11 +2016,11 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), dim0, o0_, conj0,
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), dim1, o1_, conj1,
             detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
+            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), dimr, o_r_,
             detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
             co);
     }
@@ -2046,10 +2028,11 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
               typename std::enable_if<!detail::supported_type_for_contractions<T>::value,
                                       bool>::type = true>
-    void contraction(T, const PartitionItem<Nd0> *, int, const char *, bool, const T **,
-                     const Context *, const PartitionItem<Nd1> *, int, const char *, bool,
-                     const T **, const Context *, T, const PartitionItem<Ndo> *, int,
-                     const char o_r, T **, const Context *, MPI_Comm, CoorOrder, Session = 0) {
+    void contraction(T, const PartitionItem<Nd0> *, const Coor<Nd0> &, int, const char *, bool,
+                     const T **, const Context *, const PartitionItem<Nd1> *, const Coor<Nd1> &,
+                     int, const char *, bool, const T **, const Context *, T,
+                     const PartitionItem<Ndo> *, const Coor<Ndo> &, int, const char o_r, T **,
+                     const Context *, MPI_Comm, CoorOrder, Session = 0) {
         throw std::runtime_error("contraction: unsupported type");
     }
 #endif // SUPERBBLAS_USE_MPI
@@ -2080,10 +2063,11 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
               typename std::enable_if<detail::supported_type_for_contractions<T>::value,
                                       bool>::type = true>
-    void contraction(T alpha, const PartitionItem<Nd0> *p0, int ncomponents0, const char *o0,
-                     bool conj0, const T **v0, const Context *ctx0, const PartitionItem<Nd1> *p1,
-                     int ncomponents1, const char *o1, bool conj1, const T **v1,
-                     const Context *ctx1, T beta, const PartitionItem<Ndo> *pr, int ncomponentsr,
+    void contraction(T alpha, const PartitionItem<Nd0> *p0, const Coor<Nd0> &dim0, int ncomponents0,
+                     const char *o0, bool conj0, const T **v0, const Context *ctx0,
+                     const PartitionItem<Nd1> *p1, const Coor<Nd1> &dim1, int ncomponents1,
+                     const char *o1, bool conj1, const T **v1, const Context *ctx1, T beta,
+                     const PartitionItem<Ndo> *pr, const Coor<Ndo> &dimr, int ncomponentsr,
                      const char *o_r, T **vr, const Context *ctxr, CoorOrder co,
                      Session session = 0) {
 
@@ -2094,11 +2078,11 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::contraction<Nd0, Nd1, Ndo>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), o0_, conj0,
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), dim0, o0_, conj0,
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), o1_, conj1,
+            detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), dim1, o1_, conj1,
             detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), o_r_,
+            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), dimr, o_r_,
             detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
             co);
     }
@@ -2106,10 +2090,11 @@ namespace superbblas {
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
               typename std::enable_if<!detail::supported_type_for_contractions<T>::value,
                                       bool>::type = true>
-    void contraction(T, const PartitionItem<Nd0> *, int, const char *, bool, const T **,
-                     const Context *, const PartitionItem<Nd1> *, int, const char *, bool,
-                     const T **, const Context *, T, const PartitionItem<Ndo> *, int,
-                     const char o_r, T **, const Context *, CoorOrder, Session = 0) {
+    void contraction(T, const PartitionItem<Nd0> *, const Coor<Nd0> &, int, const char *, bool,
+                     const T **, const Context *, const PartitionItem<Nd1> *, const Coor<Nd1> &,
+                     int, const char *, bool, const T **, const Context *, T,
+                     const PartitionItem<Ndo> *, const Coor<Ndo> &, int, const char o_r, T **,
+                     const Context *, CoorOrder, Session = 0) {
         throw std::runtime_error("contraction: unsupported type");
     }
 }

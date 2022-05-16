@@ -93,8 +93,8 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     IndexType *iiptr = ii_xpu.data();
     Coor<6> *jjptr = jj_xpu.data();
     T *dataptr = data_xpu.data();
-    create_bsr<6, 6, T>(pi.data(), pd.data(), 1, block, block, false, &iiptr, &jjptr,
-                        (const T **)&dataptr, &ctx,
+    create_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, 1, block, block, false, &iiptr,
+                        &jjptr, (const T **)&dataptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
@@ -155,9 +155,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
             for (int n = 0; n < dim[N]; ++n) {
                 Q *ptr0 = t0.data(), *ptr1 = t1.data();
                 bsr_krylov<Nd - 1, Nd - 1, Nd, Nd + 1, Q>(
-                    op, "xyztsc", "XYZTSC", p0.data(), 1, "XYZTSCn", (const Q **)&ptr0,
-                    is_cpu ? p1_rm.data() : p1_cm.data(), is_cpu ? "pxyztscn" : "pnxyztsc", 'p',
-                    &ptr1, &ctx,
+                    op, "xyztsc", "XYZTSC", p0.data(), dim0, 1, "XYZTSCn", (const Q **)&ptr0,
+                    is_cpu ? p1_rm.data() : p1_cm.data(), is_cpu ? dim1_rm : dim1_cm,
+                    is_cpu ? "pxyztscn" : "pnxyztsc", 'p', &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
 #endif

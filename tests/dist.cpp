@@ -155,8 +155,8 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data(), *ptr1 = t1.data();
-                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, nullptr,
-                         &ctx, p1.data(), 1, "tnsxyzc", from1, &ptr1, nullptr, &ctx,
+                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, dim0, (const Scalar **)&ptr0,
+                         nullptr, &ctx, p1.data(), 1, "tnsxyzc", from1, dim1, &ptr1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
@@ -223,8 +223,8 @@ int main(int argc, char **argv) {
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data();
                     ScalarD *ptr1 = t1d.data();
-                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, nullptr,
-                         &ctx, p1.data(), 1, "tnsxyzc", from1, &ptr1, nullptr, &ctx,
+                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, dim0, (const Scalar **)&ptr0,
+                         nullptr, &ctx, p1.data(), 1, "tnsxyzc", from1, dim1, &ptr1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #endif
@@ -246,8 +246,8 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data();
-                copy(1.0, p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, nullptr,
-                     &ctx, p1.data(), 1, "tnsxyzc", from1, &ptr1, nullptr, &ctx,
+                copy(1.0, p1.data(), 1, "tnsxyzc", from0, dim1, dim1, (const Scalar **)&ptr0,
+                     nullptr, &ctx, p1.data(), 1, "tnsxyzc", from1, dim1, &ptr1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
@@ -267,9 +267,10 @@ int main(int argc, char **argv) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data(), *ptr1 = t2.data(), *ptrc = tc.data();
-                contraction(Scalar{1.0}, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
-                            &ctx, p1.data(), 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
-                            Scalar{0.0}, pc.data(), 1, "tNSns", &ptrc, &ctx,
+                contraction(Scalar{1.0}, p1.data(), dim1, 1, "tnsxyzc", false,
+                            (const Scalar **)&ptr0, &ctx, p1.data(), dim1, 1, "tNSxyzc", false,
+                            (const Scalar **)&ptr1, &ctx, Scalar{0.0}, pc.data(), dimc, 1, "tNSns",
+                            &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif
@@ -340,8 +341,8 @@ int main(int argc, char **argv) {
                     const Coor<Nd - 1> from0 = {0};
                     const Coor<Nd> from1 = {0, n, 0};
                     Scalar *ptr0 = t0.data().get(), *ptr1 = t1.data().get();
-                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, (const Scalar **)&ptr0, nullptr,
-                         &ctx, p1.data(), 1, "tnsxyzc", from1, &ptr1, nullptr, &ctx,
+                    copy(1.0, p0.data(), 1, "xyztsc", from0, dim0, dim0, (const Scalar **)&ptr0,
+                         nullptr, &ctx, p1.data(), 1, "tnsxyzc", from1, dim1, &ptr1, nullptr, &ctx,
 #    ifdef SUPERBBLAS_USE_MPI
                          MPI_COMM_WORLD,
 #    endif
@@ -411,8 +412,8 @@ int main(int argc, char **argv) {
                 Coor<Nd> from1 = {0};
                 from1[4] = 1; // Displace one on the z-direction
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get();
-                copy(1.0, p1.data(), 1, "tnsxyzc", from0, dim1, (const Scalar **)&ptr0, nullptr,
-                     &ctx, p1.data(), 1, "tnsxyzc", from1, &ptr1, nullptr, &ctx,
+                copy(1.0, p1.data(), 1, "tnsxyzc", from0, dim1, dim1, (const Scalar **)&ptr0,
+                     nullptr, &ctx, p1.data(), 1, "tnsxyzc", from1, dim1, &ptr1, nullptr, &ctx,
 #    ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #    endif
@@ -433,9 +434,10 @@ int main(int argc, char **argv) {
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Scalar *ptr0 = t1.data().get(), *ptr1 = t2.data().get(), *ptrc = tc.data().get();
-                contraction(Scalar{1.0}, p1.data(), 1, "tnsxyzc", false, (const Scalar **)&ptr0,
-                            &ctx, p1.data(), 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
-                            Scalar{0.0}, pc.data(), 1, "tNSns", &ptrc, &ctx,
+                contraction(Scalar{1.0}, p1.data(), dim1, 1, "tnsxyzc", false,
+                            (const Scalar **)&ptr0, &ctx, p1.data(), 1, "tNSxyzc", false,
+                            (const Scalar **)&ptr1, &ctx, Scalar{0.0}, pc.data(), dimc, 1, "tNSns",
+                            &ptrc, &ctx,
 #    ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #    endif

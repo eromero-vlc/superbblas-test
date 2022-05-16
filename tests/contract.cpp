@@ -77,8 +77,8 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     PartitionStored<N0> p0_(nprocs, {Coor<N0>{}, dim0}); // tensor replicated partitioning
     T const *ptrv0_ = v0_.data();
     T *ptrv0 = v0.data();
-    copy(1.0, p0_.data(), 1, &o0[0], {}, dim0, (const T **)&ptrv0_, nullptr, &ctx, p0.data(), 1,
-         &o0[0], {}, &ptrv0, nullptr, &ctx,
+    copy(1.0, p0_.data(), 1, &o0[0], {}, dim0, dim0, (const T **)&ptrv0_, nullptr, &ctx, p0.data(),
+         1, &o0[0], {}, dim0, &ptrv0, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -91,8 +91,8 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     PartitionStored<N1> p1_(nprocs, {Coor<N1>{}, dim1}); // tensor replicated partitioning
     T const *ptrv1_ = v1_.data();
     T *ptrv1 = v1.data();
-    copy(1.0, p1_.data(), 1, &o1[0], {}, dim1, (const T **)&ptrv1_, nullptr, &ctx, p1.data(), 1,
-         &o1[0], {}, &ptrv1, nullptr, &ctx,
+    copy(1.0, p1_.data(), 1, &o1[0], {}, dim1, dim1, (const T **)&ptrv1_, nullptr, &ctx, p1.data(),
+         1, &o1[0], {}, dim1, &ptrv1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -106,8 +106,9 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
 
     // Contract the distributed matrices
 
-    contraction(T{1}, p0.data(), 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(), 1, &o1[0],
-                conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), 1, &o2[0], &ptrv2, &ctx,
+    contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(), dim1,
+                1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), dim2, 1, &o2[0],
+                &ptrv2, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                 MPI_COMM_WORLD,
 #endif
@@ -118,8 +119,8 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     pr[0][1] = dim2; // tensor only supported on proc 0
     std::vector<T> vr(detail::volume(pr[rank][1]));
     T *ptrvr = vr.data();
-    copy(1, p2.data(), 1, &o2[0], {}, dim2, (const T **)&ptrv2, nullptr, &ctx, pr.data(), 1, &o2[0],
-         {}, &ptrvr, nullptr, &ctx,
+    copy(1, p2.data(), 1, &o2[0], {}, dim2, dim2, (const T **)&ptrv2, nullptr, &ctx, pr.data(), 1,
+         &o2[0], {}, dim2, &ptrvr, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -135,9 +136,9 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
         fn = std::sqrt(fn);
         if (diff_fn > fn * 1e-4) {
             // NOTE: Put a breakpoint here to debug the cases producing wrong answers!
-            contraction(T{1}, p0.data(), 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(), 1,
-                        &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), 1, &o2[0], &ptrv2,
-                        &ctx,
+            contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx,
+                        p1.data(), dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0},
+                        p2.data(), dim2, 1, &o2[0], &ptrv2, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif

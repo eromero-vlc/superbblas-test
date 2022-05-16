@@ -184,7 +184,7 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
 
         template <std::size_t N>
-        From_size<N> get_dense_output_partition(From_size<N> p0, const Order<N> &o0,
+        From_size<N> get_dense_output_partition(From_size<N> p0, const Coor<N> &dim, const Order<N> &o0,
                                                 const Order<N> &o_r, unsigned int num_mat_dims,
                                                 CoorOrder co) {
             // Find partition on cache
@@ -196,7 +196,6 @@ namespace superbblas {
             if (it != cache.end()) return it->second.value;
 
             // Create partition
-            Coor<N> dim = get_dim<N>(p0);
             Coor<N> perm0 = find_permutation<N, N>(o0, o_r);
             Coor<N> dimr = reorder_coor<N, N>(dim, perm0, 1);
             From_size_out<N> pr(p0.size(), p0.ctx());
@@ -239,8 +238,8 @@ namespace superbblas {
         /// \param n: (out) the number of rows/columns
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
-        std::tuple<From_size<N>, Order<N>, Components_tmpl<N, T, XPU0, XPU1>, std::size_t>
-        prepare_for_cholesky(const From_size<N> &p, const Order<N> &o,
+        std::tuple<From_size<N>, Coor<N>, Order<N>, Components_tmpl<N, T, XPU0, XPU1>, std::size_t>
+        prepare_for_cholesky(const From_size<N> &p, const Coor<N> &dim, const Order<N> &o,
                              const Components_tmpl<N, T, XPU0, XPU1> &v, const char *orows,
                              const char *ocols, Comm comm, CoorOrder co, bool force_copy = false) {
 
@@ -270,7 +269,6 @@ namespace superbblas {
             Order<N> ow = concat<N>(orows_, ocols_, ot, co);
 
             // Check that number of rows and columns is the same
-            Coor<N> dim = get_dim<N>(p);
             Coor<N> perm0 = find_permutation<N, N>(o, ow);
             Coor<N> dimw = reorder_coor<N, N>(dim, perm0, 1);
             std::size_t n =
@@ -282,11 +280,11 @@ namespace superbblas {
             if (m != n) std::runtime_error("cholesky: the matrices to factorize should be square");
 
             // Generate the working partition
-            From_size<N> pw = get_dense_output_partition(p, o, ow, nrows + ncols, co);
+            From_size<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);
             Components_tmpl<N, T, XPU0, XPU1> vw =
-                reorder_tensor(p, o, v, pw, ow, comm, co, force_copy);
+                reorder_tensor(p, dim, o, v, pw, dimw, ow, comm, co, force_copy);
 
-            return {pw, ow, vw, n};
+            return {pw, dimw, ow, vw, n};
         }
 
         /// Compute the Cholesky factorization of several matrices
@@ -300,7 +298,7 @@ namespace superbblas {
         /// \param session: concurrent calls should have different session
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
-        void cholesky(const From_size<N> &p, const Order<N> &o,
+        void cholesky(const From_size<N> &p, const Coor<N> &dim, const Order<N> &o,
                       const Components_tmpl<N, T, XPU0, XPU1> &v, const char *orows,
                       const char *ocols, Comm comm, CoorOrder co) {
 
@@ -313,11 +311,12 @@ namespace superbblas {
             tracker<Cpu> _t("distributed cholesky", p.ctx());
 
             // Reorder the tensor so can be processed by cholesky
-            auto t = prepare_for_cholesky(p, o, v, orows, ocols, comm, co);
+            auto t = prepare_for_cholesky(p, dim, o, v, orows, ocols, comm, co);
             From_size<N> &pw = std::get<0>(t);
-            Order<N> &ow = std::get<1>(t);
-            Components_tmpl<N, T, XPU0, XPU1> &vw = std::get<2>(t);
-            std::size_t n = std::get<3>(t);
+            const Coor<N> &dimw = std::get<1>(t);
+            Order<N> &ow = std::get<2>(t);
+            Components_tmpl<N, T, XPU0, XPU1> &vw = std::get<3>(t);
+            std::size_t n = std::get<4>(t);
 
             // Do cholesky on the local pieces
             unsigned int ncomponents = vw.first.size() + vw.second.size();
@@ -335,8 +334,8 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            Coor<N> dimw = get_dim<N>(pw);
-            copy<N, N, T>(T{1}, pw, {}, dimw, ow, toConst(vw), p, {}, o, v, comm, EWOp::Copy{}, co);
+            copy<N, N, T>(T{1}, pw, {}, dimw, dimw, ow, toConst(vw), p, {}, dim, o, v, comm,
+                          EWOp::Copy{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -348,12 +347,12 @@ namespace superbblas {
 
         template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void trsm(T alpha, const From_size<Nc> &pc, const Order<Nc> &oc,
+        void trsm(T alpha, const From_size<Nc> &pc, const Coor<Nc> &dimc, const Order<Nc> &oc,
                   const Components_tmpl<Nc, T, XPU0, XPU1> &vc, const char *orows,
-                  const char *ocols, const From_size<Nx> &px, const Order<Nx> &ox,
-                  const Components_tmpl<Nx, T, XPU0, XPU1> &vx, const From_size<Ny> &py,
-                  const Order<Ny> &oy, const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm,
-                  CoorOrder co) {
+                  const char *ocols, const From_size<Nx> &px, const Coor<Nx> &dimx,
+                  const Order<Nx> &ox, const Components_tmpl<Nx, T, XPU0, XPU1> &vx,
+                  const From_size<Ny> &py, const Coor<Ny> &dimy, const Order<Ny> &oy,
+                  const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm, CoorOrder co) {
 
             if (getDebugLevel() >= 1) {
                 for (const auto &i : vc.first) sync(i.it.ctx());
@@ -366,9 +365,6 @@ namespace superbblas {
             tracker<Cpu> _t("distributed trsm", pc.ctx());
 
             // Check the compatibility of the tensors
-            Coor<Nc> dimc = get_dim(pc);
-            Coor<Nx> dimx = get_dim(px);
-            Coor<Ny> dimy = get_dim(py);
             if (!check_dimensions(oc, dimc, ox, dimx, oy, dimy))
                 throw std::runtime_error("some dimension does not match");
 
@@ -419,11 +415,12 @@ namespace superbblas {
             if (fail) throw std::runtime_error("trsm: missing labels to contract");
 
             // Reorder the tensor so can be processed by cholesky
-            auto t = prepare_for_cholesky(pc, oc, toNonConst(vc), orows, ocols, comm, co);
+            auto t = prepare_for_cholesky(pc, dimc, oc, toNonConst(vc), orows, ocols, comm, co);
             From_size<Nc> &pcw = std::get<0>(t);
-            Order<Nc> &ocw = std::get<1>(t);
-            Components_tmpl<Nc, T, XPU0, XPU1> &vcw = std::get<2>(t);
-            std::size_t r = std::get<3>(t); // number of rows/columns
+            Coor<Nc> &dimcw = std::get<1>(t);
+            Order<Nc> &ocw = std::get<2>(t);
+            Components_tmpl<Nc, T, XPU0, XPU1> &vcw = std::get<3>(t);
+            std::size_t r = std::get<4>(t); // number of rows/columns
 
             // Find the labels
 
@@ -446,9 +443,11 @@ namespace superbblas {
 
             // Generate the working tensors
 
-            From_size<Nx> pxw = get_output_partition(pcw, ocw, px, ox, oxw, false);
-            Components_tmpl<Nx, T, XPU0, XPU1> vxw =
-                reorder_tensor(px, ox, toNonConst(vx), pxw, oxw, comm, co, true /* Force copy */);
+            auto t_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw, false);
+            From_size<Nx> &pxw = t_.first;
+            const Coor<Nx> &dimxw = t_.second;
+            Components_tmpl<Nx, T, XPU0, XPU1> vxw = reorder_tensor(
+                px, dimx, ox, toNonConst(vx), pxw, dimxw, oxw, comm, co, true /* Force copy */);
             std::size_t x_num_mat_dims = contract_rows ? orows_.size() : ocols_.size();
             std::size_t y_num_mat_dims = contract_rows ? ocols_.size() : orows_.size();
             Coor<Ny> permy2yw = find_permutation(oy, oyw);
@@ -486,8 +485,8 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<Ny, Ny, T>(T{1}, pyw, {}, dimyw, oyw, toConst(vxw), py, {}, oy, vy, comm,
-                            EWOp::Copy{}, co);
+            copy<Ny, Ny, T>(T{1}, pyw, {}, dimyw, dimyw, oyw, toConst(vxw), py, {}, dimy, oy, vy,
+                            comm, EWOp::Copy{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -499,12 +498,12 @@ namespace superbblas {
 
         template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void gesm(T alpha, const From_size<Nc> &pc, const Order<Nc> &oc,
+        void gesm(T alpha, const From_size<Nc> &pc, const Coor<Nc> dimc, const Order<Nc> &oc,
                   const Components_tmpl<Nc, T, XPU0, XPU1> &vc, const char *orows,
-                  const char *ocols, const From_size<Nx> &px, const Order<Nx> &ox,
-                  const Components_tmpl<Nx, T, XPU0, XPU1> &vx, const From_size<Ny> &py,
-                  const Order<Ny> &oy, const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm,
-                  CoorOrder co) {
+                  const char *ocols, const From_size<Nx> &px, const Coor<Nx> &dimx,
+                  const Order<Nx> &ox, const Components_tmpl<Nx, T, XPU0, XPU1> &vx,
+                  const From_size<Ny> &py, const Coor<Ny> &dimy, const Order<Ny> &oy,
+                  const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm, CoorOrder co) {
 
             if (getDebugLevel() >= 1) {
                 for (const auto &i : vc.first) sync(i.it.ctx());
@@ -517,9 +516,6 @@ namespace superbblas {
             tracker<Cpu> _t("distributed gesm", pc.ctx());
 
             // Check the compatibility of the tensors
-            Coor<Nc> dimc = get_dim(pc);
-            Coor<Nx> dimx = get_dim(px);
-            Coor<Ny> dimy = get_dim(py);
             if (!check_dimensions(oc, dimc, ox, dimx, oy, dimy))
                 throw std::runtime_error("some dimension does not match");
 
@@ -575,12 +571,13 @@ namespace superbblas {
             if (fail) throw std::runtime_error("gesm: missing labels to contract");
 
             // Reorder the tensor so can be processed by cholesky
-            auto t = prepare_for_cholesky(pc, oc, toNonConst(vc), orows, ocols, comm, co,
+            auto t = prepare_for_cholesky(pc, dimc, oc, toNonConst(vc), orows, ocols, comm, co,
                                           true /* Force copy */);
             From_size<Nc> &pcw = std::get<0>(t);
-            Order<Nc> &ocw = std::get<1>(t);
-            Components_tmpl<Nc, T, XPU0, XPU1> &vcw = std::get<2>(t);
-            std::size_t r = std::get<3>(t); // number of rows/columns
+            Coor<Nc> &dimcw = std::get<1>(t);
+            Order<Nc> &ocw = std::get<2>(t);
+            Components_tmpl<Nc, T, XPU0, XPU1> &vcw = std::get<3>(t);
+            std::size_t r = std::get<4>(t); // number of rows/columns
 
             // Find the labels
 
@@ -601,9 +598,11 @@ namespace superbblas {
 
             // Generate the working tensors
 
-            From_size<Nx> pxw = get_output_partition(pcw, ocw, px, ox, oxw, false);
-            Components_tmpl<Nx, T, XPU0, XPU1> vxw =
-                reorder_tensor(px, ox, toNonConst(vx), pxw, oxw, comm, co, true /* Force copy */);
+            auto t_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw, false);
+            From_size<Nx> &pxw = t_.first;
+            const Coor<Nx> &dimxw = t_.second;
+            Components_tmpl<Nx, T, XPU0, XPU1> vxw = reorder_tensor(
+                px, dimx, ox, toNonConst(vx), pxw, dimxw, oxw, comm, co, true /* Force copy */);
             std::size_t x_num_mat_dims = contract_rows ? orows_.size() : ocols_.size();
             std::size_t y_num_mat_dims = contract_rows ? ocols_.size() : orows_.size();
             Coor<Ny> permy2yw = find_permutation(oy, oyw);
@@ -643,8 +642,8 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<Ny, Ny, T>(alpha, pyw, {}, dimyw, oyw, toConst(vxw), py, {}, oy, vy, comm,
-                            EWOp::Copy{}, co);
+            copy<Ny, Ny, T>(alpha, pyw, {}, dimyw, dimyw, oyw, toConst(vxw), py, {}, dimy, oy, vy,
+                            comm, EWOp::Copy{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -668,8 +667,8 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t N, typename T>
-    void cholesky(const PartitionItem<N> *p, int ncomponents, const char *o, T **v,
-                  const char *orows, const char *ocols, const Context *ctx, MPI_Comm mpicomm,
+    void cholesky(const PartitionItem<N> *p, const Coor<N> &dim, int ncomponents, const char *o,
+                  T **v, const char *orows, const char *ocols, const Context *ctx, MPI_Comm mpicomm,
                   CoorOrder co, Session session = 0) {
 
         Order<N> o_ = detail::toArray<N>(o, "o");
@@ -677,7 +676,7 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::cholesky<N>(
-            detail::get_from_size(p, ncomponents * comm.nprocs, session), o_,
+            detail::get_from_size(p, ncomponents * comm.nprocs, session), dim, o_,
             detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
             comm, co);
     }
@@ -703,10 +702,11 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void trsm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
-              const char *orows, const char *ocols, const Context *ctxc,
-              const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
-              const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
+    void trsm(T alpha, const PartitionItem<Nc> *pc, const Coor<Nc> &dimc, int ncomponentsc,
+              const char *oc, const T **vc, const char *orows, const char *ocols,
+              const Context *ctxc, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
+              int ncomponentsx, const char *ox, const T **vx, const Context *ctxx,
+              const PartitionItem<Ny> *py, const Coor<Ny> &dimy, int ncomponentsy, const char *oy,
               T **vy, const Context *ctxy, MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
 
         Order<Nc> oc_ = detail::toArray<Nc>(oc, "oc");
@@ -716,11 +716,11 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::trsm<Nc, Nx, Ny>(
-            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), dimc, oc_,
             detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
-            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
-            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
     }
@@ -746,10 +746,11 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void gesm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
-              const char *orows, const char *ocols, const Context *ctxc,
-              const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
-              const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
+    void gesm(T alpha, const PartitionItem<Nc> *pc, const Coor<Nc> &dimc, int ncomponentsc,
+              const char *oc, const T **vc, const char *orows, const char *ocols,
+              const Context *ctxc, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
+              int ncomponentsx, const char *ox, const T **vx, const Context *ctxx,
+              const PartitionItem<Ny> *py, const Coor<Ny> &dimy, int ncomponentsy, const char *oy,
               T **vy, const Context *ctxy, MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
 
         Order<Nc> oc_ = detail::toArray<Nc>(oc, "oc");
@@ -759,11 +760,11 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::gesm<Nc, Nx, Ny>(
-            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), dimc, oc_,
             detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
-            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
-            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
     }
@@ -781,8 +782,8 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t N, typename T>
-    void cholesky(const PartitionItem<N> *p, int ncomponents, const char *o, T **v,
-                  const char *orows, const char *ocols, const Context *ctx, CoorOrder co,
+    void cholesky(const PartitionItem<N> *p, const Coor<N> &dim, int ncomponents, const char *o,
+                  T **v, const char *orows, const char *ocols, const Context *ctx, CoorOrder co,
                   Session session = 0) {
 
         Order<N> o_ = detail::toArray<N>(o, "o");
@@ -790,7 +791,7 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::cholesky<N>(
-            detail::get_from_size(p, ncomponents * comm.nprocs, session), o_,
+            detail::get_from_size(p, ncomponents * comm.nprocs, session), dim, o_,
             detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
             comm, co);
     }
@@ -816,10 +817,11 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void trsm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
-              const char *orows, const char *ocols, const Context *ctxc,
-              const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
-              const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
+    void trsm(T alpha, const PartitionItem<Nc> *pc, const Coor<Nc> &dimc, int ncomponentsc,
+              const char *oc, const T **vc, const char *orows, const char *ocols,
+              const Context *ctxc, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
+              int ncomponentsx, const char *ox, const T **vx, const Context *ctxx,
+              const PartitionItem<Ny> *py, const Coor<Ny> &dimy, int ncomponentsy, const char *oy,
               T **vy, const Context *ctxy, CoorOrder co, Session session = 0) {
 
         Order<Nc> oc_ = detail::toArray<Nc>(oc, "oc");
@@ -829,11 +831,11 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::trsm<Nc, Nx, Ny>(
-            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), dimc, oc_,
             detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
-            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
-            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
             detail::get_components<Ny>(vy, ctxy, nullptr, ncomponentsx, py, comm, session), comm,
             co);
     }
@@ -859,10 +861,10 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void gesm(T alpha, const PartitionItem<Nc> *pc, int ncomponentsc, const char *oc, const T **vc,
+    void gesm(T alpha, const PartitionItem<Nc> *pc,const Coor<Nc>&dimc, int ncomponentsc, const char *oc, const T **vc,
               const char *orows, const char *ocols, const Context *ctxc,
-              const PartitionItem<Nx> *px, int ncomponentsx, const char *ox, const T **vx,
-              const Context *ctxx, const PartitionItem<Ny> *py, int ncomponentsy, const char *oy,
+              const PartitionItem<Nx> *px,const Coor<Nx>&dimx, int ncomponentsx, const char *ox, const T **vx,
+              const Context *ctxx, const PartitionItem<Ny> *py,const Coor<Ny>&dimy, int ncomponentsy, const char *oy,
               T **vy, const Context *ctxy, CoorOrder co, Session session = 0) {
 
         Order<Nc> oc_ = detail::toArray<Nc>(oc, "oc");
@@ -872,11 +874,11 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::gesm<Nc, Nx, Ny>(
-            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), oc_,
+            alpha, detail::get_from_size(pc, ncomponentsc * comm.nprocs, session), dimc, oc_,
             detail::get_components<Nc>((T **)vc, nullptr, ctxc, ncomponentsc, pc, comm, session),
-            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), ox_,
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
-            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), oy_,
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
     }

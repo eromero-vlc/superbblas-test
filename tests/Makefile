@@ -16,7 +16,7 @@ SB_LDFLAGS ?=
 
 include ../make.inc
 
-SOURCES := blas.cpp local.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp
+SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
@@ -63,7 +63,7 @@ clean:
 
 known_issues:
 	# MPI_Ialltoallv hungs
-	mpirun -np 4 ./dist_cpu --dim='2 1 1 2 1' --procs='2 1 1 2'
-	mpirun -np 6 ./dist_cpu  --procs='1 1 2 3' --dim='4 4 4 4 64'
+	SB_DEBUG=5 mpirun -np 4 ./dist_cpu --dim='2 1 1 2 1' --procs='2 1 1 2'
+	SB_DEBUG=5 mpirun -np 6 ./dist_cpu  --procs='1 1 2 3' --dim='4 4 4 4 64'
 
 .PHONY: clean ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS}
