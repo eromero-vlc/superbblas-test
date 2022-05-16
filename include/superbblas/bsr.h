@@ -734,6 +734,7 @@ namespace superbblas {
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
                                    dimx, ox, dimy, oy, okr, bsr.allowLayout, bsr.v.co, transSp, lx,
                                    ly, volC);
+            if (volume(dimx) == 0) return;
 
             // Get the number of powers
             int powers = 1;
@@ -753,6 +754,7 @@ namespace superbblas {
                                      dimy, vy, {}, EWOp::Copy{}, bsr.v.co);
 
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
+            if (vold == 0 || voli == 0) return;
             IndexType ldx = lx == ColumnMajor ? (!transSp ? vold : voli) : volC;
             IndexType ldy = ly == ColumnMajor ? (!transSp ? voli : vold) : volC;
 
