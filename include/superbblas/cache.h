@@ -238,7 +238,7 @@ namespace superbblas {
                         // Get maximum memory use for CPU cache
                         std::size_t cacheMaxSizeCpu = 0;
                         if (getMaxCacheGiBCpu() >= 0) {
-                            cacheMaxSizeCpu = std::size_t(getMaxCacheGiBCpu()) * 1024 * 1024 * 1024;
+                            cacheMaxSizeCpu = std::size_t(getMaxCacheGiBCpu() * 1024 * 1024 * 1024);
                         } else {
                             cacheMaxSizeCpu =
                                 std::size_t(sysconf(_SC_PAGESIZE)) * sysconf(_SC_PHYS_PAGES) / 10;
@@ -252,7 +252,7 @@ namespace superbblas {
                         // Get maximum memory use for GPU cache
                         std::size_t cacheMaxSizeGpu = 0;
                         if (getMaxCacheGiBGpu() >= 0) {
-                            cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu()) * 1024 * 1024 * 1024;
+                            cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu() * 1024 * 1024 * 1024);
                         } else {
                             std::size_t free = 0, total = 0;
 #    ifdef SUPERBBLAS_USE_CUDA

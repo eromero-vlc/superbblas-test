@@ -88,11 +88,11 @@ namespace superbblas {
     ///   * < 0: use the 10% of the total memory (default)
     ///   * >= 0: use that amount of GiB for cache
 
-    inline int getMaxCacheGiBCpu() {
-        static int size = []() {
+    inline double getMaxCacheGiBCpu() {
+        static double size = []() {
             const char *l = std::getenv("SB_CACHEGB_CPU");
-            if (l) return std::atoi(l);
-            return -1;
+            if (l) return std::atof(l);
+            return -1.0;
         }();
         return size;
     }
@@ -103,11 +103,11 @@ namespace superbblas {
     ///   * < 0: use the 10% of the total memory of the device (default)
     ///   * >= 0: use that amount of GiB for cache
 
-    inline int getMaxCacheGiBGpu() {
-        static int size = []() {
+    inline double getMaxCacheGiBGpu() {
+        static double size = []() {
             const char *l = std::getenv("SB_CACHEGB_GPU");
-            if (l) return std::atoi(l);
-            return -1;
+            if (l) return std::atof(l);
+            return -1.0;
         }();
         return size;
     }
