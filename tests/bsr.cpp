@@ -155,9 +155,10 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
             for (int n = 0; n < dim[N]; ++n) {
                 Q *ptr0 = t0.data(), *ptr1 = t1.data();
                 bsr_krylov<Nd - 1, Nd - 1, Nd, Nd + 1, Q>(
-                    op, "xyztsc", "XYZTSC", p0.data(), dim0, 1, "XYZTSCn", (const Q **)&ptr0,
-                    is_cpu ? p1_rm.data() : p1_cm.data(), is_cpu ? dim1_rm : dim1_cm,
-                    is_cpu ? "pxyztscn" : "pnxyztsc", 'p', &ptr1, &ctx,
+                    op, "xyztsc", "XYZTSC", p0.data(), 1, "XYZTSCn", {{}}, dim0, dim0,
+                    (const Q **)&ptr0, is_cpu ? p1_rm.data() : p1_cm.data(),
+                    is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
+                    is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
 #endif
