@@ -1941,13 +1941,14 @@ namespace superbblas {
     /// \param o0: dimension labels for the origin tensor
     /// \param from0: first coordinate to copy from the origin tensor
     /// \param size0: number of elements to copy in each dimension
+    /// \param dim0: dimension size for the origin tensor
     /// \param v0: vector of data pointers for the origin tensor
     /// \param data0: vector of mask pointers for the origin tensor
     /// \param ctx0: context for each data pointer in v0
     /// \param p1: partitioning of the destination tensor in consecutive ranges
     /// \param o1: dimension labels for the destination tensor
-    /// \param dim1: dimension size for the destination tensor
     /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+    /// \param dim1: dimension size for the destination tensor
     /// \param v1: vector of data pointers for the origin tensor
     /// \param mask1: vector of mask pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1

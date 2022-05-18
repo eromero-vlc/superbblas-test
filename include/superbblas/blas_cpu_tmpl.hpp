@@ -321,8 +321,8 @@ namespace superbblas {
             return linfo;
         }
 
-        inline int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work, BLASINT lwork,
-                   Cpu) {
+        inline int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work,
+                          BLASINT lwork, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0) return 0;
 
@@ -332,7 +332,7 @@ namespace superbblas {
         }
 
         inline int xgetrs(char trans, BLASINT n, BLASINT nrhs, SCALAR *a, BLASINT lda,
-                   std::int64_t *ipivot, SCALAR *b, BLASINT ldb, Cpu) {
+                          std::int64_t *ipivot, SCALAR *b, BLASINT ldb, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0 || nrhs == 0) return 0;
 

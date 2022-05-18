@@ -1949,8 +1949,8 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0, dim0,
-            detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
+            dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
     }

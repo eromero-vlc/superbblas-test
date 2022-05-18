@@ -56,16 +56,8 @@ namespace superbblas {
             return callStack[session];
         }
 
-        /// Return the current function call stack begin tracked
-        inline CallStack &getCallStack(Session session) {
-            static std::vector<CallStack> callStack(256, CallStack{});
-            return callStack[session];
-        }
-
         /// Push function call to be tracked
         inline void pushCall(std::string funcName, Session session) {
-            getCallStack(session).push_back(funcName);
-
             if (getCallStackWithPath(session).empty()) {
                 // If the stack is empty, just append the function name
                 getCallStackWithPath(session).push_back(funcName);
@@ -78,9 +70,8 @@ namespace superbblas {
 
         /// Pop function call from the stack
         inline std::string popCall(Session session) {
-            assert(getCallStack(session).size() > 0);
+            assert(getCallStackWithPath(session).size() > 0);
             std::string back = getCallStackWithPath(session).back();
-            getCallStack(session).pop_back();
             getCallStackWithPath(session).pop_back();
             return back;
         }
@@ -128,21 +119,15 @@ namespace superbblas {
                 double elapsedTime =
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
 
-                // Pop out this call
-                std::string category = popCall(session);
+                // Pop out this call and get a string representing the current call stack
+                std::string funcNameWithStack = popCall(session);
 
-                // If this function is not recursive, store the timings in the category with its name only
-                const auto &stack = getCallStack(session);
-                if (std::find(stack.begin(), stack.end(), funcName) == stack.end())
-                    getTimings(session)[funcName] += elapsedTime;
-
-                // If this is not the first function being tracked, store the timings in the
-                // category with its path name
-                if (category != funcName) getTimings(session)[category] += elapsedTime;
+                // Record the time
+                getTimings(session)[funcNameWithStack] += elapsedTime;
 
                 // Record memory not released
                 if (getTrackingMemory())
-                    getCacheUsage(session)[funcName] +=
+                    getCacheUsage(session)[funcNameWithStack] +=
                         getCpuMemUsed(session) - mem_cpu + getGpuMemUsed(session) - mem_gpu;
             }
 
@@ -210,8 +195,6 @@ namespace superbblas {
         struct Allocations : public std::unordered_map<void *, std::size_t> {
             Allocations(std::size_t num_backets)
                 : std::unordered_map<void *, std::size_t>{num_backets} {}
-            // Make sure of no usage of the instance after its destruction
-            ~Allocations() { getTrackingMemory() = false; }
         };
 
         /// Return all current allocations

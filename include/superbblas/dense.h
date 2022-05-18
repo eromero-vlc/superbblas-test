@@ -184,9 +184,9 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
 
         template <std::size_t N>
-        From_size<N> get_dense_output_partition(From_size<N> p0, const Coor<N> &dim, const Order<N> &o0,
-                                                const Order<N> &o_r, unsigned int num_mat_dims,
-                                                CoorOrder co) {
+        From_size<N> get_dense_output_partition(From_size<N> p0, const Coor<N> &dim,
+                                                const Order<N> &o0, const Order<N> &o_r,
+                                                unsigned int num_mat_dims, CoorOrder co) {
             // Find partition on cache
             using Key = std::tuple<From_size<N>, PairPerms<N, N>>;
             struct cache_tag {};
@@ -861,10 +861,11 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nc, std::size_t Nx, std::size_t Ny, typename T>
-    void gesm(T alpha, const PartitionItem<Nc> *pc,const Coor<Nc>&dimc, int ncomponentsc, const char *oc, const T **vc,
-              const char *orows, const char *ocols, const Context *ctxc,
-              const PartitionItem<Nx> *px,const Coor<Nx>&dimx, int ncomponentsx, const char *ox, const T **vx,
-              const Context *ctxx, const PartitionItem<Ny> *py,const Coor<Ny>&dimy, int ncomponentsy, const char *oy,
+    void gesm(T alpha, const PartitionItem<Nc> *pc, const Coor<Nc> &dimc, int ncomponentsc,
+              const char *oc, const T **vc, const char *orows, const char *ocols,
+              const Context *ctxc, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
+              int ncomponentsx, const char *ox, const T **vx, const Context *ctxx,
+              const PartitionItem<Ny> *py, const Coor<Ny> &dimy, int ncomponentsy, const char *oy,
               T **vy, const Context *ctxy, CoorOrder co, Session session = 0) {
 
         Order<Nc> oc_ = detail::toArray<Nc>(oc, "oc");
