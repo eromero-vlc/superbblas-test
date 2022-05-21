@@ -575,7 +575,7 @@ namespace superbblas {
 
         template <typename T> void zero_n(T *v, std::size_t n, Cpu) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < n; ++i) v[i] = T{0};
         }
@@ -589,7 +589,7 @@ namespace superbblas {
         template <typename IndexType, typename T>
         void zero_n(T *v, const IndexType *indices, std::size_t n, Cpu) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < n; ++i) v[indices[i]] = T{0};
         }
@@ -629,23 +629,23 @@ namespace superbblas {
             if (alpha == typename elem<T>::type{1}) {
                 if (std::is_same<T, Q>::value && (void *)v == (void *)w) return;
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
             } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] = T{0};
             } else {
                 if (std::is_same<T, Q>::value && (void *)v == (void *)w) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] *= alpha;
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[i];
                 }
@@ -660,14 +660,14 @@ namespace superbblas {
             assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
             if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
             } else if (std::norm(alpha) == 0) {
                 // Do nothing
             } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[i];
             }
@@ -684,17 +684,17 @@ namespace superbblas {
                 assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
                 } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] = T{0};
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[indices[i]];
                 }
@@ -712,14 +712,14 @@ namespace superbblas {
                 assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] += v[indices[i]];
                 } else if (alpha == typename elem<T>::type{1}) {
                     // Do nothing
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[indices[i]];
                 }
@@ -737,17 +737,17 @@ namespace superbblas {
                 assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
                 } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] = T{0};
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
                 }
@@ -765,14 +765,14 @@ namespace superbblas {
                 assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
                 } else if (std::norm(alpha) == 0) {
                     // Do nothing
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
                 }
@@ -791,17 +791,17 @@ namespace superbblas {
                 //assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
                 } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = T{0};
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
                 }
@@ -820,14 +820,14 @@ namespace superbblas {
                 assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
                 } else if (std::norm(alpha) == 0) {
                     // Do nothing
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
                 }
@@ -843,14 +843,14 @@ namespace superbblas {
             if (alpha == typename elem<T>::type{1}) {
                 if (indicesw) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < ndistinct - 1; ++i)
                         for (IndexType j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
                             w[indicesw[i]] += v[perm[j]];
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < ndistinct - 1; ++i)
                         for (IndexType j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
@@ -859,14 +859,14 @@ namespace superbblas {
             } else {
                 if (indicesw) {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < ndistinct - 1; ++i)
                         for (IndexType j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)
                             w[indicesw[i]] += alpha * v[perm[j]];
                 } else {
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < ndistinct - 1; ++i)
                         for (IndexType j = perm_distinct[i]; j < perm_distinct[i + 1]; ++j)

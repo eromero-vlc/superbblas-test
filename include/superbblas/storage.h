@@ -698,7 +698,7 @@ namespace superbblas {
 
             std::vector<checksum_t> block_checksums(num_blocks);
 #ifdef _OPENMP
-#    pragma omp parallel for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < num_blocks; ++i) {
                 std::size_t first_element = i * checksum_blocksize;

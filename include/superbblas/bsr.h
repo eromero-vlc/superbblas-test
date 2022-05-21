@@ -181,7 +181,7 @@ namespace superbblas {
                 const bool tb = !v.blockImFast;
                 const IndexType xs = lx == ColumnMajor ? 1 : ldx;
 #    ifdef _OPENMP
-#        pragma omp parallel for
+#        pragma omp parallel for schedule(static)
 #    endif
                 for (IndexType i = 0; i < block_rows; ++i) {
                     for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
@@ -435,7 +435,7 @@ namespace superbblas {
             std::size_t block_nnz = v.j.size();
             std::size_t bd = return_jj_blocked ? volume(v.blockd) : 1;
 #ifdef _OPENMP
-#    pragma omp parallel for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < block_nnz; ++i) {
                 jj[i] = coor2index<Nd>(vj[i], v.dimd, strided) / bd;
@@ -942,8 +942,8 @@ namespace superbblas {
                     vector<T, XPU1> vxi(volume(dimx), bsr.c.second[i].v.it.ctx());
                     vx0_.second.push_back(Component<Nx, T, XPU1>{vxi, dimx, componentId, {}});
                 }
-                copy<Nx, Nx, T>(T{1}, px, fromx, sizex, dimx, ox, vx, px_, {}, sizex, ox, vx0_, comm,
-                                EWOp::Copy{}, co);
+                copy<Nx, Nx, T>(T{1}, px, fromx, sizex, dimx, ox, vx, px_, {}, sizex, ox, vx0_,
+                                comm, EWOp::Copy{}, co);
                 vx_ = toConst(vx0_);
             } else {
                 vx_ = vx;

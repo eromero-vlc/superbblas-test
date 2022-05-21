@@ -537,7 +537,7 @@ namespace superbblas {
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
 #ifdef _OPENMP
-#    pragma omp parallel for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
@@ -592,7 +592,7 @@ namespace superbblas {
             Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
             Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
 #ifdef _OPENMP
-#    pragma omp parallel for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);

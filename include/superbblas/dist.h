@@ -1027,7 +1027,7 @@ namespace superbblas {
                     Coor<Nd> local_stride = get_strides(size, co);
                     Coor<Nd> stride = get_strides(dim, co);
 #ifdef _OPENMP
-#    pragma omp parallel for
+#    pragma omp parallel for schedule(static)
 #endif
                     for (std::size_t i = 0; i < vol; ++i)
                         r[i] = coor2index(
@@ -1132,7 +1132,7 @@ namespace superbblas {
                 vector<MaskType, Cpu> m_host = makeSure(v.mask_it, Cpu{});
 
 #ifdef _OPENMP
-#    pragma omp parallel for
+#    pragma omp parallel for schedule(static)
 #endif
                 for (std::size_t i = 0; i < vol; ++i) {
                     Coor<Nd1> c1 =

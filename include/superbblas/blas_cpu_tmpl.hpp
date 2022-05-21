@@ -280,7 +280,7 @@ namespace superbblas {
 #    else
             SCALAR r = (SCALAR)0.0;
 #        ifdef _OPENMP
-#            pragma omp for
+#            pragma omp parallel for schedule(static)
 #        endif
             for (int i = 0; i < n; i++) r += std::conj(x[i * incx]) * y[i * incy];
             return r;
@@ -290,7 +290,7 @@ namespace superbblas {
         inline void xscal(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, Cpu) {
             if (std::fabs(alpha) == SCALAR{0.0}) {
 #    ifdef _OPENMP
-#        pragma omp for
+#        pragma omp parallel for schedule(static)
 #    endif
                 for (BLASINT i = 0; i < n; ++i) x[i * incx] = SCALAR{0};
                 return;
@@ -398,7 +398,7 @@ namespace superbblas {
                                         int stridec, int batch_size, Cpu cpu) {
 
 #        ifdef _OPENMP
-#            pragma omp for
+#            pragma omp parallel for schedule(static)
 #        endif
             for (int i = 0; i < batch_size; ++i) {
                 xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i, ldb,

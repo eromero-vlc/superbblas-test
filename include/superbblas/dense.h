@@ -57,7 +57,7 @@ namespace superbblas {
                 int id = omp_get_thread_num();
 
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp for schedule(static)
 #endif
                 for (std::size_t i = 0; i < k; ++i)
                     if (info[id] == 0) info[id] = xpotrf('U', n, p + n * n * i, n, Cpu{});
@@ -95,7 +95,7 @@ namespace superbblas {
             T *xp = x.data();
 
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp parallel for schedule(static)
 #endif
             for (std::size_t i = 0; i < k; ++i)
                 xtrsm(left_side ? 'L' : 'R', 'U', 'N', 'N', left_side ? n : m, left_side ? m : n,
@@ -147,7 +147,7 @@ namespace superbblas {
                 int id = omp_get_thread_num();
                 BLASINT *ipiv = ipivs + n * id;
 #ifdef _OPENMP
-#    pragma omp for
+#    pragma omp for schedule(static)
 #endif
                 for (std::size_t i = 0; i < k; ++i) {
                     if (info[id] == 0) info[id] = xgetrf(n, n, ap + n * n * i, n, ipiv, Cpu{});
