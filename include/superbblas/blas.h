@@ -95,7 +95,8 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 /// Generate template instantiations for sum functions with template parameter T
 
 #    define DECL_SELECT_T(...)                                                                     \
-        EMIT REPLACE1(select, superbblas::detail::select<T>) REPLACE_T template __VA_ARGS__;
+        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>)                            \
+            REPLACE(T, superbblas::IndexType, SUPERBBLAS_REAL_TYPES) template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__
@@ -1402,7 +1403,7 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_THRUST
         // Return whether the element isn't zero
         template <typename T> struct not_zero : public thrust::unary_function<T, bool> {
-            __host__ __device__ bool operator()(const T &i) const { return i != 0; }
+            __host__ __device__ bool operator()(const T &i) const { return i != T{0}; }
         };
 #    endif
 

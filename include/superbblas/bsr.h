@@ -2,7 +2,6 @@
 #define __SUPERBBLAS_BSR__
 
 #include "dist.h"
-#include "superbblas/blas.h"
 #include <numeric>
 #include <stdexcept>
 
