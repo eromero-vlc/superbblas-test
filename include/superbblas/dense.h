@@ -433,13 +433,13 @@ namespace superbblas {
                 if (std::find(oc.begin(), oc.end(), c) == oc.end()) on.push_back(c);
 
             // Compute the ordering for tensors x and y
-            // If contracting rows, then C\X -> Y => (c,r,t) x (r,n,t) -> (c,n,t).
-            // Otherwise X/C -> Y => (n,c,t) x (c,r,t) -> (n,r,t)
+            // If contracting rows, then X/C -> Y => (n,r,t) x (r,c,t) -> (n,c,t).
+            // Otherwise C\X -> Y => (r,c,t) x (c,n,t) -> (r,n,t)
 
             Order<Nx> oxw =
-                contract_rows ? concat<Nx>(orows_, on, ot, co) : concat<Nx>(on, ocols_, ot, co);
+                contract_rows ? concat<Nx>(on, orows_, ot, co) : concat<Nx>(ocols_, on, ot, co);
             Order<Ny> oyw =
-                contract_rows ? concat<Ny>(ocols_, on, ot, co) : concat<Ny>(on, orows_, ot, co);
+                contract_rows ? concat<Ny>(on, ocols_, ot, co) : concat<Ny>(orows_, on, ot, co);
 
             // Generate the working tensors
 
@@ -592,11 +592,13 @@ namespace superbblas {
                 if (std::find(oc.begin(), oc.end(), c) == oc.end()) on.push_back(c);
 
             // Compute the ordering for tensors x and y
-            // If contracting rows, then C\X -> Y => (c,r,t) x (r,n,t) -> (c,n,t).
-            // Otherwise X/C -> Y => (n,c,t) x (c,r,t) -> (n,r,t)
+            // If contracting rows, then X/C -> Y => (n,r,t) x (r,c,t) -> (n,c,t).
+            // Otherwise C\X -> Y => (r,c,t) x (c,n,t) -> (r,n,t)
 
-            Order<Nx> oxw = concat<Nx>(on, ocols_, ot, co);
-            Order<Ny> oyw = concat<Ny>(on, orows_, ot, co);
+            Order<Nx> oxw =
+                contract_rows ? concat<Nx>(on, orows_, ot, co) : concat<Nx>(ocols_, on, ot, co);
+            Order<Ny> oyw =
+                contract_rows ? concat<Ny>(on, ocols_, ot, co) : concat<Ny>(orows_, on, ot, co);
 
             // Generate the working tensors
 
