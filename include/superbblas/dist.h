@@ -1423,14 +1423,10 @@ namespace superbblas {
                 intersection(from, size, p[i0][0], p[i0][1], dim, fromi0, sizei0);
                 if (volume(sizei0) == 0) continue;
 
-                for (unsigned int i1 = i0 + 1; i1 < nprocs; ++i1) {
-                    // Intersect the range with p[i1] range
-                    Coor<Nd> rfromi1, rsizei1;
-                    intersection(p[i1][0], p[i1][1], fromi0, sizei0, dim, rfromi1, rsizei1);
-
-                    // If it is not empty, report that an overlap exists
-                    if (volume(rsizei1) > 0) return true;
-                }
+                // Intersect the range with p[i1] range and return if an overlap exists
+                for (unsigned int i1 = i0 + 1; i1 < nprocs; ++i1)
+                    if (intersection(p[i1][0], p[i1][1], fromi0, sizei0, dim).size() > 0)
+                        return true;
             }
 
             return false;
