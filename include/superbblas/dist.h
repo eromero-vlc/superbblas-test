@@ -50,7 +50,6 @@ namespace superbblas {
         /// List of ranges
         template <std::size_t N> using From_size = vector<const From_size_item<N>, Cpu>;
         template <std::size_t N> using From_size_out = vector<From_size_item<N>, Cpu>;
-        template <std::size_t N> using From_size_vector = std::vector<From_size_item<N>>;
         /// From_size iterator
         template <std::size_t N> using From_size_iterator = const From_size_item<N> *;
 
@@ -65,25 +64,11 @@ namespace superbblas {
             static constexpr bool value = false;
         };
 
+        template <std::size_t N> using Proc_ranges = std::vector<From_size_out<N>>;
+
         //
         // Auxiliary functions
         //
-
-        /// Return the total volume in a partition
-        /// \param p: partitioning of the tensor in consecutive ranges
-
-        template <std::size_t N> std::size_t get_volume(From_size_iterator<N> p, std::size_t n) {
-            std::size_t r = 0;
-            for (std::size_t j = 0; j < n; j++) r += volume<N>(p[j][1]);
-            return r;
-        }
-
-        /// Return the total volume in a partition
-        /// \param p: partitioning of the tensor in consecutive ranges
-
-        template <std::size_t N> std::size_t get_volume(const From_size<N> &p) {
-            return get_volume<N>(p.begin(), p.size());
-        }
 
         /// Return the permutations associated to two order
 
@@ -334,8 +319,7 @@ namespace superbblas {
         /// \param comm: communicator
 
         template <std::size_t Nd, typename T>
-        PackedValues<T> prepare_pack(const From_size<Nd> *ranges, unsigned int nranges,
-                                     unsigned int ncomponents, MpiComm comm) {
+        PackedValues<T> prepare_pack(const std::vector<Proc_ranges<Nd>> &toSend, MpiComm comm) {
 
             // Allocate PackedValues
             static_assert(MpiTypeSize % sizeof(T) == 0,
@@ -344,6 +328,8 @@ namespace superbblas {
                               std::vector<MpiInt>(comm.nprocs)};
 
             // Prepare counts and displ
+            std::size_t nranges = toSend.size();
+            unsigned int ncomponents = 1;
             std::size_t n = 0; // accumulate total number of T elements
             int d = 0;         // accumulate total number of MpiT elements
             for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
@@ -351,11 +337,11 @@ namespace superbblas {
                 if (rank != comm.rank) { // Skip the communications of the local rank
                     // Compute the total number of T elements for rank i
                     for (unsigned int irange = 0; irange < nranges; ++irange) {
-                        assert(ranges[irange].size() == comm.nprocs * ncomponents);
+                        assert(toSend[irange].size() == comm.nprocs * ncomponents);
                         for (unsigned int componentId = 0; componentId < ncomponents;
                              ++componentId) {
-                            n_rank +=
-                                volume<Nd>(ranges[irange][rank * ncomponents + componentId][1]);
+                            for (const auto &fs : toSend[irange][rank * ncomponents + componentId])
+                                n_rank += volume<Nd>(fs[1]);
                         }
                     }
                 }
@@ -384,7 +370,7 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0>
-        void pack(const Order<Nd0> &o0, const From_size<Nd0> &fs, const Coor<Nd0> &dim0,
+        void pack(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, const Coor<Nd0> &dim0,
                   vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
                   typename Indices<Cpu>::iterator disp1, vector<Q, Cpu> &v1,
                   unsigned int ncomponents1, MpiComm comm, CoorOrder co) {
@@ -392,7 +378,7 @@ namespace superbblas {
             assert(fs.size() == comm.nprocs * ncomponents1);
 
             // Find indices on cache
-            using pointer_perm = std::tuple<From_size<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
+            using pointer_perm = std::tuple<Proc_ranges<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
             using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
             struct cache_tag {};
             auto cache =
@@ -407,45 +393,49 @@ namespace superbblas {
                 tracker<XPU0> _t("comp. pack permutation", v0.ctx());
 
                 // Get the maximum volume of communicated data without the local part
-                std::size_t vol =
-                    get_volume<Nd0>(fs) -
-                    get_volume<Nd0>(fs.begin() + comm.rank * ncomponents1, ncomponents1);
+                std::size_t vol = 0;
+                for (unsigned int i = 0; i < fs.size(); ++i)
+                    if (i / ncomponents1 != comm.rank)
+                        for (const auto &it : fs[i]) vol += volume(it[1]);
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-                Indices<Cpu> indices0{vol, fs.ctx()};
-                indices1 = Indices<Cpu>{vol, fs.ctx()};
+                Indices<Cpu> indices0{vol, Cpu{}};
+                indices1 = Indices<Cpu>{vol, Cpu{}};
                 Mask<Cpu> mask0_cpu = makeSure(mask0, Cpu{});
                 std::size_t n = 0;
                 for (std::size_t i = 0; i < fs.size(); ++i) {
                     // Skip the communications of the local rank
                     if (i / ncomponents1 == comm.rank) continue;
 
-                    // Compute the permutation so that the subtensors are packed on the natural
-                    // order on the destination; in other words, apply the permutation before
-                    // doing the MPI call
-                    Coor<Nd0> fromi = fs[i][0], sizei = fs[i][1];
-                    Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
-                    Indices<Cpu> indices0i = get_permutation_origin<Nd0, Nd1>(
-                        o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
-                    assert(indices0i.size() + n <= vol);
-                    Indices<Cpu> indices0i_mask = indices0i;
-                    if (mask0_cpu.size() > 0)
-                        indices0i_mask = select(indices0i, mask0_cpu.data(), indices0i);
-                    std::copy_n(indices0i_mask.begin(), indices0i_mask.size(),
-                                indices0.begin() + n);
+                    for (const auto &fsi : fs[i]) {
+                        // Compute the permutation so that the subtensors are packed on the natural
+                        // order on the destination; in other words, apply the permutation before
+                        // doing the MPI call
+                        Coor<Nd0> fromi = fsi[0], sizei = fsi[1];
+                        Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
+                        Indices<Cpu> indices0i = get_permutation_origin<Nd0, Nd1>(
+                            o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
+                        assert(indices0i.size() + n <= vol);
+                        Indices<Cpu> indices0i_mask = indices0i;
+                        if (mask0_cpu.size() > 0)
+                            indices0i_mask = select(indices0i, mask0_cpu.data(), indices0i);
+                        std::copy_n(indices0i_mask.begin(), indices0i_mask.size(),
+                                    indices0.begin() + n);
 
-                    Indices<Cpu> indices1i_mask = get_permutation_destination<Nd0, Nd1>(
-                        o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
-                    assert(indices0i.size() == indices1i_mask.size());
-                    if (mask0_cpu.size() > 0)
-                        indices1i_mask = select(indices0i, mask0_cpu.data(), indices1i_mask);
-                    IndexType dispi = disp1[i / ncomponents1];
-                    std::transform(indices1i_mask.begin(), indices1i_mask.end(),
-                                   indices1.begin() + n, [=](IndexType d) { return d + dispi; });
+                        Indices<Cpu> indices1i_mask = get_permutation_destination<Nd0, Nd1>(
+                            o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
+                        assert(indices0i.size() == indices1i_mask.size());
+                        if (mask0_cpu.size() > 0)
+                            indices1i_mask = select(indices0i, mask0_cpu.data(), indices1i_mask);
+                        IndexType dispi = disp1[i / ncomponents1];
+                        std::transform(indices1i_mask.begin(), indices1i_mask.end(),
+                                       indices1.begin() + n,
+                                       [=](IndexType d) { return d + dispi; });
 
-                    disp1[i / ncomponents1] += indices1i_mask.size();
-                    n += indices1i_mask.size();
-                    assert(n <= vol);
+                        disp1[i / ncomponents1] += indices1i_mask.size();
+                        n += indices1i_mask.size();
+                        assert(n <= vol);
+                    }
                 }
                 indices0.resize(n);
                 indices1.resize(n);
@@ -483,7 +473,7 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1>
-        PackedValues<Q> pack(const vector<From_size<Nd0>, Cpu> &toSend,
+        PackedValues<Q> pack(const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
                              MpiComm comm, CoorOrder co) {
@@ -491,7 +481,7 @@ namespace superbblas {
             tracker<Cpu> _t("prepare and pack", Cpu{});
 
             unsigned int ncomponents0 = toSend.size();
-            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend.data(), ncomponents0, 1, comm);
+            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend, comm);
 
             Indices<Cpu> buf_disp(comm.nprocs, Cpu{});
             for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
@@ -518,17 +508,15 @@ namespace superbblas {
 
         /// Vectors used in MPI communications
         template <typename T, typename XPU> struct UnpackedValues : public PackedValues<T> {
-            std::vector<Indices<XPU>> indices;   ///< indices of the destination elements
-            std::vector<IndexType> indices_disp; ///< constant added to all indices
-            UnpackedValues(vector<T, Cpu> buf, std::vector<MpiInt> counts,
-                           std::vector<MpiInt> displ, std::vector<Indices<XPU>> indices,
-                           std::vector<IndexType> indices_disp)
+            std::vector<std::vector<Indices<XPU>>> indices;   ///< indices of the destination elements
+            std::vector<std::vector<IndexType>> indices_disp; ///< constant added to all indices
+            UnpackedValues(vector<T, Cpu> buf, const std::vector<MpiInt> &counts,
+                           const std::vector<MpiInt> &displ,
+                           const std::vector<std::vector<Indices<XPU>>> &indices,
+                           const std::vector<std::vector<IndexType>> &indices_disp)
                 : PackedValues<T>{buf, counts, displ},
                   indices{indices},
                   indices_disp{indices_disp} {}
-
-            //UnpackedValues(const UnpackedValues &u)
-            //    : UnpackedValues{u.buf, u.counts, u.displ, u.indices, u.indices_disp} {}
         };
 
         /// Allocate buffers for the receiving tensor pieces from a MPI communication
@@ -540,18 +528,18 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd, typename T, typename XPU>
-        UnpackedValues<T, XPU> prepare_unpack(const From_size<Nd> &toReceive,
+        UnpackedValues<T, XPU> prepare_unpack(const Proc_ranges<Nd> &toReceive,
                                               const Component<Nd, T, XPU> &v, MpiComm comm,
                                               CoorOrder co) {
 
             tracker<XPU> _t("prepare unpack", v.it.ctx());
 
             UnpackedValues<T, XPU> r{
-                vector<T, Cpu>(),                            // buf
-                std::vector<MpiInt>(comm.nprocs, 0),         // counts
-                std::vector<MpiInt>(comm.nprocs, 0),         // displ
-                std::vector<Indices<XPU>>(toReceive.size()), // indices
-                std::vector<IndexType>(toReceive.size())     // indices_disp
+                vector<T, Cpu>(),                                         // buf
+                std::vector<MpiInt>(comm.nprocs, 0),                      // counts
+                std::vector<MpiInt>(comm.nprocs, 0),                      // displ
+                std::vector<std::vector<Indices<XPU>>>(toReceive.size()), // indices
+                std::vector<std::vector<IndexType>>(toReceive.size())     // indices_disp
             };
 
             // Compute the destination indices and the total number of elements received from each process
@@ -559,21 +547,23 @@ namespace superbblas {
             std::size_t ncomponents = toReceive.size() / comm.nprocs;
             for (std::size_t i = 0; i < toReceive.size(); ++i) {
                 if (i / ncomponents == comm.rank) continue;
-                Coor<Nd> fromi = toReceive[i][0], sizei = toReceive[i][1];
-                Indices<XPU> indices1;
-                IndexType disp;
-                get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
-                                                          v.it.ctx(), indices1, disp, co);
+                for (const auto &fsi : toReceive[i]) {
+                    Coor<Nd> fromi = fsi[0], sizei = fsi[1];
+                    Indices<XPU> indices1;
+                    IndexType disp;
+                    get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
+                                                              v.it.ctx(), indices1, disp, co);
 
-                // Apply the masks
-                if (v.mask_it.size() > 0)
-                    indices1 = select(indices1, v.mask_it.data() + disp, indices1);
+                    // Apply the masks
+                    if (v.mask_it.size() > 0)
+                        indices1 = select(indices1, v.mask_it.data() + disp, indices1);
 
-                // Store the number of permutation and the number of elements
-                r.counts[i / ncomponents] +=
-                    (indices1.size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
-                r.indices[i] = indices1;
-                r.indices_disp[i] = disp;
+                    // Store the number of permutation and the number of elements
+                    r.counts[i / ncomponents] +=
+                        (indices1.size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                    r.indices[i].push_back(indices1);
+                    r.indices_disp[i].push_back(disp);
+                }
             }
 
             // Compute the displacements
@@ -606,12 +596,15 @@ namespace superbblas {
             std::size_t ncomponents = r.indices.size() / comm.nprocs;
             for (std::size_t i = 0; i < r.indices.size(); ++i) {
                 if (i / ncomponents == comm.rank) continue;
-                const T *data = r.buf.data() + r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
-                copy_n<IndexType, T, T>(alpha, data, Cpu{}, r.indices[i].size(),
-                                        v.it.data() + r.indices_disp[i], r.indices[i].begin(),
-                                        v.it.ctx(), EWOP{});
-                r.displ[i / ncomponents] +=
-                    (r.indices[i].size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                for (unsigned int j = 0; j < r.indices[i].size(); j++) {
+                    const T *data =
+                        r.buf.data() + r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
+                    copy_n<IndexType, T, T>(alpha, data, Cpu{}, r.indices[i][j].size(),
+                                            v.it.data() + r.indices_disp[i][j],
+                                            r.indices[i][j].begin(), v.it.ctx(), EWOP{});
+                    r.displ[i / ncomponents] +=
+                        (r.indices[i][j].size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                }
             }
         }
 
@@ -629,13 +622,13 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename XPUr, typename EWOp>
-        Request send_receive(const Order<Nd0> &o0, const vector<From_size<Nd0>, Cpu> &toSend,
+        Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                             const Order<Nd1> &o1, From_size<Nd1> toReceive,
+                             const Order<Nd1> &o1, const Proc_ranges<Nd1>& toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
 
-            tracker<Cpu> _t("packing", toReceive.ctx());
+            tracker<Cpu> _t("packing", Cpu{});
 
             if (comm.nprocs <= 1) return [] {};
 
@@ -669,7 +662,7 @@ namespace superbblas {
                                          v1ToReceive->counts.data(), v1ToReceive->displ.data(),
                                          dtype, comm.comm, &r));
             } else {
-                tracker<Cpu> _t("alltoall", toReceive.ctx());
+                tracker<Cpu> _t("alltoall", Cpu{});
                 MPI_check(MPI_Alltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
                                         v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
                                         v1ToReceive->counts.data(), v1ToReceive->displ.data(),
@@ -714,9 +707,9 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename XPUr, typename EWOp>
-        Request send_receive(const Order<Nd0> &o0, const vector<From_size<Nd0>, Cpu> &toSend,
+        Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                             const Order<Nd1> &o1, From_size<Nd1> toReceive,
+                             const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              SelfComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
             (void)o0;
@@ -781,8 +774,8 @@ namespace superbblas {
 
         template <std::size_t Nd>
         std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>
-        intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
-                     const Coor<Nd> &size1, const Coor<Nd> &dim) {
+        intersection_aux(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
+                         const Coor<Nd> &size1, const Coor<Nd> &dim) {
 
             std::array<From_size_item<Nd>, 2> grid;
             Coor<Nd> grid_n{};
@@ -817,18 +810,6 @@ namespace superbblas {
                 }
             }
             return {grid, grid_n};
-
-            // std::size_t vol = volume(grid_n);
-            // From_size_vector<Nd> r(vol);
-            // Coor<Nd> strides = get_strides(grid_n, SlowToFast);
-            // for (std::size_t i = 0; i < vol; ++i) {
-            //     Coor<Nd> c = index2coor(i, grid_n, strides);
-            //     for (std::size_t j = 0; j < Nd; ++j) {
-            //         r[i][0][j] = grid[c[j]][0][j];
-            //         r[i][1][j] = grid[c[j]][1][j];
-            //     }
-            // }
-            //return r;
         }
 
         /// Return the intersection between two ranges in a periodic lattice
@@ -844,7 +825,7 @@ namespace superbblas {
         void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
                           const Coor<Nd> &size1, const Coor<Nd> &dim, Coor<Nd> &fromr,
                           Coor<Nd> &sizer) {
-            auto p = intersection<Nd>(from0, size0, from1, size1, dim);
+            auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
             std::size_t vol = volume(p.second);
             if (vol == 0) {
                 fromr = Coor<Nd>{};
@@ -855,6 +836,90 @@ namespace superbblas {
             } else {
                 throw std::runtime_error("Not supported complex overlap of intervals");
             }
+        }
+
+        /// Return all ranges resulting from intersecting the two given ranges in a periodic lattice
+        /// \param from0: first coordinate of the first range
+        /// \param size0: size of the first range
+        /// \param from1: first coordinate of the second range
+        /// \param size1: size of the second range
+        /// \param dim: size of lattice
+
+        template <std::size_t Nd>
+        From_size_out<Nd> intersection(const Coor<Nd> &from0, const Coor<Nd> &size0,
+                                       const Coor<Nd> &from1, const Coor<Nd> &size1,
+                                       const Coor<Nd> &dim) {
+            auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
+            std::size_t vol = volume(p.second);
+            if (vol == 0) {
+		return {};
+            } else if (vol == 1) {
+                From_size_out<Nd> r(1, Cpu{});
+                r[0] = p.first[0];
+                return r;
+            } else {
+                From_size_out<Nd> r(vol, Cpu{});
+                Coor<Nd> stride = get_strides<Nd>(p.second, FastToSlow);
+                for (std::size_t i = 0; i < vol; ++i) {
+                    Coor<Nd> c = index2coor<Nd>(i, p.second, stride);
+                    for (std::size_t j = 0; j < Nd; ++j) {
+                        r[i][0][j] = p.first[c[j]][0][j];
+                        r[i][1][j] = p.first[c[j]][1][j];
+                    }
+                }
+                return r;
+            }
+        }
+
+        /// Return all ranges resulting from intersecting the two given ranges in a periodic lattice
+        /// \param fs0: vector of first coordinate and size of the first range
+        /// \param from1: first coordinate of the second range
+        /// \param size1: size of the second range
+        /// \param dim: size of lattice
+
+        template <std::size_t Nd>
+        From_size_out<Nd> intersection(const From_size_out<Nd> &fs0, const Coor<Nd> &from1,
+                                       const Coor<Nd> &size1, const Coor<Nd> &dim) {
+            vector<std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>, Cpu> p(fs0.size(),
+                                                                                  Cpu{});
+            std::size_t vol = 0;
+            for (std::size_t i = 0; i < fs0.size(); ++i) {
+                p[i] = intersection_aux<Nd>(fs0[i][0], fs0[i][1], from1, size1, dim);
+                vol += volume(p[i].second);
+            }
+            From_size_out<Nd> r(vol, Cpu{});
+            std::size_t ri = 0;
+            for (std::size_t i = 0; i < fs0.size(); ++i) {
+                Coor<Nd> stride = get_strides<Nd>(p[i].second, FastToSlow);
+                for (std::size_t j = 0, j1 = volume(p[i].second); j < j1; ++j) {
+                    Coor<Nd> c = index2coor<Nd>(j, p[i].second, stride);
+                    for (std::size_t k = 0; k < Nd; ++k) {
+                        r[ri][0][k] = p[i].first[c[k]][0][k];
+                        r[ri][1][k] = p[i].first[c[k]][1][k];
+                    }
+                    ++ri;
+                }
+            }
+            return r;
+        }
+
+        /// Shift a list of ranges
+        /// \param fs0: vector of first coordinate and size of the ranges to translate
+        /// \param from0: origin coordinate on the origin lattice
+        /// \param dim0: dimensions of the origin lattice
+        /// \param from1: origin coordinate on the destination lattice
+        /// \param dim1: dimensions of the destination lattice
+        /// \param perm: permutation of the coordinates
+
+        template <std::size_t Nd>
+        From_size_out<Nd> shift_ranges(const From_size_out<Nd> &fs, const Coor<Nd> &from,
+                                       const Coor<Nd> &to, const Coor<Nd> &dim) {
+            From_size_out<Nd> r(fs.size(), Cpu{});
+            for (std::size_t i = 0; i < fs.size(); ++i) {
+                r[i][0] = normalize_coor(fs[i][0] - from + to, dim);
+                r[i][1] = fs[i][1];
+            }
+            return r;
         }
 
         /// Translate a range from one coordinate lattice to another
@@ -881,6 +946,25 @@ namespace superbblas {
             if (volume(sizer) == 0) sizer = Coor<Nd1>{};
         }
 
+        /// Translate a range from one coordinate lattice to another
+        /// \param fs0: vector of first coordinate and size of the ranges to translate
+        /// \param from0: origin coordinate on the origin lattice
+        /// \param dim0: dimensions of the origin lattice
+        /// \param from1: origin coordinate on the destination lattice
+        /// \param dim1: dimensions of the destination lattice
+        /// \param perm: permutation of the coordinates
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        From_size_out<Nd1> translate_range(const From_size_out<Nd0> &fs0, const Coor<Nd0> &from0,
+                                           const Coor<Nd0> &dim0, const Coor<Nd1> &from1,
+                                           const Coor<Nd1> &dim1, const Coor<Nd1> perm) {
+            From_size_out<Nd1> r(fs0.size(), Cpu{});
+            for (std::size_t i = 0; i < fs0.size(); ++i)
+                translate_range<Nd0, Nd1>(fs0[i][0], fs0[i][1], from0, dim0, from1, dim1, perm,
+                                          r[i][0], r[i][1]);
+            return r;
+        }
+
         /// Return a permutation that transform an o0 coordinate into an o1 coordinate
         /// \param o0: dimension labels for the origin tensor
         /// \param dim0: dimension size for the origin tensor
@@ -894,7 +978,7 @@ namespace superbblas {
         /// \param cpu: device context
 
         template <std::size_t Nd0, std::size_t Nd1>
-        From_size<Nd0>
+        Proc_ranges<Nd0>
         get_indices_to_send(From_size<Nd0> p0, unsigned int from_rank, const Order<Nd0> &o0,
                             const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                             From_size<Nd1> p1, unsigned int componentId1, unsigned int ncomponents1,
@@ -908,27 +992,24 @@ namespace superbblas {
             // Restrict the local range in v0 to the range from0, size0
             Coor<Nd0> local_from0 = p0[from_rank][0];
             Coor<Nd0> local_size0 = p0[from_rank][1];
-            Coor<Nd0> rlocal_from0, rlocal_size0;
-            intersection<Nd0>(from0, size0, local_from0, local_size0, dim0, rlocal_from0,
-                              rlocal_size0);
+            From_size_out<Nd0> rlocal0 = intersection(from0, size0, local_from0, local_size0, dim0);
 
             // Translate the restricted range to the destination lattice
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> rfrom1, rsize1;
-            translate_range(rlocal_from0, rlocal_size0, from0, dim0, from1, dim1, perm0, rfrom1,
-                            rsize1);
+            From_size_out<Nd1> rfs1 =
+                translate_range<Nd0, Nd1>(rlocal0, from0, dim0, from1, dim1, perm0);
 
             // Compute the indices
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             unsigned int nprocs = p1.size() / ncomponents1;
-            From_size_out<Nd0> r(nprocs, p0.ctx());
+            Proc_ranges<Nd0> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd1> &local_from1 = p1[i * ncomponents1 + componentId1][0];
                 const Coor<Nd1> &local_size1 = p1[i * ncomponents1 + componentId1][1];
-                Coor<Nd1> fromi, sizei;
-                intersection<Nd1>(rfrom1, rsize1, local_from1, local_size1, dim1, fromi, sizei);
-                translate_range(fromi, sizei, from1, dim1, from0, dim0, perm1, r[i][0], r[i][1]);
-                r[i][0] = normalize_coor(r[i][0] - local_from0, dim0);
+                r[i] = shift_ranges(
+                    translate_range(intersection<Nd1>(rfs1, local_from1, local_size1, dim1), from1,
+                                    dim1, from0, dim0, perm1),
+                    local_from0, {}, dim0);
             }
 
             return r;
@@ -947,11 +1028,11 @@ namespace superbblas {
         /// \param cpu: device context
 
         template <std::size_t Nd0, std::size_t Nd1>
-        From_size<Nd1> get_indices_to_receive(const From_size<Nd0> &p0, const Order<Nd0> &o0,
-                                              const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                                              const Coor<Nd0> &dim0, const From_size<Nd1> &p1,
-                                              unsigned int to_rank, const Order<Nd1> &o1,
-                                              const Coor<Nd1> &from1, const Coor<Nd1> &dim1) {
+        Proc_ranges<Nd1> get_indices_to_receive(const From_size<Nd0> &p0, const Order<Nd0> &o0,
+                                                const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                                                const Coor<Nd0> &dim0, const From_size<Nd1> &p1,
+                                                unsigned int to_rank, const Order<Nd1> &o1,
+                                                const Coor<Nd1> &from1, const Coor<Nd1> &dim1) {
 
             tracker<Cpu> _t("comp. tensor overlaps", p0.ctx());
 
@@ -963,26 +1044,23 @@ namespace superbblas {
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
             Coor<Nd1> local_from1 = p1[to_rank][0];
             Coor<Nd1> local_size1 = p1[to_rank][1];
-            Coor<Nd1> rlocal_from1, rlocal_size1;
-            intersection<Nd1>(from1, size1, local_from1, local_size1, dim1, rlocal_from1,
-                              rlocal_size1);
+            From_size_out<Nd1> rlocal1 =
+                intersection<Nd1>(from1, size1, local_from1, local_size1, dim1);
 
             // Translate the restricted range to the origin lattice
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            Coor<Nd0> rfrom0, rsize0;
-            translate_range(rlocal_from1, rlocal_size1, from1, dim1, from0, dim0, perm1, rfrom0,
-                            rsize0);
+            From_size_out<Nd0> rfs0 = translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
 
             // Compute the indices
             unsigned int nprocs = p0.size();
-            From_size_out<Nd1> r(nprocs, p0.ctx());
+            Proc_ranges<Nd1> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd0> &local_from0 = p0[i][0];
                 const Coor<Nd0> &local_size0 = p0[i][1];
-                Coor<Nd0> fromi, sizei;
-                intersection<Nd0>(rfrom0, rsize0, local_from0, local_size0, dim0, fromi, sizei);
-                translate_range(fromi, sizei, from0, dim0, from1, dim1, perm0, r[i][0], r[i][1]);
-                r[i][0] = normalize_coor(r[i][0] - local_from1, dim1);
+                r[i] = shift_ranges(
+                    translate_range(intersection<Nd0>(rfs0, local_from0, local_size0, dim0), from0,
+                                    dim0, from1, dim1, perm0),
+                    local_from1, {}, dim1);
             }
 
             return r;
@@ -1438,8 +1516,8 @@ namespace superbblas {
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>, Coor<Nd1>,
                                    PairPerms<Nd0, Nd1>, int, int>;
             struct Value {
-                vector<From_size<Nd0>, Cpu> toSend;
-                From_size<Nd1> toReceive;
+                std::vector<Proc_ranges<Nd0>> toSend;
+                Proc_ranges<Nd1> toReceive;
                 bool need_comms;
             };
             struct cache_tag {};
@@ -1452,11 +1530,11 @@ namespace superbblas {
 
             // Generate the list of subranges to send from each component from v0 to v1
             unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            vector<From_size<Nd0>, Cpu> toSend;
-            From_size<Nd1> toReceive;
+            std::vector<Proc_ranges<Nd0>> toSend;
+            Proc_ranges<Nd1> toReceive;
             bool need_comms;
             if (it == cache.end()) {
-                toSend = vector<From_size<Nd0>, Cpu>(ncomponents0, p0.ctx());
+                toSend = std::vector<Proc_ranges<Nd0>>(ncomponents0);
                 for (unsigned int i = 0; i < v0.first.size(); ++i) {
                     toSend[v0.first[i].componentId] = get_indices_to_send<Nd0, Nd1>(
                         p0, comm.rank * ncomponents0 + v0.first[i].componentId, o0, from0, size0,
@@ -1495,28 +1573,48 @@ namespace superbblas {
             Request local_req = [=] {
                 unsigned int ncomponents0 = v0.first.size() + v0.second.size();
                 for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
-                    assert(check_equivalence(
-                        o0, toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        o1, toReceive[c0.componentId + comm.rank * ncomponents0][1]));
-                    local_copy<Nd0, Nd1, T, Q>(
-                        alpha, o0,
-                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
-                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        c0.dim, c0.it, c0.mask_it, o1,
-                        toReceive[c0.componentId + comm.rank * ncomponents0][0], v1.dim, v1.it,
-                        v1.mask_it, ewop, co);
+                    assert(
+                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1].size() ==
+                        toReceive[c0.componentId + comm.rank * ncomponents0].size());
+                    for (unsigned int
+                             i = 0,
+                             i1 = toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1]
+                                      .size();
+                         i < i1; ++i) {
+                        assert(check_equivalence(
+                            o0,
+                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
+                            o1, toReceive[c0.componentId + comm.rank * ncomponents0][i][1]));
+                        local_copy<Nd0, Nd1, T, Q>(
+                            alpha, o0,
+                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][0],
+                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
+                            c0.dim, c0.it, c0.mask_it, o1,
+                            toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim, v1.it,
+                            v1.mask_it, ewop, co);
+                    }
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
-                    assert(check_equivalence(
-                        o0, toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        o1, toReceive[c0.componentId + comm.rank * ncomponents0][1]));
-                    local_copy<Nd0, Nd1, T, Q>(
-                        alpha, o0,
-                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][0],
-                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][1],
-                        c0.dim, c0.it, c0.mask_it, o1,
-                        toReceive[c0.componentId + comm.rank * ncomponents0][0], v1.dim, v1.it,
-                        v1.mask_it, ewop, co);
+                    assert(
+                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1].size() ==
+                        toReceive[c0.componentId + comm.rank * ncomponents0].size());
+                    for (unsigned int
+                             i = 0,
+                             i1 = toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1]
+                                      .size();
+                         i < i1; ++i) {
+                        assert(check_equivalence(
+                            o0,
+                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
+                            o1, toReceive[c0.componentId + comm.rank * ncomponents0][i][1]));
+                        local_copy<Nd0, Nd1, T, Q>(
+                            alpha, o0,
+                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][0],
+                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
+                            c0.dim, c0.it, c0.mask_it, o1,
+                            toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim, v1.it,
+                            v1.mask_it, ewop, co);
+                    }
                 }
             };
 

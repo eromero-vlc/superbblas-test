@@ -796,6 +796,16 @@ namespace superbblas {
             }
         };
 
+        /// Extend Hash for std::vector<T>
+
+        template <typename T> struct Hash<std::vector<T>> {
+            static std::size_t hash(std::vector<T> const &t) noexcept {
+                std::size_t r = 12345;
+                for (std::size_t i = 0; i < t.size(); ++i) r = r ^ Hash<T>::hash(t[i]);
+                return r;
+            }
+        };
+
         template <class Tuple, std::size_t N> struct TupleHashHelp {
             static std::size_t hash(Tuple const &t) noexcept {
                 return Hash<typename std::tuple_element<N, Tuple>::type>::hash(std::get<N>(t)) ^
