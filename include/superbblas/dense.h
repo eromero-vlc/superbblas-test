@@ -475,7 +475,7 @@ namespace superbblas {
                 std::size_t ki = volume(pcw[pi][1]) / r / r;
                 if (ki == 0) continue;
                 std::size_t ni = volume(pxw[pi][1]) / r / ki; // rows/columns of x and y
-                local_trsm(contract_rows, r, ki, ni, alpha, vcw.first[i].it, vxw.first[i].it);
+                local_trsm(!contract_rows, r, ki, ni, alpha, vcw.first[i].it, vxw.first[i].it);
             }
             for (unsigned int i = 0; i < vcw.second.size(); ++i) {
                 const unsigned int componentId = vcw.second[i].componentId;
@@ -483,7 +483,7 @@ namespace superbblas {
                 std::size_t ki = volume(pcw[pi][1]) / r / r;
                 if (ki == 0) continue;
                 std::size_t ni = volume(pxw[pi][1]) / r / ki; // rows/columns of x and y
-                local_trsm(contract_rows, r, ki, ni, alpha, vcw.second[i].it, vxw.second[i].it);
+                local_trsm(!contract_rows, r, ki, ni, alpha, vcw.second[i].it, vxw.second[i].it);
             }
 
             // Copy the working tensor into the given tensor
