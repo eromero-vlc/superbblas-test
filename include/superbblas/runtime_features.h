@@ -67,6 +67,21 @@ namespace superbblas {
         return track_time;
     }
 
+    /// Return whether to sync before taking timings, which may have been set by the environment variable SB_TRACK_TIME_SYNC
+    /// \return bool: whether to sync before taking the time that critical functions take
+    /// The accepted value in the environment variable SB_TRACK_TIME_SYNC are:
+    ///   * 0: no synchronization (default)
+    ///   * != 0: do synchronization
+
+    inline bool &getTrackingTimeSync() {
+        static bool track_time_sync = []() {
+            const char *l = std::getenv("SB_TRACK_TIME_SYNC");
+            if (l) return (0 != std::atoi(l));
+            return false;
+        }();
+        return track_time_sync;
+    }
+
     /// Return whether to use asynchronous MPI_Alltoall in `copy`, which may have been set by the environment variable SB_ASYNC_ALLTOALL
     /// \return bool: whether to use the asynchronous version of MPI_Alltoall
     /// The accepted value in the environment variable SB_ASYNC_ALLTOALL are:

@@ -93,8 +93,8 @@ namespace superbblas {
             const double mem_cpu, mem_gpu;
             /// Instant of the construction
             const std::chrono::time_point<std::chrono::system_clock> start;
-            /// Session
-            const Session session;
+            /// Context
+            const XPU xpu;
 
             /// Start a tracker
             tracker(std::string funcName, XPU xpu)
@@ -104,8 +104,8 @@ namespace superbblas {
                   mem_gpu(getTrackingMemory() ? getGpuMemUsed(xpu.session) : 0),
                   start(!stopped ? std::chrono::system_clock::now()
                                  : std::chrono::time_point<std::chrono::system_clock>{}),
-                  session(xpu.session) {
-                if (!stopped) pushCall(funcName, session); // NOTE: well this is timed...
+                  xpu(xpu) {
+                if (!stopped) pushCall(funcName, xpu.session); // NOTE: well this is timed...
             }
 
             ~tracker() { stop(); }
@@ -115,20 +115,23 @@ namespace superbblas {
                 if (stopped) return;
                 stopped = true;
 
+		// Enforce a synchronization
+                if (getTrackingTimeSync()) sync(xpu);
+
                 // Count elapsed time since the creation of the object
                 double elapsedTime =
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
 
                 // Pop out this call and get a string representing the current call stack
-                std::string funcNameWithStack = popCall(session);
+                std::string funcNameWithStack = popCall(xpu.session);
 
                 // Record the time
-                getTimings(session)[funcNameWithStack] += elapsedTime;
+                getTimings(xpu.session)[funcNameWithStack] += elapsedTime;
 
                 // Record memory not released
                 if (getTrackingMemory())
-                    getCacheUsage(session)[funcNameWithStack] +=
-                        getCpuMemUsed(session) - mem_cpu + getGpuMemUsed(session) - mem_gpu;
+                    getCacheUsage(xpu.session)[funcNameWithStack] +=
+                        getCpuMemUsed(xpu.session) - mem_cpu + getGpuMemUsed(xpu.session) - mem_gpu;
             }
 
             // Forbid copy constructor and assignment operator
