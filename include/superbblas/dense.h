@@ -188,10 +188,10 @@ namespace superbblas {
                                                 const Order<N> &o0, const Order<N> &o_r,
                                                 unsigned int num_mat_dims, CoorOrder co) {
             // Find partition on cache
-            using Key = std::tuple<From_size<N>, PairPerms<N, N>>;
+            using Key = std::tuple<From_size<N>, Coor<N>, PairPerms<N, N>, unsigned int>;
             struct cache_tag {};
             auto cache = getCache<Key, From_size<N>, TupleHash<Key>, cache_tag>(p0.ctx());
-            Key key{p0, get_perms(o0, o_r)};
+            Key key{p0, dim, get_perms(o0, o_r), num_mat_dims};
             auto it = cache.find(key);
             if (it != cache.end()) return it->second.value;
 
@@ -443,28 +443,14 @@ namespace superbblas {
 
             // Generate the working tensors
 
-            auto t_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw, false);
-            From_size<Nx> &pxw = t_.first;
-            const Coor<Nx> &dimxw = t_.second;
+            auto tx_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw);
+            From_size<Nx> &pxw = tx_.first;
+            const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw = reorder_tensor(
                 px, dimx, ox, toNonConst(vx), pxw, dimxw, oxw, comm, co, true /* Force copy */);
-            std::size_t x_num_mat_dims = contract_rows ? orows_.size() : ocols_.size();
-            std::size_t y_num_mat_dims = contract_rows ? ocols_.size() : orows_.size();
-            Coor<Ny> permy2yw = find_permutation(oy, oyw);
-            Coor<Ny> dimyw = reorder_coor(dimy, permy2yw);
-            From_size_out<Ny> pyw(pxw.size(), Cpu{});
-            From_size_item<Ny> fsy{Coor<Ny>{{}}, dimyw};
-            for (std::size_t i = 0; i < pxw.size(); ++i) pyw[i] = fsy;
-            if (co == FastToSlow) {
-                for (std::size_t i = 0; i < pxw.size(); ++i)
-                    for (std::size_t j = 0; j < 2; ++j)
-                        std::copy_n(pxw[i][j].begin() + x_num_mat_dims, Nx - x_num_mat_dims,
-                                    pyw[i][j].begin() + y_num_mat_dims);
-            } else {
-                for (std::size_t i = 0; i < pxw.size(); ++i)
-                    for (std::size_t j = 0; j < 2; ++j)
-                        std::copy_n(pxw[i][j].begin(), Nx - x_num_mat_dims, pyw[i][j].begin());
-            }
+            auto ty_ = get_output_partition(pcw, dimcw, ocw, py, dimy, oy, oyw);
+            From_size<Ny> &pyw = ty_.first;
+            const Coor<Ny> &dimyw = ty_.second;
 
             // Do the contraction of the local pieces
 
@@ -602,28 +588,14 @@ namespace superbblas {
 
             // Generate the working tensors
 
-            auto t_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw, false);
-            From_size<Nx> &pxw = t_.first;
-            const Coor<Nx> &dimxw = t_.second;
+            auto tx_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw);
+            From_size<Nx> &pxw = tx_.first;
+            const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw = reorder_tensor(
                 px, dimx, ox, toNonConst(vx), pxw, dimxw, oxw, comm, co, true /* Force copy */);
-            std::size_t x_num_mat_dims = contract_rows ? orows_.size() : ocols_.size();
-            std::size_t y_num_mat_dims = contract_rows ? ocols_.size() : orows_.size();
-            Coor<Ny> permy2yw = find_permutation(oy, oyw);
-            Coor<Ny> dimyw = reorder_coor(dimy, permy2yw);
-            From_size_out<Ny> pyw(pxw.size(), Cpu{});
-            From_size_item<Ny> fsy{Coor<Ny>{{}}, dimyw};
-            for (std::size_t i = 0; i < pxw.size(); ++i) pyw[i] = fsy;
-            if (co == FastToSlow) {
-                for (std::size_t i = 0; i < pxw.size(); ++i)
-                    for (std::size_t j = 0; j < 2; ++j)
-                        std::copy_n(pxw[i][j].begin() + x_num_mat_dims, Nx - x_num_mat_dims,
-                                    pyw[i][j].begin() + y_num_mat_dims);
-            } else {
-                for (std::size_t i = 0; i < pxw.size(); ++i)
-                    for (std::size_t j = 0; j < 2; ++j)
-                        std::copy_n(pxw[i][j].begin(), Nx - x_num_mat_dims, pyw[i][j].begin());
-            }
+            auto ty_ = get_output_partition(pcw, dimcw, ocw, py, dimy, oy, oyw);
+            From_size<Ny> &pyw = ty_.first;
+            const Coor<Ny> &dimyw = ty_.second;
 
             // Do the contraction of the local pieces
 
