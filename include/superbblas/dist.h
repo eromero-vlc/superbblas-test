@@ -378,12 +378,12 @@ namespace superbblas {
             assert(fs.size() == comm.nprocs * ncomponents1);
 
             // Find indices on cache
-            using pointer_perm = std::tuple<Proc_ranges<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
+            using Key =
+                std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
             using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
             struct cache_tag {};
-            auto cache =
-                getCache<pointer_perm, PairIndices, TupleHash<pointer_perm>, cache_tag>(v0.ctx());
-            pointer_perm key{fs, get_perms(o0, o1), deviceId(v0.ctx()), co};
+            auto cache = getCache<Key, PairIndices, TupleHash<Key>, cache_tag>(v0.ctx());
+            Key key{fs, dim0, get_perms(o0, o1), deviceId(v0.ctx()), co};
             auto it = mask0.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
@@ -1509,8 +1509,8 @@ namespace superbblas {
                      CoorOrder co) {
 
             // Find precomputed pieces on cache
-            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>, Coor<Nd1>,
-                                   PairPerms<Nd0, Nd1>, int, int>;
+            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
+                                   Coor<Nd1>, Coor<Nd1>, PairPerms<Nd0, Nd1>, int, int>;
             struct Value {
                 std::vector<Proc_ranges<Nd0>> toSend;
                 Proc_ranges<Nd1> toReceive;
@@ -1519,8 +1519,9 @@ namespace superbblas {
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(p0.ctx());
             Key key{p0,           from0,
-                    size0,        p1,
-                    from1,        get_perms(o0, o1),
+                    size0,        dim0,
+                    p1,           from1,
+                    dim1,         get_perms(o0, o1),
                     ncomponents1, std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
             auto it = cache.find(key);
 
@@ -1696,13 +1697,13 @@ namespace superbblas {
             assert(p0.size() == p1.size());
 
             // Find partition on cache
-            using Key = std::tuple<From_size<Nd0>, From_size<Nd1>, PairPerms<Nd0, Nd1>,
-                                   PairPerms<Nd0, Ndo>, PairPerms<Nd1, Ndo>>;
+            using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, From_size<Nd1>, Coor<Nd1>,
+                                   PairPerms<Nd0, Nd1>, PairPerms<Nd0, Ndo>, PairPerms<Nd1, Ndo>>;
             struct cache_tag {};
             auto cache =
                 getCache<Key, std::pair<From_size<Ndo>, Coor<Ndo>>, TupleHash<Key>, cache_tag>(
                     p0.ctx());
-            Key key{p0, p1, get_perms(o0, o1), get_perms(o0, o_r), get_perms(o1, o_r)};
+            Key key{p0, dim0, p1, dim1, get_perms(o0, o1), get_perms(o0, o_r), get_perms(o1, o_r)};
             auto it = cache.find(key);
             if (it != cache.end()) return it->second.value;
 
