@@ -109,6 +109,7 @@ namespace superbblas {
             std::shared_ptr<sparse_matrix_t> A; ///< MKL BSR descriptor
 
             static const SpMMAllowedLayout allowLayout = SameLayoutForXAndY;
+            static const MatrixLayout preferredLayout = RowMajor;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -137,13 +138,12 @@ namespace superbblas {
                     SPARSE_LAYOUT_ROW_MAJOR, 100, 1000));
             }
 
-            void operator()(bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
-                T one{1.0};
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
                 checkMKLSparse(mkl_sparse_mm(
                     !conjA ? SPARSE_OPERATION_NON_TRANSPOSE : SPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                    one, *A,
+                    alpha, *A,
                     (struct matrix_descr){.type = SPARSE_MATRIX_TYPE_GENERAL,
                                           .mode = SPARSE_FILL_MODE_LOWER /* Not used */,
                                           .diag = SPARSE_DIAG_NON_UNIT},
@@ -160,6 +160,7 @@ namespace superbblas {
             vector<IndexType, Cpu> ii, jj;  ///< BSR row and column nonzero indices
 
             static const SpMMAllowedLayout allowLayout = AnyLayoutForXAndY;
+            static const MatrixLayout preferredLayout = RowMajor;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -168,7 +169,7 @@ namespace superbblas {
                 jj = bsr.j;
             }
 
-            void operator()(bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 if (conjA) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
@@ -185,12 +186,12 @@ namespace superbblas {
                 for (IndexType i = 0; i < block_rows; ++i) {
                     for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
                         if (ly == ColumnMajor)
-                            xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, T{1},
-                                  nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, T{1}, y + i * bi,
+                            xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
+                                  nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, beta, y + i * bi,
                                   ldy, Cpu{});
                         else
-                            xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, T{1},
-                                  x + jj[j] * xs, ldx, nonzeros + j * bi * bd, bi, T{1},
+                            xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
+                                  x + jj[j] * xs, ldx, nonzeros + j * bi * bd, bi, beta,
                                   y + i * bi * ldy, ldy, Cpu{});
                     }
                 }
@@ -211,6 +212,7 @@ namespace superbblas {
 #    endif
 
             static const SpMMAllowedLayout allowLayout = ColumnMajorForY;
+            static const MatrixLayout preferredLayout = ColumnMajor;
 
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -230,7 +232,7 @@ namespace superbblas {
 #    endif
             }
 
-            void operator()(bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 if (ly == RowMajor)
                     throw std::runtime_error(
@@ -239,7 +241,6 @@ namespace superbblas {
                 IndexType block_cols = volume(v.dimd) / block_size;
                 IndexType block_rows = volume(v.dimi) / block_size;
                 IndexType num_blocks = jj.size();
-                T one{1};
 #    ifdef SUPERBBLAS_USE_CUDA
                 cusparseCheck(cusparseXbsrmm(
                     ii.ctx().cusparseHandle,
@@ -248,8 +249,8 @@ namespace superbblas {
                            : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                     lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                       : CUSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols, num_blocks, one, descrA, v.it.data(), ii.data(),
-                    jj.data(), block_size, x, ldx, beta, y, ldy));
+                    block_rows, ncols, block_cols, num_blocks, alpha, descrA, v.it.data(),
+                    ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
 #    else
                 hipsparseCheck(hipsparseXbsrmm(
                     ii.ctx().hipsparseHandle,
@@ -258,8 +259,8 @@ namespace superbblas {
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                     lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                                       : HIPSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols, num_blocks, one, descrA, v.it.data(), ii.data(),
-                    jj.data(), block_size, x, ldx, beta, y, ldy));
+                    block_rows, ncols, block_cols, num_blocks, alpha, descrA, v.it.data(),
+                    ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
 #    endif
             }
 
@@ -411,6 +412,17 @@ namespace superbblas {
             return r;
         }
 
+        template <std::size_t N, typename T, std::size_t Na, std::size_t Nb, std::size_t Nc>
+        std::array<T, N> concat(const std::array<T, Na> &a, std::size_t na,
+                                const std::array<T, Nb> &b, std::size_t nb,
+                                const std::array<T, Nc> &c, std::size_t nc) {
+            std::array<T, N> r;
+            std::copy_n(a.begin(), na, r.begin());
+            std::copy_n(b.begin(), nb, r.begin() + na);
+            std::copy_n(c.begin(), nc, r.begin() + na + nb);
+            return r;
+        }
+
         //
         // Auxiliary functions
         //
@@ -472,15 +484,20 @@ namespace superbblas {
                                     const Order<Nd> &od, const Coor<Ni> &blocki,
                                     const Coor<Nd> &blockd, const Coor<Nx> &dimx,
                                     const Order<Nx> &ox, const Coor<Ny> &dimy, const Order<Ny> &oy,
-                                    char okr, SpMMAllowedLayout xylayout, CoorOrder co,
-                                    bool &transSp, MatrixLayout &lx, MatrixLayout &ly,
-                                    std::size_t &volC) {
+                                    char okr, SpMMAllowedLayout xylayout,
+                                    MatrixLayout preferred_layout, CoorOrder co, bool &transSp,
+                                    MatrixLayout &lx, MatrixLayout &ly, std::size_t &volC,
+                                    Order<Nx> &sug_ox, Order<Ny> &sug_oy) {
 
             if (co == FastToSlow) {
+                Order<Nx> sug_ox0;
+                Order<Ny> sug_oy0;
                 local_bsr_krylov_check(reverse(dimi), reverse(dimd), reverse(oi), reverse(od),
                                        reverse(blocki), reverse(blockd), reverse(dimx), reverse(ox),
-                                       reverse(dimy), reverse(oy), okr, xylayout, SlowToFast,
-                                       transSp, lx, ly, volC);
+                                       reverse(dimy), reverse(oy), okr, xylayout, preferred_layout,
+                                       SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0);
+                sug_ox = reverse(sug_ox0);
+                sug_oy = reverse(sug_oy0);
                 return;
             }
 
@@ -650,22 +667,36 @@ namespace superbblas {
                 auto sdx = std::search(ox.begin(), ox.end(), ods.begin(), ods.begin() + nds);
                 if ((nC > 0 && sCx == ox.end()) || (nDs > 0 && sDx == ox.end()) ||
                     (nds > 0 && sdx == ox.end()) || (nDs > 0 && nds > 0 && sDx > sdx) ||
-                    (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx))
-                    throw std::runtime_error(
-                        "Unsupported dimensions order for the dense input tensor");
-                lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx))) ? ColumnMajor
-                                                                                       : RowMajor;
+                    (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx)) {
+                    lx = preferred_layout;
+                    sug_ox = (lx == ColumnMajor ? concat<Nx>(oC, nC, oDs, nDs, ods, nds)
+                                                : concat<Nx>(oDs, nDs, ods, nds, oC, nC));
+                } else {
+                    lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
+                             ? ColumnMajor
+                             : RowMajor;
+                    sug_ox = ox;
+                }
 
                 auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
                 auto sIy = std::search(oy.begin(), oy.end(), oIs.begin(), oIs.begin() + nIs);
                 auto siy = std::search(oy.begin(), oy.end(), ois.begin(), ois.begin() + nis);
-                if ((nC > 0 && sCy == oy.end()) || (nIs > 0 && sIy == oy.end()) ||
-                    (nis > 0 && siy == oy.end()) || (nIs > 0 && nis > 0 && sIy > siy) ||
-                    (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy))
-                    throw std::runtime_error(
-                        "Unsupported dimensions order for the dense input tensor");
                 ly = (nC == 0 || ((nIs == 0 || sCy < sIy) && (nds == 0 || sCy < siy))) ? ColumnMajor
                                                                                        : RowMajor;
+                if ((nC > 0 && sCy == oy.end()) || (nIs > 0 && sIy == oy.end()) ||
+                    (nis > 0 && siy == oy.end()) || (nIs > 0 && nis > 0 && sIy > siy) ||
+                    (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
+                    (lx != ly && xylayout == SameLayoutForXAndY) ||
+                    (ly == RowMajor && xylayout == ColumnMajorForY)) {
+                    ly = (xylayout == SameLayoutForXAndY
+                              ? lx
+                              : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
+                    sug_oy = (ly == ColumnMajor ? concat<Ny>(oC, nC, oIs, nIs, ois, nis)
+                                                : concat<Ny>(oIs, nIs, ois, nis, oC, nC));
+                } else {
+                    sug_oy = oy;
+                }
+
                 transSp = false;
             } else {
                 auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
@@ -673,30 +704,38 @@ namespace superbblas {
                 auto six = std::search(ox.begin(), ox.end(), ois.begin(), ois.begin() + nis);
                 if ((nC > 0 && sCx == ox.end()) || (nIs > 0 && sIx == ox.end()) ||
                     (nis > 0 && six == ox.end()) || (nIs > 0 && nis > 0 && sIx > six) ||
-                    (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six))
-                    throw std::runtime_error(
-                        "Unsupported dimensions order for the dense input tensor");
-                lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six))) ? ColumnMajor
-                                                                                       : RowMajor;
+                    (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six)) {
+                    lx = preferred_layout;
+                    sug_ox = (lx == ColumnMajor ? concat<Nx>(oC, nC, oIs, nIs, ois, nis)
+                                                : concat<Nx>(oIs, nIs, ois, nis, oC, nC));
+                } else {
+                    lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
+                             ? ColumnMajor
+                             : RowMajor;
+                    sug_ox = ox;
+                }
 
                 auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
                 auto sDy = std::search(oy.begin(), oy.end(), oDs.begin(), oDs.begin() + nDs);
                 auto sdy = std::search(oy.begin(), oy.end(), ods.begin(), ods.begin() + nds);
-                if ((nC > 0 && sCy == oy.end()) || (nDs > 0 && sDy == oy.end()) ||
-                    (nds > 0 && sdy == oy.end()) || (nDs > 0 && nds > 0 && sDy > sdy) ||
-                    (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy))
-                    throw std::runtime_error(
-                        "Unsupported dimensions order for the dense input tensor");
                 ly = (nC == 0 || ((nDs == 0 || sCy < sDy) && (nds == 0 || sCy < sdy))) ? ColumnMajor
                                                                                        : RowMajor;
+                if ((nC > 0 && sCy == oy.end()) || (nDs > 0 && sDy == oy.end()) ||
+                    (nds > 0 && sdy == oy.end()) || (nDs > 0 && nds > 0 && sDy > sdy) ||
+                    (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
+                    (lx != ly && xylayout == SameLayoutForXAndY) ||
+                    (ly == RowMajor && xylayout == ColumnMajorForY)) {
+
+                } else {
+                    ly = (xylayout == SameLayoutForXAndY
+                              ? lx
+                              : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
+                    sug_oy = (ly == ColumnMajor ? concat<Ny>(oC, nC, oDs, nDs, ods, nds)
+                                                : concat<Ny>(oDs, nDs, ods, nds, oC, nC));
+                }
+
                 transSp = true;
             }
-
-            if (lx != ly && xylayout == SameLayoutForXAndY)
-                throw std::runtime_error(
-                    "Unsupported layout for the dense input and output tensors");
-            if (ly == RowMajor && xylayout == ColumnMajorForY)
-                throw std::runtime_error("Unsupported layout for the output tensor");
         }
 
         /// RSB operator - tensor multiplication
@@ -718,11 +757,11 @@ namespace superbblas {
         /// \param copyadd: either copy or add the multiplication result into the output tensor y
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
-                  typename XPU, typename EWOP>
-        void local_bsr_krylov(const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
+                  typename XPU>
+        void local_bsr_krylov(T alpha, const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
                               const Order<Nd> &odm, const Coor<Nx> &dimx, const Order<Nx> &ox,
                               vector<const T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
-                              char okr, vector<T, XPU> vy, EWOP) {
+                              char okr, vector<T, XPU> vy) {
 
             tracker<XPU> _t("local BSR matvec", vx.ctx());
 
@@ -730,10 +769,15 @@ namespace superbblas {
             bool transSp;
             MatrixLayout lx, ly;
             std::size_t volC;
+            Order<Nx> sug_ox;
+            Order<Ny> sug_oy;
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   dimx, ox, dimy, oy, okr, bsr.allowLayout, bsr.v.co, transSp, lx,
-                                   ly, volC);
+                                   dimx, ox, dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout,
+                                   bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy);
             if (volume(dimx) == 0) return;
+            if (sug_ox != ox || sug_oy != oy)
+                throw std::runtime_error(
+                    "Unsupported layout for the input and output dense tensors");
 
             // Get the number of powers
             int powers = 1;
@@ -758,12 +802,12 @@ namespace superbblas {
             IndexType ldy = ly == ColumnMajor ? (!transSp ? voli : vold) : volC;
 
             // Do first power
-            bsr(transSp, vx.data(), ldx, lx, vy.data(), ldy, ly, volC);
+            bsr(alpha, transSp, vx.data(), ldx, lx, vy.data(), ldy, ly, volC);
             if (powers <= 1) return;
 
             // Do remaining powers
             for (int p = 1; p < powers; ++p)
-                bsr(transSp, vy.data() + vold * volC * (p - 1), ldy, ly,
+                bsr(alpha, transSp, vy.data() + vold * volC * (p - 1), ldy, ly,
                     vy.data() + vold * volC * p, ldy, ly, volC);
         }
 
@@ -810,9 +854,7 @@ namespace superbblas {
         /// Get the partitions for the dense input and output tensors
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
         /// \param o0: dimension labels for the first operator
-        /// \param fromx: first coordinate to operate from the origin tensor
         /// \param sizex: number of elements to operate in each dimension
-        /// \param dimx: dimension size for the origin tensor
         /// \param p1: partitioning of the second origin tensor in consecutive ranges
         /// \param o1: dimension labels for the second operator
         /// \param o_r: dimension labels for the output operator
@@ -821,20 +863,28 @@ namespace superbblas {
         std::pair<From_size<Nx>, From_size<Ny>>
         get_output_partition(From_size<Nd> pd, const Order<Nd> &od, From_size<Ni> pi,
                              const Order<Ni> &oi, From_size<Nx> px, const Order<Nx> &ox,
-                             const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
-                             const Order<Ny> &oy, char okr, int power) {
+                             const Order<Nx> &sug_ox, const Coor<Nx> &sizex, const Order<Ny> &oy,
+                             const Order<Ny> &sug_oy, char okr, int power) {
             assert(pd.size() == pi.size() && pi.size() == px.size());
 
             // Find partition on cache
             Order<Nd + Ni> om = concat(od, oi);
-            using Key =
-                std::tuple<From_size<Nd>, From_size<Ni>, From_size<Nx>, Coor<Nx>,
-                           PairPerms<Nd + Ni, Nx>, PairPerms<Nx, Ny>, PairPerms<Nd + Ni, Ny>>;
+            using Key = std::tuple<From_size<Nd>, From_size<Ni>, From_size<Nx>, Coor<Nx>,
+                                   PairPerms<Nd + Ni, Nx>, PairPerms<Nx, Ny>,
+                                   PairPerms<Nd + Ni, Ny>, PairPerms<Nx, Nx>, PairPerms<Ny, Ny>>;
             struct cache_tag {};
             auto cache =
                 getCache<Key, std::pair<From_size<Nx>, From_size<Ny>>, TupleHash<Key>, cache_tag>(
                     pd.ctx());
-            Key key{pd, pi, px, sizex, get_perms(om, ox), get_perms(ox, oy), get_perms(om, oy)};
+            Key key{pd,
+                    pi,
+                    px,
+                    sizex,
+                    get_perms(om, ox),
+                    get_perms(ox, oy),
+                    get_perms(om, oy),
+                    get_perms(ox, sug_ox),
+                    get_perms(oy, sug_oy)};
             auto it = cache.find(key);
             if (it != cache.end()) return it->second.value;
 
@@ -851,10 +901,12 @@ namespace superbblas {
             From_size_out<Nx> pxr(px.size(), px.ctx());
             From_size_out<Ny> pyr(px.size(), px.ctx());
             for (unsigned int i = 0; i < px.size(); ++i) {
-                pxr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, ox, false);
-                pxr[i][1] = get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, ox, false);
-                pyr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, oy, false);
-                pyr[i][1] = get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, oy, false);
+                pxr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_ox, false);
+                pxr[i][1] =
+                    get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_ox, false);
+                pyr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_oy, false);
+                pyr[i][1] =
+                    get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_oy, false);
                 if (okr != 0) {
                     pyr[i][0][power_pos] = 0;
                     pyr[i][1][power_pos] = power;
@@ -880,17 +932,27 @@ namespace superbblas {
         /// \param copyadd: either copy or add the multiplication result into the output tensor y
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
-                  typename Comm, typename XPU0, typename XPU1, typename EWOP>
-        void bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, const Order<Ni> &oim,
-                        const Order<Nd> &odm, const From_size<Nx> &px, const Order<Nx> &ox,
-                        const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
-                        const Components_tmpl<Nx, const T, XPU0, XPU1> &vx, const From_size<Ny> &py,
-                        const Order<Ny> &oy, const Coor<Ny> &fromy, const Coor<Ny> &sizey,
-                        const Coor<Ny> &dimy, char okr,
-                        const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm, EWOP,
-                        CoorOrder co) {
+                  typename Comm, typename XPU0, typename XPU1>
+        void bsr_krylov(T alpha, const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr,
+                        const Order<Ni> &oim, const Order<Nd> &odm, const From_size<Nx> &px,
+                        const Order<Nx> &ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
+                        const Coor<Nx> &dimx, const Components_tmpl<Nx, T, XPU0, XPU1> &vx,
+                        const From_size<Ny> &py, const Order<Ny> &oy, const Coor<Ny> &fromy,
+                        const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
+                        const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm, CoorOrder co) {
+
+            if (getDebugLevel() >= 1) {
+                barrier(comm);
+                for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
+                for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
+            }
 
             tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
+
+            // Check that co is that same as BSR
+            if (co != bsr.co)
+                throw std::runtime_error("Unsupported to use a different coordinate ordering that "
+                                         "one used to create the matrix");
 
             // Check that vm and vx have the same components and on the same device
             if (bsr.c.first.size() != vx.first.size() || bsr.c.second.size() != vx.second.size())
@@ -917,36 +979,36 @@ namespace superbblas {
             }
 
             // Generate the partitioning and the storage for the dense matrix input and output tensor
+            Order<Nx> sug_ox = ox;
+            Order<Ny> sug_oy = oy;
+            if (bsr.c.first.size() > 0) {
+                bool transSp;
+                MatrixLayout lx, ly;
+                std::size_t volC;
+                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd, sizex,
+                                       ox, sizey, oy, okr, bsr.c.first[0].allowLayout,
+                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy);
+            } else if (bsr.c.second.size() > 0) {
+                bool transSp;
+                MatrixLayout lx, ly;
+                std::size_t volC;
+                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd, sizex,
+                                       ox, sizey, oy, okr, bsr.c.second[0].allowLayout,
+                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy);
+            }
+            Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
+            Coor<Ny> sug_sizey = reorder_coor(sizey, find_permutation(oy, sug_oy));
 
-            auto pxy_ = get_output_partition(bsr.pd, odm, bsr.pi, oim, px, ox, fromx, sizex, dimx,
-                                             oy, okr, power);
+            auto pxy_ = get_output_partition(bsr.pd, odm, bsr.pi, oim, px, ox, sug_ox, sizex, oy,
+                                             sug_oy, okr, power);
             unsigned int ncomponents = vx.first.size() + vx.second.size();
 
             // Copy the input dense tensor to a compatible layout to the sparse tensor
             From_size<Nx> px_ = pxy_.first;
-            Components_tmpl<Nx, const T, XPU0, XPU1> vx_;
-            if (px_ != px) {
-                Components_tmpl<Nx, T, XPU0, XPU1> vx0_;
-                for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
-                    const unsigned int componentId = bsr.c.first[i].v.componentId;
-                    const unsigned int pi = comm.rank * ncomponents + componentId;
-                    const Coor<Nx> &dimx = px_[pi][1];
-                    vector<T, XPU0> vxi(volume(dimx), bsr.c.first[i].v.it.ctx());
-                    vx0_.first.push_back(Component<Nx, T, XPU0>{vxi, dimx, componentId, {}});
-                }
-                for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
-                    const unsigned int componentId = bsr.c.second[i].v.componentId;
-                    const unsigned int pi = comm.rank * ncomponents + componentId;
-                    const Coor<Nx> &dimx = px_[pi][1];
-                    vector<T, XPU1> vxi(volume(dimx), bsr.c.second[i].v.it.ctx());
-                    vx0_.second.push_back(Component<Nx, T, XPU1>{vxi, dimx, componentId, {}});
-                }
-                copy<Nx, Nx, T>(T{1}, px, fromx, sizex, dimx, ox, vx, px_, {}, sizex, ox, vx0_,
-                                comm, EWOp::Copy{}, co);
-                vx_ = toConst(vx0_);
-            } else {
-                vx_ = vx;
-            }
+            Components_tmpl<Nx, const T, XPU0, XPU1> vx_ = toConst(
+                reorder_tensor(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm, co));
 
             // Allocate the output tensor and do the contraction
             From_size<Ny> py_ = pxy_.second;
@@ -958,9 +1020,9 @@ namespace superbblas {
                 const Coor<Ny> &dimy = py_[pi][1];
                 vector<T, XPU0> vyi(volume(dimy), bsr.c.first[i].v.it.ctx());
                 vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimy, componentId, {}});
-                local_bsr_krylov<Nd, Ni, Nx, Ny, T>(bsr.c.first[i], oim, odm, dimx, ox,
-                                                    vx_.first[i].it, dimy, oy, okr, vy_.first[i].it,
-                                                    EWOP{});
+                local_bsr_krylov<Nd, Ni, Nx, Ny, T>(alpha, bsr.c.first[i], oim, odm, dimx, sug_ox,
+                                                    vx_.first[i].it, dimy, sug_oy, okr,
+                                                    vy_.first[i].it);
             }
             for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                 const unsigned int componentId = bsr.c.second[i].v.componentId;
@@ -969,9 +1031,9 @@ namespace superbblas {
                 const Coor<Ny> &dimy = py_[pi][1];
                 vector<T, XPU1> vyi(volume(dimy), bsr.c.second[i].v.it.ctx());
                 vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimy, componentId, {}});
-                local_bsr_krylov<Nd, Ni, Nx, Ny, T>(bsr.c.second[i], oim, odm, dimx, ox,
-                                                    vx_.second[i].it, dimy, oy, okr,
-                                                    vy_.second[i].it, EWOP{});
+                local_bsr_krylov<Nd, Ni, Nx, Ny, T>(alpha, bsr.c.second[i], oim, odm, dimx, sug_ox,
+                                                    vx_.second[i].it, dimy, sug_oy, okr,
+                                                    vy_.second[i].it);
             }
 
             // Scale the output tensor by beta
@@ -979,51 +1041,10 @@ namespace superbblas {
                             comm, EWOp::Copy{}, co);
 
             // Reduce all the subtensors to the final tensor
-            copy<Ny, Ny, T>(1.0, py_, {}, sizey, sizey, oy, toConst(vy_), py, fromy, dimy, oy, vy,
-                            comm, EWOp::Add{}, co);
-        }
+            copy<Ny, Ny, T>(1.0, py_, {}, sug_sizey, sug_sizey, sug_oy, toConst(vy_), py, fromy,
+                            dimy, oy, vy, comm, EWOp::Add{}, co);
 
-        /// RSB operator - tensor multiplication
-        /// \param oim: dimension labels for the RSB operator image space
-        /// \param odm: dimension labels for the RSB operator domain space
-        /// \param px: partitioning of the right tensor in consecutive ranges
-        /// \param ox: dimension labels for the right operator
-        /// \param vx: right input tensor components
-        /// \param py: partitioning of the resulting tensor in consecutive ranges
-        /// \param oy: dimension labels for the output tensor
-        /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
-        /// \param vy: output tensor components
-        /// \param co: coordinate linearization order
-        /// \param copyadd: either copy or add the multiplication result into the output tensor y
-
-        template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
-                  typename Comm, typename XPU0, typename XPU1>
-        void bsr_krylov(const BSRComponents<Nd, Ni, T> &bsr, const Order<Ni> &oim,
-                        const Order<Nd> &odm, const From_size<Nx> &px, const Order<Nx> &ox,
-                        const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
-                        const Components_tmpl<Nx, const T, XPU0, XPU1> &vx, const From_size<Ny> &py,
-                        const Order<Ny> &oy, const Coor<Ny> &fromy, const Coor<Ny> &sizey,
-                        const Coor<Ny> &dimy, char okr,
-                        const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm, CoorOrder co,
-                        CopyAdd copyadd) {
-
-            if (getDebugLevel() >= 1) {
-                barrier(comm);
-                for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
-                for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
-            }
-
-            switch (copyadd) {
-            case Copy:
-                bsr_krylov(bsr, oim, odm, px, ox, fromx, sizex, dimx, vx, py, oy, fromy, sizey,
-                           dimy, okr, vy, comm, EWOp::Copy{}, co);
-                break;
-            case Add:
-                bsr_krylov(bsr, oim, odm, px, ox, fromx, sizex, dimx, vx, py, oy, fromy, sizey,
-                           dimy, okr, vy, comm, EWOp::Add{}, co);
-                break;
-            }
-
+            _t.stop();
             if (getDebugLevel() >= 1) {
                 for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
                 for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
@@ -1079,11 +1100,12 @@ namespace superbblas {
     /// \param ctxy: context for each data pointer in vy
 
     template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T>
-    void bsr_krylov(BSR_handle *bsrh, const char *oim, const char *odm, const PartitionItem<Nx> *px,
-                    int ncomponents, const char *ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
-                    const Coor<Nx> &dimx, const T **vx, const PartitionItem<Ny> *py, const char *oy,
+    void bsr_krylov(T alpha, BSR_handle *bsrh, const char *oim, const char *odm,
+                    const PartitionItem<Nx> *px, int ncomponents, const char *ox,
+                    const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
+                    const T **vx, const PartitionItem<Ny> *py, const char *oy,
                     const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
-                    T **vy, const Context *ctx, MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd,
+                    T **vy, const Context *ctx, MPI_Comm mpicomm, CoorOrder co,
                     Session session = 0) {
 
         Order<Ni> oim_ = detail::toArray<Ni>(oim, "oim");
@@ -1097,12 +1119,12 @@ namespace superbblas {
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
         detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
-            *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session), ox_,
-            fromx, sizex, dimx,
-            detail::get_components<Nx>(vx, nullptr, ctx, ncomponents, px, comm, session),
+            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
+            ox_, fromx, sizex, dimx,
+            detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
             detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey, dimy,
             okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session), comm,
-            co, copyadd);
+            co);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -1163,9 +1185,10 @@ namespace superbblas {
     /// \param ctxy: context for each data pointer in vy
 
     template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T>
-    void bsr_krylov(BSR_handle *bsrh, const char *oim, const char *odm, const PartitionItem<Nx> *px,
-                    int ncomponents, const char *ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
-                    const Coor<Nx> &dimx, const T **vx, const PartitionItem<Ny> *py, const char *oy,
+    void bsr_krylov(T alpha, BSR_handle *bsrh, const char *oim, const char *odm,
+                    const PartitionItem<Nx> *px, int ncomponents, const char *ox,
+                    const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
+                    const T **vx, const PartitionItem<Ny> *py, const char *oy,
                     const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
                     T **vy, const Context *ctx, CoorOrder co, CopyAdd copyadd,
                     Session session = 0) {
@@ -1181,12 +1204,12 @@ namespace superbblas {
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
         detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
-            *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session), ox_,
-            fromx, sizex, dimx,
-            detail::get_components<Nx>(vx, nullptr, ctx, ncomponents, px, comm, session),
+            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
+            ox_, fromx, sizex, dimx,
+            detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
             detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey, dimy,
             okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session), comm,
-            co, copyadd);
+            co);
     }
 }
 #endif // __SUPERBBLAS_BSR__

@@ -282,7 +282,7 @@ namespace superbblas {
             // Generate the working partition
             From_size<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);
             Components_tmpl<N, T, XPU0, XPU1> vw =
-                reorder_tensor(p, dim, o, v, pw, dimw, ow, comm, co, force_copy);
+                reorder_tensor(p, o, {}, dim, dim, v, pw, dimw, ow, comm, co, force_copy);
 
             return {pw, dimw, ow, vw, n};
         }
@@ -446,8 +446,9 @@ namespace superbblas {
             auto tx_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw);
             From_size<Nx> &pxw = tx_.first;
             const Coor<Nx> &dimxw = tx_.second;
-            Components_tmpl<Nx, T, XPU0, XPU1> vxw = reorder_tensor(
-                px, dimx, ox, toNonConst(vx), pxw, dimxw, oxw, comm, co, true /* Force copy */);
+            Components_tmpl<Nx, T, XPU0, XPU1> vxw =
+                reorder_tensor(px, ox, {}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
+                               true /* Force copy */);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, py, dimy, oy, oyw);
             From_size<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;
@@ -591,8 +592,9 @@ namespace superbblas {
             auto tx_ = get_output_partition(pcw, dimcw, ocw, px, dimx, ox, oxw);
             From_size<Nx> &pxw = tx_.first;
             const Coor<Nx> &dimxw = tx_.second;
-            Components_tmpl<Nx, T, XPU0, XPU1> vxw = reorder_tensor(
-                px, dimx, ox, toNonConst(vx), pxw, dimxw, oxw, comm, co, true /* Force copy */);
+            Components_tmpl<Nx, T, XPU0, XPU1> vxw =
+                reorder_tensor(px, ox, {}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
+                               true /* Force copy */);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, py, dimy, oy, oyw);
             From_size<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;

@@ -115,7 +115,7 @@ namespace superbblas {
                 if (stopped) return;
                 stopped = true;
 
-		// Enforce a synchronization
+                // Enforce a synchronization
                 if (getTrackingTimeSync()) sync(xpu);
 
                 // Count elapsed time since the creation of the object

@@ -508,7 +508,7 @@ namespace superbblas {
 
         /// Vectors used in MPI communications
         template <typename T, typename XPU> struct UnpackedValues : public PackedValues<T> {
-            std::vector<std::vector<Indices<XPU>>> indices;   ///< indices of the destination elements
+            std::vector<std::vector<Indices<XPU>>> indices; ///< indices of the destination elements
             std::vector<std::vector<IndexType>> indices_disp; ///< constant added to all indices
             UnpackedValues(vector<T, Cpu> buf, const std::vector<MpiInt> &counts,
                            const std::vector<MpiInt> &displ,
@@ -624,7 +624,7 @@ namespace superbblas {
                   typename XPU1, typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                             const Order<Nd1> &o1, const Proc_ranges<Nd1>& toReceive,
+                             const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
                              MpiComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
 
@@ -852,7 +852,7 @@ namespace superbblas {
             auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
             std::size_t vol = volume(p.second);
             if (vol == 0) {
-		return {};
+                return {};
             } else if (vol == 1) {
                 From_size_out<Nd> r(1, Cpu{});
                 r[0] = p.first[0];
@@ -1587,8 +1587,8 @@ namespace superbblas {
                             toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][0],
                             toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
                             c0.dim, c0.it, c0.mask_it, o1,
-                            toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim, v1.it,
-                            v1.mask_it, ewop, co);
+                            toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim,
+                            v1.it, v1.mask_it, ewop, co);
                     }
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
@@ -1609,8 +1609,8 @@ namespace superbblas {
                             toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][0],
                             toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
                             c0.dim, c0.it, c0.mask_it, o1,
-                            toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim, v1.it,
-                            v1.mask_it, ewop, co);
+                            toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim,
+                            v1.it, v1.mask_it, ewop, co);
                     }
                 }
             };
@@ -1776,13 +1776,14 @@ namespace superbblas {
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
-        reorder_tensor(const From_size<N> &p0, const Coor<N> &dim0, const Order<N> &o0,
+        reorder_tensor(const From_size<N> &p0, const Order<N> &o0, const Coor<N> &from0,
+                       const Coor<N> &size0, const Coor<N> &dim0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
                        bool force_copy = false) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && o0 == o1 && p0 == p1) return v0;
+            if (!force_copy && from0 == Coor<N>{} && o0 == o1 && p0 == p1) return v0;
 
             // Allocate the tensor
             unsigned int ncomponents = v0.first.size() + v0.second.size();
@@ -1803,7 +1804,7 @@ namespace superbblas {
             }
 
             // Copy the content of v0 into v1
-            copy<N, N, T>(T{1}, p0, {}, dim0, dim0, o0, toConst(v0), p1, {}, dim1, o1, v1, comm,
+            copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {}, dim1, o1, v1, comm,
                           EWOp::Copy{}, co);
 
             return v1;
