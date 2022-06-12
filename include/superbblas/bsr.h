@@ -187,11 +187,11 @@ namespace superbblas {
                     for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
                         if (ly == ColumnMajor)
                             xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
-                                  nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, beta, y + i * bi,
+                                  nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, T{1}, y + i * bi,
                                   ldy, Cpu{});
                         else
                             xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
-                                  x + jj[j] * xs, ldx, nonzeros + j * bi * bd, bi, beta,
+                                  x + jj[j] * xs, ldx, nonzeros + j * bi * bd, bi, T{1},
                                   y + i * bi * ldy, ldy, Cpu{});
                     }
                 }
