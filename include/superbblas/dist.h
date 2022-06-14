@@ -922,6 +922,15 @@ namespace superbblas {
             return r;
         }
 
+        /// Total volume of a list of ranges
+        /// \param fs: vector of first coordinate and size of the ranges to translate
+
+        template <std::size_t Nd> std::size_t volume(const From_size_out<Nd> &fs) {
+            std::size_t vol = 0;
+            for (const auto &fsi : fs) vol += volume(fsi[1]);
+            return vol;
+        }
+
         /// Translate a range from one coordinate lattice to another
         /// \param rfrom0: first coordinate of the range to translate
         /// \param rsize0: size of the range to translate
@@ -1464,21 +1473,17 @@ namespace superbblas {
             unsigned int nprocs = p0.size();
             for (unsigned int i = 0; i < nprocs; ++i) {
                 // Restrict (from0, size0) to the p0[i] range
-                Coor<Nd0> fromi0, sizei0;
-                intersection(from0, size0, p0[i][0], p0[i][1], dim0, fromi0, sizei0);
-                if (volume(sizei0) == 0) continue;
+                auto fs0 = intersection(from0, size0, p0[i][0], p0[i][1], dim0);
 
                 // Translate the range to the destination tensor
-                Coor<Nd1> fromi1, sizei1;
-                translate_range(fromi0, sizei0, from0, dim0, from1, dim1, perm0, fromi1, sizei1);
+                auto fs1 = translate_range(fs0, from0, dim0, from1, dim1, perm0);
 
                 // Intersect the range with p1[i] range
-                Coor<Nd1> rfromi1, rsizei1;
-                intersection(p1[i][0], p1[i][1], fromi1, sizei1, dim1, rfromi1, rsizei1);
+                auto rfs1 = intersection(fs1, p1[i][0], p1[i][1], dim1);
 
                 // If it is not a complete map, it means that some elements in p0[i] range
                 // will go to other processes
-                if (volume(sizei0) != volume(rsizei1)) return true;
+                if (volume(fs0) != volume(rfs1)) return true;
             }
 
             return false;
