@@ -783,7 +783,7 @@ namespace superbblas {
                 //
                 // Compute the subintervals for the dimension ith
                 //
-                IndexType fromr0 = 0, sizer0 = 0, fromr1 = 0, sizer1 = 0;
+                IndexType fromr0 = 0, sizer0 = 0, fromr1 = 0, sizer1 = 0, fromr2 = 0, sizer2 = 0;
 
                 // Proceed with easy cases: if one of the ranges in the whole lattice
                 if (size1[i] == dim[i]) {
@@ -796,9 +796,8 @@ namespace superbblas {
                     intersection(from0[i], size0[i], from1[i], size1[i], dim[i], fromr0, sizer0);
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
-                    if (sizer1 == 0)
-                        intersection(from0[i] + dim[i], size0[i], from1[i], size1[i], dim[i],
-                                     fromr1, sizer1);
+                    intersection(from0[i] + dim[i], size0[i], from1[i], size1[i], dim[i], fromr2,
+                                 sizer2);
                 }
                 if (sizer0 > 0) {
                     grid[grid_n[i]][0][i] = fromr0;
@@ -807,6 +806,10 @@ namespace superbblas {
                 if (sizer1 > 0) {
                     grid[grid_n[i]][0][i] = fromr1;
                     grid[grid_n[i]++][1][i] = sizer1;
+                }
+                if (sizer2 > 0) {
+                    grid[grid_n[i]][0][i] = fromr2;
+                    grid[grid_n[i]++][1][i] = sizer2;
                 }
             }
             return {grid, grid_n};

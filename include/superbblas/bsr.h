@@ -1145,7 +1145,7 @@ namespace superbblas {
     /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
 
     template <std::size_t Nd, std::size_t Ni, typename T>
-    void create_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> *dimi,
+    void create_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
                     const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
                     const Coor<Ni> &blockim, const Coor<Nd> &blockdm, bool blockImFast,
                     IndexType **ii, Coor<Nd> **jj, const T **v, const Context *ctx, CoorOrder co,
@@ -1190,8 +1190,7 @@ namespace superbblas {
                     const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
                     const T **vx, const PartitionItem<Ny> *py, const char *oy,
                     const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
-                    T **vy, const Context *ctx, CoorOrder co, CopyAdd copyadd,
-                    Session session = 0) {
+                    T **vy, const Context *ctx, CoorOrder co, Session session = 0) {
 
         Order<Ni> oim_ = detail::toArray<Ni>(oim, "oim");
         Order<Nd> odm_ = detail::toArray<Nd>(odm, "odm");

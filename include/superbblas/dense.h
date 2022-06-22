@@ -814,7 +814,7 @@ namespace superbblas {
             orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
             detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
-            detail::get_components<Ny>(vy, ctxy, nullptr, ncomponentsx, py, comm, session), comm,
+            detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
     }
 

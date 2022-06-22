@@ -2170,8 +2170,8 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::append_blocks<Nd1, Nd1, Q>(
-            p, num_blocks, Coor<Nd1>{}, dim, detail::trivial_order<Nd1>(),
-            detail::trivial_order<Nd1>(), sto, Coor<Nd1>{}, comm, co);
+            p, num_blocks, {}, dim, dim, detail::trivial_order<Nd1>(), detail::trivial_order<Nd1>(),
+            sto, Coor<Nd1>{}, comm, co);
     }
 
     /// Add blocks to storage
