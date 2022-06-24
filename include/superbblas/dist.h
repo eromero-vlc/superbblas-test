@@ -547,6 +547,7 @@ namespace superbblas {
             std::size_t ncomponents = toReceive.size() / comm.nprocs;
             for (std::size_t i = 0; i < toReceive.size(); ++i) {
                 if (i / ncomponents == comm.rank) continue;
+                std::size_t n = 0;
                 for (const auto &fsi : toReceive[i]) {
                     Coor<Nd> fromi = fsi[0], sizei = fsi[1];
                     Indices<XPU> indices1;
@@ -559,11 +560,11 @@ namespace superbblas {
                         indices1 = select(indices1, v.mask_it.data() + disp, indices1);
 
                     // Store the number of permutation and the number of elements
-                    r.counts[i / ncomponents] +=
-                        (indices1.size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                    n += indices1.size();
                     r.indices[i].push_back(indices1);
                     r.indices_disp[i].push_back(disp);
                 }
+                r.counts[i / ncomponents] += (n * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
             }
 
             // Compute the displacements
@@ -587,8 +588,8 @@ namespace superbblas {
         /// \param alpha: factor applied to packed tensors
 
         template <std::size_t Nd, typename T, typename XPU, typename EWOP>
-        void unpack(UnpackedValues<T, XPU> &r, const Component<Nd, T, XPU> &v, MpiComm comm, EWOP,
-                    typename elem<T>::type alpha) {
+        void unpack(const UnpackedValues<T, XPU> &r, const Component<Nd, T, XPU> &v, MpiComm comm,
+                    EWOP, typename elem<T>::type alpha) {
 
             tracker<XPU> _t("unpack", v.it.ctx());
 
@@ -596,14 +597,13 @@ namespace superbblas {
             std::size_t ncomponents = r.indices.size() / comm.nprocs;
             for (std::size_t i = 0; i < r.indices.size(); ++i) {
                 if (i / ncomponents == comm.rank) continue;
+                std::size_t displ = r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
                 for (unsigned int j = 0; j < r.indices[i].size(); j++) {
-                    const T *data =
-                        r.buf.data() + r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
+                    const T *data = r.buf.data() + displ;
                     copy_n<IndexType, T, T>(alpha, data, Cpu{}, r.indices[i][j].size(),
                                             v.it.data() + r.indices_disp[i][j],
                                             r.indices[i][j].begin(), v.it.ctx(), EWOP{});
-                    r.displ[i / ncomponents] +=
-                        (r.indices[i][j].size() * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                    displ += r.indices[i][j].size();
                 }
             }
         }
@@ -925,6 +925,23 @@ namespace superbblas {
             return r;
         }
 
+        /// Sort a list of ranges based on the first coordinate
+        /// \param fs: vector of first coordinate and size of the ranges to order
+        /// \param dim: dimensions of the tensor where the ranges belong
+        /// \param stride: strides for those dimensions
+
+        template <std::size_t Nd>
+        From_size_out<Nd> sort_ranges(const From_size_out<Nd> &fs, const Coor<Nd> &dim,
+                                      const Coor<Nd> &stride) {
+            From_size_out<Nd> r(fs.size(), Cpu{});
+            for (std::size_t i = 0; i < fs.size(); ++i) r[i] = fs[i];
+            std::sort(r.begin(), r.end(),
+                      [&](const From_size_item<Nd> &a, const From_size_item<Nd> &b) {
+                          return coor2index(a[0], dim, stride) < coor2index(b[0], dim, stride);
+                      });
+            return r;
+        }
+
         /// Total volume of a list of ranges
         /// \param fs: vector of first coordinate and size of the ranges to translate
 
@@ -1013,15 +1030,18 @@ namespace superbblas {
 
             // Compute the indices
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+            Coor<Nd1> stride1 = get_strides(dim1, FastToSlow);
             unsigned int nprocs = p1.size() / ncomponents1;
             Proc_ranges<Nd0> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd1> &local_from1 = p1[i * ncomponents1 + componentId1][0];
                 const Coor<Nd1> &local_size1 = p1[i * ncomponents1 + componentId1][1];
-                r[i] = shift_ranges(
-                    translate_range(intersection<Nd1>(rfs1, local_from1, local_size1, dim1), from1,
-                                    dim1, from0, dim0, perm1),
-                    local_from0, {}, dim0);
+                r[i] =
+                    shift_ranges(translate_range(sort_ranges(intersection<Nd1>(rfs1, local_from1,
+                                                                               local_size1, dim1),
+                                                             dim1, stride1),
+                                                 from1, dim1, from0, dim0, perm1),
+                                 local_from0, {}, dim0);
             }
 
             return r;
@@ -1064,15 +1084,18 @@ namespace superbblas {
             From_size_out<Nd0> rfs0 = translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
 
             // Compute the indices
+            Coor<Nd1> stride1 = get_strides(dim1, FastToSlow);
             unsigned int nprocs = p0.size();
             Proc_ranges<Nd1> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
                 const Coor<Nd0> &local_from0 = p0[i][0];
                 const Coor<Nd0> &local_size0 = p0[i][1];
-                r[i] = shift_ranges(
-                    translate_range(intersection<Nd0>(rfs0, local_from0, local_size0, dim0), from0,
-                                    dim0, from1, dim1, perm0),
-                    local_from1, {}, dim1);
+                r[i] =
+                    shift_ranges(sort_ranges(translate_range(intersection<Nd0>(rfs0, local_from0,
+                                                                               local_size0, dim0),
+                                                             from0, dim0, from1, dim1, perm0),
+                                             dim1, stride1),
+                                 local_from1, {}, dim1);
             }
 
             return r;
@@ -1472,21 +1495,27 @@ namespace superbblas {
                  are_there_repetitions(p0, from0, size0, dim0)))
                 return true;
 
-            // Simple heuristic if
+            // Simple heuristic: if there's no need for communications all elements from the local origin tensor
+            // will land on the local destination tensor, and all local destination elements are receiving
+            // the values from the local origin tensor
             unsigned int nprocs = p0.size();
             for (unsigned int i = 0; i < nprocs; ++i) {
                 // Restrict (from0, size0) to the p0[i] range
                 auto fs0 = intersection(from0, size0, p0[i][0], p0[i][1], dim0);
 
                 // Translate the range to the destination tensor
-                auto fs1 = translate_range(fs0, from0, dim0, from1, dim1, perm0);
+                auto fs01 = translate_range(fs0, from0, dim0, from1, dim1, perm0);
 
                 // Intersect the range with p1[i] range
-                auto rfs1 = intersection(fs1, p1[i][0], p1[i][1], dim1);
+                auto rfs01 = intersection(fs01, p1[i][0], p1[i][1], dim1);
+
+                // Intersect the destination range with the destination range
+                auto fs1 = intersection(from1, size1, p1[i][0], p1[i][1], dim1);
 
                 // If it is not a complete map, it means that some elements in p0[i] range
-                // will go to other processes
-                if (volume(fs0) != volume(rfs1)) return true;
+                // will go to other processes, or some elements in p1[1] will come from other ranges
+                std::size_t vol_fs0 = volume(fs0);
+                if (vol_fs0 != volume(rfs01) || vol_fs0 != volume(fs1)) return true;
             }
 
             return false;
@@ -1969,24 +1998,36 @@ namespace superbblas {
     ///                it will be the product of all elements in `procs`
     /// \param replicate: (optional) if true and the total processes of `procs` is one, then replicate
     ///                   the support of the tensor on every process
+    /// \param ext_power: (optional) extend the support that many units in the positive and negative
+    ///                   direction for each dimension
 
     template <std::size_t Nd>
     std::vector<PartitionItem<Nd>> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs, int nprocs = -1,
-                                                      bool replicate = false) {
+                                                      bool replicate = false,
+                                                      Coor<Nd> ext_power = {}) {
         int vol_procs = (int)detail::volume<Nd>(procs);
         if (nprocs >= 0 && vol_procs > nprocs)
             std::runtime_error(
                 "The total number of processes from `procs` is greater than `nprocs`");
+        for (std::size_t i = 0; i < Nd; ++i)
+            if (ext_power[i] < 0) throw std::runtime_error("Unsupported value for `power`");
+
         std::vector<PartitionItem<Nd>> fs(nprocs < 0 ? vol_procs : nprocs);
         Coor<Nd> stride = detail::get_strides<Nd>(procs, SlowToFast);
         for (int rank = 0; rank < vol_procs; ++rank) {
             Coor<Nd> cproc = detail::index2coor<Nd>(rank, procs, stride);
             for (std::size_t i = 0; i < Nd; ++i) {
-                // First coordinate in process with rank 'rank' on dimension 'i'
-                fs[rank][0][i] =
-                    dim[i] / procs[i] * cproc[i] + std::min(cproc[i], dim[i] % procs[i]);
                 // Number of elements in process with rank 'cproc[i]' on dimension 'i'
-                fs[rank][1][i] = dim[i] / procs[i] + (dim[i] % procs[i] > cproc[i] ? 1 : 0);
+                fs[rank][1][i] = std::min(
+                    dim[i] / procs[i] + (dim[i] % procs[i] > cproc[i] ? 1 : 0) + ext_power[i] * 2,
+                    dim[i]);
+
+                // First coordinate in process with rank 'rank' on dimension 'i'
+                fs[rank][0][i] = fs[rank][1][i] == dim[i] ? 0
+                                                          : (dim[i] / procs[i] * cproc[i] +
+                                                             std::min(cproc[i], dim[i] % procs[i]) -
+                                                             ext_power[i] + dim[i]) %
+                                                                dim[i];
             }
         }
         if (replicate && vol_procs == 1)
