@@ -363,7 +363,10 @@ namespace superbblas {
 
             if (v_is_on_cpu && w_is_on_cpu) {
                 // Both pointers are on cpu
-                std::memcpy(w, v, sizeof(T) * n);
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+                for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
 
             } else if (v_is_on_cpu != w_is_on_cpu) {
                 // One pointer is on device and the other on host
