@@ -109,15 +109,18 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
     // Create a lattice operator of Nd-1 dims
     const Coor<Nd - 1> dimo = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
     const Coor<Nd - 1> procso = {procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // xyztsc
-    PartitionStored<Nd - 1> po = basic_partitioning(dimo, procso);
+    PartitionStored<Nd - 1> po =
+        basic_partitioning(dimo, procso, -1, false,
+                           {{max_power - 1, max_power - 1, max_power - 1, max_power - 1, 0, 0}});
     auto op_pair = create_lattice<Q>(po, rank, dimo, ctx, xpu);
     BSR_handle *op = op_pair.first;
 
     // Create tensor t0 of Nd dims: an input lattice color vector
-    const Coor<Nd> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C], dim[N]}; // xyztscn
-    const Coor<Nd> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1};      // nxyztscn
-    PartitionStored<Nd> p0 = basic_partitioning(dim0, procs0);
-    const Coor<Nd> local_size0 = p0[rank][1];
+    const Coor<Nd + 1> dim0 = {1,      dim[X], dim[Y], dim[Z],
+                               dim[T], dim[S], dim[C], dim[N]};                          // pxyztscn
+    const Coor<Nd + 1> procs0 = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1};    // pxyztscn
+    PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
+    const Coor<Nd + 1> local_size0 = p0[rank][1];
     std::size_t vol0 = detail::volume(local_size0);
     vector<Q, XPU> t0 = ones<Q>(vol0, xpu);
 
@@ -154,8 +157,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             for (int n = 0; n < dim[N]; ++n) {
                 Q *ptr0 = t0.data(), *ptr1 = t1.data();
-                bsr_krylov<Nd - 1, Nd - 1, Nd, Nd + 1, Q>(
-                    Q{1}, op, "xyztsc", "XYZTSC", p0.data(), 1, "XYZTSCn", {{}}, dim0, dim0,
+                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                    Q{1}, op, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}}, dim0, dim0,
                     (const Q **)&ptr0, is_cpu ? p1_rm.data() : p1_cm.data(),
                     is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
                     is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,

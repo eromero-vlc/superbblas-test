@@ -412,14 +412,19 @@ namespace superbblas {
             return r;
         }
 
+        /// Concatenate p (if it isn't zero), a, b, and c
+
         template <std::size_t N, typename T, std::size_t Na, std::size_t Nb, std::size_t Nc>
-        std::array<T, N> concat(const std::array<T, Na> &a, std::size_t na,
+        std::array<T, N> concat(char p, const std::array<T, Na> &a, std::size_t na,
                                 const std::array<T, Nb> &b, std::size_t nb,
                                 const std::array<T, Nc> &c, std::size_t nc) {
             std::array<T, N> r;
-            std::copy_n(a.begin(), na, r.begin());
-            std::copy_n(b.begin(), nb, r.begin() + na);
-            std::copy_n(c.begin(), nc, r.begin() + na + nb);
+            int np = p == 0 ? 0 : 1;
+            if (N != np + na + nb + nc) throw std::runtime_error("concat: invalid arguments");
+            if (p != 0) r[0] = p;
+            std::copy_n(a.begin(), na, r.begin() + np);
+            std::copy_n(b.begin(), nb, r.begin() + np + na);
+            std::copy_n(c.begin(), nc, r.begin() + np + na + nb);
             return r;
         }
 
@@ -467,7 +472,16 @@ namespace superbblas {
         /// \param dimy: dimension of the resulting tensor in consecutive ranges
         /// \param oy: dimension labels for the output tensor
         /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
+        /// \param xylayout: possible layouts for x and y
+        /// \param preferred_layout: preferred layout for x and y
         /// \param co: coordinate linearization order
+        /// \param transSp: (output) whether to contract with the sparse operator image space
+        /// \param lx: (output) layout for the x tensor
+        /// \param ly: (output) layout for the y tensor
+        /// \param volC: (output) number of columns to contract
+        /// \param sug_ox: (output) suggested order for the x
+        /// \param sug_oy: (output) suggested order for the y
+        /// \param sug_oy_trans: (output) suggested order for copying y into x
         ///
         /// For SlowToFast, it supports:
         ///   (I,D,i,d) x (C,D,d) -> (C,I,i)
@@ -487,17 +501,20 @@ namespace superbblas {
                                     char okr, SpMMAllowedLayout xylayout,
                                     MatrixLayout preferred_layout, CoorOrder co, bool &transSp,
                                     MatrixLayout &lx, MatrixLayout &ly, std::size_t &volC,
-                                    Order<Nx> &sug_ox, Order<Ny> &sug_oy) {
+                                    Order<Nx> &sug_ox, Order<Ny> &sug_oy, Order<Ny> &sug_oy_trans) {
 
             if (co == FastToSlow) {
                 Order<Nx> sug_ox0;
                 Order<Ny> sug_oy0;
+                Order<Ny> sug_oy_trans0;
                 local_bsr_krylov_check(reverse(dimi), reverse(dimd), reverse(oi), reverse(od),
                                        reverse(blocki), reverse(blockd), reverse(dimx), reverse(ox),
                                        reverse(dimy), reverse(oy), okr, xylayout, preferred_layout,
-                                       SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0);
+                                       SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0,
+                                       sug_oy_trans0);
                 sug_ox = reverse(sug_ox0);
                 sug_oy = reverse(sug_oy0);
+                sug_oy_trans = reverse(sug_oy_trans0);
                 return;
             }
 
@@ -506,6 +523,44 @@ namespace superbblas {
                 if (std::find(oi.begin(), oi.end(), c) != oi.end())
                     std::runtime_error(
                         "Common label between the domain and image of the sparse matrix");
+
+            // Check the dimensions
+            bool failMatch = false;
+            for (unsigned int i = 0; i < Nx; ++i) {
+                if (ox[i] == okr) continue;
+                auto sd = std::find(od.begin(), od.end(), ox[i]);
+                if (sd != od.end()) {
+                    failMatch |= (dimd[sd - od.begin()] != dimx[i]);
+                    continue;
+                }
+                auto si = std::find(oi.begin(), oi.end(), ox[i]);
+                if (si != oi.end()) failMatch |= (dimi[si - oi.begin()] != dimx[i]);
+            }
+            if (failMatch)
+                throw std::runtime_error("bsr_krylov: dimensions of the dense input tensor "
+                                         "doesn't match the sparse tensor");
+            for (unsigned int i = 0; i < Ny; ++i) {
+                if (ox[i] == okr) continue;
+                auto sd = std::find(od.begin(), od.end(), oy[i]);
+                if (sd != od.end()) {
+                    failMatch |= (dimd[sd - od.begin()] != dimy[i]);
+                    continue;
+                }
+                auto si = std::find(oi.begin(), oi.end(), oy[i]);
+                if (si != oi.end()) {
+                    failMatch |= (dimi[si - oi.begin()] != dimy[i]);
+                    continue;
+                }
+                auto sx = std::find(ox.begin(), ox.end(), oy[i]);
+                if (sx != ox.end()) {
+                    failMatch |= (dimx[sx - ox.begin()] != dimy[i]);
+                    continue;
+                }
+            }
+            if (failMatch)
+                throw std::runtime_error(
+                    "bsr_krylov: dimensions of the dense output tensor "
+                    "doesn't match the sparse tensor or the dense input tensor");
 
             // Find all common labels in od+oi, ox, and oy
             Order<Nx> oT;
@@ -559,6 +614,7 @@ namespace superbblas {
             volC = 1;
             enum { None, ContractWithDomain, ContractWithImage } kindx = None, kindy = None;
             int ix = 0;
+            bool powerFoundOnx = false;
             for (char c : ox) {
                 if (std::find(oi.begin(), oi.end(), c) != oi.end()) {
                     if (kindx == ContractWithDomain)
@@ -574,6 +630,11 @@ namespace superbblas {
                             "dimensions of the sparse tensor");
                     else
                         kindx = ContractWithDomain;
+                } else if (okr != 0 && c == okr) {
+                    powerFoundOnx = true;
+                    if (dimx[ix] > 1)
+                        throw std::runtime_error(
+                            "The power dimension on the input vector has a size larger than one");
                 } else if (std::find(oy.begin(), oy.end(), c) != oy.end()) {
                     oC[nC++] = c;
                     volC *= dimx[ix];
@@ -586,7 +647,9 @@ namespace superbblas {
             }
 
             // Find all common labels in ox to oy
-            bool powerFound = false;
+            bool powerFoundOny = false;
+            int power = 1;
+            int iy = 0;
             for (char c : oy) {
                 if (std::find(oi.begin(), oi.end(), c) != oi.end()) {
                     if (kindy == ContractWithDomain)
@@ -602,52 +665,35 @@ namespace superbblas {
                             "and the image on the sparse matrix");
                     else
                         kindy = ContractWithDomain;
+                } else if (okr != 0 && c == okr) {
+                    powerFoundOny = true;
+                    power = dimy[iy];
                 } else if (std::find(ox.begin(), ox.end(), c) != ox.end()) {
                     // Do nothing
-                } else if (okr != 0 && c == okr) {
-                    powerFound = true;
                 } else {
                     throw std::runtime_error(
                         "Dimension label for the dense input vector doesn't match the "
                         "input sparse dimensions nor the dense output dimensions");
                 }
+                iy++;
             }
 
             // Check okr: either zero or a label on oy
-            if (okr != 0 && !powerFound)
-                throw std::runtime_error("The power dimension isn't on the output dense tensor");
-
-            // Check that the power should be the slowest dimension in y
-            if (okr != 0 && oy[0] != okr)
+            if (okr != 0 && (!powerFoundOnx || !powerFoundOny))
                 throw std::runtime_error(
-                    "The power dimension should be at the slowest dimension on "
-                    "the output dense tensor");
+                    "The power dimension isn't on the input or output dense tensor");
 
             // If power, dimi should be equal to dimd
-            if (okr != 0 && dimy[0] > 1) {
-                if (std::search(dimd.begin(), dimd.end(), dimi.begin(), dimi.end()) == dimd.end() ||
-                    std::search(blockd.begin(), blockd.end(), blocki.begin(), blocki.end()) ==
-                        blockd.end())
+            if (okr != 0) {
+                if (Nd != Ni)
                     throw std::runtime_error(
-                        "When using powers the domain and the image of the sparse operator should "
-                        "be the same, and the dense input and output tensors should be similar.");
-
-                Coor<Nx> permxd = find_permutation(od, ox);
-                Coor<Nx> permxi = find_permutation(oi, ox);
-                Coor<Ny> permyd = find_permutation(od, oy);
-                Coor<Ny> permyi = find_permutation(oi, oy);
-                bool fail = false;
-                if (kindx == ContractWithDomain) {
-                    fail = std::search(permxd.begin(), permxd.end(), permyi.begin(),
-                                       permyi.end()) == permxd.end();
-                } else if (kindx == ContractWithImage) {
-                    fail = std::search(permxi.begin(), permxi.end(), permyd.begin(),
-                                       permyd.end()) == permxi.end();
-                }
-                if (fail)
-                    throw std::runtime_error(
-                        "When using powers the domain and the image of the sparse operator should "
-                        "be the same, and the dense input and output tensors should be similar.");
+                        "Unsupported power for operators that have different number of dimensions "
+                        "for the domain and image spaces");
+                if (power > 1)
+                    for (unsigned int i = 0, i1 = std::min(Nd, Ni); i < i1; ++i)
+                        if (dimd[i] != dimi[i])
+                            throw std::runtime_error("When using powers the domain and the image "
+                                                     "of the sparse operator should be the same");
             }
 
             // Check that kindx and kindy aren't None and they are distinct
@@ -660,17 +706,18 @@ namespace superbblas {
                     "tensors has no common dimension with the sparse tensor");
             if (kindx == kindy) throw std::runtime_error("Invalid contraction");
 
-            // Check that ox should one of (C,D,d) or (D,d,C) or (C,I,i) or (I,i,C)
+            // Check that ox should one of (okr,C,D,d) or (okr,D,d,C) or (okr,C,I,i) or (okr,I,i,C)
             if (kindx == ContractWithDomain) {
                 auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
                 auto sDx = std::search(ox.begin(), ox.end(), oDs.begin(), oDs.begin() + nDs);
                 auto sdx = std::search(ox.begin(), ox.end(), ods.begin(), ods.begin() + nds);
-                if ((nC > 0 && sCx == ox.end()) || (nDs > 0 && sDx == ox.end()) ||
-                    (nds > 0 && sdx == ox.end()) || (nDs > 0 && nds > 0 && sDx > sdx) ||
+                if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
+                    (nDs > 0 && sDx == ox.end()) || (nds > 0 && sdx == ox.end()) ||
+                    (nDs > 0 && nds > 0 && sDx > sdx) ||
                     (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx)) {
                     lx = preferred_layout;
-                    sug_ox = (lx == ColumnMajor ? concat<Nx>(oC, nC, oDs, nDs, ods, nds)
-                                                : concat<Nx>(oDs, nDs, ods, nds, oC, nC));
+                    sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oDs, nDs, ods, nds)
+                                                : concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC));
                 } else {
                     lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
                              ? ColumnMajor
@@ -683,18 +730,27 @@ namespace superbblas {
                 auto siy = std::search(oy.begin(), oy.end(), ois.begin(), ois.begin() + nis);
                 ly = (nC == 0 || ((nIs == 0 || sCy < sIy) && (nds == 0 || sCy < siy))) ? ColumnMajor
                                                                                        : RowMajor;
-                if ((nC > 0 && sCy == oy.end()) || (nIs > 0 && sIy == oy.end()) ||
-                    (nis > 0 && siy == oy.end()) || (nIs > 0 && nis > 0 && sIy > siy) ||
+                if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
+                    (nIs > 0 && sIy == oy.end()) || (nis > 0 && siy == oy.end()) ||
+                    (nIs > 0 && nis > 0 && sIy > siy) ||
                     (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
                     (lx != ly && xylayout == SameLayoutForXAndY) ||
                     (ly == RowMajor && xylayout == ColumnMajorForY)) {
                     ly = (xylayout == SameLayoutForXAndY
                               ? lx
                               : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
-                    sug_oy = (ly == ColumnMajor ? concat<Ny>(oC, nC, oIs, nIs, ois, nis)
-                                                : concat<Ny>(oIs, nIs, ois, nis, oC, nC));
+                    sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oIs, nIs, ois, nis)
+                                                : concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC));
                 } else {
                     sug_oy = oy;
+                }
+
+                if (okr != 0 && power > 1) {
+                    sug_oy_trans = sug_oy;
+                    for (unsigned int i = 0; i < Ny; ++i) {
+                        auto s = std::find(oi.begin(), oi.end(), sug_oy_trans[i]);
+                        if (s != oi.end()) sug_oy_trans[i] = od[s - oi.begin()];
+                    }
                 }
 
                 transSp = false;
@@ -702,12 +758,13 @@ namespace superbblas {
                 auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
                 auto sIx = std::search(ox.begin(), ox.end(), oIs.begin(), oIs.begin() + nIs);
                 auto six = std::search(ox.begin(), ox.end(), ois.begin(), ois.begin() + nis);
-                if ((nC > 0 && sCx == ox.end()) || (nIs > 0 && sIx == ox.end()) ||
-                    (nis > 0 && six == ox.end()) || (nIs > 0 && nis > 0 && sIx > six) ||
+                if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
+                    (nIs > 0 && sIx == ox.end()) || (nis > 0 && six == ox.end()) ||
+                    (nIs > 0 && nis > 0 && sIx > six) ||
                     (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six)) {
                     lx = preferred_layout;
-                    sug_ox = (lx == ColumnMajor ? concat<Nx>(oC, nC, oIs, nIs, ois, nis)
-                                                : concat<Nx>(oIs, nIs, ois, nis, oC, nC));
+                    sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
+                                                : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
                 } else {
                     lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
                              ? ColumnMajor
@@ -720,8 +777,9 @@ namespace superbblas {
                 auto sdy = std::search(oy.begin(), oy.end(), ods.begin(), ods.begin() + nds);
                 ly = (nC == 0 || ((nDs == 0 || sCy < sDy) && (nds == 0 || sCy < sdy))) ? ColumnMajor
                                                                                        : RowMajor;
-                if ((nC > 0 && sCy == oy.end()) || (nDs > 0 && sDy == oy.end()) ||
-                    (nds > 0 && sdy == oy.end()) || (nDs > 0 && nds > 0 && sDy > sdy) ||
+                if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
+                    (nDs > 0 && sDy == oy.end()) || (nds > 0 && sdy == oy.end()) ||
+                    (nDs > 0 && nds > 0 && sDy > sdy) ||
                     (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
                     (lx != ly && xylayout == SameLayoutForXAndY) ||
                     (ly == RowMajor && xylayout == ColumnMajorForY)) {
@@ -730,8 +788,16 @@ namespace superbblas {
                     ly = (xylayout == SameLayoutForXAndY
                               ? lx
                               : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
-                    sug_oy = (ly == ColumnMajor ? concat<Ny>(oC, nC, oDs, nDs, ods, nds)
-                                                : concat<Ny>(oDs, nDs, ods, nds, oC, nC));
+                    sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oDs, nDs, ods, nds)
+                                                : concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC));
+                }
+
+                if (okr != 0 && power > 1) {
+                    sug_oy_trans = sug_oy;
+                    for (unsigned int i = 0; i < Ny; ++i) {
+                        auto s = std::find(od.begin(), od.end(), sug_oy_trans[i]);
+                        if (s != od.end()) sug_oy_trans[i] = oi[s - od.begin()];
+                    }
                 }
 
                 transSp = true;
@@ -760,7 +826,7 @@ namespace superbblas {
                   typename XPU>
         void local_bsr_krylov(T alpha, const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
                               const Order<Nd> &odm, const Coor<Nx> &dimx, const Order<Nx> &ox,
-                              vector<const T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
+                              vector<T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
                               char okr, vector<T, XPU> vy) {
 
             tracker<XPU> _t("local BSR matvec", vx.ctx());
@@ -771,26 +837,14 @@ namespace superbblas {
             std::size_t volC;
             Order<Nx> sug_ox;
             Order<Ny> sug_oy;
+            Order<Ny> sug_oy_trans;
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
                                    dimx, ox, dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout,
-                                   bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy);
+                                   bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             if (volume(dimx) == 0) return;
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
-
-            // Get the number of powers
-            int powers = 1;
-            std::size_t power_pos = 0;
-            if (okr) {
-                power_pos = std::find(oy.begin(), oy.end(), okr) - oy.begin();
-                powers = dimy[power_pos];
-            }
-            if (powers == 0) return;
-            if (powers > 1 && ((power_pos > 0 && bsr.v.co == SlowToFast) ||
-                               (power_pos < Ny - 1 && bsr.v.co == FastToSlow)))
-                throw std::runtime_error(
-                    "Unsupported power position: it can be at the slowest index");
 
             // Set zero
             local_copy<Ny, Ny, T, T>(0, oy, {}, dimy, dimy, (vector<const T, XPU>)vy, {}, oy, {},
@@ -801,54 +855,8 @@ namespace superbblas {
             IndexType ldx = lx == ColumnMajor ? (!transSp ? vold : voli) : volC;
             IndexType ldy = ly == ColumnMajor ? (!transSp ? voli : vold) : volC;
 
-            // Do first power
+            // Do the contraction
             bsr(alpha, transSp, vx.data(), ldx, lx, vy.data(), ldy, ly, volC);
-            if (powers <= 1) return;
-
-            // Do remaining powers
-            for (int p = 1; p < powers; ++p)
-                bsr(alpha, transSp, vy.data() + vold * volC * (p - 1), ldy, ly,
-                    vy.data() + vold * volC * p, ldy, ly, volC);
-        }
-
-        /// Return a BSR operator extended for doing powers without extra communications
-        /// \param bsr: BSR tensor components
-        /// \param power: maximum power to compute
-        /// \param comm: communications handle
-
-        template <std::size_t Nd, std::size_t Ni, typename T, typename Comm, typename XPU0,
-                  typename XPU1, typename std::enable_if<Nd != Ni, bool>::type = true>
-        const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &
-        bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, unsigned int power, Comm) {
-
-            // Cannot do powers with rectangular matrices
-            if (power > 1)
-                throw std::runtime_error(
-                    "Cannot do powers on BSR operator with different domain and image spaces");
-            return bsr;
-        }
-
-        template <std::size_t Nd, std::size_t Ni, typename T, typename Comm, typename XPU0,
-                  typename XPU1, typename std::enable_if<Nd == Ni, bool>::type = true>
-        const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &
-        bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr, unsigned int power, Comm) {
-
-            // Check if the extensions have already been computed
-            if (power <= 1) return bsr;
-
-            // Unsupported powers for now
-            throw std::runtime_error("Unsupported powers on BSR for now");
-
-            //if (power <= bsr.ext_power) return *bsr.ext;
-
-            //while (power > bsr.ext_power) {
-            //    // If the image and domain spaces coincide for all components, no extra communications are required to build powers
-            //    const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr0 = (bsr.ext ? *bsr.ext : bsr);
-            //    if (bsr0.pd == bsr0.pi) return bsr0;
-
-            //    Coor<Nd> dimd = get_dim(bsr0.pd);
-            //    Coor<Ni> dimi = get_dim(bsr0.pi);
-            //}
         }
 
         /// Get the partitions for the dense input and output tensors
@@ -864,7 +872,7 @@ namespace superbblas {
         get_output_partition(From_size<Nd> pd, const Order<Nd> &od, From_size<Ni> pi,
                              const Order<Ni> &oi, From_size<Nx> px, const Order<Nx> &ox,
                              const Order<Nx> &sug_ox, const Coor<Nx> &sizex, const Order<Ny> &oy,
-                             const Order<Ny> &sug_oy, char okr, int power) {
+                             const Order<Ny> &sug_oy, char okr) {
             assert(pd.size() == pi.size() && pi.size() == px.size());
 
             // Find partition on cache
@@ -909,7 +917,7 @@ namespace superbblas {
                     get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_oy, false);
                 if (okr != 0) {
                     pyr[i][0][power_pos] = 0;
-                    pyr[i][1][power_pos] = power;
+                    pyr[i][1][power_pos] = 1;
                 }
             }
             cache.insert(key, {pxr, pyr}, storageSize(pxr) + storageSize(pyr));
@@ -971,16 +979,19 @@ namespace superbblas {
 
             /// Get power and bring pieces of BSR operator to do powers without extra communications
             unsigned int power = 1;
+            unsigned int power_pos = 0;
             if (okr != 0) {
                 auto it_oy = std::find(oy.begin(), oy.end(), okr);
                 if (it_oy == oy.end())
                     throw std::runtime_error("The dimension label `okr` wasn't found on `oy`");
-                power = sizey[it_oy - oy.begin()];
+                power_pos = it_oy - oy.begin();
+                power = sizey[power_pos];
             }
 
             // Generate the partitioning and the storage for the dense matrix input and output tensor
             Order<Nx> sug_ox = ox;
             Order<Ny> sug_oy = oy;
+            Order<Ny> sug_oy_trans;
             if (bsr.c.first.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
@@ -988,7 +999,7 @@ namespace superbblas {
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd, sizex,
                                        ox, sizey, oy, okr, bsr.c.first[0].allowLayout,
                                        bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
-                                       sug_ox, sug_oy);
+                                       sug_ox, sug_oy, sug_oy_trans);
             } else if (bsr.c.second.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
@@ -996,53 +1007,71 @@ namespace superbblas {
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd, sizex,
                                        ox, sizey, oy, okr, bsr.c.second[0].allowLayout,
                                        bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
-                                       sug_ox, sug_oy);
+                                       sug_ox, sug_oy, sug_oy_trans);
             }
             Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
-            Coor<Ny> sug_sizey = reorder_coor(sizey, find_permutation(oy, sug_oy));
+            Coor<Ny> sizey0 = sizey;
+            if (power > 1) sizey0[power_pos] = 1;
+            Coor<Ny> sug_sizey = reorder_coor(sizey0, find_permutation(oy, sug_oy));
 
             auto pxy_ = get_output_partition(bsr.pd, odm, bsr.pi, oim, px, ox, sug_ox, sizex, oy,
-                                             sug_oy, okr, power);
+                                             sug_oy, okr);
             unsigned int ncomponents = vx.first.size() + vx.second.size();
 
             // Copy the input dense tensor to a compatible layout to the sparse tensor
             From_size<Nx> px_ = pxy_.first;
-            Components_tmpl<Nx, const T, XPU0, XPU1> vx_ = toConst(
-                reorder_tensor(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm, co));
+            Components_tmpl<Nx, T, XPU0, XPU1> vx_ =
+                reorder_tensor(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm, co,
+                               power > 1 /* force copy when power > 1 */);
 
-            // Allocate the output tensor and do the contraction
+            // Allocate the output tensor
             From_size<Ny> py_ = pxy_.second;
             Components_tmpl<Ny, T, XPU0, XPU1> vy_;
             for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
                 const unsigned int componentId = bsr.c.first[i].v.componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
-                const Coor<Nx> &dimx = px_[pi][1];
-                const Coor<Ny> &dimy = py_[pi][1];
-                vector<T, XPU0> vyi(volume(dimy), bsr.c.first[i].v.it.ctx());
-                vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimy, componentId, {}});
-                local_bsr_krylov<Nd, Ni, Nx, Ny, T>(alpha, bsr.c.first[i], oim, odm, dimx, sug_ox,
-                                                    vx_.first[i].it, dimy, sug_oy, okr,
-                                                    vy_.first[i].it);
+                Coor<Ny> dimyi = py_[pi][1];
+                vector<T, XPU0> vyi(volume(dimyi), bsr.c.first[i].v.it.ctx());
+                vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimyi, componentId, {}});
             }
             for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                 const unsigned int componentId = bsr.c.second[i].v.componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
-                const Coor<Nx> &dimx = px_[pi][1];
-                const Coor<Ny> &dimy = py_[pi][1];
-                vector<T, XPU1> vyi(volume(dimy), bsr.c.second[i].v.it.ctx());
-                vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimy, componentId, {}});
-                local_bsr_krylov<Nd, Ni, Nx, Ny, T>(alpha, bsr.c.second[i], oim, odm, dimx, sug_ox,
-                                                    vx_.second[i].it, dimy, sug_oy, okr,
-                                                    vy_.second[i].it);
+                Coor<Ny> dimyi = py_[pi][1];
+                vector<T, XPU1> vyi(volume(dimyi), bsr.c.second[i].v.it.ctx());
+                vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimyi, componentId, {}});
             }
 
-            // Scale the output tensor by beta
-            copy<Ny, Ny, T>(T{0}, py, fromy, sizey, dimy, oy, toConst(vy), py, fromy, dimy, oy, vy,
-                            comm, EWOp::Copy{}, co);
+            // Do contraction
+            for (unsigned int p = 0; p < power; ++p) {
+                for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
+                    const unsigned int componentId = bsr.c.first[i].v.componentId;
+                    const unsigned int pi = comm.rank * ncomponents + componentId;
+                    local_bsr_krylov<Nd, Ni, Nx, Ny, T>(p == 0 ? alpha : T{1}, bsr.c.first[i], oim,
+                                                        odm, px_[pi][1], sug_ox, vx_.first[i].it,
+                                                        py_[pi][1], sug_oy, okr, vy_.first[i].it);
+                }
+                for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
+                    const unsigned int componentId = bsr.c.second[i].v.componentId;
+                    const unsigned int pi = comm.rank * ncomponents + componentId;
+                    local_bsr_krylov<Nd, Ni, Nx, Ny, T>(p == 0 ? alpha : T{1}, bsr.c.second[i], oim,
+                                                        odm, px_[pi][1], sug_ox, vx_.second[i].it,
+                                                        py_[pi][1], sug_oy, okr, vy_.second[i].it);
+                }
 
-            // Reduce all the subtensors to the final tensor
-            copy<Ny, Ny, T>(1.0, py_, {}, sug_sizey, sug_sizey, sug_oy, toConst(vy_), py, fromy,
-                            dimy, oy, vy, comm, EWOp::Add{}, co);
+                // Copy the result to final tensor
+                Coor<Ny> fromyi = fromy;
+                if (p > 0) fromyi[power_pos] += p;
+                copy<Ny, Ny, T>(1.0, py_, {}, sug_sizey, sug_sizey, sug_oy, toConst(vy_), py,
+                                fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co);
+
+                // Copy the result into x for doing the next power
+                if (p == power - 1) break;
+                copy<Nx, Nx, T>(T{0}, px_, {}, sug_dimx, sug_dimx, sug_ox, toConst(vx_), px_, {},
+                                sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
+                copy<Ny, Nx, T>(T{1}, py_, {}, sug_sizey, sug_sizey, sug_oy_trans, toConst(vy_),
+                                px_, {}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
+            }
 
             _t.stop();
             if (getDebugLevel() >= 1) {
