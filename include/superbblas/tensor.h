@@ -1067,15 +1067,15 @@ namespace superbblas {
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
                         Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                        const Coor<Nd1> &dim1, vector<Q, XPU1> v1, Mask<XPU1>, EWOP ewop,
+                        const Coor<Nd1> &dim1, vector<Q, XPU1> v1, Mask<XPU1> mask1, EWOP ewop,
                         CoorOrder co) {
 
             tracker<XPU1> _t("local copy", v1.ctx());
 
             // Shortcut to scale or zero out a tensor
-            if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() && o0 == o1 &&
-                from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} && size0 == dim0 && dim0 == dim1 &&
-                std::is_same<EWOP, detail::EWOp::Copy>::value) {
+            if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() &&
+                mask0.size() == 0 && o0 == o1 && from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} &&
+                size0 == dim0 && dim0 == dim1 && std::is_same<EWOP, detail::EWOp::Copy>::value) {
                 copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
                                         v1.ctx(), ewop);
                 return;
@@ -1092,10 +1092,8 @@ namespace superbblas {
 
             // Apply the masks
             if (mask0.size() > 0) {
-                Indices<XPU1> indices0_xpu1 = makeSure(indices0, v1.ctx());
                 indices0 = select(indices0, mask0.data() + disp0, indices0);
-                Mask<XPU1> mask0_xpu1 = makeSure(mask0, v1.ctx());
-                indices1 = select(indices0_xpu1, mask0_xpu1.data() + disp0, indices1);
+                indices1 = select(indices1, mask1.data() + disp1, indices1);
             }
 
             // Do the copy
