@@ -9,6 +9,7 @@ OTHER_HEADERS := \
   ../include/superbblas/bsr.h \
   ../include/superbblas/cblas.h \
   ../include/superbblas/cache.h \
+  ../include/superbblas/copy_n.h \
   ../include/superbblas/crc32.h \
   ../include/superbblas/dense.h \
   ../include/superbblas/dist.h \

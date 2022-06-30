@@ -1,8 +1,8 @@
 #ifndef __SUPERBBLAS_TENSOR__
 #define __SUPERBBLAS_TENSOR__
 
-#include "blas.h"
 #include "cache.h"
+#include "copy_n.h"
 #include <algorithm>
 #include <array>
 #include <assert.h>
@@ -51,9 +51,14 @@
                       superbblas::detail::get_permutation_destination<Nd0, Nd1>)                   \
             REPLACE_Nd0_Nd1 template __VA_ARGS__;
 
+#    define DECL_PERM(...)                                                                         \
+        EMIT REPLACE1(get_permutation, superbblas::detail::get_permutation<Nd>)                    \
+            REPLACE(Nd, COOR_DIMS) template __VA_ARGS__;
+
 #else
 #    define DECL_ORIG_PERM(...) __VA_ARGS__
 #    define DECL_DEST_PERM(...) __VA_ARGS__
+#    define DECL_PERM(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -1062,6 +1067,301 @@ namespace superbblas {
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Nd = std::min(Nd0, Nd1)>
+        void copy_normalize(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                            const Coor<Nd1> &dim1, CoorOrder co,
+                            // outputs
+                            std::size_t &new_disp0, Coor<Nd> &new_from0, Coor<Nd> &new_size,
+                            Coor<Nd> &new_dim0, Coor<Nd> &new_strides0, std::size_t &new_disp1,
+                            Coor<Nd> &new_from1, Coor<Nd> &new_dim1, Coor<Nd> &new_strides1,
+                            std::size_t &nblock) {
+
+            // Normalize to FastToSlow
+            if (co == SlowToFast) {
+                copy_normalize(reverse(o0), reverse(from0), reverse(size0), reverse(dim0),
+                               reverse(o1), reverse(from1), reverse(dim1), FastToSlow, new_disp0,
+                               new_from0, new_size, new_dim0, new_strides0, new_disp1, new_from1,
+                               new_dim1, new_strides1, nblock);
+                return;
+            }
+
+            // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit for zero volume
+            if (volume(size0) == 0) {
+                new_disp0 = new_disp1 = nblock = 0;
+                new_from0 = new_size = new_dim0 = new_strides0 = new_from1 = new_dim1 =
+                    new_strides1 = Coor<Nd>{};
+                return;
+            }
+
+            Coor<Nd1> size1 = reorder_coor(size0, find_permutation(o0, o1), 1);
+            std::size_t stride1 = 1;
+            new_disp1 = 0;
+            std::size_t i = 0;
+            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+                if (size1[i1] > 1) {
+                    if (from1[i1] + size1[i1] <= dim1[i1]) {
+                        new_from1[i] = 0;
+                        new_disp1 += from1[i1] * stride1;
+                    } else {
+                        new_from1[i] = from1[i1];
+                    }
+                    new_size[i] = size1[i1];
+                    new_dim1[i] = dim1[i1];
+                    new_strides1[i] = stride1;
+                    ++i;
+                } else {
+                    new_disp1 += from1[i1] * stride1;
+                }
+                stride1 *= dim1[i1];
+            }
+            for (; i < Nd; ++i) {
+                new_from1[i] = 0;
+                new_size[i] = 1;
+                new_strides1[i] = 0;
+            }
+            assert(volume(size0) == volume(new_size));
+
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd0> strides0 = get_strides(dim0, FastToSlow);
+            i = 0;
+            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+                if (perm0[i1] < 0) continue;
+                std::size_t i0 = perm0[i1];
+                if (size0[i0] > 1) {
+                    if (from0[i0] + size0[i0] <= dim0[i0]) {
+                        new_from0[i] = 0;
+                        new_disp0 += from0[i0] * strides0[i0];
+                    } else {
+                        new_from0[i] = from0[i0];
+                    }
+                    new_dim0[i] = dim0[i0];
+                    new_strides0[i] = strides0[i0];
+                    ++i;
+                }
+            }
+            for (; i < Nd; ++i) {
+                new_from0[i] = 0;
+                new_strides0[i] = 0;
+            }
+
+            new_disp0 = 0;
+            for (std::size_t i0 = 0; i0 < Nd0; ++i0)
+                if (size0[i0] == 1) new_disp0 += from0[i0] * strides0[i0];
+
+            nblock = 0;
+            IndexType strides = 1;
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (new_from0[i] != 0 || new_from1[i] != 0 || strides != new_strides0[i] ||
+                    strides != new_strides1[i] || new_size[i] != new_dim0[i] ||
+                    new_size[i] != new_dim1[i])
+                    break;
+                nblock++;
+                strides *= new_size[i];
+            }
+        }
+
+        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd>
+        Indices<Cpu> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
+                                     const Coor<Nd> &dim, const Coor<Nd> &strides, Cpu cpu) {
+
+            tracker<Cpu> _t("comp. permutations (alt)", cpu);
+
+            // Check inputs
+            assert((check_positive<Nd>(from)));
+
+            // Quick exit
+            std::size_t vol = volume(size);
+            if (volume(size) == 0) return Indices<Cpu>();
+            Coor<Nd> dim_strides = get_strides(dim, FastToSlow);
+            bool fail = true;
+            for (std::size_t i = 0; i < Nd; ++i)
+                fail |= (from[i] != 0 || (size[i] > 1 && dim_strides[i] != strides[i]));
+            if (!fail) return Indices<Cpu>(vol, nullptr, cpu);
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
+            // Check in the storage
+            using Key = std::tuple<Coor<Nd>, Coor<Nd>, Coor<Nd>, Coor<Nd>>;
+            struct tag {};
+            auto cache = getCache<Key, Indices<Cpu>, TupleHash<Key>, tag>(cpu);
+            Key key{from, size, dim, strides};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second.value;
+
+            // Otherwise, compute the permutation
+            Indices<Cpu> indices(vol, cpu);
+            Coor<Nd> size_strides = get_strides(size, FastToSlow);
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+            for (std::size_t i = 0; i < vol; ++i)
+                indices[i] = coor2index(index2coor(i, size, size_strides) + from, dim, strides);
+
+            // Store it in cache
+            cache.insert(key, indices, storageSize(indices));
+
+            return indices;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+#    ifdef SUPERBBLAS_USE_THRUST
+
+        /// Class that compute the origin permutation
+
+        template <std::size_t Nd>
+        struct perm_elem : public thrust::unary_function<IndexType, IndexType> {
+            const TCoor<Nd> from, size, dim, size_strides, strides;
+            perm_elem(TCoor<Nd> from, TCoor<Nd> size, TCoor<Nd> dim, TCoor<Nd> size_strides,
+                      TCoor<Nd> strides)
+                : from(from), size(size), dim(dim), size_strides(size_strides), strides(strides) {}
+
+            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+                return coor2index(tplus(index2coor(i, size, size_strides), from), dim, strides);
+            }
+        };
+
+
+        template <std::size_t Nd>
+        DECL_PERM(Indices<Gpu> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
+                                               const Coor<Nd> &dim, const Coor<Nd> &strides,
+                                               Gpu gpu))
+        IMPL({
+            tracker<Gpu> _t("comp. permutations (alt)", gpu);
+
+            // Check inputs
+            assert((check_positive(from)));
+
+            // Quick exit
+            std::size_t vol = volume(size);
+            if (volume(size) == 0) return Indices<Gpu>();
+            Coor<Nd> dim_strides = get_strides(dim, FastToSlow);
+            bool fail = true;
+            for (std::size_t i = 0; i < Nd; ++i)
+                fail |= (from[i] != 0 || (size[i] > 1 && dim_strides[i] != strides[i]));
+            if (!fail) return Indices<Gpu>(vol, nullptr, gpu);
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
+            // Check in the storage
+            using Key = std::tuple<Coor<Nd>, Coor<Nd>, Coor<Nd>, Coor<Nd>, int>;
+            struct tag {};
+            auto cache = getCache<Key, Indices<Gpu>, TupleHash<Key>, tag>(gpu);
+            Key key{from, size, dim, strides, deviceId(gpu)};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second.value;
+
+            // Otherwise, compute the permutation
+            Indices<Gpu> indices(vol, gpu);
+            Coor<Nd> size_strides = get_strides(size, FastToSlow);
+
+            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                              thrust::make_counting_iterator(IndexType(vol)),
+                              encapsulate_pointer(indices.data()),
+                              perm_elem<Nd>(toTCoor(from), toTCoor(size), toTCoor(dim),
+                                            toTCoor(size_strides), toTCoor(strides)));
+
+            // Store it in cache
+            cache.insert(key, indices, storageSize(indices));
+
+            return indices;
+        })
+#    endif
+#endif
+
+        /// Copy the content of tensor v0 into v1
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param mask0: mask for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param mask1: mask for the destination tensor (ignored)
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename EWOP>
+        void local_copy_normalize(typename elem<T>::type alpha, std::size_t disp0,
+                                  const Coor<Nd> &from0, const Coor<Nd> &size, const Coor<Nd> &dim0,
+                                  const Coor<Nd> &strides0, vector<const T, XPU0> v0,
+                                  std::size_t disp1, const Coor<Nd> &from1, const Coor<Nd> &dim1,
+                                  const Coor<Nd> &strides1, vector<Q, XPU1> v1, std::size_t nblock,
+                                  EWOP ewop) {
+
+            // 0et the permutation vectors
+            Coor<Nd> sizeb = size;
+            for (std::size_t i = 0; i < nblock; ++i) sizeb[i] = 1;
+
+            if (volume(sizeb) == 1) {
+                std::size_t extra_disp0 = coor2index(from0, dim0, strides0);
+                std::size_t extra_disp1 = coor2index(from1, dim1, strides1);
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0 + extra_disp0, v0.ctx(),
+                                        volume(size), v1.data() + disp1 + extra_disp1, v1.ctx(),
+                                        ewop);
+                return;
+            }
+
+            if (deviceId(v0.ctx()) != CPU_DEVICE_ID || deviceId(v1.ctx()) != CPU_DEVICE_ID) {
+                nblock = 0;
+                sizeb = size;
+            }
+            Indices<XPU0> indices0 = get_permutation(from0, sizeb, dim0, strides0, v0.ctx());
+            Indices<XPU1> indices1 = get_permutation(from1, sizeb, dim1, strides1, v1.ctx());
+            IndexType blocking = 1;
+            for (std::size_t i = 0; i < nblock; ++i) blocking *= size[i];
+
+            // Do the copy
+            if (blocking == 1 && false)
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
+                                        indices0.size(), v1.data() + disp1, indices1.begin(),
+                                        v1.ctx(), ewop);
+            else
+                copy_n_blocking<IndexType, T, Q>(
+                    alpha, v0.data() + disp0, blocking, indices0.begin(), v0.ctx(), indices0.size(),
+                    v1.data() + disp1, indices1.begin(), v1.ctx(), ewop);
+        }
+
+        /// Copy the content of tensor v0 into v1
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param mask0: mask for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param mask1: mask for the destination tensor (ignored)
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
@@ -1078,6 +1378,22 @@ namespace superbblas {
                 std::is_same<EWOP, detail::EWOp::Copy>::value) {
                 copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
                                         v1.ctx(), ewop);
+                return;
+            }
+
+            // Shortcut when there is no masks
+            if (mask0.size() == 0) {
+                // Canonize the copy operation
+                constexpr std::size_t Nd = std::min(Nd0, Nd1);
+                std::size_t new_disp0, new_disp1, nblock;
+                Coor<Nd> new_from0, new_size, new_dim0, new_strides0, new_from1, new_dim1,
+                    new_strides1;
+                copy_normalize(o0, from0, size0, dim0, o1, from1, dim1, co, new_disp0, new_from0,
+                               new_size, new_dim0, new_strides0, new_disp1, new_from1, new_dim1,
+                               new_strides1, nblock);
+                local_copy_normalize(alpha, new_disp0, new_from0, new_size, new_dim0, new_strides0,
+                                     v0, new_disp1, new_from1, new_dim1, new_strides1, v1, nblock,
+                                     ewop);
                 return;
             }
 
