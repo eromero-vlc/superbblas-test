@@ -1871,6 +1871,53 @@ namespace superbblas {
             return true;
         }
 
+        /// Return partitions for the input tensors that are compatible for contraction
+        /// \param p0: partitioning of the first origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the first operator
+        /// \param sug_o0: suggested dimension labels for the first operator
+        /// \param p1: partitioning of the second origin tensor in consecutive ranges
+        /// \param o1: dimension labels for the second operator
+        /// \param sug_o1: suggested dimension labels for the second operator
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        std::pair<From_size<Nd0>, From_size<Nd1>>
+        get_input_partitions_for_contraction(const From_size<Nd0> &p0, const Coor<Nd0> &dim0,
+                                             const Order<Nd0> &o0, const Order<Nd0> &sug_o0,
+                                             const From_size<Nd1> &p1, const Coor<Nd1> &dim1,
+                                             const Order<Nd1> &o1, const Order<Nd1> &sug_o1) {
+
+            // Change the partition of the smaller tensor in volume, and normalize the second tensor
+            // as the smaller one
+            if (volume(dim0) < volume(dim1)) {
+                auto p10 = get_input_partitions_for_contraction(p1, dim1, o1, sug_o1, p0, dim0, o0,
+                                                                sug_o0);
+                return {p10.second, p10.first};
+            }
+
+            // Reorder the first tensor if needed
+            From_size<Nd0> p0r = p0;
+            if (o0 != sug_o0) {
+                From_size_out<Nd0> p0r_ = From_size_out<Nd0>(p0.size(), p0.ctx());
+                Coor<Nd0> perm = find_permutation(o0, sug_o0);
+                for (unsigned int i = 0; i < p0.size(); ++i) {
+                    p0r_[i][0] = reorder_coor(p0[i][0], perm);
+                    p0r_[i][1] = reorder_coor(p0[i][1], perm);
+                }
+                p0r = p0r_;
+            }
+
+            // Create partition
+            From_size_out<Nd1> p1r(p0.size(), p0.ctx());
+            for (unsigned int i = 0; i < p0.size(); ++i) {
+                p1r[i][0] = get_dimensions(o0, p0[i][0], o1, p1[i][0], sug_o1, false);
+                p1r[i][1] = get_dimensions(o0, p0[i][1], o1, p1[i][1], sug_o1, false);
+            }
+            bool changed1 = (o1 != sug_o1 || p1 != (From_size<Nd1>)p1r);
+
+            // Return the change on the second tensor
+            return {p0r, changed1 ? (From_size<Nd1>)p1r : p1};
+        }
+
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
         /// \param alpha: factor on the contraction
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
@@ -1897,9 +1944,9 @@ namespace superbblas {
                   typename XPU0, typename XPU1>
         void contraction(T alpha, const From_size<Nd0> &p0, const Coor<Nd0> &dim0,
                          const Order<Nd0> &o0, bool conj0,
-                         const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                         const From_size<Nd1> &p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                         bool conj1, const Components_tmpl<Nd1, const T, XPU0, XPU1> &v1, T beta,
+                         const Components_tmpl<Nd0, T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+                         const Coor<Nd1> &dim1, const Order<Nd1> &o1, bool conj1,
+                         const Components_tmpl<Nd1, T, XPU0, XPU1> &v1, T beta,
                          const From_size<Ndo> &pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
                          const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
 
@@ -1922,46 +1969,60 @@ namespace superbblas {
                     "or they don't follow the same order on the devices");
 
             // Get the optimal ordering for the output tensor pr_
+            Order<Nd0> sug_o0;
+            Order<Nd1> sug_o1;
             Order<Ndo> sug_or;
-            {
-                Order<Nd0> sug_o0;
-                Order<Nd1> sug_o1;
-                bool swap_operands;
-                suggested_orders_for_contraction(o0, dim0, conj0, o1, dim1, conj1, o_r, dimr,
-                                                 sug_o0, sug_o1, sug_or, swap_operands, co);
-            }
+            bool swap_operands;
+            suggested_orders_for_contraction(o0, dim0, conj0, o1, dim1, conj1, o_r, dimr, sug_o0,
+                                             sug_o1, sug_or, swap_operands, co);
+            Coor<Nd0> sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
+            Coor<Nd1> sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
             Coor<Ndo> sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
 
+            // Change the partition of the input tensors so that the local portions to contract
+            // are local
+            auto p01 =
+                get_input_partitions_for_contraction(p0, dim0, o0, sug_o0, p1, dim1, o1, sug_o1);
+            auto p0_ = p01.first;
+            auto p1_ = p01.second;
+            Components_tmpl<Nd0, T, XPU0, XPU1> v0_ =
+                reorder_tensor(p0, o0, {{}}, dim0, dim0, v0, p0_, sug_dim0, sug_o0, comm, co);
+            Components_tmpl<Nd1, T, XPU0, XPU1> v1_ =
+                reorder_tensor(p1, o1, {{}}, dim1, dim1, v1, p1_, sug_dim1, sug_o1, comm, co);
+
             // Generate the partitioning and the storage for the output tensor
-            unsigned int ncomponents = v0.first.size() + v0.second.size();
-            From_size<Ndo> pr_ =
-                get_output_partition<Nd0, Nd1, Ndo>(p0, dim0, o0, p1, dim1, o1, sug_or).first;
+            unsigned int ncomponents = v0_.first.size() + v0_.second.size();
+            From_size<Ndo> pr_ = get_output_partition<Nd0, Nd1, Ndo>(p0_, sug_dim0, sug_o0, p1_,
+                                                                     sug_dim1, sug_o1, sug_or)
+                                     .first;
             Components_tmpl<Ndo, const T, XPU0, XPU1> vr_;
-            std::vector<vector<T, XPU0>> vr0(v0.first.size());
-            for (unsigned int i = 0; i < v0.first.size(); ++i) {
-                const unsigned int componentId = v0.first[i].componentId;
+            std::vector<vector<T, XPU0>> vr0(v0_.first.size());
+            for (unsigned int i = 0; i < v0_.first.size(); ++i) {
+                const unsigned int componentId = v0_.first[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
-                vr0[i] = vector<T, XPU0>(volume<Ndo>(dimi), v0.first[i].it.ctx());
+                vr0[i] = vector<T, XPU0>(volume<Ndo>(dimi), v0_.first[i].it.ctx());
                 vr_.first.push_back(Component<Ndo, T, XPU0>{vr0[i], dimi, componentId, {}});
-                local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.first[i].it, o1,
-                                                    p1[pi][1], conj1, v1.first[i].it, T{0.0},
-                                                    sug_or, dimi, vr0[i], co);
-                zeroed_repated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi, vr0[i],
-                                      co);
+                local_contraction<Nd0, Nd1, Ndo, T>(
+                    alpha, sug_o0, p0_[pi][1], conj0, vector<const T, XPU0>(v0_.first[i].it),
+                    sug_o1, p1_[pi][1], conj1, vector<const T, XPU0>(v1_.first[i].it), T{0.0},
+                    sug_or, dimi, vr0[i], co);
+                zeroed_repated_tensor(p0_, sug_dim0, sug_o0, p1_, sug_dim1, sug_o1, pr_, sug_dimr,
+                                      sug_or, pi, vr0[i], co);
             }
-            std::vector<vector<T, XPU1>> vr1(v0.second.size());
-            for (unsigned int i = 0; i < v0.second.size(); ++i) {
-                const unsigned int componentId = v0.second[i].componentId;
+            std::vector<vector<T, XPU1>> vr1(v0_.second.size());
+            for (unsigned int i = 0; i < v0_.second.size(); ++i) {
+                const unsigned int componentId = v0_.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
-                vr1[i] = vector<T, XPU1>(volume<Ndo>(dimi), v0.second[i].it.ctx());
+                vr1[i] = vector<T, XPU1>(volume<Ndo>(dimi), v0_.second[i].it.ctx());
                 vr_.second.push_back(Component<Ndo, T, XPU1>{vr1[i], dimi, componentId, {}});
-                local_contraction<Nd0, Nd1, Ndo, T>(alpha, o0, p0[pi][1], conj0, v0.second[i].it,
-                                                    o1, p1[pi][1], conj1, v1.second[i].it, T{0.0},
-                                                    sug_or, dimi, vr1[i], co);
-                zeroed_repated_tensor(p0, dim0, o0, p1, dim1, o1, pr_, sug_dimr, sug_or, pi, vr1[i],
-                                      co);
+                local_contraction<Nd0, Nd1, Ndo, T>(
+                    alpha, sug_o0, p0_[pi][1], conj0, vector<const T, XPU1>(v0_.second[i].it),
+                    sug_o1, p1_[pi][1], conj1, vector<const T, XPU1>(v1_.second[i].it), T{0.0},
+                    sug_or, dimi, vr1[i], co);
+                zeroed_repated_tensor(p0_, sug_dim0, sug_o0, p1_, sug_dim1, sug_o1, pr_, sug_dimr,
+                                      sug_or, pi, vr1[i], co);
             }
 
             // Scale the output tensor by beta
@@ -2163,10 +2224,10 @@ namespace superbblas {
 
         detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), dim0, o0_, conj0,
-            detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>((T **)v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), dim1, o1_, conj1,
-            detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), dimr, o_r_,
+            detail::get_components<Nd1>((T **)v1, nullptr, ctx1, ncomponents1, p1, comm, session),
+            beta, detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), dimr, o_r_,
             detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
             co);
     }
@@ -2225,10 +2286,10 @@ namespace superbblas {
 
         detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), dim0, o0_, conj0,
-            detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
+            detail::get_components<Nd0>((T **)v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), dim1, o1_, conj1,
-            detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session), beta,
-            detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), dimr, o_r_,
+            detail::get_components<Nd1>((T **)v1, nullptr, ctx1, ncomponents1, p1, comm, session),
+            beta, detail::get_from_size(pr, ncomponentsr * comm.nprocs, session), dimr, o_r_,
             detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session), comm,
             co);
     }
