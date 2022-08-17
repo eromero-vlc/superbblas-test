@@ -87,11 +87,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
     double tref = 0.0;
     {
         sync(xpu);
+        vector<Scalar, XPU> aux(local_vol0 * dim[N], xpu);
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             for (int n = 0; n < dim[N]; ++n) {
-                copy_n(t0.v.data(), t0.v.ctx(), local_vol0, t1.v.data() + local_vol0 * n,
-                       t1.v.ctx());
+                copy_n(t0.v.data(), t0.v.ctx(), local_vol0, aux.data() + local_vol0 * n, aux.ctx());
             }
         }
         sync(xpu);
