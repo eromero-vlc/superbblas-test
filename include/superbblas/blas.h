@@ -59,6 +59,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    define REPLACE_T_Q                                                                            \
         REPLACE(T Q, superbblas::IndexType superbblas::IndexType, std::size_t std::size_t, T Q)    \
         REPLACE(T Q, META_TYPES) REPLACE_META_TYPES
+#    define REPLACE_IndexType REPLACE(IndexType, superbblas::IndexType, std::size_t)
 
 #    define REPLACE_EWOP REPLACE(EWOP, EWOp::Copy, EWOp::Add)
 
@@ -75,7 +76,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define DECL_COPY_T_Q_EWOP(...)                                                                \
         EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T, Q, XPU_GPU, EWOP>)          \
-            REPLACE_T_Q REPLACE_XPU REPLACE_EWOP template __VA_ARGS__;
+            REPLACE_IndexType REPLACE_T_Q REPLACE_XPU REPLACE_EWOP template __VA_ARGS__;
 
 /// Generate template instantiations for copy_reduce_n functions with template parameters IndexType and T
 
@@ -87,7 +88,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 
 #    define DECL_ZERO_T(...)                                                                       \
         EMIT REPLACE1(zero_n, superbblas::detail::zero_n<IndexType, T, XPU_GPU>)                   \
-            REPLACE_T REPLACE_XPU template __VA_ARGS__;
+            REPLACE_IndexType REPLACE_T REPLACE_XPU template __VA_ARGS__;
 
 /// Generate template instantiations for sum functions with template parameter T
 
@@ -97,7 +98,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 /// Generate template instantiations for sum functions with template parameter T
 
 #    define DECL_SELECT_T(...)                                                                     \
-        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>) REPLACE(                   \
+        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>) REPLACE_IndexType REPLACE( \
             T, superbblas::IndexType, std::size_t, SUPERBBLAS_REAL_TYPES) template __VA_ARGS__;
 
 #else

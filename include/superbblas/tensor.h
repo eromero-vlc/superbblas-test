@@ -38,8 +38,6 @@
             26, 27, 28
 #    define REPLACE_Nd0_Nd1 REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS)
 
-#    define REPLACE_IndexType REPLACE(IndexType, superbblas::IndexType, std::size_t)
-
 /// Generate template instantiations for get_permutation_origin and get_permutation_destination functions
 /// with template parameters Nd0 and Nd1
 
