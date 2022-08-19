@@ -11,6 +11,7 @@
 #  make dist_cuda CXX=mpicxx  # builds dist.cpp with ${NVCC} adding the flags
 #                             # and linking information for MPI
 
+SHELL = /bin/bash
 BUILDDIR ?= ..
 SB_LDFLAGS ?=
 
@@ -57,6 +58,17 @@ $(CUDA_LIB_TARGETS): %_cuda_lib: %.cpp
 $(HIP_TARGETS): %_hip: %.cpp
 	${HIP} ${SB_INCLUDE} ${MPISBFLAG} ${HIPFLAGS} ${HIPSTDLANG} ${CXXFLAGS} ${MPIINCFLAGS} \
 	        ${SB_LDFLAGS} ${HIPLDFLAGS} ${MPILDFLAGS} ${LDFLAGS} $< -o $@
+
+all_cpu all_cuda all_cuda_lib all_hip: all_%:
+	./blas_$*
+	./storage_$*
+	./bsr_$* --dim='2 2 2 2 2 2'
+ifeq ($(SUPERBBLAS_WITH_MPI), yes)
+	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./dist_$*  --procs='1 1 2 3' --dim='4 4 4 4 64'
+	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./contract_$*  --procs='1 1 2 3' --dim='2 2 4 4 2'
+	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4'
+	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
+endif
 
 clean:
 	rm -f ${CPU_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS}
