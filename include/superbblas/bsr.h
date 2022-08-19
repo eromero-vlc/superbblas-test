@@ -438,6 +438,10 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU>
         CsrIndices<XPU> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
                                         bool return_jj_blocked = false) {
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
             Indices<Cpu> ii(v.i.size() + 1, Cpu{}), jj(v.j.size(), Cpu{});
             Indices<Cpu> vi = makeSure(v.i, Cpu{});
             vector<Coor<Nd>, Cpu> vj = makeSure(v.j, Cpu{});
@@ -447,14 +451,14 @@ namespace superbblas {
             for (std::size_t i = 0; i < vi.size(); ++i) ii[i + 1] = ii[i] + vi[i];
 
             // Transform the domain coordinates into indices
-            Coor<Nd> strided = get_strides<Nd>(v.dimd, v.co);
-            std::size_t block_nnz = v.j.size();
+            Coor<Nd> strided = get_strides<IndexType>(v.dimd, v.co);
+            IndexType block_nnz = v.j.size();
             std::size_t bd = return_jj_blocked ? volume(v.blockd) : 1;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-            for (std::size_t i = 0; i < block_nnz; ++i) {
-                jj[i] = coor2index<Nd>(vj[i], v.dimd, strided) / bd;
+            for (IndexType i = 0; i < block_nnz; ++i) {
+                jj[i] = coor2index(vj[i], v.dimd, strided) / bd;
             }
 
             return {makeSure(ii, v.i.ctx()), makeSure(jj, v.j.ctx())};

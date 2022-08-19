@@ -41,6 +41,7 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #endif
 
 #ifdef SUPERBBLAS_CREATING_LIB
+#    define SUPERBBLAS_INDEX_TYPES superbblas::IndexType, std::size_t
 #    define SUPERBBLAS_REAL_TYPES float, double
 #    define SUPERBBLAS_COMPLEX_TYPES std::complex<float>, std::complex<double>
 #    define SUPERBBLAS_TYPES SUPERBBLAS_REAL_TYPES, SUPERBBLAS_COMPLEX_TYPES
@@ -54,9 +55,10 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         REPLACE(TREAL, SUPERBBLAS_REAL_TYPES)                                                      \
         REPLACE(QREAL, SUPERBBLAS_REAL_TYPES)                                                      \
         REPLACE(TCOMPLEX, SUPERBBLAS_COMPLEX_TYPES) REPLACE(QCOMPLEX, SUPERBBLAS_COMPLEX_TYPES)
-#    define REPLACE_T REPLACE(T, superbblas::IndexType, SUPERBBLAS_TYPES)
+#    define REPLACE_T REPLACE(T, superbblas::IndexType, std::size_t, SUPERBBLAS_TYPES)
 #    define REPLACE_T_Q                                                                            \
-        REPLACE(T Q, IndexType IndexType, T Q) REPLACE(T Q, META_TYPES) REPLACE_META_TYPES
+        REPLACE(T Q, superbblas::IndexType superbblas::IndexType, std::size_t std::size_t, T Q)    \
+        REPLACE(T Q, META_TYPES) REPLACE_META_TYPES
 
 #    define REPLACE_EWOP REPLACE(EWOP, EWOp::Copy, EWOp::Add)
 
@@ -95,8 +97,8 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 /// Generate template instantiations for sum functions with template parameter T
 
 #    define DECL_SELECT_T(...)                                                                     \
-        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>)                            \
-            REPLACE(T, superbblas::IndexType, SUPERBBLAS_REAL_TYPES) template __VA_ARGS__;
+        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>) REPLACE(                   \
+            T, superbblas::IndexType, std::size_t, SUPERBBLAS_REAL_TYPES) template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__

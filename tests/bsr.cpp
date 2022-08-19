@@ -59,8 +59,8 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     // Compute the coordinates for all nonzeros
     for (auto &i : ii) i = neighbors;
     vector<Coor<6>, Cpu> jj(neighbors * voli, Cpu{});
-    Coor<6> stride = get_strides<6>(dimi, SlowToFast);
-    Coor<6> strided = get_strides<6>(pd[rank][1], SlowToFast);
+    Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
+    Coor<6, std::size_t> strided = get_strides<std::size_t>(pd[rank][1], SlowToFast);
     for (std::size_t i = 0, j = 0; i < voli; ++i) {
         std::size_t j0 = j;
         Coor<6> c = index2coor(i, dimi, stride) + from;

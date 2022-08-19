@@ -165,16 +165,16 @@ void test_contraction(Operator<N0, T> p0, Operator<N1, T> p1, Operator<N2, T> p2
     std::vector<T> r1(detail::volume(dim2)); // p0 conj, and p1 not conj
     std::vector<T> r2(detail::volume(dim2)); // p0 not conj, and p1 conj
     std::vector<T> r3(detail::volume(dim2)); // p0 conj, and p1 conj
-    Coor<N0> strides0 = detail::get_strides(dim0, SlowToFast);
-    Coor<N1> strides1 = detail::get_strides(dim1, SlowToFast);
-    Coor<N2> strides2 = detail::get_strides(dim2, SlowToFast);
+    Coor<N0> strides0 = detail::get_strides<IndexType>(dim0, SlowToFast);
+    Coor<N1> strides1 = detail::get_strides<IndexType>(dim1, SlowToFast);
+    Coor<N2> strides2 = detail::get_strides<IndexType>(dim2, SlowToFast);
     for (std::size_t i = 0, m = detail::volume(dim0); i < m; ++i) {
         std::vector<int> dim(128, -1);
-        Coor<N0> c0 = detail::index2coor(i, dim0, strides0);
+        Coor<N0> c0 = detail::index2coor((IndexType)i, dim0, strides0);
         for (std::size_t d = 0; d < N0; ++d) dim[o0[d]] = c0[d];
         for (std::size_t j = 0, n = detail::volume(dim1); j < n; ++j) {
             std::vector<int> dim_ = dim;
-            Coor<N1> c1 = detail::index2coor(j, dim1, strides1);
+            Coor<N1> c1 = detail::index2coor((IndexType)j, dim1, strides1);
             bool get_out = false;
             for (std::size_t d = 0; d < N1; ++d) {
                 if (dim_[o1[d]] == -1)

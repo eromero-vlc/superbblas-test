@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
         // Load into tensor t1
         if (dowrite) {
             const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
-            Coor<Nd - 2> stride = detail::get_strides(dimr, SlowToFast);
+            Coor<Nd - 2, std::size_t> stride = detail::get_strides<std::size_t>(dimr, SlowToFast);
 
             for (std::size_t nni = 0; nni < nn.size(); ++nni) {
                 int n = nn[nni];
@@ -360,8 +360,9 @@ int main(int argc, char **argv) {
                 std::size_t vol0 = detail::volume(local_size0);
                 Tensor t0(vol0);
 
-                Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, co);
-                Coor<Nd> strides1 = detail::get_strides(dim, co);
+                Coor<Nd - 1, std::size_t> local_strides0 =
+                    detail::get_strides<std::size_t>(local_size0, co);
+                Coor<Nd, std::size_t> strides1 = detail::get_strides<std::size_t>(dim, co);
                 for (int m = 0; m < dim[M]; ++m) {
                     const Coor<Nd - 1> from0{};
                     const Coor<Nd> from1{m};
@@ -420,12 +421,12 @@ int main(int argc, char **argv) {
             // Test the readings
             {
                 const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
-                Coor<Nd - 2> stridesr = detail::get_strides(dimr, co);
-                Coor<Nd> strides = detail::get_strides(dim, co);
+                Coor<Nd - 2, std::size_t> stridesr = detail::get_strides<std::size_t>(dimr, co);
+                Coor<Nd, std::size_t> strides = detail::get_strides<std::size_t>(dim, co);
 
                 for (auto n : nn) {
                     Coor<2> dimnn{n, n};
-                    Coor<2> stridesnn = detail::get_strides(dimnn, co);
+                    Coor<2, std::size_t> stridesnn = detail::get_strides<std::size_t>(dimnn, co);
 
                     // Create tensor t1 for reading the genprop on root process
                     PartitionStored<2> p1(nprocs);
@@ -482,8 +483,8 @@ int main(int argc, char **argv) {
                 std::size_t vol0 = detail::volume(local_size0);
                 Tensor t0(vol0);
 
-                Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, co);
-                Coor<Nd> strides1 = detail::get_strides(dim, co);
+                Coor<Nd - 1,std::size_t> local_strides0 = detail::get_strides<std::size_t>(local_size0, co);
+                Coor<Nd, std::size_t> strides1 = detail::get_strides<std::size_t>(dim, co);
                 for (int m = 0; m < dim[M]; ++m) {
                     const Coor<Nd - 1> from0{};
                     const Coor<Nd> from1{m};
@@ -515,12 +516,12 @@ int main(int argc, char **argv) {
             // Test the readings
             {
                 const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
-                Coor<Nd - 2> stridesr = detail::get_strides(dimr, co);
-                Coor<Nd> strides = detail::get_strides(dim, co);
+                Coor<Nd - 2, std::size_t> stridesr = detail::get_strides<std::size_t>(dimr, co);
+                Coor<Nd, std::size_t> strides = detail::get_strides<std::size_t>(dim, co);
 
                 for (auto n : nn) {
                     Coor<2> dimnn{n, n};
-                    Coor<2> stridesnn = detail::get_strides(dimnn, co);
+                    Coor<2, std::size_t> stridesnn = detail::get_strides<std::size_t>(dimnn, co);
 
                     // Create tensor t1 for reading the genprop on root process
                     PartitionStored<2> p1(nprocs);
@@ -616,8 +617,8 @@ int main(int argc, char **argv) {
             Tensor t0(vol0);
             std::vector<Scalar> t0_host(vol0);
 
-            Coor<Nd - 1> local_strides0 = detail::get_strides(local_size0, SlowToFast);
-            Coor<Nd - 1> strides0 = detail::get_strides(dim0, SlowToFast);
+            Coor<Nd - 1,std::size_t> local_strides0 = detail::get_strides<std::size_t>(local_size0, SlowToFast);
+            Coor<Nd - 1, std::size_t> strides0 = detail::get_strides<std::size_t>(dim0, SlowToFast);
             for (int m = 0; m < dim[M]; ++m) {
                 const Coor<Nd - 1> from0{};
                 const Coor<Nd> from1{m};
@@ -659,14 +660,15 @@ int main(int argc, char **argv) {
         // Test the readings
         {
             const Coor<Nd - 2> dimr{dim[M], dim[D], dim[T], dim[G], dim[S0], dim[S1]}; // mdtgsS
-            Coor<Nd - 2> stridesr = detail::get_strides(dimr, SlowToFast);
+            Coor<Nd - 2, std::size_t> stridesr = detail::get_strides<std::size_t>(dimr, SlowToFast);
             Coor<2> dimNN{dim[N0], dim[N1]};
-            Coor<2> stridesNN = detail::get_strides(dimNN, SlowToFast);
-            Coor<Nd> strides = detail::get_strides(dim, SlowToFast);
+            Coor<2, std::size_t> stridesNN = detail::get_strides<std::size_t>(dimNN, SlowToFast);
+            Coor<Nd, std::size_t> strides = detail::get_strides<std::size_t>(dim, SlowToFast);
 
             for (auto n : nn) {
                 Coor<2> dimnn{n, n};
-                Coor<2> stridesnn = detail::get_strides(dimnn, SlowToFast);
+                Coor<2, std::size_t> stridesnn =
+                    detail::get_strides<std::size_t>(dimnn, SlowToFast);
 
                 // Create tensor t1 for reading the genprop on root process
                 PartitionStored<2> p1(nprocs);

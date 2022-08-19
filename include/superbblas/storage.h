@@ -507,7 +507,7 @@ namespace superbblas {
                 // Add new block on the grid
                 Unsorted_Grid g = grid_intersection(from, size);
                 Grid_range<N, std::vector<IndexType>> git(&g[0]);
-                Coor<N> dim_strides = get_strides(dim, SlowToFast);
+                Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
                 for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
                     Coor<N> g_coor;
                     for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
@@ -529,7 +529,7 @@ namespace superbblas {
                 // Compute the return
                 std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>> r;
                 Grid_range<N, std::vector<IndexType>> git(&g[0]);
-                Coor<N> dim_strides = get_strides(dim, SlowToFast);
+                Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
                 std::set<BlockIndex> visited;
                 for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
                     Coor<N> g_coor;
@@ -616,7 +616,7 @@ namespace superbblas {
                     IndexType gFrom = *get_hyperslice(from, n);
 
                     // Insert the new hyperplanes
-                    Coor<N> dim_strides = get_strides(dim, SlowToFast);
+                    Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
                     Grid_range<N, std::set<IndexType>> git(&grid[0], n);
                     std::vector<BlockIndex> affected_blocks;
                     for (std::size_t i = 0, vol = git.volume(); i < vol; ++git, ++i) {
@@ -872,8 +872,8 @@ namespace superbblas {
         /// NOTE: the current file position should be at the beginning of the "values" section
         /// where v0 is going to be written.
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename Comm>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename Comm>
         void local_save(typename elem<T>::type alpha, Order<Nd0> o0, Coor<Nd0> from0,
                         Coor<Nd0> size0, Coor<Nd0> dim0, vector<const T, XPU0> v0,
                         const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
@@ -895,14 +895,14 @@ namespace superbblas {
             }
 
             // Get the permutation vectors
-            Indices<XPU0> indices0;
-            Indices<Cpu> indices1;
+            IndicesT<IndexType, XPU0> indices0;
+            IndicesT<IndexType, Cpu> indices1;
             IndexType disp0, disp1;
             Cpu cpu = v0.ctx().toCpu();
-            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                   v0.ctx(), indices0, disp0, co);
-            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        cpu, indices1, disp1, co);
+            get_permutation_origin_cache(o0, from0, size0, dim0, o1, from1, dim1, v0.ctx(),
+                                         indices0, disp0, co);
+            get_permutation_destination_cache(o0, from0, size0, dim0, o1, from1, dim1, cpu,
+                                              indices1, disp1, co);
 
             // Write the values of v0 contiguously
             vector<Q, Cpu> v0_host(indices0.size(), cpu);
@@ -938,6 +938,107 @@ namespace superbblas {
             }
         }
 
+        /// Copy the content of tensor v0 into the storage
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param fh: MPI file handler
+        /// \param disp: number of bytes from the beginning of the file before the coordinate zero of this block
+        /// \param co: coordinate linearization order
+        ///
+        /// NOTE: the current file position should be at the beginning of the "values" section
+        /// where v0 is going to be written.
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename Comm>
+        void local_save(typename elem<T>::type alpha, Order<Nd0> o0, Coor<Nd0> from0,
+                        Coor<Nd0> size0, Coor<Nd0> dim0, vector<const T, XPU0> v0,
+                        const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                        Storage_context<Nd1, Comm> &sto, std::size_t blockIndex, CoorOrder co,
+                        bool do_change_endianness) {
+
+            if (std::max(volume(dim0), volume(dim1)) >=
+                (std::size_t)std::numeric_limits<IndexType>::max()) {
+                local_save<std::size_t, Nd0, Nd1, T, Q>(alpha, o0, from0, size0, dim0, v0, o1,
+                                                        from1, dim1, sto, blockIndex, co,
+                                                        do_change_endianness);
+            } else {
+                local_save<IndexType, Nd0, Nd1, T, Q>(alpha, o0, from0, size0, dim0, v0, o1, from1,
+                                                      dim1, sto, blockIndex, co,
+                                                      do_change_endianness);
+            }
+        }
+
+        /// Copy from a storage into the tensor v1
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param fh: file handler
+        /// \param disp: number of bytes from the beginning of the file before the coordinate zero of this block
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU1, typename EWOP, typename FileT>
+        void local_load(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, FileT &fh, std::size_t disp,
+                        Order<Nd1> o1, Coor<Nd1> from1, Coor<Nd1> dim1, vector<Q, XPU1> v1, EWOP,
+                        CoorOrder co, bool do_change_endianness) {
+
+            tracker<XPU1> _t("local load", v1.ctx());
+
+            // Shortcut for an empty range
+            if (volume(size0) == 0) return;
+
+            // Make agree in ordering source and destination
+            if (co != SlowToFast) {
+                o1 = reverse(o1);
+                from1 = reverse(from1);
+                dim1 = reverse(dim1);
+                co = SlowToFast;
+            }
+
+            // Get the permutation vectors
+            IndicesT<IndexType, Cpu> indices0;
+            IndicesT<IndexType, XPU1> indices1;
+            IndexType disp0, disp1;
+            Cpu cpu = v1.ctx().toCpu();
+            get_permutation_origin_cache(o0, from0, size0, dim0, o1, from1, dim1, cpu, indices0,
+                                         disp0, co);
+            get_permutation_destination_cache(o0, from0, size0, dim0, o1, from1, dim1, v1.ctx(),
+                                              indices1, disp1, co);
+
+            // Do the reading
+            vector<T, Cpu> v0(indices0.size(), cpu);
+            for (std::size_t i = 0; i < indices0.size();) {
+                std::size_t n = 1;
+                for (; i + n < indices0.size() && indices0[i + n - 1] + 1 == indices0[i + n]; ++n)
+                    ;
+                seek(fh, disp + (disp0 + indices0[i]) * sizeof(T));
+                read(fh, v0.data() + i, n);
+                i += n;
+            }
+
+            // Change endianness
+            if (do_change_endianness) change_endianness(v0.data(), v0.size());
+
+            // Write the values of v0 into v1
+            copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), indices0.size(), v1.data() + disp1,
+                                    indices1.data(), v1.ctx(), EWOP{});
+        }
+
         /// Copy from a storage into the tensor v1
         /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
@@ -959,46 +1060,17 @@ namespace superbblas {
                         Order<Nd1> o1, Coor<Nd1> from1, Coor<Nd1> dim1, vector<Q, XPU1> v1, EWOP,
                         CoorOrder co, bool do_change_endianness) {
 
-            tracker<XPU1> _t("local load", v1.ctx());
+            if (std::max(volume(dim0), volume(dim1)) >=
+                (std::size_t)std::numeric_limits<IndexType>::max()) {
+                local_load<std::size_t, Nd0, Nd1, T, Q>(alpha, o0, from0, size0, dim0, fh, disp, o1,
+                                                        from1, dim1, v1, EWOP{}, co,
+                                                        do_change_endianness);
+            } else {
 
-            // Shortcut for an empty range
-            if (volume(size0) == 0) return;
-
-            // Make agree in ordering source and destination
-            if (co != SlowToFast) {
-                o1 = reverse(o1);
-                from1 = reverse(from1);
-                dim1 = reverse(dim1);
-                co = SlowToFast;
+                local_load<IndexType, Nd0, Nd1, T, Q>(alpha, o0, from0, size0, dim0, fh, disp, o1,
+                                                      from1, dim1, v1, EWOP{}, co,
+                                                      do_change_endianness);
             }
-
-            // Get the permutation vectors
-            Indices<Cpu> indices0;
-            Indices<XPU1> indices1;
-            IndexType disp0, disp1;
-            Cpu cpu = v1.ctx().toCpu();
-            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, cpu,
-                                                   indices0, disp0, co);
-            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        v1.ctx(), indices1, disp1, co);
-
-            // Do the reading
-            vector<T, Cpu> v0(indices0.size(), cpu);
-            for (std::size_t i = 0; i < indices0.size();) {
-                std::size_t n = 1;
-                for (; i + n < indices0.size() && indices0[i + n - 1] + 1 == indices0[i + n]; ++n)
-                    ;
-                seek(fh, disp + (disp0 + indices0[i]) * sizeof(T));
-                read(fh, v0.data() + i, n);
-                i += n;
-            }
-
-            // Change endianness
-            if (do_change_endianness) change_endianness(v0.data(), v0.size());
-
-            // Write the values of v0 into v1
-            copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), indices0.size(), v1.data() + disp1,
-                                    indices1.data(), v1.ctx(), EWOP{});
         }
 
         /// Copy the content of plural tensor v0 into a storage

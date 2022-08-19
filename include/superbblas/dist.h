@@ -369,7 +369,8 @@ namespace superbblas {
         /// \param comm: communicator
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0>
         void pack(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, const Coor<Nd0> &dim0,
                   vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
                   typename Indices<Cpu>::iterator disp1, vector<Q, Cpu> &v1,
@@ -380,15 +381,15 @@ namespace superbblas {
             // Find indices on cache
             using Key =
                 std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
-            using PairIndices = std::pair<Indices<XPU0>, Indices<Cpu>>;
+            using PairIndices = std::pair<IndicesT<IndexType, XPU0>, IndicesT<IndexType, Cpu>>;
             struct cache_tag {};
             auto cache = getCache<Key, PairIndices, TupleHash<Key>, cache_tag>(v0.ctx());
             Key key{fs, dim0, get_perms(o0, o1), deviceId(v0.ctx()), co};
             auto it = mask0.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
-            Indices<XPU0> indices0_xpu;
-            Indices<Cpu> indices1;
+            IndicesT<IndexType, XPU0> indices0_xpu;
+            IndicesT<IndexType, Cpu> indices1;
             if (it == cache.end()) {
                 tracker<XPU0> _t("comp. pack permutation", v0.ctx());
 
@@ -399,8 +400,8 @@ namespace superbblas {
                         for (const auto &it : fs[i]) vol += volume(it[1]);
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-                Indices<Cpu> indices0{vol, Cpu{}};
-                indices1 = Indices<Cpu>{vol, Cpu{}};
+                IndicesT<IndexType, Cpu> indices0{vol, Cpu{}};
+                indices1 = IndicesT<IndexType, Cpu>{vol, Cpu{}};
                 Mask<Cpu> mask0_cpu = makeSure(mask0, Cpu{});
                 std::size_t n = 0;
                 for (std::size_t i = 0; i < fs.size(); ++i) {
@@ -413,17 +414,18 @@ namespace superbblas {
                         // doing the MPI call
                         Coor<Nd0> fromi = fsi[0], sizei = fsi[1];
                         Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
-                        Indices<Cpu> indices0i = get_permutation_origin<Nd0, Nd1>(
+                        IndicesT<IndexType, Cpu> indices0i = get_permutation_origin<IndexType>(
                             o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
                         assert(indices0i.size() + n <= vol);
-                        Indices<Cpu> indices0i_mask = indices0i;
+                        IndicesT<IndexType, Cpu> indices0i_mask = indices0i;
                         if (mask0_cpu.size() > 0)
                             indices0i_mask = select(indices0i, mask0_cpu.data(), indices0i);
                         std::copy_n(indices0i_mask.begin(), indices0i_mask.size(),
                                     indices0.begin() + n);
 
-                        Indices<Cpu> indices1i_mask = get_permutation_destination<Nd0, Nd1>(
-                            o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
+                        IndicesT<IndexType, Cpu> indices1i_mask =
+                            get_permutation_destination<IndexType>(o0, fromi, sizei, dim0, o1, {},
+                                                                   sizei1, Cpu{}, co);
                         assert(indices0i.size() == indices1i_mask.size());
                         if (mask0_cpu.size() > 0)
                             indices1i_mask = select(indices0i, mask0_cpu.data(), indices1i_mask);
@@ -471,8 +473,8 @@ namespace superbblas {
         /// \param comm: communicator
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename XPU1>
         PackedValues<Q> pack(const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
                              const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
@@ -490,12 +492,14 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first)
                     if (c.componentId == componentId0)
-                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, c.mask_it, o1,
-                                             buf_disp.begin(), r.buf, ncomponents1, comm, co);
+                        pack<IndexType, Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it,
+                                                        c.mask_it, o1, buf_disp.begin(), r.buf,
+                                                        ncomponents1, comm, co);
                 for (const Component<Nd0, const T, XPU1> &c : v.second)
                     if (c.componentId == componentId0)
-                        pack<Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it, c.mask_it, o1,
-                                             buf_disp.begin(), r.buf, ncomponents1, comm, co);
+                        pack<IndexType, Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it,
+                                                        c.mask_it, o1, buf_disp.begin(), r.buf,
+                                                        ncomponents1, comm, co);
             }
 
             // Update the counts when using maskin
@@ -507,12 +511,14 @@ namespace superbblas {
         }
 
         /// Vectors used in MPI communications
-        template <typename T, typename XPU> struct UnpackedValues : public PackedValues<T> {
-            std::vector<std::vector<Indices<XPU>>> indices; ///< indices of the destination elements
+        template <typename IndexType, typename T, typename XPU>
+        struct UnpackedValues : public PackedValues<T> {
+            std::vector<std::vector<IndicesT<IndexType, XPU>>>
+                indices; ///< indices of the destination elements
             std::vector<std::vector<IndexType>> indices_disp; ///< constant added to all indices
             UnpackedValues(vector<T, Cpu> buf, const std::vector<MpiInt> &counts,
                            const std::vector<MpiInt> &displ,
-                           const std::vector<std::vector<Indices<XPU>>> &indices,
+                           const std::vector<std::vector<IndicesT<IndexType, XPU>>> &indices,
                            const std::vector<std::vector<IndexType>> &indices_disp)
                 : PackedValues<T>{buf, counts, displ},
                   indices{indices},
@@ -527,19 +533,19 @@ namespace superbblas {
         /// \param comm: communication
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd, typename T, typename XPU>
-        UnpackedValues<T, XPU> prepare_unpack(const Proc_ranges<Nd> &toReceive,
-                                              const Component<Nd, T, XPU> &v, MpiComm comm,
-                                              CoorOrder co) {
+        template <typename IndexType, std::size_t Nd, typename T, typename XPU>
+        UnpackedValues<IndexType, T, XPU> prepare_unpack(const Proc_ranges<Nd> &toReceive,
+                                                         const Component<Nd, T, XPU> &v,
+                                                         MpiComm comm, CoorOrder co) {
 
             tracker<XPU> _t("prepare unpack", v.it.ctx());
 
-            UnpackedValues<T, XPU> r{
-                vector<T, Cpu>(),                                         // buf
-                std::vector<MpiInt>(comm.nprocs, 0),                      // counts
-                std::vector<MpiInt>(comm.nprocs, 0),                      // displ
-                std::vector<std::vector<Indices<XPU>>>(toReceive.size()), // indices
-                std::vector<std::vector<IndexType>>(toReceive.size())     // indices_disp
+            UnpackedValues<IndexType, T, XPU> r{
+                vector<T, Cpu>(),                                                     // buf
+                std::vector<MpiInt>(comm.nprocs, 0),                                  // counts
+                std::vector<MpiInt>(comm.nprocs, 0),                                  // displ
+                std::vector<std::vector<IndicesT<IndexType, XPU>>>(toReceive.size()), // indices
+                std::vector<std::vector<IndexType>>(toReceive.size()) // indices_disp
             };
 
             // Compute the destination indices and the total number of elements received from each process
@@ -550,10 +556,10 @@ namespace superbblas {
                 std::size_t n = 0;
                 for (const auto &fsi : toReceive[i]) {
                     Coor<Nd> fromi = fsi[0], sizei = fsi[1];
-                    Indices<XPU> indices1;
+                    IndicesT<IndexType, XPU> indices1;
                     IndexType disp;
-                    get_permutation_destination_cache<Nd, Nd>(o, {}, sizei, sizei, o, fromi, v.dim,
-                                                              v.it.ctx(), indices1, disp, co);
+                    get_permutation_destination_cache(o, {}, sizei, sizei, o, fromi, v.dim,
+                                                      v.it.ctx(), indices1, disp, co);
 
                     // Apply the masks
                     if (v.mask_it.size() > 0)
@@ -587,9 +593,9 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to packed tensors
 
-        template <std::size_t Nd, typename T, typename XPU, typename EWOP>
-        void unpack(const UnpackedValues<T, XPU> &r, const Component<Nd, T, XPU> &v, MpiComm comm,
-                    EWOP, typename elem<T>::type alpha) {
+        template <typename IndexType, std::size_t Nd, typename T, typename XPU, typename EWOP>
+        void unpack(const UnpackedValues<IndexType, T, XPU> &r, const Component<Nd, T, XPU> &v,
+                    MpiComm comm, EWOP, typename elem<T>::type alpha) {
 
             tracker<XPU> _t("unpack", v.it.ctx());
 
@@ -620,8 +626,8 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1, typename XPUr, typename EWOp>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename XPU1, typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
@@ -634,9 +640,10 @@ namespace superbblas {
 
             // Pack v0 and prepare for receiving data from other processes
             std::shared_ptr<PackedValues<Q>> v0ToSend = std::make_shared<PackedValues<Q>>(
-                pack<Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co));
-            std::shared_ptr<UnpackedValues<Q, XPUr>> v1ToReceive =
-                std::make_shared<UnpackedValues<Q, XPUr>>(prepare_unpack(toReceive, v1, comm, co));
+                pack<IndexType, Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co));
+            std::shared_ptr<UnpackedValues<IndexType, Q, XPUr>> v1ToReceive =
+                std::make_shared<UnpackedValues<IndexType, Q, XPUr>>(
+                    prepare_unpack<IndexType>(toReceive, v1, comm, co));
 
             // Do the MPI communication
             static MPI_Datatype dtype = get_mpi_datatype();
@@ -705,8 +712,8 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1, typename XPUr, typename EWOp>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename XPU1, typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
@@ -724,6 +731,52 @@ namespace superbblas {
             (void)alpha;
             if (comm.nprocs <= 1) return [] {};
             throw std::runtime_error("Unsupported SelfComm with nprocs > 1");
+        }
+
+        /// Return the volume of the largest range
+        /// \param ranges: list of tensor ranges
+
+        template <std::size_t Nd> std::size_t maximum_volume(const Proc_ranges<Nd> &ranges) {
+            std::size_t vol = 0;
+            for (auto const &r : ranges)
+                for (auto const &it : r) vol = std::max(vol, volume(it[1]));
+            return vol;
+        }
+
+        /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
+        /// \param o0: dimension labels for the origin tensor
+        /// \param toSend: list of tensor ranges to be sent for each component
+        /// \param v0: origin data to send
+        /// \param o1: dimension labels for the destination tensor
+        /// \param toReceive: list of tensor ranges to receive
+        /// \param v1: destination data
+        /// \param ncomponents1: number of components on the destination tensor
+        /// \param comm: communication
+        /// \param co: coordinate linearization order
+        /// \param alpha: factor applied to sending tensors
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename XPUr, typename Comm, typename EWOp>
+        Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
+                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                             const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
+                             const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
+                             Comm comm, EWOp, CoorOrder co, typename elem<T>::type alpha) {
+
+            bool use_size_t = false;
+            for (const auto &r : toSend)
+                if (maximum_volume(r) >= (std::size_t)std::numeric_limits<IndexType>::max())
+                    use_size_t = true;
+            if (maximum_volume(toReceive) >= (std::size_t)std::numeric_limits<IndexType>::max())
+                use_size_t = true;
+
+            if (!use_size_t) {
+                return send_receive<IndexType>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
+                                               comm, EWOp{}, co, alpha);
+            } else {
+                return send_receive<std::size_t>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
+                                                 comm, EWOp{}, co, alpha);
+            }
         }
 
         /// Return coor % dim
@@ -853,7 +906,7 @@ namespace superbblas {
                                        const Coor<Nd> &from1, const Coor<Nd> &size1,
                                        const Coor<Nd> &dim) {
             auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
-            std::size_t vol = volume(p.second);
+            IndexType vol = volume(p.second);
             if (vol == 0) {
                 return {};
             } else if (vol == 1) {
@@ -862,9 +915,9 @@ namespace superbblas {
                 return r;
             } else {
                 From_size_out<Nd> r(vol, Cpu{});
-                Coor<Nd> stride = get_strides<Nd>(p.second, FastToSlow);
-                for (std::size_t i = 0; i < vol; ++i) {
-                    Coor<Nd> c = index2coor<Nd>(i, p.second, stride);
+                Coor<Nd> stride = get_strides<IndexType>(p.second, FastToSlow);
+                for (IndexType i = 0; i < vol; ++i) {
+                    Coor<Nd> c = index2coor(i, p.second, stride);
                     for (std::size_t j = 0; j < Nd; ++j) {
                         r[i][0][j] = p.first[c[j]][0][j];
                         r[i][1][j] = p.first[c[j]][1][j];
@@ -893,9 +946,9 @@ namespace superbblas {
             From_size_out<Nd> r(vol, Cpu{});
             std::size_t ri = 0;
             for (std::size_t i = 0; i < fs0.size(); ++i) {
-                Coor<Nd> stride = get_strides<Nd>(p[i].second, FastToSlow);
-                for (std::size_t j = 0, j1 = volume(p[i].second); j < j1; ++j) {
-                    Coor<Nd> c = index2coor<Nd>(j, p[i].second, stride);
+                Coor<Nd> stride = get_strides<IndexType>(p[i].second, FastToSlow);
+                for (IndexType j = 0, j1 = volume(p[i].second); j < j1; ++j) {
+                    Coor<Nd> c = index2coor(j, p[i].second, stride);
                     for (std::size_t k = 0; k < Nd; ++k) {
                         r[ri][0][k] = p[i].first[c[k]][0][k];
                         r[ri][1][k] = p[i].first[c[k]][1][k];
@@ -930,9 +983,9 @@ namespace superbblas {
         /// \param dim: dimensions of the tensor where the ranges belong
         /// \param stride: strides for those dimensions
 
-        template <std::size_t Nd>
+        template <std::size_t Nd, typename SIdx>
         From_size_out<Nd> sort_ranges(const From_size_out<Nd> &fs, const Coor<Nd> &dim,
-                                      const Coor<Nd> &stride) {
+                                      const Coor<Nd, SIdx> &stride) {
             From_size_out<Nd> r(fs.size(), Cpu{});
             for (std::size_t i = 0; i < fs.size(); ++i) r[i] = fs[i];
             std::sort(r.begin(), r.end(),
@@ -1030,7 +1083,7 @@ namespace superbblas {
 
             // Compute the indices
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            Coor<Nd1> stride1 = get_strides(dim1, FastToSlow);
+            Coor<Nd1, std::size_t> stride1 = get_strides<std::size_t>(dim1, FastToSlow);
             unsigned int nprocs = p1.size() / ncomponents1;
             Proc_ranges<Nd0> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
@@ -1084,7 +1137,7 @@ namespace superbblas {
             From_size_out<Nd0> rfs0 = translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
 
             // Compute the indices
-            Coor<Nd1> stride1 = get_strides(dim1, FastToSlow);
+            Coor<Nd1, std::size_t> stride1 = get_strides<std::size_t>(dim1, FastToSlow);
             unsigned int nprocs = p0.size();
             Proc_ranges<Nd1> r(nprocs);
             for (unsigned int i = 0; i < nprocs; ++i) {
@@ -1130,15 +1183,15 @@ namespace superbblas {
             /// \param mf: either fill with indices or zeros
 
             template <std::size_t Nd>
-            vector<IndexType, Cpu> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
-                                                       const Coor<Nd> &dim, Cpu cpu, CoorOrder co,
-                                                       MockFilling mf) {
+            vector<std::size_t, Cpu> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                         const Coor<Nd> &dim, Cpu cpu, CoorOrder co,
+                                                         MockFilling mf) {
                 std::size_t vol = volume(size);
-                vector<IndexType, Cpu> r(vol, cpu);
+                vector<std::size_t, Cpu> r(vol, cpu);
 
                 if (mf == FillWithIndices) {
-                    Coor<Nd> local_stride = get_strides(size, co);
-                    Coor<Nd> stride = get_strides(dim, co);
+                    Coor<Nd, std::size_t> local_stride = get_strides<std::size_t>(size, co);
+                    Coor<Nd, std::size_t> stride = get_strides<std::size_t>(dim, co);
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
@@ -1162,20 +1215,21 @@ namespace superbblas {
 
             template <std::size_t Nd, typename XPU,
                       typename std::enable_if<!std::is_same<Cpu, XPU>::value, bool>::type = true>
-            vector<IndexType, XPU> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
-                                                       const Coor<Nd> &dim, XPU xpu, CoorOrder co,
-                                                       MockFilling mf) {
+            vector<std::size_t, XPU> get_mock_components(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                         const Coor<Nd> &dim, XPU xpu, CoorOrder co,
+                                                         MockFilling mf) {
                 std::size_t vol = volume(size);
-                vector<IndexType, XPU> r(vol, xpu);
-                vector<IndexType, Cpu> r_host = get_mock_components(from, size, dim, Cpu{}, co, mf);
-                copy_n<IndexType>(1, r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
-                                  EWOp::Copy{});
+                vector<std::size_t, XPU> r(vol, xpu);
+                vector<std::size_t, Cpu> r_host =
+                    get_mock_components(from, size, dim, Cpu{}, co, mf);
+                copy_n<std::size_t>(1, r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
+                                    EWOp::Copy{});
                 return r;
             }
 
             template <typename T>
             using mockIndexType = typename std::conditional<std::is_const<T>::value,
-                                                            const IndexType, IndexType>::type;
+                                                            const std::size_t, std::size_t>::type;
 
             /// Return a tensor with the same shape as the given one but where each element has its index
             /// \param p0: partitioning of the origin tensor in consecutive ranges
@@ -1200,13 +1254,13 @@ namespace superbblas {
                 Components_tmpl<Nd, mockIndexType<T>, XPU0, XPU1> r;
                 unsigned int ncomponents = v.first.size() + v.second.size();
                 for (const Component<Nd, T, XPU0> &c : v.first) {
-                    r.first.push_back(Component<Nd, IndexType, XPU0>{
+                    r.first.push_back(Component<Nd, std::size_t, XPU0>{
                         get_mock_components(p[c.componentId + comm.rank * ncomponents][0], c.dim,
                                             dim, c.it.ctx(), co, mf),
                         c.dim, c.componentId, c.mask_it});
                 }
                 for (const Component<Nd, T, XPU1> &c : v.second) {
-                    r.second.push_back(Component<Nd, IndexType, XPU1>{
+                    r.second.push_back(Component<Nd, std::size_t, XPU1>{
                         get_mock_components(p[c.componentId + comm.rank * ncomponents][0], c.dim,
                                             dim, c.it.ctx(), co, mf),
                         c.dim, c.componentId, c.mask_it});
@@ -1232,16 +1286,16 @@ namespace superbblas {
                                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                  const Order<Nd0> &o0, const Coor<Nd1> &from1,
                                  const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                                 const Component<Nd1, IndexType, XPU> &v,
+                                 const Component<Nd1, std::size_t, XPU> &v,
                                  const Coor<Nd1> &local_from1, EWOP, CoorOrder co) {
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
                 Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
                 Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
                 std::size_t vol = volume(v.dim);
-                Coor<Nd1> local_stride1 = get_strides<Nd1>(v.dim, co);
-                Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-                vector<IndexType, Cpu> v_host = makeSure(v.it, Cpu{});
+                Coor<Nd1, std::size_t> local_stride1 = get_strides<std::size_t>(v.dim, co);
+                Coor<Nd0, std::size_t> stride0 = get_strides<std::size_t>(dim0, co);
+                vector<std::size_t, Cpu> v_host = makeSure(v.it, Cpu{});
                 vector<MaskType, Cpu> m_host = makeSure(v.mask_it, Cpu{});
 
 #ifdef _OPENMP
@@ -1250,7 +1304,7 @@ namespace superbblas {
                 for (std::size_t i = 0; i < vol; ++i) {
                     Coor<Nd1> c1 =
                         normalize_coor(index2coor(i, v.dim, local_stride1) + local_from1, dim1);
-                    IndexType true_val = 0;
+                    std::size_t true_val = 0;
                     if (is_in_interval(from1, size1, dim1, c1)) {
                         Coor<Nd0> c0 =
                             normalize_coor(reorder_coor(c1 - from1, perm1) + from0, dim0);
@@ -1298,9 +1352,9 @@ namespace superbblas {
                 getTrackingTime() = false;
 
                 // Fill the mock input and output tensors
-                const Components_tmpl<Nd0, const IndexType, XPU0, XPU1> v0_ =
+                const Components_tmpl<Nd0, const std::size_t, XPU0, XPU1> v0_ =
                     get_mock_components(p0, dim0, v0, co, FillWithIndices, comm);
-                const Components_tmpl<Nd1, IndexType, XPU0, XPU1> v1_ =
+                const Components_tmpl<Nd1, std::size_t, XPU0, XPU1> v1_ =
                     get_mock_components(p1, dim1, v1, co, FillWithZeros, comm);
 
                 // Copy the indices
@@ -1309,12 +1363,12 @@ namespace superbblas {
 
                 // Check that the modified elements on v1_ are what they should be
                 unsigned int ncomponents1 = v1.first.size() + v1.second.size();
-                for (const Component<Nd1, IndexType, XPU0> &c : v1_.first) {
+                for (const Component<Nd1, std::size_t, XPU0> &c : v1_.first) {
                     test_copy_check<Nd0, Nd1>(p0, from0, size0, dim0, o0, from1, dim1, o1, c,
                                               p1[c.componentId + comm.rank * ncomponents1][0],
                                               EWOP{}, co);
                 }
-                for (const Component<Nd1, IndexType, XPU1> &c : v1_.second) {
+                for (const Component<Nd1, std::size_t, XPU1> &c : v1_.second) {
                     test_copy_check<Nd0, Nd1>(p0, from0, size0, dim0, o0, from1, dim1, o1, c,
                                               p1[c.componentId + comm.rank * ncomponents1][0],
                                               EWOP{}, co);
@@ -2074,9 +2128,9 @@ namespace superbblas {
             if (ext_power[i] < 0) throw std::runtime_error("Unsupported value for `power`");
 
         std::vector<PartitionItem<Nd>> fs(nprocs < 0 ? vol_procs : nprocs);
-        Coor<Nd> stride = detail::get_strides<Nd>(procs, SlowToFast);
+        Coor<Nd> stride = detail::get_strides<IndexType>(procs, SlowToFast);
         for (int rank = 0; rank < vol_procs; ++rank) {
-            Coor<Nd> cproc = detail::index2coor<Nd>(rank, procs, stride);
+            Coor<Nd> cproc = detail::index2coor(rank, procs, stride);
             for (std::size_t i = 0; i < Nd; ++i) {
                 // Number of elements in process with rank 'cproc[i]' on dimension 'i'
                 fs[rank][1][i] = std::min(

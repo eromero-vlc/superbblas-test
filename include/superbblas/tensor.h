@@ -38,18 +38,20 @@
             26, 27, 28
 #    define REPLACE_Nd0_Nd1 REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS)
 
+#    define REPLACE_IndexType REPLACE(IndexType, superbblas::IndexType, std::size_t)
+
 /// Generate template instantiations for get_permutation_origin and get_permutation_destination functions
 /// with template parameters Nd0 and Nd1
 
 #    define DECL_ORIG_PERM(...)                                                                    \
         EMIT REPLACE1(get_permutation_origin,                                                      \
-                      superbblas::detail::get_permutation_origin<Nd0, Nd1>)                        \
-            REPLACE_Nd0_Nd1 template __VA_ARGS__;
+                      superbblas::detail::get_permutation_origin<IndexType, Nd0, Nd1>)             \
+            REPLACE_IndexType REPLACE_Nd0_Nd1 template __VA_ARGS__;
 
 #    define DECL_DEST_PERM(...)                                                                    \
         EMIT REPLACE1(get_permutation_destination,                                                 \
-                      superbblas::detail::get_permutation_destination<Nd0, Nd1>)                   \
-            REPLACE_Nd0_Nd1 template __VA_ARGS__;
+                      superbblas::detail::get_permutation_destination<IndexType, Nd0, Nd1>)        \
+            REPLACE_IndexType REPLACE_Nd0_Nd1 template __VA_ARGS__;
 
 #else
 #    define DECL_ORIG_PERM(...) __VA_ARGS__
@@ -61,7 +63,7 @@ namespace superbblas {
     /// Coordinate Index type
     using IndexType = int;
     /// Coordinate type
-    template <std::size_t Nd> using Coor = std::array<IndexType, Nd>;
+    template <std::size_t Nd, typename Idx = IndexType> using Coor = std::array<Idx, Nd>;
     /// Vector of dimension labels
     template <std::size_t Nd> using Order = std::array<char, Nd>;
     /// Mask/boolean element: use a type that work with BLAS
@@ -130,11 +132,12 @@ namespace superbblas {
         /// Coordinate based on tarray
         /// \tparam Nd: number of dimensions
 
-        template <std::size_t Nd> using TCoor = tarray<IndexType, Nd>;
+        template <std::size_t Nd, typename Idx = IndexType> using TCoor = tarray<Idx, Nd>;
 #endif
 
         /// Vector of `IndexType`
         template <typename XPU> using Indices = vector<IndexType, XPU>;
+        template <typename IndexType, typename XPU> using IndicesT = vector<IndexType, XPU>;
 
         /// Mask vector
         template <typename XPU> using Mask = vector<MaskType, XPU>;
@@ -215,17 +218,17 @@ namespace superbblas {
         }
 
         struct ns_toTCoor_aux {
-            template <std::size_t I, std::size_t Nr, std::size_t N,
+            template <std::size_t I, std::size_t Nr, std::size_t N, typename IndexType,
                       typename std::enable_if<(I < N && 1 < Nr), bool>::type = true>
-            static inline TCoor<Nr> toTCoor_aux(const Coor<N> &a) {
-                const auto sl = TCoor<Nr>::size_left;
-                const auto sr = TCoor<Nr>::size_right;
+            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<N, IndexType> &a) {
+                const auto sl = TCoor<Nr, IndexType>::size_left;
+                const auto sr = TCoor<Nr, IndexType>::size_right;
                 return {toTCoor_aux<I, sl>(a), toTCoor_aux<I + sl, sr>(a)};
             }
 
-            template <std::size_t I, std::size_t Nr, std::size_t N,
+            template <std::size_t I, std::size_t Nr, std::size_t N, typename IndexType,
                       typename std::enable_if<(I < N && 1 == Nr), bool>::type = true>
-            static inline TCoor<Nr> toTCoor_aux(const Coor<N> &a) {
+            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<N, IndexType> &a) {
                 return {a[I]};
             }
         };
@@ -233,7 +236,8 @@ namespace superbblas {
         /// Convert from Coor to TCoor
         /// \param a: input coordinate
 
-        template <std::size_t Nd> inline TCoor<Nd> toTCoor(const Coor<Nd> &a) {
+        template <std::size_t Nd, typename IndexType>
+        inline TCoor<Nd, IndexType> toTCoor(const Coor<Nd, IndexType> &a) {
             return ns_toTCoor_aux::toTCoor_aux<0, Nd>(a);
         }
 #endif
@@ -244,9 +248,9 @@ namespace superbblas {
         /// \param dim: tensor dimensions
         /// \param coor: coordinate to evaluate whether it is in the interval
 
-        template <std::size_t N>
-        bool is_in_interval(const Coor<N> &from, const Coor<N> &size, const Coor<N> &dim,
-                            const Coor<N> &coor) {
+        template <std::size_t N, typename IndexType>
+        bool is_in_interval(const Coor<N, IndexType> &from, const Coor<N, IndexType> &size,
+                            const Coor<N, IndexType> &dim, const Coor<N, IndexType> &coor) {
             for (std::size_t i = 0; i < N; i++)
                 if (!((from[i] <= coor[i] && coor[i] < from[i] + size[i]) ||
                       (from[i] <= coor[i] + dim[i] && coor[i] + dim[i] < from[i] + size[i])))
@@ -275,8 +279,9 @@ namespace superbblas {
         /// \param dim: lattice dimension
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd> Coor<Nd> get_strides(const Coor<Nd> dim, CoorOrder co) {
-            Coor<Nd> p;
+        template <typename SIdx, std::size_t Nd, typename CIdx>
+        Coor<Nd, SIdx> get_strides(const Coor<Nd, CIdx> dim, CoorOrder co) {
+            Coor<Nd, SIdx> p;
             if (Nd > 0) {
                 if (co == SlowToFast) {
                     // p(i) = prod(dim(end:-1:i))
@@ -296,24 +301,27 @@ namespace superbblas {
         /// \param dim: lattice dimensions
         /// \param stride: jump to get to the next coordinate in each dimension
 
-        template <std::size_t Nd>
-        IndexType coor2index(const Coor<Nd> &coor, const Coor<Nd> &dim, const Coor<Nd> &stride) {
+        template <std::size_t Nd, typename CIdx, typename SIdx>
+        SIdx coor2index(const Coor<Nd, CIdx> &coor, const Coor<Nd, CIdx> &dim,
+                        const Coor<Nd, SIdx> &stride) {
             IndexType r = 0;
             for (std::size_t j = 0; j < Nd; j++) r += (coor[j] % dim[j]) * stride[j];
             return r;
         }
 
 #ifdef SUPERBBLAS_USE_THRUST
-        template <std::size_t Nd, typename std::enable_if<(Nd > 1), bool>::type = true>
-        __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &coor, const TCoor<Nd> &dim,
-                                                 const TCoor<Nd> &stride) {
+        template <std::size_t Nd, typename CIdx, typename SIdx,
+                  typename std::enable_if<(Nd > 1), bool>::type = true>
+        __HOST__ __DEVICE__ SIdx coor2index(const TCoor<Nd, CIdx> &coor, const TCoor<Nd, CIdx> &dim,
+                                            const TCoor<Nd, SIdx> &stride) {
             return coor2index(coor.left, dim.left, stride.left) +
                    coor2index(coor.right, dim.right, stride.right);
         }
 
-        template <std::size_t Nd, typename std::enable_if<(Nd == 1), bool>::type = true>
-        __HOST__ __DEVICE__ IndexType coor2index(const TCoor<Nd> &coor, const TCoor<Nd> &dim,
-                                                 const TCoor<Nd> &stride) {
+        template <std::size_t Nd, typename CIdx, typename SIdx,
+                  typename std::enable_if<(Nd == 1), bool>::type = true>
+        __HOST__ __DEVICE__ SIdx coor2index(const TCoor<Nd, CIdx> &coor, const TCoor<Nd, CIdx> &dim,
+                                            const TCoor<Nd, SIdx> &stride) {
             return (coor.leaf % dim.leaf) * stride.leaf;
         }
 #endif
@@ -323,33 +331,35 @@ namespace superbblas {
         /// \param dim: lattice dimensions
         /// \param stride: jump to get to the next coordinate in each dimension
 
-        template <std::size_t Nd>
-        inline Coor<Nd> index2coor(const IndexType &index, const Coor<Nd> &dim,
-                                   const Coor<Nd> &stride) {
-            Coor<Nd> r;
-            for (std::size_t j = 0; j < Nd; j++) r[j] = (index / stride[j]) % dim[j];
+        template <std::size_t Nd, typename CIdx, typename SIdx>
+        inline Coor<Nd, CIdx> index2coor(const SIdx &index, const Coor<Nd, CIdx> &dim,
+                                         const Coor<Nd, SIdx> &stride) {
+            Coor<Nd, CIdx> r;
+            for (std::size_t j = 0; j < Nd; j++) r[j] = (index / stride[j]) % (SIdx)dim[j];
             return r;
         }
 
 #ifdef SUPERBBLAS_USE_THRUST
         struct ns_index2coor_aux {
-            template <std::size_t Nd, typename std::enable_if<(Nd > 1), bool>::type = true>
-            static __HOST__ __DEVICE__ inline TCoor<Nd>
-            index2coor(IndexType index, const TCoor<Nd> &dim, const TCoor<Nd> &stride) {
+            template <std::size_t Nd, typename CIdx, typename SIdx,
+                      typename std::enable_if<(Nd > 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd, CIdx>
+            index2coor(SIdx index, const TCoor<Nd, CIdx> &dim, const TCoor<Nd, SIdx> &stride) {
                 return {index2coor(index, dim.left, stride.left),
                         index2coor(index, dim.right, stride.right)};
             }
 
-            template <std::size_t Nd, typename std::enable_if<(Nd == 1), bool>::type = true>
-            static __HOST__ __DEVICE__ inline TCoor<Nd>
-            index2coor(IndexType index, const TCoor<Nd> &dim, const TCoor<Nd> &stride) {
-                return {(index / stride.leaf) % dim.leaf};
+            template <std::size_t Nd, typename CIdx, typename SIdx,
+                      typename std::enable_if<(Nd == 1), bool>::type = true>
+            static __HOST__ __DEVICE__ inline TCoor<Nd, CIdx>
+            index2coor(SIdx index, const TCoor<Nd, CIdx> &dim, const TCoor<Nd, SIdx> &stride) {
+                return {(CIdx)((index / stride.leaf) % (SIdx)dim.leaf)};
             }
         };
 
-        template <std::size_t Nd>
-        __HOST__ __DEVICE__ inline TCoor<Nd> index2coor(IndexType index, const TCoor<Nd> &dim,
-                                                        const TCoor<Nd> &stride) {
+        template <std::size_t Nd, typename CIdx, typename SIdx>
+        __HOST__ __DEVICE__ inline TCoor<Nd, CIdx>
+        index2coor(SIdx index, const TCoor<Nd, CIdx> &dim, const TCoor<Nd, SIdx> &stride) {
             return ns_index2coor_aux::index2coor(index, dim, stride);
         }
 #endif
@@ -507,11 +517,11 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        Indices<Cpu> get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                            const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                            const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                            const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
+        IndicesT<IndexType, Cpu>
+        get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                               const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                               const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from1;
             (void)dim1;
 
@@ -522,31 +532,28 @@ namespace superbblas {
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Quick exit
-            if (volume<Nd0>(size0) == 0) { return Indices<Cpu>(); }
+            if (volume(size0) == 0) { return IndicesT<IndexType, Cpu>(); }
 
             // Compute the indices
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            std::size_t vol0 = volume<Nd0>(dim0);
-            std::size_t vol = volume<Nd0>(size0);
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
+            std::size_t vol0 = volume(dim0);
+            IndexType vol = volume(size0);
 
             // Check that IndexType is big enough
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol0)
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
-            Indices<Cpu> indices0(vol, cpu);
-            Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
-            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+            IndicesT<IndexType, Cpu> indices0(vol, cpu);
+            Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
+            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
+            Coor<Nd0> perm1 = find_permutation(o1, o0);
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-            for (std::size_t i = 0; i < vol; ++i) {
-                Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
-                indices0[i] =
-                    coor2index<Nd0>(reorder_coor<Nd1, Nd0>(c1, perm1) + from0, dim0, stride0);
-                assert(0 <= indices0[i] && indices0[i] < (IndexType)vol0);
-                (void)vol0;
+            for (IndexType i = 0; i < vol; ++i) {
+                Coor<Nd1> c1 = index2coor(i, size1, new_stride1);
+                indices0[i] = coor2index(reorder_coor(c1, perm1) + from0, dim0, stride0);
             }
 
             return indices0;
@@ -563,11 +570,12 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        Indices<Cpu> get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                                 const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                                 const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                                 const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
+        IndicesT<IndexType, Cpu>
+        get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                    const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                    const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
             (void)from0;
             (void)dim0;
 
@@ -578,29 +586,27 @@ namespace superbblas {
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Quick exit
-            if (volume<Nd0>(size0) == 0) { return Indices<Cpu>(); }
+            if (volume(size0) == 0) { return IndicesT<IndexType, Cpu>(); }
 
             // Compute the indices
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            std::size_t vol1 = volume<Nd1>(dim1);
-            std::size_t vol = volume<Nd0>(size0);
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
+            std::size_t vol1 = volume(dim1);
+            IndexType vol = volume(size0);
 
             // Check that IndexType is big enough
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol1)
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
-            Indices<Cpu> indices1(vol, cpu);
-            Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
+            IndicesT<IndexType, Cpu> indices1(vol, cpu);
+            Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
+            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-            for (std::size_t i = 0; i < vol; ++i) {
+            for (IndexType i = 0; i < vol; ++i) {
                 Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
                 indices1[i] = coor2index<Nd1>(c1 + from1, dim1, stride1);
-                assert(0 <= indices1[i] && indices1[i] < (IndexType)vol1);
-                (void)vol1;
             }
 
             return indices1;
@@ -611,13 +617,15 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_THRUST
         /// Class that compute the origin permutation
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        struct perm_orig_elem : public thrust::unary_function<IndexType, IndexType> {
-            const TCoor<Nd0> from0, dim0, stride0;
-            const TCoor<Nd1> new_stride1, size1;
+        template <typename SIdx, std::size_t Nd0, std::size_t Nd1>
+        struct perm_orig_elem : public thrust::unary_function<SIdx, SIdx> {
+            const TCoor<Nd0> from0, dim0;
+            const TCoor<Nd0, SIdx> stride0;
+            const TCoor<Nd1, SIdx> new_stride1;
+            const TCoor<Nd1> size1;
             const TCoor<Nd0> perm1;
-            perm_orig_elem(TCoor<Nd0> from0, TCoor<Nd0> dim0, TCoor<Nd0> stride0,
-                           TCoor<Nd1> new_stride1, TCoor<Nd1> size1, TCoor<Nd0> perm1)
+            perm_orig_elem(TCoor<Nd0> from0, TCoor<Nd0> dim0, TCoor<Nd0, SIdx> stride0,
+                           TCoor<Nd1, SIdx> new_stride1, TCoor<Nd1> size1, TCoor<Nd0> perm1)
                 : from0(from0),
                   dim0(dim0),
                   stride0(stride0),
@@ -625,7 +633,7 @@ namespace superbblas {
                   size1(size1),
                   perm1(perm1) {}
 
-            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+            __HOST__ __DEVICE__ SIdx operator()(SIdx i) {
                 return coor2index(
                     tplus(reorder_coor(index2coor(i, size1, new_stride1), perm1), from0), dim0,
                     stride0);
@@ -634,18 +642,19 @@ namespace superbblas {
 
         /// Class that compute the destination permutation
 
-        template <std::size_t Nd1>
-        struct perm_dest_elem : public thrust::unary_function<IndexType, IndexType> {
-            const TCoor<Nd1> from1, dim1, stride1, new_stride1, size1;
-            perm_dest_elem(TCoor<Nd1> from1, TCoor<Nd1> dim1, TCoor<Nd1> stride1,
-                           TCoor<Nd1> new_stride1, TCoor<Nd1> size1)
+        template <typename SIdx, std::size_t Nd1>
+        struct perm_dest_elem : public thrust::unary_function<SIdx, SIdx> {
+            const TCoor<Nd1> from1, dim1, size1;
+            const TCoor<Nd1, SIdx> stride1, new_stride1;
+            perm_dest_elem(TCoor<Nd1> from1, TCoor<Nd1> dim1, TCoor<Nd1, SIdx> stride1,
+                           TCoor<Nd1, SIdx> new_stride1, TCoor<Nd1> size1)
                 : from1(from1),
                   dim1(dim1),
                   stride1(stride1),
                   new_stride1(new_stride1),
                   size1(size1) {}
 
-            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+            __HOST__ __DEVICE__ SIdx operator()(SIdx i) {
                 return coor2index(tplus(index2coor(i, size1, new_stride1), from1), dim1, stride1);
             }
         };
@@ -662,8 +671,8 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        DECL_ORIG_PERM(Indices<Gpu> get_permutation_origin(
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
+        DECL_ORIG_PERM(IndicesT<IndexType, Gpu> get_permutation_origin(
             const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
             const Coor<Nd1> &dim1, Gpu gpu, CoorOrder co))
@@ -678,24 +687,28 @@ namespace superbblas {
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Quick exit
-            if (volume<Nd0>(size0) == 0) { return Indices<Gpu>(0, gpu); }
+            if (volume(size0) == 0) { return IndicesT<IndexType, Gpu>(0, gpu); }
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim0))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
 
             // Compute the indices
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            std::size_t vol = volume<Nd0>(size0);
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
+            std::size_t vol = volume(size0);
 
-            Indices<Gpu> indices0(vol, gpu);
-            Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
-            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+            IndicesT<IndexType, Gpu> indices0(vol, gpu);
+            Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
+            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
+            Coor<Nd0> perm1 = find_permutation(o1, o0);
 
             thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
                               thrust::make_counting_iterator(IndexType(vol)),
                               encapsulate_pointer(indices0.data()),
-                              perm_orig_elem<Nd0, Nd1>(toTCoor(from0), toTCoor(dim0),
-                                                       toTCoor(stride0), toTCoor(new_stride1),
-                                                       toTCoor(size1), toTCoor(perm1)));
+                              perm_orig_elem<IndexType, Nd0, Nd1>(
+                                  toTCoor(from0), toTCoor(dim0), toTCoor(stride0),
+                                  toTCoor(new_stride1), toTCoor(size1), toTCoor(perm1)));
 
             return indices0;
         })
@@ -711,8 +724,8 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        DECL_DEST_PERM(Indices<Gpu> get_permutation_destination(
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
+        DECL_DEST_PERM(IndicesT<IndexType, Gpu> get_permutation_destination(
             const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
             const Coor<Nd1> &dim1, Gpu gpu, CoorOrder co))
@@ -727,22 +740,27 @@ namespace superbblas {
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Quick exit
-            if (volume<Nd0>(size0) == 0) { return Indices<Gpu>(); }
+            if (volume(size0) == 0) { return IndicesT<IndexType, Gpu>(); }
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim1))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
 
             // Compute the indices
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            std::size_t vol = volume<Nd0>(size0);
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
+            std::size_t vol = volume(size0);
 
-            Indices<Gpu> indices1(vol, gpu);
-            Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
-            Coor<Nd1> new_stride1 = get_strides<Nd1>(size1, co);
+            IndicesT<IndexType, Gpu> indices1(vol, gpu);
+            Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
+            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
 
             thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
                               thrust::make_counting_iterator(IndexType(vol)),
                               encapsulate_pointer(indices1.data()),
-                              perm_dest_elem<Nd1>(toTCoor(from1), toTCoor(dim1), toTCoor(stride1),
-                                                  toTCoor(new_stride1), toTCoor(size1)));
+                              perm_dest_elem<IndexType, Nd1>(toTCoor(from1), toTCoor(dim1),
+                                                             toTCoor(stride1), toTCoor(new_stride1),
+                                                             toTCoor(size1)));
 
             return indices1;
         })
@@ -860,36 +878,37 @@ namespace superbblas {
         /// The ith element of the permutation is:
         ///   indices_out[i] + disp
 
-        template <std::size_t Nd0, std::size_t Nd1, typename XPU>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
         void get_permutation_destination_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                                const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                                const Order<Nd1> &o1, const Coor<Nd1> &from1,
                                                const Coor<Nd1> &dim1, XPU xpu,
-                                               Indices<XPU> &indices_out, IndexType &disp,
-                                               CoorOrder co) {
+                                               IndicesT<IndexType, XPU> &indices_out,
+                                               IndexType &disp, CoorOrder co) {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Quick exit
-            if (volume<Nd0>(size0) == 0) {
-                indices_out = Indices<XPU>(0, xpu);
+            if (volume(size0) == 0) {
+                indices_out = IndicesT<IndexType, XPU>(0, xpu);
                 disp = 0;
                 return;
             }
 
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
 
             // Check in the storage
             using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
             using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
             struct size_dim_map_tag {};
             auto size_dim_map =
-                getCache<size_dim, Indices<XPU>, TupleHash<size_dim>, size_dim_map_tag>(xpu);
+                getCache<size_dim, IndicesT<IndexType, XPU>, TupleHash<size_dim>, size_dim_map_tag>(
+                    xpu);
             struct from_size_dim_map_tag {};
-            auto from_size_dim_map = getCache<from_size_dim, Indices<XPU>, TupleHash<from_size_dim>,
-                                              from_size_dim_map_tag>(xpu);
+            auto from_size_dim_map = getCache<from_size_dim, IndicesT<IndexType, XPU>,
+                                              TupleHash<from_size_dim>, from_size_dim_map_tag>(xpu);
             {
                 auto it =
                     from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
@@ -903,27 +922,27 @@ namespace superbblas {
                 auto it = size_dim_map.find(size_dim{size1, dim1, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second.value;
-                    Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
-                    disp = coor2index<Nd1>(from1, dim1, stride1);
+                    Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
+                    disp = coor2index(from1, dim1, stride1);
                     return;
                 }
             }
 
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from1 + size1, dim1)) {
-                Indices<XPU> indices1_sd = get_permutation_destination<Nd0, Nd1>(
+                IndicesT<IndexType, XPU> indices1_sd = get_permutation_destination<IndexType>(
                     o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
                 size_dim_map.insert(size_dim{size1, dim1, deviceId(xpu), co}, indices1_sd,
                                     storageSize(indices1_sd));
-                Coor<Nd1> stride1 = get_strides<Nd1>(dim1, co);
-                disp = coor2index<Nd1>(from1, dim1, stride1);
+                Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
+                disp = coor2index(from1, dim1, stride1);
                 indices_out = indices1_sd;
                 return;
             }
 
             // Get the permutation and store it in cache
-            Indices<XPU> indices1 = get_permutation_destination<Nd0, Nd1>(o0, from0, size0, dim0,
-                                                                          o1, from1, dim1, xpu, co);
+            IndicesT<IndexType, XPU> indices1 = get_permutation_destination<IndexType>(
+                o0, from0, size0, dim0, o1, from1, dim1, xpu, co);
             from_size_dim_map.insert(from_size_dim{from1, size1, dim1, deviceId(xpu), co}, indices1,
                                      storageSize(indices1));
 
@@ -948,19 +967,20 @@ namespace superbblas {
         /// The ith element of the permutation is:
         ///   indices_out[i] + disp
 
-        template <std::size_t Nd0, std::size_t Nd1, typename XPU>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
         void get_permutation_origin_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
                                           const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                           const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                          const Coor<Nd1> &dim1, XPU xpu, Indices<XPU> &indices_out,
-                                          IndexType &disp, CoorOrder co) {
+                                          const Coor<Nd1> &dim1, XPU xpu,
+                                          IndicesT<IndexType, XPU> &indices_out, IndexType &disp,
+                                          CoorOrder co) {
             // Check the compatibility of the tensors
             assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
             // Quick exit
-            if (volume<Nd0>(size0) == 0) {
-                indices_out = Indices<XPU>(0, xpu);
+            if (volume(size0) == 0) {
+                indices_out = IndicesT<IndexType, XPU>(0, xpu);
                 disp = 0;
                 return;
             }
@@ -970,13 +990,12 @@ namespace superbblas {
             using perm_from_size_dim =
                 std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
             struct size_dim_map_tag {};
-            auto size_dim_map =
-                getCache<perm_size_dim, Indices<XPU>, TupleHash<perm_size_dim>, size_dim_map_tag>(
-                    xpu);
+            auto size_dim_map = getCache<perm_size_dim, IndicesT<IndexType, XPU>,
+                                         TupleHash<perm_size_dim>, size_dim_map_tag>(xpu);
             struct from_size_dim_map_tag {};
             auto from_size_dim_map =
-                getCache<perm_from_size_dim, Indices<XPU>, TupleHash<perm_from_size_dim>,
-                         from_size_dim_map_tag>(xpu);
+                getCache<perm_from_size_dim, IndicesT<IndexType, XPU>,
+                         TupleHash<perm_from_size_dim>, from_size_dim_map_tag>(xpu);
             Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
             {
                 auto it = from_size_dim_map.find(
@@ -991,7 +1010,7 @@ namespace superbblas {
                 auto it = size_dim_map.find(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co});
                 if (it != size_dim_map.end()) {
                     indices_out = it->second.value;
-                    Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
+                    Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
                     disp = coor2index<Nd0>(from0, dim0, stride0);
                     return;
                 }
@@ -999,19 +1018,19 @@ namespace superbblas {
 
             // Get the permutation independent of 'from1' and store it in cache
             if (all_less_or_equal(from0 + size0, dim0)) {
-                Indices<XPU> indices0_sd =
-                    get_permutation_origin<Nd0, Nd1>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
+                IndicesT<IndexType, XPU> indices0_sd =
+                    get_permutation_origin<IndexType>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
                 size_dim_map.insert(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co},
                                     indices0_sd, storageSize(indices0_sd));
-                Coor<Nd0> stride0 = get_strides<Nd0>(dim0, co);
-                disp = coor2index<Nd0>(from0, dim0, stride0);
+                Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
+                disp = coor2index(from0, dim0, stride0);
                 indices_out = indices0_sd;
                 return;
             }
 
             // Get the permutation and store it in cache
-            Indices<XPU> indices0 =
-                get_permutation_origin<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co);
+            IndicesT<IndexType, XPU> indices0 =
+                get_permutation_origin<IndexType>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co);
             from_size_dim_map.insert(
                 perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}, indices0,
                 storageSize(indices0));
@@ -1062,8 +1081,8 @@ namespace superbblas {
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1, typename EWOP>
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename XPU1, typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
                         Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -1082,13 +1101,13 @@ namespace superbblas {
             }
 
             // Get the permutation vectors
-            Indices<XPU0> indices0;
-            Indices<XPU1> indices1;
+            IndicesT<IndexType, XPU0> indices0;
+            IndicesT<IndexType, XPU1> indices1;
             IndexType disp0, disp1;
-            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                   v0.ctx(), indices0, disp0, co);
-            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        v1.ctx(), indices1, disp1, co);
+            get_permutation_origin_cache<IndexType>(o0, from0, size0, dim0, o1, from1, dim1,
+                                                    v0.ctx(), indices0, disp0, co);
+            get_permutation_destination_cache<IndexType>(o0, from0, size0, dim0, o1, from1, dim1,
+                                                         v1.ctx(), indices1, disp1, co);
 
             // Apply the masks
             if (mask0.size() > 0) {
@@ -1100,6 +1119,40 @@ namespace superbblas {
             copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
                                     indices0.size(), v1.data() + disp1, indices1.begin(), v1.ctx(),
                                     ewop);
+        }
+
+        /// Copy the content of tensor v0 into v1
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param mask0: mask for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param mask1: mask for the destination tensor (ignored)
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename EWOP>
+        void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
+                        Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                        const Coor<Nd1> &dim1, vector<Q, XPU1> v1, Mask<XPU1> mask1, EWOP,
+                        CoorOrder co) {
+
+            if (std::max(volume(dim0), volume(dim1)) >=
+                (std::size_t)std::numeric_limits<IndexType>::max()) {
+                local_copy<std::size_t>(alpha, o0, from0, size0, dim0, v0, mask0, o1, from1, dim1,
+                                        v1, mask1, EWOP{}, co);
+            } else {
+                local_copy<IndexType>(alpha, o0, from0, size0, dim0, v0, mask0, o1, from1, dim1, v1,
+                                      mask1, EWOP{}, co);
+            }
         }
 
         /// Recommended orderings for contracting two tensors
@@ -1385,13 +1438,13 @@ namespace superbblas {
             }
 
             // Compute the volume for each piece
-            int volT = volume<Nd0>(dim0.begin() + posT0, dim0.begin() + posT0 + nT);
-            int volA = volume<Nd0>(dim0.begin() + posA0, dim0.begin() + posA0 + nA);
-            int volB = volume<Nd0>(dim0.begin() + posB0, dim0.begin() + posB0 + nB);
-            int volC = volume<Nd1>(dim1.begin() + posC1, dim1.begin() + posC1 + nC);
-            int vol0 = volume<Nd0>(dim0);
-            int vol1 = volume<Nd1>(dim1);
-            int volr = volume<Ndo>(dimr);
+            std::size_t volT = volume<Nd0>(dim0.begin() + posT0, dim0.begin() + posT0 + nT);
+            std::size_t volA = volume<Nd0>(dim0.begin() + posA0, dim0.begin() + posA0 + nA);
+            std::size_t volB = volume<Nd0>(dim0.begin() + posB0, dim0.begin() + posB0 + nB);
+            std::size_t volC = volume<Nd1>(dim1.begin() + posC1, dim1.begin() + posC1 + nC);
+            std::size_t vol0 = volume<Nd0>(dim0);
+            std::size_t vol1 = volume<Nd1>(dim1);
+            std::size_t volr = volume<Ndo>(dimr);
 
             // Deal with zero dimensions and implicit dimensions
             if (volr == 0) return;
@@ -1473,12 +1526,29 @@ namespace superbblas {
             // Let's do (A, B) x (C, A) -> (C, B)
             char transab = (o0_trans ? (conj0 ? 'C' : 'T') : 'N');
             char transca = (o1_trans ? (conj1 ? 'C' : 'T') : 'N');
-            int ldab = (o0_starts_with_T ? 1 : volT) * (!o0_trans ? volB : volA);
-            int strideab = (o0_starts_with_T ? volA * volB : (!o0_trans ? volB : volA));
-            int ldca = (o1_starts_with_T ? 1 : volT) * (!o1_trans ? volA : volC);
-            int strideca = (o1_starts_with_T ? volA * volC : (!o1_trans ? volA : volC));
-            int ldcb = (or_starts_with_T ? 1 : volT) * volB;
-            int stridecb = (or_starts_with_T ? volB * volC : volB);
+            std::size_t ldab = (o0_starts_with_T ? 1u : volT) * (!o0_trans ? volB : volA);
+            std::size_t strideab = (o0_starts_with_T ? volA * volB : (!o0_trans ? volB : volA));
+            std::size_t ldca = (o1_starts_with_T ? 1u : volT) * (!o1_trans ? volA : volC);
+            std::size_t strideca = (o1_starts_with_T ? volA * volC : (!o1_trans ? volA : volC));
+            std::size_t ldcb = (or_starts_with_T ? 1u : volT) * volB;
+            std::size_t stridecb = (or_starts_with_T ? volB * volC : volB);
+            if (std::max(
+                    volA,
+                    std::max(
+                        volB,
+                        std::max(
+                            volC,
+                            std::max(
+                                volT,
+                                std::max(
+                                    ldab,
+                                    std::max(
+                                        strideab,
+                                        std::max(ldca, std::max(strideca,
+                                                                std::max(ldcb, stridecb))))))))) >=
+                (std::size_t)std::numeric_limits<int>::max()) {
+                std::runtime_error("contraction: too large tensors to contract");
+            }
             xgemm_batch_strided(transab, transca, volB, volC, volA, alpha, v0.data(), ldab,
                                 strideab, v1.data(), ldca, strideca, beta, vr.data(), ldcb,
                                 stridecb, volT, vr.ctx());
