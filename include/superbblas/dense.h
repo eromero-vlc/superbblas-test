@@ -54,7 +54,11 @@ namespace superbblas {
 #    pragma omp parallel
 #endif
             {
+#ifdef _OPENMP
                 int id = omp_get_thread_num();
+#else
+                int id = 0;
+#endif
 
 #ifdef _OPENMP
 #    pragma omp for schedule(static)
@@ -144,7 +148,11 @@ namespace superbblas {
 #    pragma omp parallel
 #endif
             {
+#ifdef _OPENMP
                 int id = omp_get_thread_num();
+#else
+                int id = 0;
+#endif
                 BLASINT *ipiv = ipivs + n * id;
 #ifdef _OPENMP
 #    pragma omp for schedule(static)
