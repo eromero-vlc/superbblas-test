@@ -414,22 +414,29 @@ namespace superbblas {
                         // doing the MPI call
                         Coor<Nd0> fromi = fsi[0], sizei = fsi[1];
                         Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
-                        IndicesT<IndexType, Cpu> indices0i = get_permutation_origin<IndexType>(
-                            o0, fromi, sizei, dim0, o1, {}, sizei1, Cpu{}, co);
-                        assert(indices0i.size() + n <= vol);
-                        IndicesT<IndexType, Cpu> indices0i_mask = indices0i;
+                        auto indices0i = get_permutation_origin<IndexType>(
+                            o0, fromi, sizei, dim0, o1, {}, sizei1, DontAllowImplicitPermutation,
+                            Cpu{}, co);
+                        assert(indices0i.first.size() + n <= vol);
+                        IndicesT<IndexType, Cpu> indices0i_mask = indices0i.first;
+                        IndexType indices0i_disp = indices0i.second;
                         if (mask0_cpu.size() > 0)
-                            indices0i_mask = select(indices0i, mask0_cpu.data(), indices0i);
-                        std::copy_n(indices0i_mask.begin(), indices0i_mask.size(),
-                                    indices0.begin() + n);
+                            indices0i_mask = select(
+                                indices0i.first, mask0_cpu.data() + indices0i_disp, indices0i_mask);
+                        std::transform(indices0i_mask.begin(), indices0i_mask.end(),
+                                       indices0.begin() + n,
+                                       [=](IndexType d) { return d + indices0i_disp; });
 
-                        IndicesT<IndexType, Cpu> indices1i_mask =
-                            get_permutation_destination<IndexType>(o0, fromi, sizei, dim0, o1, {},
-                                                                   sizei1, Cpu{}, co);
-                        assert(indices0i.size() == indices1i_mask.size());
+                        auto indices1i = get_permutation_destination<IndexType>(
+                            o0, fromi, sizei, dim0, o1, {}, sizei1, DontAllowImplicitPermutation,
+                            Cpu{}, co);
+                        assert(indices0i.first.size() == indices1i.first.size());
+                        IndicesT<IndexType, Cpu> indices1i_mask = indices1i.first;
+                        IndexType indices1i_disp = indices1i.second;
                         if (mask0_cpu.size() > 0)
-                            indices1i_mask = select(indices0i, mask0_cpu.data(), indices1i_mask);
-                        IndexType dispi = disp1[i / ncomponents1];
+                            indices1i_mask = select(
+                                indices0i.first, mask0_cpu.data() + indices0i_disp, indices1i_mask);
+                        IndexType dispi = disp1[i / ncomponents1] + indices1i_disp;
                         std::transform(indices1i_mask.begin(), indices1i_mask.end(),
                                        indices1.begin() + n,
                                        [=](IndexType d) { return d + dispi; });
@@ -556,10 +563,11 @@ namespace superbblas {
                 std::size_t n = 0;
                 for (const auto &fsi : toReceive[i]) {
                     Coor<Nd> fromi = fsi[0], sizei = fsi[1];
-                    IndicesT<IndexType, XPU> indices1;
-                    IndexType disp;
-                    get_permutation_destination_cache(o, {}, sizei, sizei, o, fromi, v.dim,
-                                                      v.it.ctx(), indices1, disp, co);
+                    auto indices1_pair = get_permutation_destination<IndexType>(
+                        o, {}, sizei, sizei, o, fromi, v.dim, AllowImplicitPermutation, v.it.ctx(),
+                        co);
+                    IndicesT<IndexType, XPU> indices1 = indices1_pair.first;
+                    IndexType disp = indices1_pair.second;
 
                     // Apply the masks
                     if (v.mask_it.size() > 0)

@@ -895,14 +895,14 @@ namespace superbblas {
             }
 
             // Get the permutation vectors
-            IndicesT<IndexType, XPU0> indices0;
-            IndicesT<IndexType, Cpu> indices1;
-            IndexType disp0, disp1;
             Cpu cpu = v0.ctx().toCpu();
-            get_permutation_origin_cache(o0, from0, size0, dim0, o1, from1, dim1, v0.ctx(),
-                                         indices0, disp0, co);
-            get_permutation_destination_cache(o0, from0, size0, dim0, o1, from1, dim1, cpu,
-                                              indices1, disp1, co);
+            auto indices0_pair = get_permutation_origin<IndexType>(
+                o0, from0, size0, dim0, o1, from1, dim1, AllowImplicitPermutation, v0.ctx(), co);
+            auto indices1_pair = get_permutation_destination<IndexType>(
+                o0, from0, size0, dim0, o1, from1, dim1, DontAllowImplicitPermutation, cpu, co);
+            IndicesT<IndexType, XPU0> indices0 = indices0_pair.first;
+            IndicesT<IndexType, Cpu> indices1 = indices1_pair.first;
+            IndexType disp0 = indices0_pair.second, disp1 = indices1_pair.second;
 
             // Write the values of v0 contiguously
             vector<Q, Cpu> v0_host(indices0.size(), cpu);
@@ -1011,14 +1011,14 @@ namespace superbblas {
             }
 
             // Get the permutation vectors
-            IndicesT<IndexType, Cpu> indices0;
-            IndicesT<IndexType, XPU1> indices1;
-            IndexType disp0, disp1;
             Cpu cpu = v1.ctx().toCpu();
-            get_permutation_origin_cache(o0, from0, size0, dim0, o1, from1, dim1, cpu, indices0,
-                                         disp0, co);
-            get_permutation_destination_cache(o0, from0, size0, dim0, o1, from1, dim1, v1.ctx(),
-                                              indices1, disp1, co);
+            auto indices0_pair = get_permutation_origin<IndexType>(
+                o0, from0, size0, dim0, o1, from1, dim1, DontAllowImplicitPermutation, cpu, co);
+            auto indices1_pair = get_permutation_destination<IndexType>(
+                o0, from0, size0, dim0, o1, from1, dim1, AllowImplicitPermutation, v1.ctx(), co);
+            IndicesT<IndexType, Cpu> indices0 = indices0_pair.first;
+            IndicesT<IndexType, XPU1> indices1 = indices1_pair.first;
+            IndexType disp0 = indices0_pair.second, disp1 = indices1_pair.second;
 
             // Do the reading
             vector<T, Cpu> v0(indices0.size(), cpu);

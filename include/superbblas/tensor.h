@@ -1,8 +1,8 @@
 #ifndef __SUPERBBLAS_TENSOR__
 #define __SUPERBBLAS_TENSOR__
 
-#include "blas.h"
 #include "cache.h"
+#include "copy_n.h"
 #include <algorithm>
 #include <array>
 #include <assert.h>
@@ -38,22 +38,14 @@
             26, 27, 28
 #    define REPLACE_Nd0_Nd1 REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS)
 
-/// Generate template instantiations for get_permutation_origin and get_permutation_destination functions
-/// with template parameters Nd0 and Nd1
+/// Generate template instantiations for get_permutation function with template parameters IndexType and Nd
 
-#    define DECL_ORIG_PERM(...)                                                                    \
-        EMIT REPLACE1(get_permutation_origin,                                                      \
-                      superbblas::detail::get_permutation_origin<IndexType, Nd0, Nd1>)             \
-            REPLACE_IndexType REPLACE_Nd0_Nd1 template __VA_ARGS__;
-
-#    define DECL_DEST_PERM(...)                                                                    \
-        EMIT REPLACE1(get_permutation_destination,                                                 \
-                      superbblas::detail::get_permutation_destination<IndexType, Nd0, Nd1>)        \
-            REPLACE_IndexType REPLACE_Nd0_Nd1 template __VA_ARGS__;
+#    define DECL_PERM(...)                                                                         \
+        EMIT REPLACE1(get_permutation, superbblas::detail::get_permutation<IndexType, Nd>)         \
+            REPLACE_IndexType REPLACE(Nd, COOR_DIMS) template __VA_ARGS__;
 
 #else
-#    define DECL_ORIG_PERM(...) __VA_ARGS__
-#    define DECL_DEST_PERM(...) __VA_ARGS__
+#    define DECL_PERM(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -504,266 +496,6 @@ namespace superbblas {
             return all_less_or_equal(size1, dim1);
         }
 
-        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param cpu: device context for the returned vector
-        /// \param co: coordinate linearization order
-
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
-        IndicesT<IndexType, Cpu>
-        get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                               const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                               const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
-            (void)from1;
-            (void)dim1;
-
-            tracker<Cpu> _t("comp. permutations", cpu);
-
-            // Check the compatibility of the tensors
-            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
-
-            // Quick exit
-            if (volume(size0) == 0) { return IndicesT<IndexType, Cpu>(); }
-
-            // Compute the indices
-            Coor<Nd1> perm0 = find_permutation(o0, o1);
-            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
-            std::size_t vol0 = volume(dim0);
-            IndexType vol = volume(size0);
-
-            // Check that IndexType is big enough
-            if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol0)
-                throw std::runtime_error("Ups! IndexType isn't big enough");
-
-            IndicesT<IndexType, Cpu> indices0(vol, cpu);
-            Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
-            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
-            Coor<Nd0> perm1 = find_permutation(o1, o0);
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-            for (IndexType i = 0; i < vol; ++i) {
-                Coor<Nd1> c1 = index2coor(i, size1, new_stride1);
-                indices0[i] = coor2index(reorder_coor(c1, perm1) + from0, dim0, stride0);
-            }
-
-            return indices0;
-        }
-
-        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param cpu: device context for the returned vector
-        /// \param co: coordinate linearization order
-
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
-        IndicesT<IndexType, Cpu>
-        get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                    const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                    const Coor<Nd1> &dim1, Cpu cpu, CoorOrder co) {
-            (void)from0;
-            (void)dim0;
-
-            tracker<Cpu> _t("comp. permutations", cpu);
-
-            // Check the compatibility of the tensors
-            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
-
-            // Quick exit
-            if (volume(size0) == 0) { return IndicesT<IndexType, Cpu>(); }
-
-            // Compute the indices
-            Coor<Nd1> perm0 = find_permutation(o0, o1);
-            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
-            std::size_t vol1 = volume(dim1);
-            IndexType vol = volume(size0);
-
-            // Check that IndexType is big enough
-            if ((std::size_t)std::numeric_limits<IndexType>::max() <= vol1)
-                throw std::runtime_error("Ups! IndexType isn't big enough");
-
-            IndicesT<IndexType, Cpu> indices1(vol, cpu);
-            Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
-            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-            for (IndexType i = 0; i < vol; ++i) {
-                Coor<Nd1> c1 = index2coor<Nd1>(i, size1, new_stride1);
-                indices1[i] = coor2index<Nd1>(c1 + from1, dim1, stride1);
-            }
-
-            return indices1;
-        }
-
-#ifdef SUPERBBLAS_USE_GPU
-
-#    ifdef SUPERBBLAS_USE_THRUST
-        /// Class that compute the origin permutation
-
-        template <typename SIdx, std::size_t Nd0, std::size_t Nd1>
-        struct perm_orig_elem : public thrust::unary_function<SIdx, SIdx> {
-            const TCoor<Nd0> from0, dim0;
-            const TCoor<Nd0, SIdx> stride0;
-            const TCoor<Nd1, SIdx> new_stride1;
-            const TCoor<Nd1> size1;
-            const TCoor<Nd0> perm1;
-            perm_orig_elem(TCoor<Nd0> from0, TCoor<Nd0> dim0, TCoor<Nd0, SIdx> stride0,
-                           TCoor<Nd1, SIdx> new_stride1, TCoor<Nd1> size1, TCoor<Nd0> perm1)
-                : from0(from0),
-                  dim0(dim0),
-                  stride0(stride0),
-                  new_stride1(new_stride1),
-                  size1(size1),
-                  perm1(perm1) {}
-
-            __HOST__ __DEVICE__ SIdx operator()(SIdx i) {
-                return coor2index(
-                    tplus(reorder_coor(index2coor(i, size1, new_stride1), perm1), from0), dim0,
-                    stride0);
-            }
-        };
-
-        /// Class that compute the destination permutation
-
-        template <typename SIdx, std::size_t Nd1>
-        struct perm_dest_elem : public thrust::unary_function<SIdx, SIdx> {
-            const TCoor<Nd1> from1, dim1, size1;
-            const TCoor<Nd1, SIdx> stride1, new_stride1;
-            perm_dest_elem(TCoor<Nd1> from1, TCoor<Nd1> dim1, TCoor<Nd1, SIdx> stride1,
-                           TCoor<Nd1, SIdx> new_stride1, TCoor<Nd1> size1)
-                : from1(from1),
-                  dim1(dim1),
-                  stride1(stride1),
-                  new_stride1(new_stride1),
-                  size1(size1) {}
-
-            __HOST__ __DEVICE__ SIdx operator()(SIdx i) {
-                return coor2index(tplus(index2coor(i, size1, new_stride1), from1), dim1, stride1);
-            }
-        };
-#    endif
-
-        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param cpu: device context for the returned vector
-        /// \param co: coordinate linearization order
-
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
-        DECL_ORIG_PERM(IndicesT<IndexType, Gpu> get_permutation_origin(
-            const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-            const Coor<Nd1> &dim1, Gpu gpu, CoorOrder co))
-        IMPL({
-            (void)from1;
-            (void)dim1;
-
-            tracker<Gpu> _t("comp. permutations gpu", gpu);
-
-            // Check the compatibility of the tensors
-            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
-
-            // Quick exit
-            if (volume(size0) == 0) { return IndicesT<IndexType, Gpu>(0, gpu); }
-
-            // Check that IndexType is big enough
-            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim0))
-                throw std::runtime_error("Ups! IndexType isn't big enough");
-
-            // Compute the indices
-            Coor<Nd1> perm0 = find_permutation(o0, o1);
-            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
-            std::size_t vol = volume(size0);
-
-            IndicesT<IndexType, Gpu> indices0(vol, gpu);
-            Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
-            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
-            Coor<Nd0> perm1 = find_permutation(o1, o0);
-
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
-                              thrust::make_counting_iterator(IndexType(vol)),
-                              encapsulate_pointer(indices0.data()),
-                              perm_orig_elem<IndexType, Nd0, Nd1>(
-                                  toTCoor(from0), toTCoor(dim0), toTCoor(stride0),
-                                  toTCoor(new_stride1), toTCoor(size1), toTCoor(perm1)));
-
-            return indices0;
-        })
-
-        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param cpu: device context for the returned vector
-        /// \param co: coordinate linearization order
-
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1>
-        DECL_DEST_PERM(IndicesT<IndexType, Gpu> get_permutation_destination(
-            const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-            const Coor<Nd1> &dim1, Gpu gpu, CoorOrder co))
-        IMPL({
-            (void)from0;
-            (void)dim0;
-
-            tracker<Gpu> _t("comp. permutations gpu", gpu);
-
-            // Check the compatibility of the tensors
-            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
-
-            // Quick exit
-            if (volume(size0) == 0) { return IndicesT<IndexType, Gpu>(); }
-
-            // Check that IndexType is big enough
-            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim1))
-                throw std::runtime_error("Ups! IndexType isn't big enough");
-
-            // Compute the indices
-            Coor<Nd1> perm0 = find_permutation(o0, o1);
-            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
-            std::size_t vol = volume(size0);
-
-            IndicesT<IndexType, Gpu> indices1(vol, gpu);
-            Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
-            Coor<Nd1, IndexType> new_stride1 = get_strides<IndexType>(size1, co);
-
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
-                              thrust::make_counting_iterator(IndexType(vol)),
-                              encapsulate_pointer(indices1.data()),
-                              perm_dest_elem<IndexType, Nd1>(toTCoor(from1), toTCoor(dim1),
-                                                             toTCoor(stride1), toTCoor(new_stride1),
-                                                             toTCoor(size1)));
-
-            return indices1;
-        })
-#endif // SUPERBBLAS_USE_GPU
-
         //
         // Hash for tuples and arrays
         //
@@ -860,184 +592,6 @@ namespace superbblas {
             return sizeof(T) * v.size();
         }
 
-        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param cpu: device context for the returned vector
-        /// \param indices_out: returned permutation
-        /// \param disp: returned displacement
-        /// \param co: coordinate linearization order
-        ///
-        /// The ith element of the permutation is:
-        ///   indices_out[i] + disp
-
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
-        void get_permutation_destination_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                               const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                               const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                               const Coor<Nd1> &dim1, XPU xpu,
-                                               IndicesT<IndexType, XPU> &indices_out,
-                                               IndexType &disp, CoorOrder co) {
-            // Check the compatibility of the tensors
-            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
-
-            // Quick exit
-            if (volume(size0) == 0) {
-                indices_out = IndicesT<IndexType, XPU>(0, xpu);
-                disp = 0;
-                return;
-            }
-
-            Coor<Nd1> perm0 = find_permutation(o0, o1);
-            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1);
-
-            // Check in the storage
-            using size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
-            using from_size_dim = std::tuple<Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, int, CoorOrder>;
-            struct size_dim_map_tag {};
-            auto size_dim_map =
-                getCache<size_dim, IndicesT<IndexType, XPU>, TupleHash<size_dim>, size_dim_map_tag>(
-                    xpu);
-            struct from_size_dim_map_tag {};
-            auto from_size_dim_map = getCache<from_size_dim, IndicesT<IndexType, XPU>,
-                                              TupleHash<from_size_dim>, from_size_dim_map_tag>(xpu);
-            {
-                auto it =
-                    from_size_dim_map.find(from_size_dim{from1, size1, dim1, deviceId(xpu), co});
-                if (it != from_size_dim_map.end()) {
-                    indices_out = it->second.value;
-                    disp = 0;
-                    return;
-                }
-            }
-            if (all_less_or_equal(from1 + size1, dim1)) {
-                auto it = size_dim_map.find(size_dim{size1, dim1, deviceId(xpu), co});
-                if (it != size_dim_map.end()) {
-                    indices_out = it->second.value;
-                    Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
-                    disp = coor2index(from1, dim1, stride1);
-                    return;
-                }
-            }
-
-            // Get the permutation independent of 'from1' and store it in cache
-            if (all_less_or_equal(from1 + size1, dim1)) {
-                IndicesT<IndexType, XPU> indices1_sd = get_permutation_destination<IndexType>(
-                    o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
-                size_dim_map.insert(size_dim{size1, dim1, deviceId(xpu), co}, indices1_sd,
-                                    storageSize(indices1_sd));
-                Coor<Nd1, IndexType> stride1 = get_strides<IndexType>(dim1, co);
-                disp = coor2index(from1, dim1, stride1);
-                indices_out = indices1_sd;
-                return;
-            }
-
-            // Get the permutation and store it in cache
-            IndicesT<IndexType, XPU> indices1 = get_permutation_destination<IndexType>(
-                o0, from0, size0, dim0, o1, from1, dim1, xpu, co);
-            from_size_dim_map.insert(from_size_dim{from1, size1, dim1, deviceId(xpu), co}, indices1,
-                                     storageSize(indices1));
-
-            // Return the permutation
-            indices_out = indices1;
-            disp = 0;
-        }
-
-        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of coordinates to copy in each direction
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o1: dimension labels for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param cpu: device context for the returned vector
-        /// \param indices_out: returned permutation
-        /// \param disp: returned displacement
-        /// \param co: coordinate linearization order
-        ///
-        /// The ith element of the permutation is:
-        ///   indices_out[i] + disp
-
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
-        void get_permutation_origin_cache(const Order<Nd0> &o0, const Coor<Nd0> &from0,
-                                          const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
-                                          const Order<Nd1> &o1, const Coor<Nd1> &from1,
-                                          const Coor<Nd1> &dim1, XPU xpu,
-                                          IndicesT<IndexType, XPU> &indices_out, IndexType &disp,
-                                          CoorOrder co) {
-            // Check the compatibility of the tensors
-            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
-            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
-
-            // Quick exit
-            if (volume(size0) == 0) {
-                indices_out = IndicesT<IndexType, XPU>(0, xpu);
-                disp = 0;
-                return;
-            }
-
-            // Check in the storage
-            using perm_size_dim = std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
-            using perm_from_size_dim =
-                std::tuple<Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, int, CoorOrder>;
-            struct size_dim_map_tag {};
-            auto size_dim_map = getCache<perm_size_dim, IndicesT<IndexType, XPU>,
-                                         TupleHash<perm_size_dim>, size_dim_map_tag>(xpu);
-            struct from_size_dim_map_tag {};
-            auto from_size_dim_map =
-                getCache<perm_from_size_dim, IndicesT<IndexType, XPU>,
-                         TupleHash<perm_from_size_dim>, from_size_dim_map_tag>(xpu);
-            Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
-            {
-                auto it = from_size_dim_map.find(
-                    perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co});
-                if (it != from_size_dim_map.end()) {
-                    indices_out = it->second.value;
-                    disp = 0;
-                    return;
-                }
-            }
-            if (all_less_or_equal(from0 + size0, dim0)) {
-                auto it = size_dim_map.find(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co});
-                if (it != size_dim_map.end()) {
-                    indices_out = it->second.value;
-                    Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
-                    disp = coor2index<Nd0>(from0, dim0, stride0);
-                    return;
-                }
-            }
-
-            // Get the permutation independent of 'from1' and store it in cache
-            if (all_less_or_equal(from0 + size0, dim0)) {
-                IndicesT<IndexType, XPU> indices0_sd =
-                    get_permutation_origin<IndexType>(o0, {}, size0, dim0, o1, {}, dim1, xpu, co);
-                size_dim_map.insert(perm_size_dim{perm1, size0, dim0, deviceId(xpu), co},
-                                    indices0_sd, storageSize(indices0_sd));
-                Coor<Nd0, IndexType> stride0 = get_strides<IndexType>(dim0, co);
-                disp = coor2index(from0, dim0, stride0);
-                indices_out = indices0_sd;
-                return;
-            }
-
-            // Get the permutation and store it in cache
-            IndicesT<IndexType, XPU> indices0 =
-                get_permutation_origin<IndexType>(o0, from0, size0, dim0, o1, from1, dim1, xpu, co);
-            from_size_dim_map.insert(
-                perm_from_size_dim{perm1, from0, size0, dim0, deviceId(xpu), co}, indices0,
-                storageSize(indices0));
-
-            // Return the permutation
-            indices_out = indices0;
-            disp = 0;
-        }
-
         /// Check that all dimensions with the same label has the same size
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
         bool check_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
@@ -1061,6 +615,351 @@ namespace superbblas {
                 }
             }
             return true;
+        }
+
+        /// Copy the content of tensor v0 into v1
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param co: coordinate linearization order
+        /// \param new_disp0: (out) implicit index shift in the origin tensor
+        /// \param new_from0: (out) first coordinate to copy after the implicit shift for the origin tensor
+        /// \param new_size: (out) number of coordinates to copy in each dimension
+        /// \param new_dim0: (out) origin tensor size
+        /// \param new_strides0: (out) strides for the origin tensor
+        /// \param new_disp1: (out) implicit index shift in the destination tensor
+        /// \param new_from1: (out) first coordinate to copy after the implicit shift for the destination tensor
+        /// \param new_dim1: (out) destination tensor size
+        /// \param new_strides0: (out) strides for the destination tensor
+        /// \param nblock: (out) the first `nblock` dimensions are equivalent to a trivial permutation
+        ///
+        /// This function translates the copy of a subtensor into another subtensor with possibly different
+        /// ordering and number of dimensions into the copy of a subtensor into another one with the same
+        /// number of dimensions. The origin and destination tensor dimensions are rearrange in order to
+        /// coincided, and the `ordering` of each tensor is capture by taking a different element in the vector as
+        /// the first tensor element (`new_disp0` and `new_disp`) and the `strides`. We only need to consider the
+        /// common dimensions between the origin and the destination tensors in the strides. The other dimensions
+        /// are captured by the initial displacements, `new_disp0` and `new_disp`.
+
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1,
+                  std::size_t Nd = std::min(Nd0, Nd1)>
+        void copy_normalize(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                            const Coor<Nd1> &dim1, CoorOrder co,
+                            // outputs
+                            IndexType &new_disp0, Coor<Nd> &new_from0, Coor<Nd> &new_size,
+                            Coor<Nd> &new_dim0, Coor<Nd, IndexType> &new_strides0,
+                            IndexType &new_disp1, Coor<Nd> &new_from1, Coor<Nd> &new_dim1,
+                            Coor<Nd, IndexType> &new_strides1, std::size_t &nblock) {
+
+            // Normalize to FastToSlow
+            if (co == SlowToFast) {
+                copy_normalize(reverse(o0), reverse(from0), reverse(size0), reverse(dim0),
+                               reverse(o1), reverse(from1), reverse(dim1), FastToSlow, new_disp0,
+                               new_from0, new_size, new_dim0, new_strides0, new_disp1, new_from1,
+                               new_dim1, new_strides1, nblock);
+                return;
+            }
+
+            // Check the compatibility of the tensors
+            assert((check_positive<Nd0>(from0) && check_positive<Nd1>(from1)));
+            assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
+
+            // Quick exit for zero volume
+            if (volume(size0) == 0) {
+                new_disp0 = new_disp1 = nblock = 0;
+                new_from0 = new_size = new_dim0 = new_from1 = new_dim1 = Coor<Nd>{};
+                new_strides0 = new_strides1 = Coor<Nd, IndexType>{};
+                return;
+            }
+
+            Coor<Nd1> size1 = reorder_coor(size0, find_permutation(o0, o1), 1);
+            IndexType stride1 = 1;
+            new_disp1 = 0;
+            std::size_t i = 0;
+            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+                if (size1[i1] > 1) {
+                    if (from1[i1] + size1[i1] <= dim1[i1]) {
+                        new_from1[i] = 0;
+                        new_disp1 += from1[i1] * stride1;
+                    } else {
+                        new_from1[i] = from1[i1];
+                    }
+                    new_size[i] = size1[i1];
+                    new_dim1[i] = dim1[i1];
+                    new_strides1[i] = stride1;
+                    ++i;
+                } else {
+                    new_disp1 += from1[i1] * stride1;
+                }
+                stride1 *= dim1[i1];
+            }
+            for (; i < Nd; ++i) {
+                new_from1[i] = 0;
+                new_size[i] = 1;
+                new_dim1[i] = 1;
+                new_strides1[i] = (i > 0 ? new_strides1[i - 1] : 1);
+            }
+            assert(volume(size0) == volume(new_size));
+
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd0, IndexType> strides0 = get_strides<IndexType>(dim0, FastToSlow);
+            i = 0;
+            new_disp0 = 0;
+            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+                if (perm0[i1] < 0) continue;
+                superbblas::IndexType i0 = perm0[i1];
+                if (size0[i0] > 1) {
+                    if (from0[i0] + size0[i0] <= dim0[i0]) {
+                        new_from0[i] = 0;
+                        new_disp0 += from0[i0] * strides0[i0];
+                    } else {
+                        new_from0[i] = from0[i0];
+                    }
+                    new_dim0[i] = dim0[i0];
+                    new_strides0[i] = strides0[i0];
+                    ++i;
+                }
+            }
+            for (; i < Nd; ++i) {
+                new_from0[i] = 0;
+                new_dim0[i] = 1;
+                new_strides0[i] = (i > 0 ? new_strides0[i - 1] : 1);
+            }
+
+            for (std::size_t i0 = 0; i0 < Nd0; ++i0)
+                if (size0[i0] == 1) new_disp0 += from0[i0] * strides0[i0];
+
+            nblock = 0;
+            IndexType strides = 1;
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (new_from0[i] != 0 || new_from1[i] != 0 || strides != new_strides0[i] ||
+                    strides != new_strides1[i] || new_size[i] != new_dim0[i] ||
+                    new_size[i] != new_dim1[i])
+                    break;
+                nblock++;
+                strides *= new_size[i];
+            }
+        }
+
+        /// Wether to allow returning a null pointer instead of the trivial permutation
+        enum ImplicitPermutation {
+            AllowImplicitPermutation,    ///< allow returning null pointers
+            DontAllowImplicitPermutation ///< don't allow returning null pointer
+        };
+
+        /// Return the indices to copy
+        /// \param from: first coordinate to copy
+        /// \param size: number of coordinates to copy in each direction
+        /// \param dim: dimension size
+        /// \param strides: strides
+        /// \param cpu: device context for the returned vector
+
+        template <typename IndexType, std::size_t Nd>
+        IndicesT<IndexType, Cpu> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                 const Coor<Nd> &dim,
+                                                 const Coor<Nd, IndexType> &strides, Cpu cpu) {
+
+            tracker<Cpu> _t("compute permutations", cpu);
+
+            // Check inputs
+            assert((check_positive<Nd>(from)));
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
+            // Quick exit
+            IndexType vol = volume(size);
+            if (volume(size) == 0) return IndicesT<IndexType, Cpu>();
+
+            // Compute the permutation
+            IndicesT<IndexType, Cpu> indices(vol, cpu);
+            Coor<Nd, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+            for (IndexType i = 0; i < vol; ++i)
+                indices[i] = coor2index(index2coor(i, size, size_strides) + from, dim, strides);
+
+            return indices;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+#    ifdef SUPERBBLAS_USE_THRUST
+
+        /// Class that compute the origin permutation
+
+        template <typename IndexType, std::size_t Nd>
+        struct perm_elem : public thrust::unary_function<IndexType, IndexType> {
+            const TCoor<Nd> from, size, dim;
+            const TCoor<Nd, IndexType> size_strides, strides;
+            perm_elem(TCoor<Nd> from, TCoor<Nd> size, TCoor<Nd> dim,
+                      TCoor<Nd, IndexType> size_strides, TCoor<Nd, IndexType> strides)
+                : from(from), size(size), dim(dim), size_strides(size_strides), strides(strides) {}
+
+            __HOST__ __DEVICE__ IndexType operator()(IndexType i) {
+                return coor2index(tplus(index2coor(i, size, size_strides), from), dim, strides);
+            }
+        };
+
+        template <typename IndexType, std::size_t Nd>
+        DECL_PERM(IndicesT<IndexType, Gpu> get_permutation(
+            const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
+            const Coor<Nd, IndexType> &strides, Gpu gpu))
+        IMPL({
+            tracker<Gpu> _t("compute permutations", gpu);
+
+            // Check inputs
+            assert((check_positive(from)));
+
+            // Quick exit
+            IndexType vol = volume(size);
+            if (volume(size) == 0) return IndicesT<IndexType, Gpu>();
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
+            // Compute the permutation
+            IndicesT<IndexType, Gpu> indices(vol, gpu);
+            Coor<Nd, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
+
+            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                              thrust::make_counting_iterator(IndexType(vol)),
+                              encapsulate_pointer(indices.data()),
+                              perm_elem<IndexType, Nd>(toTCoor(from), toTCoor(size), toTCoor(dim),
+                                                       toTCoor(size_strides), toTCoor(strides)));
+            return indices;
+        })
+#    endif
+#endif
+
+        /// Return the indices to copy
+        /// \param from: first coordinate to copy
+        /// \param size: number of coordinates to copy in each direction
+        /// \param dim: dimension size
+        /// \param strides: strides
+        /// \param implicitPermutation: whether to return a null pointer instead of the trivial permutation
+        /// \param xpu: device context for the returned vector
+
+        template <typename IndexType, std::size_t Nd, typename XPU>
+        IndicesT<IndexType, XPU> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                 const Coor<Nd> &dim,
+                                                 const Coor<Nd, IndexType> &strides,
+                                                 ImplicitPermutation implicitPermutation, XPU xpu) {
+
+            tracker<XPU> _t("get permutation", xpu);
+
+            // Check inputs
+            assert((check_positive<Nd>(from)));
+
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
+            // Quick exit
+            IndexType vol = volume(size);
+            if (volume(size) == 0) return IndicesT<IndexType, XPU>();
+            Coor<Nd, IndexType> dim_strides = get_strides<IndexType>(dim, FastToSlow);
+            if (implicitPermutation == AllowImplicitPermutation) {
+                bool fail = true;
+                for (std::size_t i = 0; i < Nd; ++i)
+                    fail |= (from[i] != 0 || (size[i] > 1 && dim_strides[i] != strides[i]));
+                if (!fail) return IndicesT<IndexType, XPU>(vol, nullptr, xpu);
+            }
+
+            // Check in the storage
+            using Key = std::tuple<Coor<Nd>, Coor<Nd>, Coor<Nd>, Coor<Nd, IndexType>>;
+            struct tag {};
+            auto cache = getCache<Key, IndicesT<IndexType, XPU>, TupleHash<Key>, tag>(xpu);
+            Key key{from, size, dim, strides};
+            auto it = cache.find(key);
+            if (it != cache.end()) return it->second.value;
+
+            // Otherwise, compute the permutation
+            IndicesT<IndexType, XPU> indices =
+                get_permutation<IndexType>(from, size, dim, strides, xpu);
+
+            // Store it in cache
+            cache.insert(key, indices, storageSize(indices));
+
+            return indices;
+        }
+
+        /// Copy the content of tensor v0 into v1
+        /// \param alpha: factor on the copy
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param v0: data for the origin tensor
+        /// \param mask0: mask for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param v1: data for the destination tensor
+        /// \param mask1: mask for the destination tensor (ignored)
+        /// \param ewop: either to copy or to add the origin values into the destination values
+
+        template <typename IndexType, std::size_t Nd, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename EWOP>
+        void local_copy_normalize(typename elem<T>::type alpha, IndexType disp0,
+                                  const Coor<Nd> &from0, const Coor<Nd> &size, const Coor<Nd> &dim0,
+                                  const Coor<Nd, IndexType> &strides0, vector<const T, XPU0> v0,
+                                  Mask<XPU0> mask0, IndexType disp1, const Coor<Nd> &from1,
+                                  const Coor<Nd> &dim1, const Coor<Nd, IndexType> &strides1,
+                                  vector<Q, XPU1> v1, Mask<XPU1> mask1, std::size_t nblock,
+                                  EWOP ewop) {
+
+            // Get the permutation vectors
+            Coor<Nd> sizeb = size;
+            for (std::size_t i = 0; i < nblock; ++i) sizeb[i] = 1;
+
+            // Shortcut for a trivial permutation
+            if (volume(sizeb) == 1 && mask0.size() == 0) {
+                IndexType extra_disp0 = coor2index(from0, dim0, strides0);
+                IndexType extra_disp1 = coor2index(from1, dim1, strides1);
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0 + extra_disp0, v0.ctx(),
+                                        volume(size), v1.data() + disp1 + extra_disp1, v1.ctx(),
+                                        ewop);
+                return;
+            }
+
+            if (deviceId(v0.ctx()) != CPU_DEVICE_ID || deviceId(v1.ctx()) != CPU_DEVICE_ID ||
+                mask0.size() != 0) {
+                nblock = 0;
+                sizeb = size;
+            }
+            IndicesT<IndexType, XPU0> indices0 = get_permutation(
+                from0, sizeb, dim0, strides0,
+                mask0.size() == 0 ? AllowImplicitPermutation : DontAllowImplicitPermutation,
+                v0.ctx());
+            IndicesT<IndexType, XPU1> indices1 = get_permutation(
+                from1, sizeb, dim1, strides1,
+                mask0.size() == 0 ? AllowImplicitPermutation : DontAllowImplicitPermutation,
+                v1.ctx());
+            IndexType blocking = 1;
+            for (std::size_t i = 0; i < nblock; ++i) blocking *= size[i];
+
+            // Do the copy
+            if (blocking == 1) {
+                if (mask0.size() > 0) {
+                    indices0 = select(indices0, mask0.data() + disp0, indices0);
+                    indices1 = select(indices1, mask1.data() + disp1, indices1);
+                }
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
+                                        indices0.size(), v1.data() + disp1, indices1.begin(),
+                                        v1.ctx(), ewop);
+            } else {
+                copy_n_blocking<IndexType, T, Q>(
+                    alpha, v0.data() + disp0, blocking, indices0.begin(), v0.ctx(), indices0.size(),
+                    v1.data() + disp1, indices1.begin(), v1.ctx(), ewop);
+            }
         }
 
         /// Copy the content of tensor v0 into v1
@@ -1098,25 +997,20 @@ namespace superbblas {
                 return;
             }
 
-            // Get the permutation vectors
-            IndicesT<IndexType, XPU0> indices0;
-            IndicesT<IndexType, XPU1> indices1;
-            IndexType disp0, disp1;
-            get_permutation_origin_cache<IndexType>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                    v0.ctx(), indices0, disp0, co);
-            get_permutation_destination_cache<IndexType>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                         v1.ctx(), indices1, disp1, co);
-
-            // Apply the masks
-            if (mask0.size() > 0) {
-                indices0 = select(indices0, mask0.data() + disp0, indices0);
-                indices1 = select(indices1, mask1.data() + disp1, indices1);
-            }
+            // Canonize the copy operation
+            constexpr std::size_t Nd = std::min(Nd0, Nd1);
+            IndexType new_disp0, new_disp1;
+            std::size_t nblock;
+            Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
+            Coor<Nd, IndexType> new_strides0, new_strides1;
+            copy_normalize(o0, from0, size0, dim0, o1, from1, dim1, co, new_disp0, new_from0,
+                           new_size, new_dim0, new_strides0, new_disp1, new_from1, new_dim1,
+                           new_strides1, nblock);
 
             // Do the copy
-            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
-                                    indices0.size(), v1.data() + disp1, indices1.begin(), v1.ctx(),
-                                    ewop);
+            local_copy_normalize(alpha, new_disp0, new_from0, new_size, new_dim0, new_strides0, v0,
+                                 mask0, new_disp1, new_from1, new_dim1, new_strides1, v1, mask1,
+                                 nblock, ewop);
         }
 
         /// Copy the content of tensor v0 into v1
@@ -1151,6 +1045,82 @@ namespace superbblas {
                 local_copy<IndexType>(alpha, o0, from0, size0, dim0, v0, mask0, o1, from1, dim1, v1,
                                       mask1, EWOP{}, co);
             }
+        }
+
+        /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param xpu: device context for the returned vector
+        /// \param co: coordinate linearization order
+
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
+        std::pair<IndicesT<IndexType, XPU>, IndexType>
+        get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                               const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                               const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation,
+                               XPU xpu, CoorOrder co) {
+            (void)from1;
+            (void)dim1;
+
+            tracker<XPU> _t("compute permutations (origin)", xpu);
+
+            // Canonize the copy operation
+            constexpr std::size_t Nd = std::min(Nd0, Nd1);
+            std::size_t nblock;
+            IndexType new_disp0, new_disp1;
+            Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
+            Coor<Nd, IndexType> new_strides0, new_strides1;
+            copy_normalize(o0, from0, size0, dim0, o1, from1, dim1, co, new_disp0, new_from0,
+                           new_size, new_dim0, new_strides0, new_disp1, new_from1, new_dim1,
+                           new_strides1, nblock);
+
+            // Compute the permutation
+            return {get_permutation(new_from0, new_size, new_dim0, new_strides0,
+                                    implicitPermutation, xpu),
+                    new_disp0};
+        }
+
+        /// Return the permutation on the destination to copy from the origin tensor into the destination tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of coordinates to copy in each direction
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param cpu: device context for the returned vector
+        /// \param co: coordinate linearization order
+
+        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
+        std::pair<IndicesT<IndexType, XPU>, IndexType> get_permutation_destination(
+            const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
+            const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation, XPU xpu, CoorOrder co) {
+
+            (void)from0;
+            (void)dim0;
+
+            tracker<XPU> _t("compute permutations (destination)", xpu);
+
+            // Canonize the copy operation
+            constexpr std::size_t Nd = std::min(Nd0, Nd1);
+            IndexType new_disp0, new_disp1;
+            std::size_t nblock;
+            Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
+            Coor<Nd, IndexType> new_strides0, new_strides1;
+            copy_normalize(o0, from0, size0, dim0, o1, from1, dim1, co, new_disp0, new_from0,
+                           new_size, new_dim0, new_strides0, new_disp1, new_from1, new_dim1,
+                           new_strides1, nblock);
+
+            // Compute the permutation
+            return {get_permutation(new_from1, new_size, new_dim1, new_strides1,
+                                    implicitPermutation, xpu),
+                    new_disp1};
         }
 
         /// Recommended orderings for contracting two tensors
