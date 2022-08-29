@@ -30,7 +30,7 @@ template <typename T, typename XPU> vector<T, XPU> laplacian(std::size_t n, std:
     for (std::size_t k = 0, K = size / (n * n); k < K; ++k) {
         for (std::size_t i = 0; i < n; ++i) r[k * n * n + i * n + i] = 2;
         for (std::size_t i = 0; i < n - 1; ++i) r[k * n * n + (i + 1) * n + i] = -1;
-        for (std::size_t i = 1; i < n; ++i) r[k * n * n + (i - 1) * n + i] = -1;
+        for (std::size_t i = 0; i < n - 1; ++i) r[k * n * n + i * n + (i + 1)] = -1;
     }
     return makeSure(r, xpu);
 }
@@ -67,16 +67,16 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
     // Copy tensor t0 into each of the c components of tensor 1
     resetTimings();
     try {
+        vector<Q, XPU> tx(vol0, xpu);
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
-            for (unsigned int n = 0; n < nrep; ++n) {
-                Q *ptr0 = t0.data();
-                cholesky<Nd + 1, Q>(p0.data(), dim0, 1, "xyztscSC", (Q **)&ptr0, "sc", "SC", &ctx,
+            copy_n(t0.data(), xpu, vol0, tx.data(), xpu);
+            Q *ptr0 = tx.data();
+            cholesky<Nd + 1, Q>(p0.data(), dim0, 1, "xyztscSC", (Q **)&ptr0, "sc", "SC", &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                    MPI_COMM_WORLD,
+                                MPI_COMM_WORLD,
 #endif
-                                    SlowToFast);
-            }
+                                SlowToFast);
         }
         sync(xpu);
         t = w_time() - t;

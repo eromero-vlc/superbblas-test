@@ -66,7 +66,7 @@ all_cpu all_cuda all_cuda_lib all_hip: all_%:
 ifeq ($(SUPERBBLAS_WITH_MPI), yes)
 	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./dist_$*  --procs='1 1 2 3' --dim='4 4 4 4 64'
 	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./contract_$*  --procs='1 1 2 3' --dim='2 2 4 4 2'
-	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4'
+	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 	OMP_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 endif
 
