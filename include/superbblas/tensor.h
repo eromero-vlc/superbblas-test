@@ -788,8 +788,7 @@ namespace superbblas {
             return indices;
         }
 
-#ifdef SUPERBBLAS_USE_GPU
-#    ifdef SUPERBBLAS_USE_THRUST
+#ifdef SUPERBBLAS_USE_THRUST
 
         /// Class that compute the origin permutation
 
@@ -806,6 +805,26 @@ namespace superbblas {
             }
         };
 
+        template <typename IndexType, std::size_t Nd>
+        IndicesT<IndexType, Gpu>
+        get_permutation_thrust(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
+                               const Coor<Nd, IndexType> &strides, Gpu gpu) {
+
+            // Compute the permutation
+            IndexType vol = volume(size);
+            IndicesT<IndexType, Gpu> indices(vol, gpu);
+            Coor<Nd, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
+
+            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                              thrust::make_counting_iterator(IndexType(vol)),
+                              encapsulate_pointer(indices.data()),
+                              perm_elem<IndexType, Nd>(toTCoor(from), toTCoor(size), toTCoor(dim),
+                                                       toTCoor(size_strides), toTCoor(strides)));
+            return indices;
+        }
+#endif
+
+#ifdef SUPERBBLAS_USE_GPU
         template <typename IndexType, std::size_t Nd>
         DECL_PERM(IndicesT<IndexType, Gpu> get_permutation(
             const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
@@ -825,17 +844,8 @@ namespace superbblas {
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
             // Compute the permutation
-            IndicesT<IndexType, Gpu> indices(vol, gpu);
-            Coor<Nd, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
-
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
-                              thrust::make_counting_iterator(IndexType(vol)),
-                              encapsulate_pointer(indices.data()),
-                              perm_elem<IndexType, Nd>(toTCoor(from), toTCoor(size), toTCoor(dim),
-                                                       toTCoor(size_strides), toTCoor(strides)));
-            return indices;
+            return get_permutation_thrust<IndexType, Nd>(from, size, dim, strides, gpu);
         })
-#    endif
 #endif
 
         /// Return the indices to copy
