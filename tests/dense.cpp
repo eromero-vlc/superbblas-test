@@ -36,8 +36,10 @@ template <typename T, typename XPU> vector<T, XPU> laplacian(std::size_t n, std:
 }
 
 template <typename Q, typename XPU>
-void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu,
-          unsigned int nrep = 10) {
+void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
+
+    // Set number of repetitions
+    const unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
 
     // Create tensor t0 of Nd dims: a lattice color vector
     const Coor<Nd + 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T],

@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     constexpr unsigned int nS = 4, nC = 3; // length of dimension spin and color dimensions
     constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
-    const unsigned int nrep = 10;
+    const unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
 
     // Get options
     for (int i = 1; i < argc; ++i) {

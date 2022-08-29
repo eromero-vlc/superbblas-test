@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     constexpr unsigned int M = 0, D = 1, T = 2, G = 3, S0 = 4, S1 = 5, N0 = 6, N1 = 7;
     Coor<Nd> dim = {2, 3, 5, nG, nS, nS, 4, 4}; // mdtgsSnN
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1, 1};
-    const unsigned int nrep = 1;
+    const unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
     const unsigned int num_reqs = 1000;
     std::string metadata = "S3T format!";
     const char *filename = "tensor.s3t";

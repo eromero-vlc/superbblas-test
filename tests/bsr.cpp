@@ -103,8 +103,10 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
 }
 
 template <typename Q, typename XPU>
-void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XPU xpu,
-          unsigned int nrep = 10) {
+void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XPU xpu) {
+
+    // Set number of repetitions
+    const unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
 
     // Create a lattice operator of Nd-1 dims
     const Coor<Nd - 1> dimo = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc

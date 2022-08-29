@@ -309,7 +309,7 @@ int main(int argc, char **argv) {
 
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1};
-    unsigned int nrep = 10;
+    unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
 
     // Get options
     bool procs_was_set = false;
