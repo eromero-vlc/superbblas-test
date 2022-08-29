@@ -13,8 +13,8 @@
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
 
 #    define DECL_COPY_BLOCKING_T_Q_EWOP(...)                                                       \
-        EMIT REPLACE1(copy_n, superbblas::detail::copy_n_blocking<IndexType, T, Q, XPU_GPU, EWOP>) \
-            REPLACE_T_Q REPLACE_XPU REPLACE_EWOP template __VA_ARGS__;
+        EMIT REPLACE1(copy_n_blocking, superbblas::detail::copy_n_blocking<IndexType, T, Q, EWOP>) \
+            REPLACE_IndexType REPLACE_T_Q REPLACE_EWOP template __VA_ARGS__;
 
 /// Generate template instantiations for zero_n functions with template parameters IndexType and T
 
@@ -589,9 +589,8 @@ namespace superbblas {
                   indicesw(indicesw) {}
 
             __HOST__ __DEVICE__ void operator()(IndexType i) {
-                //IndexType d = i / blocking, r = i - d * blocking;
-                //w[indicesw[d] + r] = v[indicesv[d] + r];
-                w[indicesw[i]] = v[indicesv[i]];
+                IndexType d = i / blocking, r = i % blocking;
+                w[indicesw[d] + r] = alpha * v[indicesv[d] + r];
             }
         };
 
@@ -614,8 +613,8 @@ namespace superbblas {
                   indicesw(indicesw) {}
 
             __HOST__ __DEVICE__ void operator()(IndexType i) {
-                w[indicesw[i / blocking] + i % blocking] +=
-                    alpha * v[indicesv[i / blocking] + i % blocking];
+                IndexType d = i / blocking, r = i % blocking;
+                w[indicesw[d] + r] += alpha * v[indicesv[d] + r];
             }
         };
 
