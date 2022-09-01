@@ -960,6 +960,8 @@ namespace superbblas {
                 if (mask0.size() > 0) {
                     indices0 = select(indices0, mask0.data() + disp0, indices0);
                     indices1 = select(indices1, mask1.data() + disp1, indices1);
+                    if (indices0.size() != indices1.size())
+                        throw std::runtime_error("copy: non-compatible masks");
                 }
                 copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
                                         indices0.size(), v1.data() + disp1, indices1.begin(),
