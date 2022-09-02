@@ -290,7 +290,7 @@ namespace superbblas {
             // Generate the working partition
             From_size<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);
             Components_tmpl<N, T, XPU0, XPU1> vw =
-                reorder_tensor(p, o, {}, dim, dim, v, pw, dimw, ow, comm, co, force_copy);
+                reorder_tensor(p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co, force_copy);
 
             return {pw, dimw, ow, vw, n};
         }
@@ -342,7 +342,7 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<N, N, T>(T{1}, pw, {}, dimw, dimw, ow, toConst(vw), p, {}, dim, o, v, comm,
+            copy<N, N, T>(T{1}, pw, {{}}, dimw, dimw, ow, toConst(vw), p, {{}}, dim, o, v, comm,
                           EWOp::Copy{}, co);
 
             _t.stop();
@@ -455,7 +455,7 @@ namespace superbblas {
             From_size<Nx> &pxw = tx_.first;
             const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw =
-                reorder_tensor(px, ox, {}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
+                reorder_tensor(px, ox, {{}}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
                                true /* Force copy */);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, py, dimy, oy, oyw);
             From_size<Ny> &pyw = ty_.first;
@@ -482,8 +482,8 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<Ny, Ny, T>(T{1}, pyw, {}, dimyw, dimyw, oyw, toConst(vxw), py, {}, dimy, oy, vy,
-                            comm, EWOp::Copy{}, co);
+            copy<Ny, Ny, T>(T{1}, pyw, {{}}, dimyw, dimyw, oyw, toConst(vxw), py, {{}}, dimy, oy,
+                            vy, comm, EWOp::Copy{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -601,7 +601,7 @@ namespace superbblas {
             From_size<Nx> &pxw = tx_.first;
             const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw =
-                reorder_tensor(px, ox, {}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
+                reorder_tensor(px, ox, {{}}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
                                true /* Force copy */);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, py, dimy, oy, oyw);
             From_size<Ny> &pyw = ty_.first;
@@ -628,8 +628,8 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<Ny, Ny, T>(alpha, pyw, {}, dimyw, dimyw, oyw, toConst(vxw), py, {}, dimy, oy, vy,
-                            comm, EWOp::Copy{}, co);
+            copy<Ny, Ny, T>(alpha, pyw, {{}}, dimyw, dimyw, oyw, toConst(vxw), py, {{}}, dimy, oy,
+                            vy, comm, EWOp::Copy{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {

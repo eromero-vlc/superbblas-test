@@ -851,8 +851,8 @@ namespace superbblas {
                     "Unsupported layout for the input and output dense tensors");
 
             // Set zero
-            local_copy<Ny, Ny, T, T>(0, oy, {}, dimy, dimy, (vector<const T, XPU>)vy, {}, oy, {},
-                                     dimy, vy, {}, EWOp::Copy{}, bsr.v.co);
+            local_copy<Ny, Ny, T, T>(0, oy, {{}}, dimy, dimy, (vector<const T, XPU>)vy, Mask<XPU>{},
+                                     oy, {{}}, dimy, vy, Mask<XPU>{}, EWOp::Copy{}, bsr.v.co);
 
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
             if (vold == 0 || voli == 0) return;
@@ -1036,14 +1036,14 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 Coor<Ny> dimyi = py_[pi][1];
                 vector<T, XPU0> vyi(volume(dimyi), bsr.c.first[i].v.it.ctx());
-                vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimyi, componentId, {}});
+                vy_.first.push_back(Component<Ny, T, XPU0>{vyi, dimyi, componentId, Mask<XPU0>{}});
             }
             for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                 const unsigned int componentId = bsr.c.second[i].v.componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 Coor<Ny> dimyi = py_[pi][1];
                 vector<T, XPU1> vyi(volume(dimyi), bsr.c.second[i].v.it.ctx());
-                vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimyi, componentId, {}});
+                vy_.second.push_back(Component<Ny, T, XPU1>{vyi, dimyi, componentId, Mask<XPU1>{}});
             }
 
             // Do contraction
@@ -1066,15 +1066,15 @@ namespace superbblas {
                 // Copy the result to final tensor
                 Coor<Ny> fromyi = fromy;
                 if (p > 0) fromyi[power_pos] += p;
-                copy<Ny, Ny, T>(1.0, py_, {}, sug_sizey, sug_sizey, sug_oy, toConst(vy_), py,
+                copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_), py,
                                 fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co);
 
                 // Copy the result into x for doing the next power
                 if (p == power - 1) break;
-                copy<Nx, Nx, T>(T{0}, px_, {}, sug_dimx, sug_dimx, sug_ox, toConst(vx_), px_, {},
-                                sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
-                copy<Ny, Nx, T>(T{1}, py_, {}, sug_sizey, sug_sizey, sug_oy_trans, toConst(vy_),
-                                px_, {}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
+                copy<Nx, Nx, T>(T{0}, px_, {{}}, sug_dimx, sug_dimx, sug_ox, toConst(vx_), px_,
+                                {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
+                copy<Ny, Nx, T>(T{1}, py_, {{}}, sug_sizey, sug_sizey, sug_oy_trans, toConst(vy_),
+                                px_, {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
             }
 
             _t.stop();

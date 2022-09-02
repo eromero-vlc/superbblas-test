@@ -415,7 +415,7 @@ namespace superbblas {
                         Coor<Nd0> fromi = fsi[0], sizei = fsi[1];
                         Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
                         auto indices0i = get_permutation_origin<IndexType>(
-                            o0, fromi, sizei, dim0, o1, {}, sizei1, DontAllowImplicitPermutation,
+                            o0, fromi, sizei, dim0, o1, {{}}, sizei1, DontAllowImplicitPermutation,
                             Cpu{}, co);
                         assert(indices0i.first.size() + n <= vol);
                         IndicesT<IndexType, Cpu> indices0i_mask = indices0i.first;
@@ -428,7 +428,7 @@ namespace superbblas {
                                        [=](IndexType d) { return d + indices0i_disp; });
 
                         auto indices1i = get_permutation_destination<IndexType>(
-                            o0, fromi, sizei, dim0, o1, {}, sizei1, DontAllowImplicitPermutation,
+                            o0, fromi, sizei, dim0, o1, {{}}, sizei1, DontAllowImplicitPermutation,
                             Cpu{}, co);
                         assert(indices0i.first.size() == indices1i.first.size());
                         IndicesT<IndexType, Cpu> indices1i_mask = indices1i.first;
@@ -564,8 +564,8 @@ namespace superbblas {
                 for (const auto &fsi : toReceive[i]) {
                     Coor<Nd> fromi = fsi[0], sizei = fsi[1];
                     auto indices1_pair = get_permutation_destination<IndexType>(
-                        o, {}, sizei, sizei, o, fromi, v.dim, AllowImplicitPermutation, v.it.ctx(),
-                        co);
+                        o, {{}}, sizei, sizei, o, fromi, v.dim, AllowImplicitPermutation,
+                        v.it.ctx(), co);
                     IndicesT<IndexType, XPU> indices1 = indices1_pair.first;
                     IndexType disp = indices1_pair.second;
 
@@ -892,8 +892,8 @@ namespace superbblas {
             auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
             std::size_t vol = volume(p.second);
             if (vol == 0) {
-                fromr = Coor<Nd>{};
-                sizer = Coor<Nd>{};
+                fromr = Coor<Nd>{{}};
+                sizer = Coor<Nd>{{}};
             } else if (vol == 1) {
                 fromr = p.first[0][0];
                 sizer = p.first[0][1];
@@ -1033,7 +1033,7 @@ namespace superbblas {
                     from1,
                 dim1);
             sizer = reorder_coor<Nd0, Nd1>(rsize0, perm, 1);
-            if (volume(sizer) == 0) sizer = Coor<Nd1>{};
+            if (volume(sizer) == 0) sizer = Coor<Nd1>{{}};
         }
 
         /// Translate a range from one coordinate lattice to another
@@ -1102,7 +1102,7 @@ namespace superbblas {
                                                                                local_size1, dim1),
                                                              dim1, stride1),
                                                  from1, dim1, from0, dim0, perm1),
-                                 local_from0, {}, dim0);
+                                 local_from0, {{}}, dim0);
             }
 
             return r;
@@ -1156,7 +1156,7 @@ namespace superbblas {
                                                                                local_size0, dim0),
                                                              from0, dim0, from1, dim1, perm0),
                                              dim1, stride1),
-                                 local_from1, {}, dim1);
+                                 local_from1, {{}}, dim1);
             }
 
             return r;
@@ -1836,10 +1836,10 @@ namespace superbblas {
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
-        void zeroed_repated_tensor(From_size<Nd0> p0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                                   From_size<Nd1> p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                                   From_size<Ndo> pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
-                                   unsigned int componentId, vector<T, XPU> v, CoorOrder co) {
+        void zeroed_repeated_tensor(From_size<Nd0> p0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                                    From_size<Nd1> p1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                                    From_size<Ndo> pr, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
+                                    unsigned int componentId, vector<T, XPU> v, CoorOrder co) {
 
             assert(p0.size() == p1.size() && p1.size() == pr.size());
 
@@ -1859,8 +1859,8 @@ namespace superbblas {
 
                 fromr = normalize_coor(fromr - pr[componentId][0], dimr);
                 local_copy<Ndo, Ndo, T, T>(0, o_r, fromr, sizer, pr[componentId][1],
-                                           (vector<const T, XPU>)v, {}, o_r, fromr,
-                                           pr[componentId][1], v, {}, EWOp::Copy{}, co);
+                                           (vector<const T, XPU>)v, Mask<XPU>{}, o_r, fromr,
+                                           pr[componentId][1], v, Mask<XPU>{}, EWOp::Copy{}, co);
             }
         }
 
@@ -1882,7 +1882,7 @@ namespace superbblas {
                        bool force_copy = false) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{} && o0 == o1 && p0 == p1) return v0;
+            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
 
             // Allocate the tensor
             unsigned int ncomponents = v0.first.size() + v0.second.size();
@@ -1892,19 +1892,19 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p1[pi][1];
                 vector<T, XPU0> v1i(volume(dimi), v0.first[i].it.ctx());
-                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId, {}});
+                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId, Mask<XPU0>{}});
             }
             for (unsigned int i = 0; i < v0.second.size(); ++i) {
                 const unsigned int componentId = v0.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p1[pi][1];
                 vector<T, XPU1> v1i(volume(dimi), v0.second[i].it.ctx());
-                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId, {}});
+                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId, Mask<XPU1>{}});
             }
 
             // Copy the content of v0 into v1
-            copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {}, dim1, o1, v1, comm,
-                          EWOp::Copy{}, co);
+            copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {{}}, dim1, o1, v1,
+                          comm, EWOp::Copy{}, co);
 
             return v1;
         }
@@ -2064,13 +2064,14 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
                 vr0[i] = vector<T, XPU0>(volume<Ndo>(dimi), v0_.first[i].it.ctx());
-                vr_.first.push_back(Component<Ndo, T, XPU0>{vr0[i], dimi, componentId, {}});
+                vr_.first.push_back(
+                    Component<Ndo, T, XPU0>{vr0[i], dimi, componentId, Mask<XPU0>{}});
                 local_contraction<Nd0, Nd1, Ndo, T>(
                     alpha, sug_o0, p0_[pi][1], conj0, vector<const T, XPU0>(v0_.first[i].it),
                     sug_o1, p1_[pi][1], conj1, vector<const T, XPU0>(v1_.first[i].it), T{0.0},
                     sug_or, dimi, vr0[i], co);
-                zeroed_repated_tensor(p0_, sug_dim0, sug_o0, p1_, sug_dim1, sug_o1, pr_, sug_dimr,
-                                      sug_or, pi, vr0[i], co);
+                zeroed_repeated_tensor(p0_, sug_dim0, sug_o0, p1_, sug_dim1, sug_o1, pr_, sug_dimr,
+                                       sug_or, pi, vr0[i], co);
             }
             std::vector<vector<T, XPU1>> vr1(v0_.second.size());
             for (unsigned int i = 0; i < v0_.second.size(); ++i) {
@@ -2078,22 +2079,23 @@ namespace superbblas {
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<Ndo> &dimi = pr_[pi][1];
                 vr1[i] = vector<T, XPU1>(volume<Ndo>(dimi), v0_.second[i].it.ctx());
-                vr_.second.push_back(Component<Ndo, T, XPU1>{vr1[i], dimi, componentId, {}});
+                vr_.second.push_back(
+                    Component<Ndo, T, XPU1>{vr1[i], dimi, componentId, Mask<XPU1>{}});
                 local_contraction<Nd0, Nd1, Ndo, T>(
                     alpha, sug_o0, p0_[pi][1], conj0, vector<const T, XPU1>(v0_.second[i].it),
                     sug_o1, p1_[pi][1], conj1, vector<const T, XPU1>(v1_.second[i].it), T{0.0},
                     sug_or, dimi, vr1[i], co);
-                zeroed_repated_tensor(p0_, sug_dim0, sug_o0, p1_, sug_dim1, sug_o1, pr_, sug_dimr,
-                                      sug_or, pi, vr1[i], co);
+                zeroed_repeated_tensor(p0_, sug_dim0, sug_o0, p1_, sug_dim1, sug_o1, pr_, sug_dimr,
+                                       sug_or, pi, vr1[i], co);
             }
 
             // Scale the output tensor by beta
-            copy<Ndo, Ndo, T>(beta, pr, {}, dimr, dimr, o_r, toConst(vr), pr, {}, dimr, o_r, vr,
+            copy<Ndo, Ndo, T>(beta, pr, {{}}, dimr, dimr, o_r, toConst(vr), pr, {{}}, dimr, o_r, vr,
                               comm, EWOp::Copy{}, co);
 
             // Scale the output tensor by beta and reduce all the subtensors to the final tensor
-            copy<Ndo, Ndo, T>(1, pr_, {}, sug_dimr, sug_dimr, sug_or, vr_, pr, {}, dimr, o_r, vr,
-                              comm, EWOp::Add{}, co);
+            copy<Ndo, Ndo, T>(1, pr_, {{}}, sug_dimr, sug_dimr, sug_or, vr_, pr, {{}}, dimr, o_r,
+                              vr, comm, EWOp::Add{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -2127,7 +2129,7 @@ namespace superbblas {
     template <std::size_t Nd>
     std::vector<PartitionItem<Nd>> basic_partitioning(Coor<Nd> dim, Coor<Nd> procs, int nprocs = -1,
                                                       bool replicate = false,
-                                                      Coor<Nd> ext_power = {}) {
+                                                      Coor<Nd> ext_power = {{}}) {
         int vol_procs = (int)detail::volume<Nd>(procs);
         if (nprocs >= 0 && vol_procs > nprocs)
             std::runtime_error(

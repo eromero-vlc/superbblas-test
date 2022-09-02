@@ -34,14 +34,14 @@ namespace superbblas {
     /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
 
     inline double &getCpuMemUsed(Session session) {
-        static std::array<double, 256> mem{};
+        static std::array<double, 256> mem{{}};
         return mem[session];
     }
 
     /// Get total memory allocated on devices if tracking memory consumption (see `getTrackingMemory`)
 
     inline double &getGpuMemUsed(Session session) {
-        static std::array<double, 256> mem{};
+        static std::array<double, 256> mem{{}};
         return mem[session];
     }
 

@@ -241,6 +241,8 @@ namespace superbblas {
         struct File_Requests {
             MPI_File f;
             std::list<AllocAbstract *> reqs;
+            File_Requests() : f{}, reqs{} {}
+            File_Requests(MPI_File f) : f(f), reqs{} {}
         };
 
         // File descriptor specialization for MpiComm
@@ -263,7 +265,7 @@ namespace superbblas {
                 MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
                 break;
             }
-            return File_Requests{fh, {}};
+            return {fh};
         }
 
         inline void seek(File_Requests &f, std::size_t offset) {
@@ -473,7 +475,7 @@ namespace superbblas {
             /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
             std::unordered_multimap<std::size_t, BlockIndex> gridToBlocks;
 
-            GridHash(Coor<N> dim) : dim{dim}, grid{}, gridToBlocks{16} {
+            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks{16} {
                 assert(check_positive(dim));
             }
 
@@ -1961,9 +1963,9 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::append_blocks<Nd1, Nd1, Q>(p, num_blocks, {}, dim, dim,
+        detail::append_blocks<Nd1, Nd1, Q>(p, num_blocks, {{}}, dim, dim,
                                            detail::trivial_order<Nd1>(),
-                                           detail::trivial_order<Nd1>(), sto, {}, comm, co);
+                                           detail::trivial_order<Nd1>(), sto, {{}}, comm, co);
     }
 
     /// Add blocks to storage
@@ -2242,8 +2244,8 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::append_blocks<Nd1, Nd1, Q>(
-            p, num_blocks, {}, dim, dim, detail::trivial_order<Nd1>(), detail::trivial_order<Nd1>(),
-            sto, Coor<Nd1>{}, comm, co);
+            p, num_blocks, {{}}, dim, dim, detail::trivial_order<Nd1>(),
+            detail::trivial_order<Nd1>(), sto, Coor<Nd1>{{}}, comm, co);
     }
 
     /// Add blocks to storage

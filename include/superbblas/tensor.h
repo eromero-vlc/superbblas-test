@@ -1001,7 +1001,7 @@ namespace superbblas {
 
             // Shortcut to scale or zero out a tensor
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() &&
-                mask0.size() == 0 && o0 == o1 && from0 == Coor<Nd0>{} && from1 == Coor<Nd1>{} &&
+                mask0.size() == 0 && o0 == o1 && from0 == Coor<Nd0>{{}} && from1 == Coor<Nd1>{{}} &&
                 size0 == dim0 && dim0 == dim1 && std::is_same<EWOP, detail::EWOp::Copy>::value) {
                 copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
                                         v1.ctx(), ewop);
@@ -1378,8 +1378,9 @@ namespace superbblas {
                     if (sug_o0 != o0) {
                         sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
                         vector<T, XPU> sug_v0_(v0.size(), v0.ctx());
-                        local_copy<Nd0, Nd0>(T{1}, o0, {}, dim0, dim0, v0, {}, sug_o0, {}, sug_dim0,
-                                             sug_v0_, {}, EWOp::Copy{}, SlowToFast);
+                        local_copy<Nd0, Nd0>(T{1}, o0, {{}}, dim0, dim0, v0, Mask<XPU>{}, sug_o0,
+                                             {{}}, sug_dim0, sug_v0_, Mask<XPU>{}, EWOp::Copy{},
+                                             SlowToFast);
                         sug_v0 = sug_v0_;
                     }
 
@@ -1388,8 +1389,9 @@ namespace superbblas {
                     if (sug_o1 != o1) {
                         sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
                         vector<T, XPU> sug_v1_(v1.size(), v1.ctx());
-                        local_copy<Nd1, Nd1>(T{1}, o1, {}, dim1, dim1, v1, {}, sug_o1, {}, sug_dim1,
-                                             sug_v1_, {}, EWOp::Copy{}, SlowToFast);
+                        local_copy<Nd1, Nd1>(T{1}, o1, {{}}, dim1, dim1, v1, Mask<XPU>{}, sug_o1,
+                                             {{}}, sug_dim1, sug_v1_, Mask<XPU>{}, EWOp::Copy{},
+                                             SlowToFast);
                         sug_v1 = sug_v1_;
                     }
 
@@ -1399,9 +1401,10 @@ namespace superbblas {
                         sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
                         sug_vr = vector<T, XPU>(vr.size(), vr.ctx());
                         if (std::fabs(beta) != 0)
-                            local_copy<Ndo, Ndo, T, T>(
-                                T{1}, o_r, {}, dimr, dimr, vector<const T, XPU>(vr), {}, sug_or, {},
-                                sug_dimr, sug_vr, {}, EWOp::Copy{}, SlowToFast);
+                            local_copy<Ndo, Ndo, T, T>(T{1}, o_r, {{}}, dimr, dimr,
+                                                       vector<const T, XPU>(vr), Mask<XPU>{},
+                                                       sug_or, {{}}, sug_dimr, sug_vr, Mask<XPU>{},
+                                                       EWOp::Copy{}, SlowToFast);
                     }
 
                     local_contraction<Nd0, Nd1, Ndo, T, XPU>(alpha, sug_o0, sug_dim0, conj0, sug_v0,
@@ -1409,9 +1412,9 @@ namespace superbblas {
                                                              sug_or, sug_dimr, sug_vr, SlowToFast);
 
                     if (sug_or != o_r)
-                        local_copy<Ndo, Ndo>(T{1}, sug_or, {}, sug_dimr, sug_dimr,
-                                             vector<const T, XPU>(sug_vr), {}, o_r, {}, dimr, vr,
-                                             {}, EWOp::Copy{}, SlowToFast);
+                        local_copy<Ndo, Ndo>(T{1}, sug_or, {{}}, sug_dimr, sug_dimr,
+                                             vector<const T, XPU>(sug_vr), Mask<XPU>{}, o_r, {{}},
+                                             dimr, vr, Mask<XPU>{}, EWOp::Copy{}, SlowToFast);
                     return;
                 }
             }
