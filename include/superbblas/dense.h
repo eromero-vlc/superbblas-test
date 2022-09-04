@@ -75,11 +75,17 @@ namespace superbblas {
 
             tracker<Gpu> _t("local cholesky (GPU)", v.ctx());
 
-            // TODO: use cudaSolverDN<t>potrfBatched
-
-            vector<T, Cpu> v_cpu = makeSure(v, Cpu{0});
-            local_cholesky(n, k, v_cpu);
-            copy_n(v_cpu.data(), v_cpu.ctx(), v_cpu.size(), v.data(), v.ctx());
+            vector<T *, Cpu> v_ps(k, Cpu{});
+            for (std::size_t i = 0; i < k; ++i) v_ps[i] = v.data() + n * n * i;
+            vector<T *, Gpu> v_ps_gpu = makeSure(v_ps, v.ctx());
+            vector<int, Gpu> info(k, v.ctx());
+            cusolverCheck(cusolverDnXpotrfBatched(v.ctx().cusolverDnHandle, CUBLAS_FILL_MODE_UPPER,
+                                                  n, v_ps_gpu.data(), n, info.data(), k));
+            vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
+            for (std::size_t i = 0; i < k; ++i)
+                if (info_cpu[i] > 0)
+                    throw std::runtime_error(std::string("Error cholesky: ") +
+                                             std::to_string(info_cpu[i]));
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -113,11 +119,15 @@ namespace superbblas {
 
             tracker<Gpu> _t("local trsm (GPU)", a.ctx());
 
-            // TODO: use cudaSolverDN<t>trsmBatched
-
-            vector<T, Cpu> a_cpu = makeSure(a, Cpu{0}), x_cpu = makeSure(x, Cpu{0});
-            local_trsm(left_side, n, k, m, alpha, a_cpu, x_cpu);
-            copy_n(x_cpu.data(), x_cpu.ctx(), x_cpu.size(), x.data(), x.ctx());
+            vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
+            for (std::size_t i = 0; i < k; ++i) a_ps[i] = a.data() + n * n * i;
+            for (std::size_t i = 0; i < k; ++i) x_ps[i] = x.data() + n * m * i;
+            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx()), x_ps_gpu = makeSure(x_ps, x.ctx());
+            cublasCheck(cublasXtrsmBatched(
+                a.ctx().cublasHandle, left_side ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT,
+                CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, left_side ? n : m,
+                left_side ? m : n, alpha, a_ps_gpu.data(), n, x_ps_gpu.data(), left_side ? n : m,
+                k));
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -176,11 +186,20 @@ namespace superbblas {
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
 
-            // TODO: use cudaSolverDN<t>trsmBatched
-
-            vector<T, Cpu> a_cpu = makeSure(a, Cpu{0}), x_cpu = makeSure(x, Cpu{0});
-            local_gesm(trans, n, k, m, a_cpu, x_cpu);
-            copy_n(x_cpu.data(), x_cpu.ctx(), x_cpu.size(), x.data(), x.ctx());
+            vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
+            for (std::size_t i = 0; i < k; ++i) a_ps[i] = a.data() + n * n * i;
+            for (std::size_t i = 0; i < k; ++i) x_ps[i] = x.data() + n * m * i;
+            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx()), x_ps_gpu = makeSure(x_ps, x.ctx());
+            vector<int, Gpu> ipivs(k * n, a.ctx()), info(k, a.ctx());
+            cublasCheck(cublasXgetrfBatched(a.ctx().cublasHandle, n, a_ps_gpu.data(), n,
+                                            ipivs.data(), info.data(), k));
+            vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
+            for (std::size_t i = 0; i < k; ++i) checkLapack(info_cpu[i]);
+            int info_getrs;
+            cublasCheck(cublasXgetrsBatched(a.ctx().cublasHandle, toCublasTrans(trans), n, m,
+                                            a_ps_gpu.data(), n, ipivs.data(), x_ps_gpu.data(), n,
+                                            &info_getrs, k));
+            checkLapack(info_getrs);
         }
 #endif // SUPERBBLAS_USE_GPU
 

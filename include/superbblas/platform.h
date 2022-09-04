@@ -33,6 +33,7 @@
 #ifdef SUPERBBLAS_USE_CUDA
 #    include <cublas_v2.h>
 #    include <cuda_runtime.h>
+#    include <cusolverDn.h>
 #    include <cusparse.h>
 #endif
 
@@ -188,10 +189,32 @@ namespace superbblas {
             }
         }
 
+        inline void cusolverCheck(cusolverStatus_t status) {
+            if (status != CUSOLVER_STATUS_SUCCESS) {
+                std::string str = "(unknown)";
+
+                if (status == CUSOLVER_STATUS_NOT_INITIALIZED)
+                    str = "CUSOLVER_STATUS_NOT_INITIALIZED";
+                if (status == CUSOLVER_STATUS_ALLOC_FAILED) str = "CUSOLVER_STATUS_ALLOC_FAILED";
+                if (status == CUSOLVER_STATUS_INVALID_VALUE) str = "CUSOLVER_STATUS_INVALID_VALUE";
+                if (status == CUSOLVER_STATUS_ARCH_MISMATCH) str = "CUSOLVER_STATUS_ARCH_MISMATCH";
+                if (status == CUSOLVER_STATUS_EXECUTION_FAILED)
+                    str = "CUSOLVER_STATUS_EXECUTION_FAILED";
+                if (status == CUSOLVER_STATUS_INTERNAL_ERROR)
+                    str = "CUSOLVER_STATUS_INTERNAL_ERROR";
+                if (status == CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
+                    str = "CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+                std::stringstream ss;
+                ss << "cuSolver function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+        }
+
         struct Cuda {
             int device;
             cublasHandle_t cublasHandle;
             cusparseHandle_t cusparseHandle;
+            cusolverDnHandle_t cusolverDnHandle;
             /// Optional function for allocating memory on devices
             Allocator alloc;
             /// Optional function for deallocating memory on devices
@@ -361,6 +384,7 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_CUDA
         std::shared_ptr<cublasHandle_t> cublasHandle;
         std::shared_ptr<cusparseHandle_t> cusparseHandle;
+        std::shared_ptr<cusolverDnHandle_t> cusolverDnHandle;
 #elif defined(SUPERBBLAS_USE_HIP)
         std::shared_ptr<hipblasHandle_t> hipblasHandle;
         std::shared_ptr<hipsparseHandle_t> hipsparseHandle;
@@ -388,6 +412,12 @@ namespace superbblas {
                         delete p;
                     });
                 detail::cusparseCheck(cusparseCreate(cusparseHandle.get()));
+                cusolverDnHandle = std::shared_ptr<cusolverDnHandle_t>(
+                    new cusolverDnHandle_t, [](cusolverDnHandle_t *p) {
+                        detail::cusolverCheck(cusolverDnDestroy(*p));
+                        delete p;
+                    });
+                detail::cusolverCheck(cusolverDnCreate(cusolverDnHandle.get()));
             }
 #elif defined(SUPERBBLAS_USE_HIP)
             if (plat == HIP) {
@@ -411,7 +441,8 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         detail::Cuda toCuda(Session session) const {
-            return detail::Cuda{device, *cublasHandle, *cusparseHandle, alloc, dealloc, session};
+            return detail::Cuda{device, *cublasHandle, *cusparseHandle, *cusolverDnHandle,
+                                alloc,  dealloc,       session};
         }
 
         detail::Cuda toGpu(Session session) const { return toCuda(session); }

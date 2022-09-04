@@ -475,6 +475,46 @@ namespace superbblas {
                 (CUSPARSE_SCALAR *)C, ldc);
         }
 
+        inline cublasStatus_t cublasXtrsmBatched(cublasHandle_t handle, cublasSideMode_t side,
+                                                 cublasFillMode_t uplo, cublasOperation_t trans,
+                                                 cublasDiagType_t diag, int m, int n, SCALAR alpha,
+                                                 const SCALAR *const A[], int lda,
+                                                 SCALAR *const B[], int ldb, int batchCount) {
+            return ARITH(, , cublasStrsmBatched, cublasCtrsmBatched, cublasDtrsmBatched,
+                         cublasZtrsmBatched,
+                         , )(handle, side, uplo, trans, diag, m, n, (const CUSPARSE_SCALAR *)&alpha,
+                             (const CUSPARSE_SCALAR *const *)A, lda, (CUSPARSE_SCALAR *const *)B,
+                             ldb, batchCount);
+        }
+
+        inline cublasStatus_t cublasXgetrfBatched(cublasHandle_t handle, int n,
+                                                  SCALAR *const Aarray[], int lda, int *PivotArray,
+                                                  int *infoArray, int batchSize) {
+            return ARITH(, , cublasSgetrfBatched, cublasCgetrfBatched, cublasDgetrfBatched,
+                         cublasZgetrfBatched, , )(handle, n, (CUSPARSE_SCALAR *const *)Aarray, lda,
+                                                  PivotArray, infoArray, batchSize);
+        }
+
+        inline cublasStatus_t cublasXgetrsBatched(cublasHandle_t handle, cublasOperation_t trans,
+                                                  int n, int nrhs, const SCALAR *const Aarray[],
+                                                  int lda, const int *devIpiv,
+                                                  SCALAR *const Barray[], int ldb, int *info,
+                                                  int batchSize) {
+            return ARITH(, , cublasSgetrsBatched, cublasCgetrsBatched, cublasDgetrsBatched,
+                         cublasZgetrsBatched,
+                         , )(handle, trans, n, nrhs, (const CUSPARSE_SCALAR *const *)Aarray, lda,
+                             devIpiv, (CUSPARSE_SCALAR *const *)Barray, ldb, info, batchSize);
+        }
+
+        inline cusolverStatus_t cusolverDnXpotrfBatched(cusolverDnHandle_t handle,
+                                                        cublasFillMode_t uplo, int n,
+                                                        SCALAR **Aarray, int lda, int *infoArray,
+                                                        int batchSize) {
+            return ARITH(, , cusolverDnSpotrfBatched, cusolverDnCpotrfBatched,
+                         cusolverDnDpotrfBatched, cusolverDnZpotrfBatched, , )(
+                handle, uplo, n, (CUSPARSE_SCALAR **)Aarray, lda, infoArray, batchSize);
+        }
+
 #        undef CUSPARSE_SCALAR
 
 #    elif defined(SUPERBBLAS_USE_HIP)
