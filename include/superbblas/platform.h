@@ -40,6 +40,7 @@
 #ifdef SUPERBBLAS_USE_HIP
 #    include <hip/hip_runtime_api.h>
 #    include <hipblas.h>
+#    include <hipsolver.h>
 #    include <hipsparse.h>
 #endif
 
@@ -305,10 +306,40 @@ namespace superbblas {
             }
         }
 
+        inline void hipsolverCheck(hipsolverStatus_t status) {
+            if (status != HIPSOLVER_STATUS_SUCCESS) {
+                std::string str = "(unknown)";
+                if (status == HIPSOLVER_STATUS_NOT_INITIALIZED)
+                    str = "HIPSOLVER_STATUS_NOT_INITIALIZED";
+                if (status == HIPSOLVER_STATUS_ALLOC_FAILED) str = "HIPSOLVER_STATUS_ALLOC_FAILED";
+                if (status == HIPSOLVER_STATUS_INVALID_VALUE)
+                    str = "HIPSOLVER_STATUS_INVALID_VALUE";
+                if (status == HIPSOLVER_STATUS_MAPPING_ERROR)
+                    str = "HIPSOLVER_STATUS_MAPPING_ERROR";
+                if (status == HIPSOLVER_STATUS_EXECUTION_FAILED)
+                    str = "HIPSOLVER_STATUS_EXECUTION_FAILED";
+                if (status == HIPSOLVER_STATUS_INTERNAL_ERROR)
+                    str = "HIPSOLVER_STATUS_INTERNAL_ERROR";
+                if (status == HIPSOLVER_STATUS_NOT_SUPPORTED)
+                    str = "HIPSOLVER_STATUS_NOT_SUPPORTED";
+                if (status == HIPSOLVER_STATUS_ARCH_MISMATCH)
+                    str = "HIPSOLVER_STATUS_ARCH_MISMATCH";
+                if (status == HIPSOLVER_STATUS_HANDLE_IS_NULLPTR)
+                    str = "HIPSOLVER_STATUS_HANDLE_IS_NULLPTR";
+                if (status == HIPSOLVER_STATUS_INVALID_ENUM) str = "HIPSOLVER_STATUS_INVALID_ENUM";
+                if (status == HIPSOLVER_STATUS_UNKNOWN) str = "HIPSOLVER_STATUS_UNKNOWN";
+
+                std::stringstream ss;
+                ss << "hipSolver function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+        }
+
         struct Hip {
             int device;
             hipblasHandle_t hipblasHandle;
             hipsparseHandle_t hipsparseHandle;
+            hipsolverDnHandle_t hipsolverDnHandle;
             /// Optional function for allocating memory on devices
             Allocator alloc;
             /// Optional function for deallocating memory on devices
@@ -388,6 +419,7 @@ namespace superbblas {
 #elif defined(SUPERBBLAS_USE_HIP)
         std::shared_ptr<hipblasHandle_t> hipblasHandle;
         std::shared_ptr<hipsparseHandle_t> hipsparseHandle;
+        std::shared_ptr<hipsolverDnHandle_t> hipsolverDnHandle;
 #endif
 
     public:
@@ -433,6 +465,12 @@ namespace superbblas {
                         delete p;
                     });
                 detail::hipsparseCheck(hipsparseCreate(hipsparseHandle.get()));
+                hipsolverDnHandle = std::shared_ptr<hipsolverDnHandle_t>(
+                    new hipsolverDnHandle_t, [](hipsolverDnHandle_t *p) {
+                        detail::hipsolverCheck(hipsolverDnDestroy(*p));
+                        delete p;
+                    });
+                detail::hipsolverCheck(hipsolverDnCreate(hipsolverDnHandle.get()));
             }
 #endif
         }
@@ -449,7 +487,8 @@ namespace superbblas {
 
 #elif defined(SUPERBBLAS_USE_HIP)
         detail::Hip toHip(Session session) const {
-            return detail::Hip{device, *hipblasHandle, *hipsparseHandle, alloc, dealloc, session};
+            return detail::Hip{device, *hipblasHandle, *hipsparseHandle, *hipsolverDnHandle,
+                               alloc,  dealloc,        session};
         }
 
         detail::Hip toGpu(Session session) const { return toHip(session); }

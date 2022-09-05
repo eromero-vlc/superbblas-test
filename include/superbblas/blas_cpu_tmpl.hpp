@@ -520,6 +520,7 @@ namespace superbblas {
 #    elif defined(SUPERBBLAS_USE_HIP)
 
 #        define HIPSPARSE_SCALAR ARITH(, , float, hipComplex, double, hipDoubleComplex, , )
+#        define HIPBLAS_SCALAR ARITH(, , float, hipblasComplex, double, hipblasDoubleComplex, , )
 
         inline hipsparseStatus_t
         hipsparseXbsrmm(hipsparseHandle_t handle, hipsparseDirection_t dirA,
@@ -533,6 +534,47 @@ namespace superbblas {
                              (const HIPSPARSE_SCALAR *)bsrValA, bsrRowPtrA, bsrColIndA, blockDim,
                              (const HIPSPARSE_SCALAR *)B, ldb, (const HIPSPARSE_SCALAR *)&beta,
                              (HIPSPARSE_SCALAR *)C, ldc);
+        }
+
+        inline hipblasStatus_t hipblasXtrsmStridedBatched(
+            hipblasHandle_t handle, hipblasSideMode_t side, hipblasFillMode_t uplo,
+            hipblasOperation_t trans, hipblasDiagType_t diag, int m, int n, SCALAR alpha, SCALAR *A,
+            int lda, int strideA, SCALAR *B, int ldb, int strideB, int batchCount) {
+            return ARITH(, , hipblasStrsmStridedBatched, hipblasCtrsmStridedBatched,
+                         hipblasDtrsmStridedBatched, hipblasZtrsmStridedBatched, , )(
+                handle, side, uplo, trans, diag, m, n, (const HIPBLAS_SCALAR *)&alpha,
+                (HIPBLAS_SCALAR *)A, lda, strideA, (HIPBLAS_SCALAR *)B, ldb, strideB, batchCount);
+        }
+
+        inline hipblasStatus_t hipblasXgetrfStridedBatched(hipblasHandle_t handle, int n, SCALAR *A,
+                                                           int lda, int strideA, int *PivotArray,
+                                                           int stridePivotArray, int *infoArray,
+                                                           int batchSize) {
+            return ARITH(, , hipblasSgetrfStridedBatched, hipblasCgetrfStridedBatched,
+                         hipblasDgetrfStridedBatched, hipblasZgetrfStridedBatched,
+                         , )(handle, n, (HIPBLAS_SCALAR *)A, lda, strideA, PivotArray,
+                             stridePivotArray, infoArray, batchSize);
+        }
+
+        inline hipblasStatus_t hipblasXgetrsStridedBatched(hipblasHandle_t handle,
+                                                           hipblasOperation_t trans, int n,
+                                                           int nrhs, SCALAR *A, int lda,
+                                                           int strideA, const int *devIpiv,
+                                                           int strideDevIpiv, SCALAR *B, int ldb,
+                                                           int strideB, int *info, int batchSize) {
+            return ARITH(, , hipblasSgetrsStridedBatched, hipblasCgetrsStridedBatched,
+                         hipblasDgetrsStridedBatched, hipblasZgetrsStridedBatched,
+                         , )(handle, trans, n, nrhs, (HIPBLAS_SCALAR *)A, lda, strideA, devIpiv,
+                             strideDevIpiv, (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
+        }
+
+        inline hipsolverStatus_t hipsolverDnXpotrfBatched(hipsolverDnHandle_t handle,
+                                                          hipsolverFillMode_t uplo, int n,
+                                                          SCALAR **Aarray, int lda, int *infoArray,
+                                                          int batchSize) {
+            return ARITH(, , hipsolverDnSpotrfBatched, hipsolverDnCpotrfBatched,
+                         hipsolverDnDpotrfBatched, hipsolverDnZpotrfBatched, , )(
+                handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda, infoArray, batchSize);
         }
 
 #        undef HIPSPARSE_SCALAR

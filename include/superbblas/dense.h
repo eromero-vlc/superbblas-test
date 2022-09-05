@@ -79,8 +79,14 @@ namespace superbblas {
             for (std::size_t i = 0; i < k; ++i) v_ps[i] = v.data() + n * n * i;
             vector<T *, Gpu> v_ps_gpu = makeSure(v_ps, v.ctx());
             vector<int, Gpu> info(k, v.ctx());
+#    ifdef SUPERBBLAS_USE_CUDA
             cusolverCheck(cusolverDnXpotrfBatched(v.ctx().cusolverDnHandle, CUBLAS_FILL_MODE_UPPER,
                                                   n, v_ps_gpu.data(), n, info.data(), k));
+#    else
+            hipsolverCheck(hipsolverDnXpotrfBatched(v.ctx().hipsolverDnHandle,
+                                                    HIPSOLVER_FILL_MODE_UPPER, n, v_ps_gpu.data(),
+                                                    n, info.data(), k));
+#    endif
             vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
             for (std::size_t i = 0; i < k; ++i)
                 if (info_cpu[i] > 0)
@@ -119,6 +125,7 @@ namespace superbblas {
 
             tracker<Gpu> _t("local trsm (GPU)", a.ctx());
 
+#    ifdef SUPERBBLAS_USE_CUDA
             vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
             for (std::size_t i = 0; i < k; ++i) a_ps[i] = a.data() + n * n * i;
             for (std::size_t i = 0; i < k; ++i) x_ps[i] = x.data() + n * m * i;
@@ -128,6 +135,13 @@ namespace superbblas {
                 CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, left_side ? n : m,
                 left_side ? m : n, alpha, a_ps_gpu.data(), n, x_ps_gpu.data(), left_side ? n : m,
                 k));
+#    else
+            hipblasCheck(hipblasXtrsmStridedBatched(
+                a.ctx().hipblasHandle, left_side ? HIPBLAS_SIDE_LEFT : HIPBLAS_SIDE_RIGHT,
+                HIPBLAS_FILL_MODE_UPPER, HIPBLAS_OP_N, HIPBLAS_DIAG_NON_UNIT, left_side ? n : m,
+                left_side ? m : n, alpha, a.data(), n, n * n, x.data(), left_side ? n : m, n * m,
+                k));
+#    endif
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -186,19 +200,30 @@ namespace superbblas {
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
 
+            vector<int, Gpu> ipivs(k * n, a.ctx()), info(k, a.ctx());
+#    ifdef SUPERBBLAS_USE_CUDA
             vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
             for (std::size_t i = 0; i < k; ++i) a_ps[i] = a.data() + n * n * i;
             for (std::size_t i = 0; i < k; ++i) x_ps[i] = x.data() + n * m * i;
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx()), x_ps_gpu = makeSure(x_ps, x.ctx());
-            vector<int, Gpu> ipivs(k * n, a.ctx()), info(k, a.ctx());
             cublasCheck(cublasXgetrfBatched(a.ctx().cublasHandle, n, a_ps_gpu.data(), n,
                                             ipivs.data(), info.data(), k));
+#    else
+            hipblasCheck(hipblasXgetrfStridedBatched(a.ctx().hipblasHandle, n, a.data(), n, n * n,
+                                                     ipivs.data(), n, info.data(), k));
+#    endif
             vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
             for (std::size_t i = 0; i < k; ++i) checkLapack(info_cpu[i]);
             int info_getrs;
+#    ifdef SUPERBBLAS_USE_CUDA
             cublasCheck(cublasXgetrsBatched(a.ctx().cublasHandle, toCublasTrans(trans), n, m,
                                             a_ps_gpu.data(), n, ipivs.data(), x_ps_gpu.data(), n,
                                             &info_getrs, k));
+#    else
+            hipblasCheck(hipblasXgetrsStridedBatched(a.ctx().hipblasHandle, toHipblasTrans(trans),
+                                                     n, m, a.data(), n, n * n, ipivs.data(), n,
+                                                     x.data(), n, n * m, &info_getrs, k));
+#    endif
             checkLapack(info_getrs);
         }
 #endif // SUPERBBLAS_USE_GPU
