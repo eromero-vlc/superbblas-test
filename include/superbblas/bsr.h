@@ -138,6 +138,11 @@ namespace superbblas {
                     SPARSE_LAYOUT_ROW_MAJOR, 100, 1000));
             }
 
+            double getCostPerMatvec() const {
+                double block_size = (double)volume(v.blocki);
+                return block_size * block_size * jj.size();
+            }
+
             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
@@ -167,6 +172,11 @@ namespace superbblas {
                 auto bsr = get_bsr_indices(v);
                 ii = bsr.i;
                 jj = bsr.j;
+            }
+
+            double getCostPerMatvec() const {
+                double bi = (double)volume(v.blocki), bd = (double)volume(v.blockd);
+                return bi * bd * jj.size();
             }
 
             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
@@ -230,6 +240,11 @@ namespace superbblas {
                 hipsparseCheck(hipsparseSetMatIndexBase(descrA, HIPSPARSE_INDEX_BASE_ZERO));
                 hipsparseCheck(hipsparseSetMatType(descrA, HIPSPARSE_MATRIX_TYPE_GENERAL));
 #    endif
+            }
+
+            double getCostPerMatvec() const {
+                double block_size = (double)volume(v.blocki);
+                return block_size * block_size * jj.size();
             }
 
             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
@@ -860,6 +875,7 @@ namespace superbblas {
             IndexType ldy = ly == ColumnMajor ? (!transSp ? voli : vold) : volC;
 
             // Do the contraction
+            _t.cost = bsr.getCostPerMatvec() * volC * multiplication_cost<T>::value;
             bsr(alpha, transSp, vx.data(), ldx, lx, vy.data(), ldy, ly, volC);
         }
 

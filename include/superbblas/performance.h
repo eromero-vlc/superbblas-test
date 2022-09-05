@@ -13,8 +13,27 @@
 
 namespace superbblas {
 
+    namespace detail {
+        /// Return the relative cost of the multiplication with respect to real floating point
+        /// \tparam T: type to consider
+        template <typename T> struct multiplication_cost { static const int value = 0; };
+        template <> struct multiplication_cost<float> { static const int value = 1; };
+        template <> struct multiplication_cost<double> { static const int value = 2; };
+        template <> struct multiplication_cost<std::complex<float>> { static const int value = 4; };
+        template <> struct multiplication_cost<std::complex<double>> {
+            static const int value = 8;
+        };
+    }
+
+    /// Total time and number of invocations or cost factor
+    struct Timing {
+        double time;
+        double cost;
+        Timing() : time(0), cost(0) {}
+    };
+
     /// Type for storing the timings
-    using Timings = std::unordered_map<std::string, double>;
+    using Timings = std::unordered_map<std::string, Timing>;
 
     /// Return the performance timings
     inline Timings &getTimings(Session session) {
@@ -95,16 +114,22 @@ namespace superbblas {
             const std::chrono::time_point<std::chrono::system_clock> start;
             /// Context
             const XPU xpu;
+            /// Elapsed time
+            double elapsedTime;
+            /// Equivalent units of cost
+            double cost;
 
             /// Start a tracker
-            tracker(std::string funcName, XPU xpu)
-                : stopped(!getTrackingTime()),
+            tracker(std::string funcName, XPU xpu, bool timeAnyway = false)
+                : stopped(!(timeAnyway || getTrackingTime())),
                   funcName(!stopped ? funcName : std::string()),
                   mem_cpu(getTrackingMemory() ? getCpuMemUsed(xpu.session) : 0),
                   mem_gpu(getTrackingMemory() ? getGpuMemUsed(xpu.session) : 0),
                   start(!stopped ? std::chrono::system_clock::now()
                                  : std::chrono::time_point<std::chrono::system_clock>{}),
-                  xpu(xpu) {
+                  xpu(xpu),
+                  elapsedTime(0),
+                  cost(1) {
                 if (!stopped) pushCall(funcName, xpu.session); // NOTE: well this is timed...
             }
 
@@ -119,19 +144,27 @@ namespace superbblas {
                 if (getTrackingTimeSync()) sync(xpu);
 
                 // Count elapsed time since the creation of the object
-                double elapsedTime =
+                elapsedTime =
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
 
                 // Pop out this call and get a string representing the current call stack
                 std::string funcNameWithStack = popCall(xpu.session);
 
                 // Record the time
-                getTimings(xpu.session)[funcNameWithStack] += elapsedTime;
+                auto &timing = getTimings(xpu.session)[funcNameWithStack];
+                timing.time += elapsedTime;
+                timing.cost += cost;
 
                 // Record memory not released
                 if (getTrackingMemory())
                     getCacheUsage(xpu.session)[funcNameWithStack] +=
                         getCpuMemUsed(xpu.session) - mem_cpu + getGpuMemUsed(xpu.session) - mem_gpu;
+            }
+
+            /// Stop the tracker and return timing
+            double stopAndGetElapsedTime() {
+                stop();
+                return elapsedTime;
             }
 
             // Forbid copy constructor and assignment operator
@@ -159,12 +192,17 @@ namespace superbblas {
             for (const auto &it : getTimings(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
         for (const auto &name : names) {
-            double total = 0;
+            double total = 0, cost = 0;
             for (Session session = 0; session < 256; ++session) {
                 auto it = getTimings(session).find(name);
-                if (it != getTimings(session).end()) total += it->second;
+                if (it != getTimings(session).end()) {
+                    total += it->second.time;
+                    cost += it->second.cost;
+                }
             }
-            s << name << " : " << total << std::endl;
+            s << name << " : " << total << " s (calls/cost: " << cost
+              << " calls/cost_per_sec: " << (std::fabs(cost) == 0 ? 0 : total / cost) << " )"
+              << std::endl;
         }
     }
 

@@ -1019,6 +1019,8 @@ namespace superbblas {
                            new_strides1, nblock);
 
             // Do the copy
+            _t.cost = (double)(mask0.size() > 0 ? mask0.size() : volume(new_size)) *
+                      (sizeof(T) + sizeof(Q));
             local_copy_normalize(alpha, new_disp0, new_from0, new_size, new_dim0, new_strides0, v0,
                                  mask0, new_disp1, new_from1, new_dim1, new_strides1, v1, mask1,
                                  nblock, ewop);
@@ -1531,6 +1533,7 @@ namespace superbblas {
                 (std::size_t)std::numeric_limits<int>::max()) {
                 std::runtime_error("contraction: too large tensors to contract");
             }
+            _t.cost = volA * volB * volC * volT * multiplication_cost<T>::value;
             xgemm_batch_strided(transab, transca, volB, volC, volA, alpha, v0.data(), ldab,
                                 strideab, v1.data(), ldca, strideca, beta, vr.data(), ldcb,
                                 stridecb, volT, vr.ctx());

@@ -40,6 +40,7 @@ namespace superbblas {
         template <typename T> void local_cholesky(std::size_t n, std::size_t k, vector<T, Cpu> v) {
 
             tracker<Cpu> _t("local cholesky (Cpu)", v.ctx());
+            _t.cost = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
 
 #ifdef _OPENMP
             int num_threads = omp_get_max_threads();
@@ -106,6 +107,7 @@ namespace superbblas {
                         vector<T, Cpu> a, vector<T, Cpu> x) {
 
             tracker<Cpu> _t("local trsm (Cpu)", a.ctx());
+            _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
 
             const T *ap = a.data();
             T *xp = x.data();
@@ -156,6 +158,9 @@ namespace superbblas {
                         vector<T, Cpu> x) {
 
             tracker<Cpu> _t("local gesm (Cpu)", a.ctx());
+            // Cost approximated as the cost of LU plus multiplying two triangular matrices
+            _t.cost = (double)n * n * n * 2 / 3 * k +
+                      (double)n * n * m * k * multiplication_cost<T>::value;
 
             using BLASINT = std::int64_t;
             T *ap = a.data(), *xp = x.data();

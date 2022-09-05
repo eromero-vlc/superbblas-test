@@ -465,6 +465,7 @@ namespace superbblas {
 
             // Do the copy
             tracker<XPU0> _t("local copy", v0.ctx());
+            _t.cost = (double)(sizeof(T) + sizeof(Q)) * indices0_xpu.size();
             copy_n<IndexType, T, Q>(1.0, v0.data(), indices0_xpu.begin(), v0.ctx(),
                                     indices0_xpu.size(), v1.data(), indices1.begin(), v1.ctx(),
                                     EWOp::Copy{});
@@ -609,6 +610,7 @@ namespace superbblas {
 
             // Do the addition
             std::size_t ncomponents = r.indices.size() / comm.nprocs;
+            _t.cost = 0;
             for (std::size_t i = 0; i < r.indices.size(); ++i) {
                 if (i / ncomponents == comm.rank) continue;
                 std::size_t displ = r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
@@ -619,6 +621,7 @@ namespace superbblas {
                                             r.indices[i][j].begin(), v.it.ctx(), EWOP{});
                     displ += r.indices[i][j].size();
                 }
+                _t.cost += (double)sizeof(T) * 2 * displ;
             }
         }
 
