@@ -201,7 +201,7 @@ namespace superbblas {
                 }
             }
             s << name << " : " << total << " s (calls/cost: " << cost
-              << " calls/cost_per_sec: " << (std::fabs(cost) == 0 ? 0 : total / cost) << " )"
+              << " calls/cost_per_sec: " << (std::fabs(total) == 0 ? 0 : cost / total) << " )"
               << std::endl;
         }
     }
