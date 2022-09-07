@@ -84,6 +84,9 @@ template <> struct toStr<std::complex<double>> { static constexpr const char *ge
 template <typename T, typename XPU, typename EWOP>
 void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
 
+    // Normalize size
+    size /= (sizeof(T) / sizeof(float));
+
     // Do once the operation for testing correctness
     vector<T, Cpu> t0 = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
     vector<T, XPU> t0_xpu = gen_dummy_vector<T, XPU>::get(size, xpu);
@@ -138,19 +141,19 @@ void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
     double t;
     t  = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType, T>(1.0, t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
+        copy_n<IndexType, T>(a, t0.data(), Cpu{}, size, t0_xpu.data(), xpu, EWOP{});
     }
     double t_cpu_xpu = (w_time() - t) / nrep;
 
     t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType, T>(1.0, t0_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOP{});
+        copy_n<IndexType, T>(a, t0_xpu.data(), xpu, size, t1.data(), Cpu{}, EWOP{});
     }
     double t_xpu_cpu = (w_time() - t) / nrep;
 
     t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType, T>(1.0, t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
+        copy_n<IndexType, T>(a, t0_xpu.data(), xpu, size, t1_xpu.data(), xpu, EWOP{});
     }
     sync(xpu);
     double t_xpu_xpu = (w_time() - t) / nrep;
@@ -158,13 +161,13 @@ void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
     Indices<XPU> p = gen_dummy_perm(size, size, xpu);
     t = w_time();
     for (unsigned int rep = 0; rep < nrep; ++rep) {
-        copy_n<IndexType>(T{1}, t0_xpu.data(), p.begin(), xpu, size, t1_xpu.data(), p.begin(), xpu,
+        copy_n<IndexType>(a, t0_xpu.data(), p.begin(), xpu, size, t1_xpu.data(), p.begin(), xpu,
                           EWOP{});
     }
     sync(xpu);
     double tp_xpu_xpu = (w_time() - t) / nrep;
 
-    std::string var = (a != T{1} ? "/mult" : "     ");
+    std::string var = (a == T{1} ? "     " : (a == T{0} ? "/zero" : "/mult"));
     std::cout << toStr<T>::get << " in " << toStr<EWOP>::get << var << " ("
               << sizeof(T) * size / 1024. / 1024 << " MiB)\t\t"
 
@@ -189,6 +192,7 @@ template <typename T, typename XPU, typename EWOP>
 void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     test_copy<T>(size, xpu, EWOP{}, T{1}, nrep);
     test_copy<T>(size, xpu, EWOP{}, T{2}, nrep);
+    test_copy<T>(size, xpu, EWOP{}, T{0}, nrep);
 }
 
 int main(int argc, char **argv) {
