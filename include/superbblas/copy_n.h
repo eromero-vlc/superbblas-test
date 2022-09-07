@@ -39,31 +39,31 @@ namespace superbblas {
         /// Copy n values, w[i] = v[i]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w, Cpu,
-                    EWOp::Copy) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
+                    Q *SB_RESTRICT w, Cpu, EWOp::Copy) {
             assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
             if (alpha == typename elem<T>::type{1}) {
                 if (std::is_same<T, Q>::value && (void *)v == (void *)w) return;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
+                for (IndexType i = 0; i < n; ++i) w[i] = v[i];
             } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[i] = T{0};
+                for (IndexType i = 0; i < n; ++i) w[i] = T{0};
             } else {
                 if (std::is_same<T, Q>::value && (void *)v == (void *)w) {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] *= alpha;
+                    for (IndexType i = 0; i < n; ++i) w[i] *= alpha;
                 } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[i];
+                    for (IndexType i = 0; i < n; ++i) w[i] = alpha * v[i];
                 }
             }
         }
@@ -71,29 +71,30 @@ namespace superbblas {
         /// Copy n values, w[i] += v[i]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w, Cpu,
-                    EWOp::Add) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
+                    Q *SB_RESTRICT w, Cpu, EWOp::Add) {
             assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
             if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[i] += v[i];
+                for (IndexType i = 0; i < n; ++i) w[i] += v[i];
             } else if (std::norm(alpha) == 0) {
                 // Do nothing
             } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[i];
+                for (IndexType i = 0; i < n; ++i) w[i] += alpha * v[i];
             }
         }
 
         /// Copy n values, w[i] = v[indices[i]]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, Cpu,
-                    std::size_t n, Q *w, Cpu, EWOp::Copy) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
+                    const IndexType *SB_RESTRICT indices, Cpu, IndexType n, Q *SB_RESTRICT w, Cpu,
+                    EWOp::Copy) {
             if (indices == nullptr) {
                 copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
@@ -102,17 +103,17 @@ namespace superbblas {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] = v[indices[i]];
+                    for (IndexType i = 0; i < n; ++i) w[i] = v[indices[i]];
                 } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] = T{0};
+                    for (IndexType i = 0; i < n; ++i) w[i] = T{0};
                 } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] = alpha * v[indices[i]];
+                    for (IndexType i = 0; i < n; ++i) w[i] = alpha * v[indices[i]];
                 }
             }
         }
@@ -120,8 +121,9 @@ namespace superbblas {
         /// Copy n values, w[i] += v[indices[i]]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, Cpu,
-                    std::size_t n, Q *w, Cpu, EWOp::Add) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
+                    const IndexType *SB_RESTRICT indices, Cpu, IndexType n, Q *SB_RESTRICT w, Cpu,
+                    EWOp::Add) {
             if (indices == nullptr) {
                 copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
             } else {
@@ -130,14 +132,14 @@ namespace superbblas {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] += v[indices[i]];
+                    for (IndexType i = 0; i < n; ++i) w[i] += v[indices[i]];
                 } else if (alpha == typename elem<T>::type{1}) {
                     // Do nothing
                 } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[i] += alpha * v[indices[i]];
+                    for (IndexType i = 0; i < n; ++i) w[i] += alpha * v[indices[i]];
                 }
             }
         }
@@ -145,8 +147,8 @@ namespace superbblas {
         /// Copy n values, w[indices[i]] = v[i]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w,
-                    const IndexType *indices, Cpu, EWOp::Copy) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
+                    Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indices, Cpu, EWOp::Copy) {
             if (indices == nullptr) {
                 copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
             } else {
@@ -155,17 +157,17 @@ namespace superbblas {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = v[i];
+                    for (IndexType i = 0; i < n; ++i) w[indices[i]] = v[i];
                 } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = T{0};
+                    for (IndexType i = 0; i < n; ++i) w[indices[i]] = T{0};
                 } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
+                    for (IndexType i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
                 }
             }
         }
@@ -173,8 +175,8 @@ namespace superbblas {
         /// Copy n values, w[indices[i]] += v[i]
 
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, Cpu, std::size_t n, Q *w,
-                    const IndexType *indices, Cpu, EWOp::Add) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
+                    Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indices, Cpu, EWOp::Add) {
             if (indices == nullptr) {
                 copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
             } else {
@@ -183,22 +185,23 @@ namespace superbblas {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] += v[i];
+                    for (IndexType i = 0; i < n; ++i) w[indices[i]] += v[i];
                 } else if (std::norm(alpha) == 0) {
                     // Do nothing
                 } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
+                    for (IndexType i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
                 }
             }
         }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cpu,
-                    std::size_t n, Q *w, const IndexType *indicesw, Cpu, EWOp::Copy) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
+                    const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
+                    const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Copy) {
             if (indicesv == nullptr) {
                 copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Copy{});
             } else if (indicesw == nullptr) {
@@ -207,27 +210,28 @@ namespace superbblas {
                 //assert(n == 0 || (void *)v != (void *)w);
                 if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
+#    pragma omp parallel for simd schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
+                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
                 } else if (std::norm(alpha) == 0) {
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
+#    pragma omp parallel for simd schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = T{0};
+                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] = T{0};
                 } else {
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
+#    pragma omp parallel for simd schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
+                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
                 }
             }
         }
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, Cpu,
-                    std::size_t n, Q *w, const IndexType *indicesw, Cpu, EWOp::Add) {
+        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
+                    const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
+                    const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Add) {
             if (indicesv == nullptr) {
                 copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Add{});
             } else if (indicesw == nullptr) {
@@ -238,14 +242,14 @@ namespace superbblas {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
+                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
                 } else if (std::norm(alpha) == 0) {
                     // Do nothing
                 } else {
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                    for (std::size_t i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
+                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
                 }
             }
         }
@@ -294,7 +298,7 @@ namespace superbblas {
         }
 
         template <typename IndexType, typename T, typename Q, typename IteratorV, typename EWOP>
-        void copy_n_same_dev_thrust(const IteratorV &itv, std::size_t n, Q *w,
+        void copy_n_same_dev_thrust(const IteratorV &itv, IndexType n, Q *w,
                                     const IndexType *indicesw, EWOP) {
             if (indicesw == nullptr) {
                 copy_n_same_dev_thrust<T, Q>(itv, n, encapsulate_pointer(w), EWOP{});
@@ -307,7 +311,7 @@ namespace superbblas {
 
         template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
         void copy_n_same_dev_thrust(typename elem<T>::type alpha, const T *v,
-                                    const IndexType *indicesv, std::size_t n, Q *w,
+                                    const IndexType *indicesv, IndexType n, Q *w,
                                     const IndexType *indicesw, XPU xpu, EWOP) {
             setDevice(xpu);
             if (indicesv == nullptr) {
@@ -339,7 +343,7 @@ namespace superbblas {
         /// \param xpu: device context
 
         template <typename IndexType, typename T, typename XPU>
-        void zero_n_thrust(T *v, const IndexType *indices, std::size_t n, XPU xpu) {
+        void zero_n_thrust(T *v, const IndexType *indices, IndexType n, XPU xpu) {
             if (indices == nullptr) {
                 zero_n(v, n, xpu);
             } else {
@@ -361,14 +365,14 @@ namespace superbblas {
         /// \param xpu: device context
 
         template <typename IndexType, typename T, typename XPU>
-        DECL_ZERO_T(void zero_n(T *v, const IndexType *indices, std::size_t n, XPU xpu))
+        DECL_ZERO_T(void zero_n(T *v, const IndexType *indices, IndexType n, XPU xpu))
         IMPL({ zero_n_thrust<IndexType, T, XPU>(v, indices, n, xpu); })
 
         /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] when v and w are on device
 
         template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
         DECL_COPY_T_Q_EWOP(void copy_n(typename elem<T>::type alpha, const T *v,
-                                       const IndexType *indicesv, XPU xpuv, std::size_t n, Q *w,
+                                       const IndexType *indicesv, XPU xpuv, IndexType n, Q *w,
                                        const IndexType *indicesw, XPU xpuw, EWOP))
         IMPL({
             assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
@@ -421,7 +425,7 @@ namespace superbblas {
                   typename EWOP,
                   typename std::enable_if<!std::is_same<XPU0, XPU1>::value, bool>::type = true>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indicesv, XPU0 xpu0,
-                    std::size_t n, Q *w, const IndexType *indicesw, XPU1 xpu1, EWOP) {
+                    IndexType n, Q *w, const IndexType *indicesw, XPU1 xpu1, EWOP) {
             if (n == 0) return;
 
             // Treat zero case
@@ -461,7 +465,7 @@ namespace superbblas {
                   typename std::enable_if<!std::is_same<XPU0, Cpu>::value |
                                               !std::is_same<XPU1, Cpu>::value,
                                           bool>::type = true>
-        void copy_n(typename elem<T>::type alpha, const T *v, XPU0 xpu0, std::size_t n, Q *w,
+        void copy_n(typename elem<T>::type alpha, const T *v, XPU0 xpu0, IndexType n, Q *w,
                     XPU1 xpu1, EWOP) {
             copy_n<IndexType>(alpha, v, nullptr, xpu0, n, w, nullptr, xpu1, EWOP{});
         }
@@ -474,7 +478,7 @@ namespace superbblas {
                                               !std::is_same<XPU1, Cpu>::value,
                                           bool>::type = true>
         void copy_n(typename elem<T>::type alpha, const T *v, const IndexType *indices, XPU0 xpu0,
-                    std::size_t n, Q *w, XPU1 xpu1, EWOP) {
+                    IndexType n, Q *w, XPU1 xpu1, EWOP) {
             copy_n<IndexType>(alpha, v, indices, xpu0, n, w, nullptr, xpu1, EWOP{});
         }
 
@@ -485,7 +489,7 @@ namespace superbblas {
                   typename std::enable_if<!std::is_same<XPU0, Cpu>::value |
                                               !std::is_same<XPU1, Cpu>::value,
                                           bool>::type = true>
-        void copy_n(typename elem<T>::type alpha, const T *v, XPU0 xpu0, std::size_t n, Q *w,
+        void copy_n(typename elem<T>::type alpha, const T *v, XPU0 xpu0, IndexType n, Q *w,
                     const IndexType *indices, XPU1 xpu1, EWOP) {
             copy_n<IndexType>(alpha, v, nullptr, xpu0, n, w, indices, xpu1, EWOP{});
         }
@@ -497,25 +501,25 @@ namespace superbblas {
         ///
 
 #define COPY_N_BLOCKING_FOR(S)                                                                     \
-    for (std::size_t i = 0; i < n; ++i) {                                                          \
-        for (std::size_t j = 0; j < blocking; ++j) {                                               \
-            std::size_t vj = indicesv[i] + j, wj = indicesw[i] + j;                                \
+    for (IndexType i = 0; i < n; ++i) {                                                            \
+        for (IndexType j = 0; j < blocking; ++j) {                                                 \
+            IndexType vj = indicesv[i] + j, wj = indicesw[i] + j;                                  \
             S;                                                                                     \
         }                                                                                          \
     }
 
 #define COPY_N_BLOCKING_FOR_NEW(S)                                                                 \
-    for (std::size_t i = 0; i < n * blocking; ++i) {                                               \
-        std::size_t vj = indicesv ? indicesv[i / blocking] + i % blocking : i,                     \
-                    wj = indicesw ? indicesw[i / blocking] + i % blocking : i;                     \
+    for (IndexType i = 0; i < n * blocking; ++i) {                                                 \
+        IndexType vj = indicesv ? indicesv[i / blocking] + i % blocking : i,                       \
+                  wj = indicesw ? indicesw[i / blocking] + i % blocking : i;                       \
         S;                                                                                         \
     }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
         void copy_n_blocking(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                             std::size_t blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
-                             std::size_t n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
+                             IndexType blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
+                             IndexType n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
                              Cpu, EWOp::Copy) {
 
             if (alpha == typename elem<T>::type{1}) {
@@ -542,8 +546,8 @@ namespace superbblas {
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
         void copy_n_blocking(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                             std::size_t blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
-                             std::size_t n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
+                             IndexType blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
+                             IndexType n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
                              Cpu, EWOp::Add) {
             if (alpha == typename elem<T>::type{1}) {
 #ifdef _OPENMP
@@ -621,8 +625,8 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
         void copy_n_blocking_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                              IndexType blocking, const IndexType *indicesv,
-                                             std::size_t n, Q *w, const IndexType *indicesw,
-                                             XPU xpu, EWOP) {
+                                             IndexType n, Q *w, const IndexType *indicesw, XPU xpu,
+                                             EWOP) {
             setDevice(xpu);
             thrust::for_each_n(thrust::device, thrust::make_counting_iterator(IndexType(0)),
                                blocking * n,
@@ -641,7 +645,7 @@ namespace superbblas {
         template <typename IndexType, typename T, typename Q, typename EWOP>
         DECL_COPY_BLOCKING_T_Q_EWOP(void copy_n_blocking(
             typename elem<T>::type alpha, const T *v, IndexType blocking, const IndexType *indicesv,
-            Gpu xpuv, std::size_t n, Q *w, const IndexType *indicesw, Gpu xpuw, EWOP))
+            Gpu xpuv, IndexType n, Q *w, const IndexType *indicesw, Gpu xpuw, EWOP))
         IMPL({
             if (n == 0) return;
 
@@ -662,7 +666,7 @@ namespace superbblas {
                   typename EWOP,
                   typename std::enable_if<!std::is_same<XPU0, XPU1>::value, bool>::type = true>
         void copy_n_blocking(typename elem<T>::type alpha, const T *v, IndexType blocking,
-                             const IndexType *indicesv, XPU0 xpu0, std::size_t n, Q *w,
+                             const IndexType *indicesv, XPU0 xpu0, IndexType n, Q *w,
                              const IndexType *indicesw, XPU1 xpu1, EWOP) {
             if (n == 0) return;
 
