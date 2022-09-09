@@ -569,20 +569,6 @@ namespace superbblas {
             for (std::size_t i = 0; i < n; ++i) v[i] = T{0};
         }
 
-        /// Set the first `n` elements to zero
-        /// \param v: first element to set
-        /// \param indices: indices of the elements to set
-        /// \param n: number of elements to set
-        /// \param cpu: device context
-
-        template <typename IndexType, typename T>
-        void zero_n(T *v, const IndexType *indices, std::size_t n, Cpu) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-            for (std::size_t i = 0; i < n; ++i) v[indices[i]] = T{0};
-        }
-
 #ifdef SUPERBBLAS_USE_CUDA
         /// Set the first `n` elements to zero
         /// \param v: first element to set

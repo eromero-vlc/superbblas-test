@@ -68,17 +68,17 @@ template <typename T, typename XPU0, typename XPU1> void check_are_equal(vector<
 
 template<typename T> struct toStr;
 
-template <> struct toStr<Cpu> { static constexpr const char *get = "cpu"; };
+template <> struct toStr<Cpu> { static constexpr const char *get = "cpu "; };
 #ifdef SUPERBBLAS_USE_CUDA
 template <> struct toStr<Cuda> { static constexpr const char *get = "cuda"; };
 #elif defined(SUPERBBLAS_USE_HIP)
-template <> struct toStr<Hip> { static constexpr const char *get = "hip"; };
+template <> struct toStr<Hip> { static constexpr const char *get = "hip "; };
 #endif
-template <> struct toStr<EWOp::Add> { static constexpr const char *get = "add"; };
+template <> struct toStr<EWOp::Add> { static constexpr const char *get = "add "; };
 template <> struct toStr<EWOp::Copy> { static constexpr const char *get = "copy"; };
-template <> struct toStr<float> { static constexpr const char *get = "float"; };
-template <> struct toStr<double> { static constexpr const char *get = "double"; };
-template <> struct toStr<std::complex<float>> { static constexpr const char *get = "cfloat"; };
+template <> struct toStr<float> { static constexpr const char *get = "float  "; };
+template <> struct toStr<double> { static constexpr const char *get = "double "; };
+template <> struct toStr<std::complex<float>> { static constexpr const char *get = "cfloat "; };
 template <> struct toStr<std::complex<double>> { static constexpr const char *get = "cdouble"; };
 
 template <typename T, typename XPU, typename EWOP>
@@ -168,20 +168,21 @@ void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
     double tp_xpu_xpu = (w_time() - t) / nrep;
 
     std::string var = (a == T{1} ? "     " : (a == T{0} ? "/zero" : "/mult"));
+    const char *sep = "    ";
     std::cout << toStr<T>::get << " in " << toStr<EWOP>::get << var << " ("
-              << sizeof(T) * size / 1024. / 1024 << " MiB)\t\t"
+              << sizeof(T) * size / 1024. / 1024 << " MiB)" << sep
 
               << toStr<Cpu>::get << " -> " << toStr<XPU>::get << " : "
               << sizeof(T) * size / t_cpu_xpu / 1024 / 1024 / 1024 << " GiB/s"
-              << "\t\t"
+              << sep
 
               << toStr<XPU>::get << " -> " << toStr<Cpu>::get << " : "
               << sizeof(T) * size / t_xpu_cpu / 1024 / 1024 / 1024 << " GiB/s"
-              << "\t\t"
+              << sep
 
               << toStr<XPU>::get << " -> " << toStr<XPU>::get << " : "
               << sizeof(T) * size / t_xpu_xpu / 1024 / 1024 / 1024 << " GiB/s"
-              << "\t\t"
+              << sep
 
               << toStr<XPU>::get << "[i] -> " << toStr<XPU>::get
               << "[i] : " << sizeof(T) * size / tp_xpu_xpu / 1024 / 1024 / 1024 << " GiB/s"
@@ -193,6 +194,74 @@ void test_copy(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
     test_copy<T>(size, xpu, EWOP{}, T{1}, nrep);
     test_copy<T>(size, xpu, EWOP{}, T{2}, nrep);
     test_copy<T>(size, xpu, EWOP{}, T{0}, nrep);
+}
+
+template <typename T, typename XPU, typename EWOP>
+void test_copy_blocking(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {
+
+    // Normalize size
+    size /= (sizeof(T) / sizeof(float));
+
+    // Test performance
+    vector<T, Cpu> t0 = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
+    vector<T, Cpu> t1 = gen_dummy_vector<T, Cpu>::get(size, Cpu{});
+    vector<T, XPU> t0_xpu = gen_dummy_vector<T, XPU>::get(size, xpu);
+    vector<T, XPU> t1_xpu = gen_dummy_vector<T, XPU>::get(size, xpu);
+    std::vector<int> blockings{1, 2, 3, 4, 8, 12, 16, 24, 32};
+    for (int blocking : blockings) {
+        Indices<Cpu> i0 = gen_dummy_perm(size / blocking, size / blocking, Cpu{});
+        Indices<Cpu> i1 = gen_dummy_perm(size / blocking, size / blocking, Cpu{});
+        Indices<XPU> i0_xpu = gen_dummy_perm(size / blocking, size / blocking, xpu);
+        Indices<XPU> i1_xpu = gen_dummy_perm(size / blocking, size / blocking, xpu);
+        double t;
+        t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            copy_n_blocking<IndexType>(a, t0.data(), blocking, i0.data(), Cpu{}, size / blocking,
+                                       t1_xpu.data(), i1_xpu.data(), xpu, EWOP{});
+        }
+        double t_cpu_xpu = (w_time() - t) / nrep;
+
+        t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            copy_n_blocking<IndexType>(a, t0_xpu.data(), blocking, i0_xpu.data(), xpu, size / blocking,
+                                       t1.data(), i1.data(), Cpu{}, EWOP{});
+        }
+        double t_xpu_cpu = (w_time() - t) / nrep;
+
+        t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            copy_n_blocking<IndexType>(a, t0_xpu.data(), blocking, i0_xpu.data(), xpu, size / blocking,
+                                       t1_xpu.data(), i1_xpu.data(), xpu, EWOP{});
+        }
+        sync(xpu);
+        double t_xpu_xpu = (w_time() - t) / nrep;
+
+        std::string var = (a == T{1} ? "     " : (a == T{0} ? "/zero" : "/mult"));
+        const char *sep = "    ";
+        std::cout << "blocking: " << blocking << "\t"
+
+                  << toStr<T>::get << " in " << toStr<EWOP>::get << var << " ("
+                  << sizeof(T) * size / 1024. / 1024 << " MiB)" << sep
+
+                  << toStr<Cpu>::get << "[i] -> " << toStr<XPU>::get
+                  << "[i] : " << sizeof(T) * size / t_cpu_xpu / 1024 / 1024 / 1024 << " GiB/s"
+                  << sep
+
+                  << toStr<XPU>::get << "[i] -> " << toStr<Cpu>::get
+                  << "[i] : " << sizeof(T) * size / t_xpu_cpu / 1024 / 1024 / 1024 << " GiB/s"
+                  << sep
+
+                  << toStr<XPU>::get << "[i] -> " << toStr<XPU>::get
+                  << "[i] : " << sizeof(T) * size / t_xpu_xpu / 1024 / 1024 / 1024 << " GiB/s"
+                  << std::endl;
+    }
+}
+
+template <typename T, typename XPU, typename EWOP>
+void test_copy_blocking(std::size_t size, XPU xpu, EWOP, unsigned int nrep = 10) {
+    test_copy_blocking<T>(size, xpu, EWOP{}, T{1}, nrep);
+    test_copy_blocking<T>(size, xpu, EWOP{}, T{2}, nrep);
+    test_copy_blocking<T>(size, xpu, EWOP{}, T{0}, nrep);
 }
 
 int main(int argc, char **argv) {
@@ -223,6 +292,8 @@ int main(int argc, char **argv) {
     std::cout << "Maximum number of elements in a tested array: " << size << std::endl;
     std::cout << "Doing " << nrep << " repetitions" << std::endl;
 
+    std::cout << std::endl;
+    std::cout << "- Non-blocking:" << std::endl;
     {
         Context ctx = createCpuContext();
         test_copy<float, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
@@ -246,6 +317,34 @@ int main(int argc, char **argv) {
         test_copy<std::complex<float>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
         test_copy<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
         test_copy<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+     }
+#endif
+
+    std::cout << std::endl;
+    std::cout << "- Blocking:" << std::endl;
+    {
+        Context ctx = createCpuContext();
+        test_copy_blocking<float, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<float, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy_blocking<double, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<double, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy_blocking<std::complex<float>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<std::complex<float>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+        test_copy_blocking<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
+     }
+
+#ifdef SUPERBBLAS_USE_GPU
+    {
+        Context ctx = createGpuContext();
+        test_copy_blocking<float, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<float, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+        test_copy_blocking<double, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<double, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+        test_copy_blocking<std::complex<float>, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<std::complex<float>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
+        test_copy_blocking<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Copy{}, nrep);
+        test_copy_blocking<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
      }
 #endif
     return 0;

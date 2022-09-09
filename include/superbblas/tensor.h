@@ -939,8 +939,13 @@ namespace superbblas {
                 return;
             }
 
-            if (deviceId(v0.ctx()) != CPU_DEVICE_ID || deviceId(v1.ctx()) != CPU_DEVICE_ID ||
-                mask0.size() != 0) {
+            // If using masks or there's no blocking, turn off blocking.
+            // Also, performance reported by blas test shows that blocking in copy is worth it for
+            // blocking at least 8
+            std::size_t vol_sizeb = volume(sizeb);
+            if (mask0.size() != 0 || vol_sizeb <= 1 ||
+                (deviceId(v0.ctx()) == CPU_DEVICE_ID && deviceId(v1.ctx()) == CPU_DEVICE_ID &&
+                 vol_sizeb < 8)) {
                 nblock = 0;
                 sizeb = size;
             }
