@@ -5,10 +5,6 @@
 #    include <omp.h>
 #endif
 
-#ifdef SUPERBBLAS_USE_CUDA
-#    include <thrust/device_vector.h>
-#endif
-
 using namespace superbblas;
 using namespace superbblas::detail;
 
