@@ -836,7 +836,6 @@ namespace superbblas {
             assert((check_positive(from)));
 
             // Quick exit
-            IndexType vol = volume(size);
             if (volume(size) == 0) return IndicesT<IndexType, Gpu>();
 
             // Check that IndexType is big enough

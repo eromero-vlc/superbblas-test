@@ -40,7 +40,7 @@ THRUST ?=
 HIP ?= $(shell which hipcc)
 ROCMDIR ?= $(shell hipconfig -R)
 HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I$(ROCMDIR)/hipsparse/include -I$(ROCMDIR)/hipsolver/include -I$(PRIM) -I$(THRUST) -std=c++14
-HIPLDFLAGS ?= -L$(ROCMDIR)/hipblas/lib -L$(ROCMDIR)/hipsparse/lib -L$(ROCMDIR)/hipsolver/lib -lhipsolver -lhipsparse -lhipblas
+HIPLDFLAGS ?= -L$(ROCMDIR)/lib -L$(ROCMDIR)/hipsolver/lib -lhipsolver -lhipsparse -lhipblas -lamdhip64
 
 #
 # Building directory

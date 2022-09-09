@@ -309,10 +309,10 @@ namespace superbblas {
             }
         }
 
-        template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
+        template <typename IndexType, typename T, typename Q, typename EWOP>
         void copy_n_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                     const IndexType *indicesv, IndexType n, Q *w,
-                                    const IndexType *indicesw, XPU xpu, EWOP) {
+                                    const IndexType *indicesw, Gpu xpu, EWOP) {
             setDevice(xpu);
             if (indicesv == nullptr) {
                 auto itv = encapsulate_pointer(v);
@@ -455,10 +455,14 @@ namespace superbblas {
                      indicesv == nullptr && indicesw == nullptr) {
                 copy_n(v, xpu0, n, (T *)w, xpu1);
                 // Scale by alpha
-#    pragma GCC diagnostic push
-#    pragma GCC diagnostic ignored "-Wrestrict"
+#    if defined(__GNUC__) && !defined(__clang__)
+#        pragma GCC diagnostic push
+#        pragma GCC diagnostic ignored "-Wrestrict"
+#    endif
                 copy_n<IndexType>((Q)alpha, w, nullptr, xpu1, n, w, nullptr, xpu1, EWOp::Copy{});
-#    pragma GCC diagnostic pop
+#    if defined(__GNUC__) && !defined(__clang__)
+#        pragma GCC diagnostic pop
+#    endif
             }
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
@@ -524,6 +528,7 @@ namespace superbblas {
     for (IndexType i = 0; i < n; ++i) {                                                            \
         for (IndexType j = 0; j < blocking; ++j) {                                                 \
             IndexType vj = indicesv[i] + j, wj = indicesw[i] + j;                                  \
+            (void)vj;                                                                              \
             S;                                                                                     \
         }                                                                                          \
     }
@@ -532,6 +537,7 @@ namespace superbblas {
     for (IndexType i = 0; i < n; ++i) {                                                            \
         for (IndexType j = 0; j < blocking; ++j) {                                                 \
             IndexType wj = indicesw[i] + j, idx = i * blocking + j;                                \
+            (void)idx;                                                                             \
             S;                                                                                     \
         }                                                                                          \
     }
@@ -540,6 +546,7 @@ namespace superbblas {
     for (IndexType i = 0; i < n; ++i) {                                                            \
         for (IndexType j = 0; j < blocking; ++j) {                                                 \
             IndexType vj = indicesv[i] + j, idx = i * blocking + j;                                \
+            (void)vj;                                                                              \
             S;                                                                                     \
         }                                                                                          \
     }

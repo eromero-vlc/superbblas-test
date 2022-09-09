@@ -2305,7 +2305,7 @@ namespace superbblas {
     void contraction(T, const PartitionItem<Nd0> *, const Coor<Nd0> &, int, const char *, bool,
                      const T **, const Context *, const PartitionItem<Nd1> *, const Coor<Nd1> &,
                      int, const char *, bool, const T **, const Context *, T,
-                     const PartitionItem<Ndo> *, const Coor<Ndo> &, int, const char o_r, T **,
+                     const PartitionItem<Ndo> *, const Coor<Ndo> &, int, const char, T **,
                      const Context *, MPI_Comm, CoorOrder, Session = 0) {
         throw std::runtime_error("contraction: unsupported type");
     }
