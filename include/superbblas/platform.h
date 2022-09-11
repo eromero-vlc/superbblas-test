@@ -453,6 +453,9 @@ namespace superbblas {
             }
 #elif defined(SUPERBBLAS_USE_HIP)
             if (plat == HIP) {
+                int currentDevice = -1;
+                detail::hipCheck(hipGetDevice(&currentDevice));
+                if (currentDevice != device) detail::hipCheck(hipSetDevice(device));
                 hipblasHandle =
                     std::shared_ptr<hipblasHandle_t>(new hipblasHandle_t, [](hipblasHandle_t *p) {
                         detail::hipblasCheck(hipblasDestroy(*p));
