@@ -52,5 +52,8 @@ test_header_only_cpu test_header_only_cuda test_header_only_hip: export SB_INCLU
 format:
 	${MAKE} -C src format
 
+experimental-clang-tidy:
+	clang-tidy -checks='-*,clang-analyzer-*,hicpp-*,performance-*,portability-*,readability-*,-hicpp-braces-around-statements,-readability-braces-around-statements,-readability-magic-numbers,-readability-function-cognitive-complexity,-hicpp-named-parameter,-readability-named-parameter,-readability-isolate-declaration,-hicpp-no-array-decay,-hicpp-uppercase-literal-suffix,-readability-uppercase-literal-suffix' -header-filter='.*' tests/bsr.cpp -- -std=c++14 -Iinclude
+
 .PHONY: install_cpu install_cuda install_hip test_cpu test_cuda test_hip test_header_only_cpu test_header_only_cuda test_header_only_hip format
 .NOTPARALLEL:

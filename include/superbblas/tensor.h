@@ -5,7 +5,7 @@
 #include "copy_n.h"
 #include <algorithm>
 #include <array>
-#include <assert.h>
+#include <cassert>
 #include <cstring>
 #include <iterator>
 #include <limits>
