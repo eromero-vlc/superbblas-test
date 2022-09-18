@@ -13,7 +13,7 @@ using namespace superbblas::detail;
 template <std::size_t N, typename T>
 void check_storage(const char *filename) {
     Storage_handle stoh;
-    open_storage<N, T>(filename, &stoh);
+    open_storage<N, T>(filename, false /* don't allow writing */, &stoh);
     check_storage<N, T>(stoh);
     close_storage<N, T>(stoh);
 }
@@ -45,7 +45,7 @@ using Blocks = std::vector<std::vector<std::vector<int>>>;
 template <std::size_t N, typename T>
 Blocks get_blocks(const char *filename, const std::vector<IndexType> &dim) {
     Storage_handle stoh;
-    open_storage<N, T>(filename, &stoh);
+    open_storage<N, T>(filename, false /* don't allow writing */, &stoh);
     std::vector<char> o(N + 1);
     for (unsigned int i = 0; i < N; ++i) o[i] = (char)(i + 1);
     Coor<N> dimc{};
