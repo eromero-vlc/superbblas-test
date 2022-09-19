@@ -189,7 +189,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     }
 
     Storage_handle stoh;
-    open_storage<Nd, Scalar>(filename,
+    open_storage<Nd, Scalar>(filename, true /* allow writing */,
 #ifdef SUPERBBLAS_USE_MPI
                              MPI_COMM_WORLD,
 #endif

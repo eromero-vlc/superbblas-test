@@ -71,7 +71,7 @@ namespace superbblas {
         const int magic_number = 314;
 
         /// Open file modes
-        enum Mode { CreateForReadWrite, ReadWrite };
+        enum Mode { CreateForReadWrite, ReadWrite, OnlyRead };
 
         /// Return the values_datatype of a type
         template <typename T> values_datatype get_values_datatype();
@@ -116,6 +116,7 @@ namespace superbblas {
             switch (mode) {
             case CreateForReadWrite: f = std::fopen(filename, "wb+"); break;
             case ReadWrite: f = std::fopen(filename, "rb+"); break;
+            case OnlyRead: f = std::fopen(filename, "rb"); break;
             }
             if (f == nullptr) {
                 std::stringstream ss;
@@ -264,6 +265,9 @@ namespace superbblas {
             case ReadWrite:
                 MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
                 break;
+            case OnlyRead:
+                MPI_check(MPI_File_open(comm.comm, filename, MPI_MODE_RDONLY, MPI_INFO_NULL, &fh));
+                break;
             }
             return {fh};
         }
@@ -356,7 +360,8 @@ namespace superbblas {
                 barrier(comm);
             } else {
                 barrier(comm);
-                f = file_open(detail::get_comm(), filename, ReadWrite);
+                f = file_open(detail::get_comm(), filename,
+                              mode == OnlyRead ? OnlyRead : ReadWrite);
             }
             return {f, comm};
         }
@@ -746,6 +751,7 @@ namespace superbblas {
             checksum_t checksum_val;              ///< checksum of the file excepting the values
                                                   ///< (when checksum is BlockChecksum)
             std::size_t num_chunks;               ///< number of chunks written
+            bool allow_writing;                   ///< whether to allow writing
 
             /// displacement in the file of the values of a block
             std::vector<std::size_t> disp_values;
@@ -756,7 +762,8 @@ namespace superbblas {
             Storage_context(values_datatype values_type, std::size_t header_size,
                             typename File<Comm>::type fh, Coor<N> dim, bool change_endianness,
                             bool is_new_storage, checksum_type checksum,
-                            std::size_t checksum_blocksize, checksum_t checksum_val)
+                            std::size_t checksum_blocksize, checksum_t checksum_val,
+                            bool allow_writing)
                 : values_type(values_type),
                   header_size(header_size),
                   disp(header_size + sizeof(double)), // hop over num_chunks
@@ -769,6 +776,7 @@ namespace superbblas {
                   checksum_blocksize(checksum_blocksize),
                   checksum_val(checksum_val),
                   num_chunks(0),
+                  allow_writing(allow_writing),
                   blocks(dim) {}
 
             std::size_t getNdim() override { return N; }
@@ -778,7 +786,7 @@ namespace superbblas {
             ~Storage_context() override {
                 detail::flush(fh);
                 std::size_t filesize = disp + (checksum == NoChecksum ? 0 : sizeof(double));
-                truncate(fh, filesize);
+                if (allow_writing) truncate(fh, filesize);
                 close(fh);
             }
         };
@@ -1327,11 +1335,13 @@ namespace superbblas {
                                                  true /* new storage */,
                                                  checksum,
                                                  default_checksum_blocksize,
-                                                 checksum_val};
+                                                 checksum_val,
+                                                 true /* allow writing */};
         }
 
         /// Read fields in the header of a storage
         /// \param filename: path and name of the file
+        /// \param allow_writing: whether to allow writing
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
         /// \param values_dtype: (out) type of the values
         /// \param metadata: (out) metadata content
@@ -1344,17 +1354,18 @@ namespace superbblas {
         /// \param fh: (out) file handler
 
         template <typename Comm>
-        void open_storage(const char *filename, CoorOrder co, values_datatype &values_dtype,
-                          std::vector<char> &metadata, std::vector<IndexType> &size,
-                          std::size_t &header_size, bool &do_change_endianness,
-                          checksum_type &checksum, std::size_t &checksum_blocksize,
-                          checksum_t &checksum_val, Comm comm, typename File<Comm>::type &fh) {
+        void open_storage(const char *filename, bool allow_writing, CoorOrder co,
+                          values_datatype &values_dtype, std::vector<char> &metadata,
+                          std::vector<IndexType> &size, std::size_t &header_size,
+                          bool &do_change_endianness, checksum_type &checksum,
+                          std::size_t &checksum_blocksize, checksum_t &checksum_val, Comm comm,
+                          typename File<Comm>::type &fh) {
 
             // Check that int has a size of 4
             if (sizeof(int) != 4) throw std::runtime_error("Expected int to have size 4");
 
             // Open the existing file for reading and writing
-            fh = file_open(comm, filename, ReadWrite);
+            fh = file_open(comm, filename, allow_writing ? ReadWrite : OnlyRead);
 
             // Read magic_number and check Endianness
             do_change_endianness = false;
@@ -1676,12 +1687,14 @@ namespace superbblas {
 
         /// Open a storage for reading and writing
         /// \param filename: path and name of the file
+        /// \param allow_writing: whether to allow writing
         /// \param comm: communicator
         ///
         /// NOTE: If the file does not exist, an exception will raise
 
         template <std::size_t Nd, typename T, typename Comm>
-        Storage_context<Nd, Comm> *open_storage_template(const char *filename, Comm comm) {
+        Storage_context<Nd, Comm> *open_storage_template(const char *filename, bool allow_writing,
+                                                         Comm comm) {
 
             // Open storage and check template parameters
             typename File<Comm>::type fh;
@@ -1693,9 +1706,9 @@ namespace superbblas {
             checksum_type checksum;
             std::size_t checksum_blocksize;
             checksum_t checksum_header;
-            open_storage(filename, SlowToFast, values_dtype, metadata, size, header_size,
-                         do_change_endianness, checksum, checksum_blocksize, checksum_header, comm,
-                         fh);
+            open_storage(filename, allow_writing, SlowToFast, values_dtype, metadata, size,
+                         header_size, do_change_endianness, checksum, checksum_blocksize,
+                         checksum_header, comm, fh);
 
             if (values_dtype != get_values_datatype<T>())
                 throw std::runtime_error(
@@ -1711,7 +1724,8 @@ namespace superbblas {
             Storage_context<Nd, Comm> *sto = new Storage_context<Nd, Comm>{
                 values_dtype, header_size,          fh,
                 dim,          do_change_endianness, false /* not new storage */,
-                checksum,     checksum_blocksize,   checksum_header};
+                checksum,     checksum_blocksize,   checksum_header,
+                allow_writing};
 
             // Read the nonzero blocks
             read_all_blocks<Nd, T, Comm>(*sto);
@@ -1929,7 +1943,7 @@ namespace superbblas {
         checksum_type checksum;
         std::size_t checksum_blocksize;
         detail::checksum_t checksum_header;
-        detail::open_storage(filename, co, values_dtype, metadata, size, header_size,
+        detail::open_storage(filename, false, co, values_dtype, metadata, size, header_size,
                              do_change_endianness, checksum, checksum_blocksize, checksum_header,
                              comm, fh);
         detail::close(fh);
@@ -1937,17 +1951,19 @@ namespace superbblas {
 
     /// Open a storage for reading and writing
     /// \param filename: path and name of the file
+    /// \param allow_writing: whether to allow writing
     /// \param stoh (out) handle to a tensor storage
     ///
     /// NOTE: If the file does not exist, an exception will raise
 
     template <std::size_t Nd, typename T>
-    void open_storage(const char *filename, MPI_Comm mpicomm, Storage_handle *stoh) {
+    void open_storage(const char *filename, bool allow_writing, MPI_Comm mpicomm,
+                      Storage_handle *stoh) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         // Open storage and check template parameters
-        *stoh = detail::open_storage_template<Nd, T>(filename, comm);
+        *stoh = detail::open_storage_template<Nd, T>(filename, allow_writing, comm);
     }
 
     /// Add blocks to storage
@@ -2171,7 +2187,7 @@ namespace superbblas {
         checksum_type checksum;
         std::size_t checksum_blocksize;
         detail::checksum_t checksum_header;
-        detail::open_storage(filename, co, values_dtype, metadata, size, header_size,
+        detail::open_storage(filename, false, co, values_dtype, metadata, size, header_size,
                              do_change_endianness, checksum, checksum_blocksize, checksum_header,
                              comm, fh);
         detail::close(fh);
@@ -2218,17 +2234,18 @@ namespace superbblas {
 
     /// Open a storage for reading and writing
     /// \param filename: path and name of the file
+    /// \param allow_writing: whether to allow writing
     /// \param stoh (out) handle to a tensor storage
     ///
     /// NOTE: If the file does not exist, an exception will raise
 
     template <std::size_t Nd, typename T>
-    void open_storage(const char *filename, Storage_handle *stoh) {
+    void open_storage(const char *filename, bool allow_writing, Storage_handle *stoh) {
 
         detail::SelfComm comm = detail::get_comm();
 
         // Open storage and check template parameters
-        *stoh = detail::open_storage_template<Nd, T>(filename, comm);
+        *stoh = detail::open_storage_template<Nd, T>(filename, allow_writing, comm);
     }
 
     /// Add blocks to storage
