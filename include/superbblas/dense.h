@@ -74,7 +74,10 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_GPU
         template <typename T> void local_cholesky(std::size_t n, std::size_t k, vector<T, Gpu> v) {
 
+            if (n == 0 || k == 0) return;
+
             tracker<Gpu> _t("local cholesky (GPU)", v.ctx());
+            _t.cost = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
 
             vector<T *, Cpu> v_ps(k, Cpu{});
             for (std::size_t i = 0; i < k; ++i) v_ps[i] = v.data() + n * n * i;
@@ -125,7 +128,10 @@ namespace superbblas {
         void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m, T alpha,
                         vector<T, Gpu> a, vector<T, Gpu> x) {
 
+            if (n == 0 || k == 0 || m == 0) return;
+
             tracker<Gpu> _t("local trsm (GPU)", a.ctx());
+            _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
 
 #    ifdef SUPERBBLAS_USE_CUDA
             vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
@@ -203,7 +209,12 @@ namespace superbblas {
         void local_gesm(char trans, std::size_t n, std::size_t k, std::size_t m, vector<T, Gpu> a,
                         vector<T, Gpu> x) {
 
+            if (n == 0 || k == 0 || m == 0) return;
+
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
+            // Cost approximated as the cost of LU plus multiplying two triangular matrices
+            _t.cost = (double)n * n * n * 2 / 3 * k +
+                      (double)n * n * m * k * multiplication_cost<T>::value;
 
             vector<int, Gpu> ipivs(k * n, a.ctx()), info(k, a.ctx());
 #    ifdef SUPERBBLAS_USE_CUDA
