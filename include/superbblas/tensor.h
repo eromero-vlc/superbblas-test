@@ -41,7 +41,7 @@
 
 #    define DECL_PERM(...)                                                                         \
         EMIT REPLACE1(get_permutation, superbblas::detail::get_permutation<IndexType, Nd>)         \
-            REPLACE_IndexType REPLACE(Nd, COOR_DIMS) template __VA_ARGS__;
+            REPLACE_IndexType REPLACE(Nd, COOR_DIMS) REPLACE_XPU template __VA_ARGS__;
 
 #else
 #    define DECL_PERM(...) __VA_ARGS__
@@ -759,10 +759,9 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
 
         template <typename IndexType, std::size_t Nd>
-        IndicesT<IndexType, Cpu> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
-                                                 const Coor<Nd> &dim,
-                                                 const Coor<Nd, IndexType> &strides, Cpu cpu) {
-
+        IndicesT<IndexType, Cpu> get_permutation_cpu(const Coor<Nd> &from, const Coor<Nd> &size,
+                                                     const Coor<Nd> &dim,
+                                                     const Coor<Nd, IndexType> &strides, Cpu cpu) {
             tracker<Cpu> _t("compute permutations", cpu);
 
             // Check inputs
@@ -787,6 +786,19 @@ namespace superbblas {
 
             return indices;
         }
+
+        /// Return the indices to copy
+        /// \param from: first coordinate to copy
+        /// \param size: number of coordinates to copy in each direction
+        /// \param dim: dimension size
+        /// \param strides: strides
+        /// \param cpu: device context for the returned vector
+
+        template <typename IndexType, std::size_t Nd>
+        DECL_PERM(superbblas::detail::IndicesT<IndexType, Cpu> get_permutation(
+            const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
+            const Coor<Nd, IndexType> &strides, Cpu cpu))
+        IMPL({ return get_permutation_cpu(from, size, dim, strides, cpu); })
 
 #ifdef SUPERBBLAS_USE_THRUST
 
@@ -826,7 +838,7 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_GPU
         template <typename IndexType, std::size_t Nd>
-        DECL_PERM(IndicesT<IndexType, Gpu> get_permutation(
+        DECL_PERM(superbblas::detail::IndicesT<IndexType, Gpu> get_permutation(
             const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
             const Coor<Nd, IndexType> &strides, Gpu gpu))
         IMPL({

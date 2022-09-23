@@ -61,28 +61,22 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         REPLACE(T Q, META_TYPES) REPLACE_META_TYPES
 #    define REPLACE_IndexType REPLACE(IndexType, superbblas::IndexType, std::size_t)
 
-#    define REPLACE_EWOP REPLACE(EWOP, EWOp::Copy, EWOp::Add)
+#    define REPLACE_EWOP                                                                           \
+        REPLACE(EWOP, superbblas::detail::EWOp::Copy, superbblas::detail::EWOp::Add)
 
-#    define REPLACE_XPU REPLACE(XPU, XPU_GPU)
-
-#    if defined(SUPERBBLAS_USE_CUDA)
-#        define XPU_GPU Cuda
-#    elif defined(SUPERBBLAS_USE_HIP)
-#        define XPU_GPU Hip
-#    else
-#        define XPU_GPU Cpu
-#    endif
+#    define REPLACE_XPU REPLACE(Cpu, superbblas::detail::Cpu) REPLACE(Gpu, superbblas::detail::Gpu)
 
 /// Generate template instantiations for sum functions with template parameter T
 
 #    define DECL_SUM_T(...)                                                                        \
-        EMIT REPLACE1(sum, superbblas::detail::sum<T>) REPLACE_T template __VA_ARGS__;
+        EMIT REPLACE1(sum, superbblas::detail::sum<T>) REPLACE_T REPLACE_XPU template __VA_ARGS__;
 
 /// Generate template instantiations for sum functions with template parameter T
 
 #    define DECL_SELECT_T(...)                                                                     \
-        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>) REPLACE_IndexType REPLACE( \
-            T, superbblas::IndexType, std::size_t, SUPERBBLAS_REAL_TYPES) template __VA_ARGS__;
+        EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>)                            \
+            REPLACE_IndexType REPLACE(T, superbblas::IndexType, std::size_t,                       \
+                                      SUPERBBLAS_REAL_TYPES) REPLACE_XPU template __VA_ARGS__;
 
 #else
 #    define DECL_SUM_T(...) __VA_ARGS__
@@ -826,7 +820,7 @@ namespace superbblas {
         /// \return: the sum of all the elements of v
 
         template <typename T>
-        DECL_SUM_T(T sum(const vector<T, Gpu> &v))
+        DECL_SUM_T(T sum(const superbblas::detail::vector<T, Gpu> &v))
         IMPL({
             auto it = encapsulate_pointer(v.begin());
             return thrust::reduce(it, it + v.size());
@@ -869,8 +863,9 @@ namespace superbblas {
         /// \return: a new vector
 
         template <typename IndexType, typename T>
-        DECL_SELECT_T(vector<IndexType, Gpu> select(const vector<IndexType, Gpu> &v, T *m,
-                                                    const vector<IndexType, Gpu> &w))
+        DECL_SELECT_T(superbblas::detail::vector<IndexType, Gpu> select(
+            const superbblas::detail::vector<IndexType, Gpu> &v, T *m,
+            const superbblas::detail::vector<IndexType, Gpu> &w))
         IMPL({
             vector<IndexType, Gpu> r{w.size(), v.ctx()};
             auto itv = encapsulate_pointer(v.begin());

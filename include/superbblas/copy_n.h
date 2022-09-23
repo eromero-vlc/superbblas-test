@@ -8,19 +8,19 @@
 
 #    define DECL_COPY_T_Q_EWOP(...)                                                                \
         EMIT REPLACE1(copy_n, superbblas::detail::copy_n<IndexType, T, Q, EWOP>)                   \
-            REPLACE_IndexType REPLACE_T_Q REPLACE_EWOP template __VA_ARGS__;
+            REPLACE_IndexType REPLACE_T_Q REPLACE_EWOP REPLACE_XPU template __VA_ARGS__;
 
 /// Generate template instantiations for copy_n functions with template parameters IndexType, T and Q
 
 #    define DECL_COPY_BLOCKING_T_Q_EWOP(...)                                                       \
         EMIT REPLACE1(copy_n_blocking, superbblas::detail::copy_n_blocking<IndexType, T, Q, EWOP>) \
-            REPLACE_IndexType REPLACE_T_Q REPLACE_EWOP template __VA_ARGS__;
+            REPLACE_IndexType REPLACE_T_Q REPLACE_EWOP REPLACE_XPU template __VA_ARGS__;
 
 /// Generate template instantiations for zero_n functions with template parameters IndexType and T
 
 #    define DECL_ZERO_T(...)                                                                       \
         EMIT REPLACE1(zero_n, superbblas::detail::zero_n<IndexType, T>)                            \
-            REPLACE_IndexType REPLACE_T template __VA_ARGS__;
+            REPLACE_IndexType REPLACE_T REPLACE_XPU template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_T_Q_EWOP(...) __VA_ARGS__

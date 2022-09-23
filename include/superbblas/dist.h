@@ -17,6 +17,19 @@
 #    include "mpi.h"
 #endif // SUPERBBLAS_USE_MPI
 
+#ifdef SUPERBBLAS_CREATING_LIB
+
+/// Generate template instantiations for copy function with template parameters Nd0, Nd1, T, and Q
+
+#    define DECL_COPY_ND01_TQ(...)                                                                 \
+        EMIT REPLACE1(copy, superbblas::copy<Nd0, Nd1, T, Q>) REPLACE(Nd0, COOR_DIMS)              \
+            REPLACE(Nd1, COOR_DIMS) REPLACE_T_Q template __VA_ARGS__;
+
+#else
+#    define DECL_COPY_ND01_TQ(...) __VA_ARGS__
+#endif
+
+
 namespace superbblas {
 
     /// First coordinate and size of a range of coordinates supported on a process/component.
@@ -1473,7 +1486,9 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
-                  typename XPU0, typename XPU1>
+                  typename XPU0, typename XPU1,
+                  typename std::enable_if<is_complex<Q>::value || !is_complex<T>::value,
+                                          bool>::type = true>
         void copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
@@ -1503,6 +1518,20 @@ namespace superbblas {
                 for (const auto &i : v1.second) sync(i.it.ctx());
                 barrier(comm);
             }
+        }
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1,
+                  typename std::enable_if<!is_complex<Q>::value && is_complex<T>::value,
+                                          bool>::type = true>
+        void copy(typename elem<T>::type, const From_size<Nd0> &, const Coor<Nd0> &,
+                  const Coor<Nd0> &, const Coor<Nd0> &, const Order<Nd0> &,
+                  const Components_tmpl<Nd0, const T, XPU0, XPU1> &, const From_size<Nd1> &,
+                  const Coor<Nd1> &, const Coor<Nd1> &, const Order<Nd1> &,
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &, Comm, CopyAdd, CoorOrder) {
+
+            throw std::runtime_error(
+                "copy: unsupported copying from complex type into a non-complex type");
         }
 
         /// Return whether the distribution has overlaps with itself
@@ -2229,12 +2258,15 @@ namespace superbblas {
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
-              const char *o0, const Coor<Nd0> from0, const Coor<Nd0> size0, const Coor<Nd0> dim0,
-              const T **v0, const MaskType **mask0, const Context *ctx0,
-              const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1, const Coor<Nd1> from1,
-              const Coor<Nd1> dim1, Q **v1, const MaskType **mask1, const Context *ctx1,
-              CoorOrder co, CopyAdd copyadd, Session session = 0) {
+    DECL_COPY_ND01_TQ(void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0,
+                                int ncomponents0, const char *o0, const Coor<Nd0> from0,
+                                const Coor<Nd0> size0, const Coor<Nd0> dim0, const T **v0,
+                                const MaskType **mask0, const Context *ctx0,
+                                const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
+                                const Coor<Nd1> from1, const Coor<Nd1> dim1, Q **v1,
+                                const MaskType **mask1, const Context *ctx1, CoorOrder co,
+                                CopyAdd copyadd, Session session = 0))
+    IMPL({
 
         detail::SelfComm comm = detail::get_comm();
 
@@ -2246,7 +2278,7 @@ namespace superbblas {
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
             copyadd, co);
-    }
+    })
 
 #ifdef SUPERBBLAS_USE_MPI
     /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr

@@ -51,7 +51,8 @@ endif
 #
 
 LIB_SOURCE_STEM := $(BUILDDIR)/superbblas_lib
-SOURCE_LIB := $(patsubst %,%.cpp,$(subst %,$(LIB_SOURCE_STEM),%_0 %_1 %_2 %_3 %_4 %_5 %_6 %_7 %_8 %_9))
+FRAGMENTS := $(shell seq -f '%02.f' 0 99)
+SOURCE_LIB := $(patsubst %,$(LIB_SOURCE_STEM)_%.cpp,$(FRAGMENTS))
 OBJECT_LIB := $(patsubst %.cpp,%.o,$(SOURCE_LIB))
 
 $(LIB_SOURCE_STEM): $(SOURCE)
@@ -68,16 +69,22 @@ endif
 $(SOURCE_LIB): $(LIB_SOURCE_STEM).split
 
 $(LIB_SOURCE_STEM).split: $(LIB_SOURCE_STEM)
-	split -d -n l/10 -a 1 $< $(LIB_SOURCE_STEM)_
-	for i in $(LIB_SOURCE_STEM)_? ; do \
+	split -d -n l/100 -a 2 $< $(LIB_SOURCE_STEM)_
+	for i in $(LIB_SOURCE_STEM)_?? ; do \
 		( \
 			echo "// This file is generated automatically. Please, do not modify"; \
 			echo "#include \"superbblas.h\""; \
 			echo "using namespace superbblas; using namespace detail;";  \
+			for j in $(LIB_SOURCE_STEM)_?? ; do \
+				[ $$j != $$i ] && cat $$j | awk '{print "extern", $$0}'; \
+			done; \
 			cat $$i \
 		) > $${i}.cpp; \
 	done
 	touch $(LIB_SOURCE_STEM).split
+
+$(BUILDDIR)/superbblas_compiled_templates.h: $(LIB_SOURCE_STEM)
+	awk '{print "extern", $$0}' $< > $@
 
 %.o: %.cpp
 ifeq ($(TARGET), cpu)
@@ -106,12 +113,13 @@ else
 endif
 	install -m 644 $(LIBRARY) $(libdir)
 
-install_headers: $(BUILDDIR)/superbblas_flags.h
+install_headers: $(BUILDDIR)/superbblas_flags.h $(BUILDDIR)/superbblas_compiled_templates.h
 	install -d $(includedir)
 	install -d $(includedir)/superbblas
 	install -m 644 $(MAIN_HEADER) $(includedir)
 	install -m 644 $(OTHER_HEADERS) $(includedir)/superbblas
 	install -m 644 $(BUILDDIR)/superbblas_flags.h $(includedir)/superbblas
+	install -m 644 $(BUILDDIR)/superbblas_compiled_templates.h $(includedir)/superbblas
 
 $(pkgconfig_file):
 	install -d $(libdir)/pkgconfig

@@ -11,6 +11,7 @@
 #include "superbblas/storage.h"
 #include "superbblas/bsr.h"
 #include "superbblas/dense.h"
+#include "superbblas/superbblas_compiled_templates.h"
 // clang-format on
 
 #endif // __SUPERBBLAS_H__
