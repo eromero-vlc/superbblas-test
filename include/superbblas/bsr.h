@@ -850,6 +850,9 @@ namespace superbblas {
 
             tracker<XPU> _t("local BSR matvec", vx.ctx());
 
+            // Quick exit
+            if (volume(dimx) == 0 && volume(dimy) == 0) return;
+
             // Check inputs and get the common dimensions
             bool transSp;
             MatrixLayout lx, ly;
@@ -860,7 +863,6 @@ namespace superbblas {
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
                                    dimx, ox, dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout,
                                    bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
-            if (volume(dimx) == 0) return;
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
