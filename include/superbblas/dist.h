@@ -36,6 +36,14 @@ namespace superbblas {
 
     template <std::size_t N> using ConstPartition = const PartitionItem<N> *;
 
+    /// Callback to execute to finish an operation
+    using Request = std::function<void(void)>;
+
+    /// Wait until the operation is finished
+    /// \param request: operation to finish
+
+    inline void wait(const Request &request) { request(); }
+
     namespace detail {
 
         /// Type use in MPI calls to indicate cardinality and displacements
@@ -77,14 +85,6 @@ namespace superbblas {
             return PairPerms<Nd0, Nd1>{find_permutation<Nd1, Nd0>(o1, o0),
                                        find_permutation<Nd0, Nd1>(o0, o1)};
         }
-
-        /// Output of `send` and input of `wait`
-        using Request = std::function<void(void)>;
-
-        /// Wait until an operation started by `send` finishes
-        /// \param request:
-
-        inline void wait(Request request) { request(); }
 
 #ifdef SUPERBBLAS_USE_MPI
         /// Communicator
@@ -1389,122 +1389,6 @@ namespace superbblas {
             }
         }
 
-        /// Copy the content of plural tensor v0 into v1
-        /// \param alpha: factor applied to the input tensors
-        /// \param p0: partitioning of the origin tensor in consecutive ranges
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of elements to copy in each dimension
-        /// \param v0: data for the origin tensor
-        /// \param p1: partitioning of the destination tensor in consecutive ranges
-        /// \param o1: dimension labels for the destination tensor
-        /// \param dim1: dimension size for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param v1: data for the destination tensor
-        /// \param comm: communicator context
-        /// \param ewop: either to copy or to add the origin values into the destination values
-        /// \param co: coordinate linearization order
-
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
-                  typename XPU0, typename XPU1, typename EWOp>
-        void copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                  const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                  const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
-                  bool do_test = true) {
-
-            if (getDebugLevel() >= 2 && do_test) {
-                ns_copy_test::test_copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
-                                        v1, comm, EWOp{}, co);
-            }
-
-            tracker<Cpu> _t("distributed copy", p0.ctx());
-
-            // Check the dimensions of p0 and p1
-            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            unsigned int ncomponents1 = v1.first.size() + v1.second.size();
-
-            if (p0.size() != ncomponents0 * comm.nprocs)
-                throw std::runtime_error("Invalid number of elements in the tensor distribution");
-
-            if (p1.size() != ncomponents1 * comm.nprocs)
-                throw std::runtime_error("Invalid number of elements in the tensor distribution");
-
-            // Check the compatibility of the tensors
-            if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
-                throw std::runtime_error("Invalid copy operation");
-
-            // Split the work for each receiving component
-            std::vector<Request> reqs;
-            for (unsigned int i = 0; i < ncomponents1; ++i) {
-                for (const Component<Nd1, Q, XPU0> &c : v1.first) {
-                    if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
-                                                            p1, ncomponents1, from1, dim1, o1, c,
-                                                            comm, ewop, co));
-                }
-                for (const Component<Nd1, Q, XPU1> &c : v1.second) {
-                    if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
-                                                            p1, ncomponents1, from1, dim1, o1, c,
-                                                            comm, ewop, co));
-                }
-            }
-
-            // Finish the request
-            for (const Request &r : reqs) wait(r);
-        }
-
-        /// Copy the content of plural tensor v0 into v1
-        /// \param alpha: factor applied to the input tensors
-        /// \param p0: partitioning of the origin tensor in consecutive ranges
-        /// \param o0: dimension labels for the origin tensor
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of elements to copy in each dimension
-        /// \param v0: data for the origin tensor
-        /// \param p1: partitioning of the destination tensor in consecutive ranges
-        /// \param o1: dimension labels for the destination tensor
-        /// \param dim1: dimension size for the destination tensor
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param v1: data for the destination tensor
-        /// \param comm: communicator context
-        /// \param ewop: either to copy or to add the origin values into the destination values
-        /// \param co: coordinate linearization order
-
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
-                  typename XPU0, typename XPU1>
-        void copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                  const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                  const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, CopyAdd copyadd,
-                  CoorOrder co) {
-
-            if (getDebugLevel() >= 1) {
-                barrier(comm);
-                for (const auto &i : v1.first) sync(i.it.ctx());
-                for (const auto &i : v1.second) sync(i.it.ctx());
-            }
-
-            switch (copyadd) {
-            case Copy:
-                copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1, comm,
-                     EWOp::Copy{}, co);
-                break;
-            case Add:
-                copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1, comm,
-                     EWOp::Add{}, co);
-                break;
-            }
-
-            if (getDebugLevel() >= 1) {
-                for (const auto &i : v1.first) sync(i.it.ctx());
-                for (const auto &i : v1.second) sync(i.it.ctx());
-                barrier(comm);
-            }
-        }
-
         /// Return whether the distribution has overlaps with itself
         /// \param p: partitioning of the origin tensor in consecutive ranges
         /// \param from: first coordinate to consider
@@ -1603,12 +1487,13 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename XPU, typename EWOP>
-        Request copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                     const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                     unsigned int ncomponents1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                     const Order<Nd1> &o1, const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop,
-                     CoorOrder co) {
+        std::array<Request, 2>
+        copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+             const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+             unsigned int ncomponents1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+             const Order<Nd1> &o1, const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop,
+             CoorOrder co) {
 
             // Find precomputed pieces on cache
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
@@ -1717,10 +1602,161 @@ namespace superbblas {
                 }
             };
 
+            return {local_req, mpi_req};
+        }
+
+        /// Copy the content of plural tensor v0 into v1
+        /// \param alpha: factor applied to the input tensors
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param v0: data for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param v1: data for the destination tensor
+        /// \param comm: communicator context
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1, typename EWOp>
+        Request
+        copy_request(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                     const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                     const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop,
+                     CoorOrder co, bool do_test = true) {
+
+            if (getDebugLevel() >= 2 && do_test) {
+                ns_copy_test::test_copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
+                                        v1, comm, EWOp{}, co);
+            }
+
+            tracker<Cpu> _t("distributed copy", p0.ctx());
+
+            // Check the dimensions of p0 and p1
+            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
+            unsigned int ncomponents1 = v1.first.size() + v1.second.size();
+
+            if (p0.size() != ncomponents0 * comm.nprocs)
+                throw std::runtime_error("Invalid number of elements in the tensor distribution");
+
+            if (p1.size() != ncomponents1 * comm.nprocs)
+                throw std::runtime_error("Invalid number of elements in the tensor distribution");
+
+            // Check the compatibility of the tensors
+            if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
+                throw std::runtime_error("Invalid copy operation");
+
+            // Split the work for each receiving component
+            std::vector<std::array<Request, 2>> reqs;
+            for (unsigned int i = 0; i < ncomponents1; ++i) {
+                for (const Component<Nd1, Q, XPU0> &c : v1.first) {
+                    if (c.componentId == i)
+                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
+                                                            p1, ncomponents1, from1, dim1, o1, c,
+                                                            comm, ewop, co));
+                }
+                for (const Component<Nd1, Q, XPU1> &c : v1.second) {
+                    if (c.componentId == i)
+                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
+                                                            p1, ncomponents1, from1, dim1, o1, c,
+                                                            comm, ewop, co));
+                }
+            }
+
+            // Do the local part
+            for (const auto &r : reqs) wait(r[0]);
+
+            // Finish the rest later
             return [=] {
-                wait(local_req);
-                wait(mpi_req);
+                for (const auto &r : reqs) wait(r[1]);
             };
+        }
+
+        /// Copy the content of plural tensor v0 into v1
+        /// \param alpha: factor applied to the input tensors
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param v0: data for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param v1: data for the destination tensor
+        /// \param comm: communicator context
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1, typename EWOp>
+        void copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+                  const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                  const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+                  const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
+                  bool do_test = true) {
+
+            wait(copy_request(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1, comm,
+                              ewop, co, do_test));
+        }
+
+        /// Copy the content of plural tensor v0 into v1
+        /// \param alpha: factor applied to the input tensors
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param v0: data for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param v1: data for the destination tensor
+        /// \param comm: communicator context
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1>
+        Request copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                     const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                     const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, CopyAdd copyadd,
+                     CoorOrder co) {
+
+            if (getDebugLevel() >= 1) {
+                barrier(comm);
+                for (const auto &i : v1.first) sync(i.it.ctx());
+                for (const auto &i : v1.second) sync(i.it.ctx());
+            }
+
+            Request r;
+            switch (copyadd) {
+            case Copy:
+                r = copy_request(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
+                                 comm, EWOp::Copy{}, co);
+                break;
+            case Add:
+                r = copy_request(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
+                                 comm, EWOp::Add{}, co);
+                break;
+            }
+
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : v1.first) sync(i.it.ctx());
+                for (const auto &i : v1.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+
+            return r;
         }
 
         /// Return value for the dimensions in o_r matching the given for o0 and o1
@@ -2183,7 +2219,8 @@ namespace superbblas {
     /// \param mask1: vector of mask pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
-    /// \param session: concurrent calls should have different session
+    /// \param request: (optional) return a callback to finish the operation later with `wait`
+    /// \param session: (optional) concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
     void copy(typename elem<T>::type alpha, const PartitionItem<Nd0> *p0, int ncomponents0,
@@ -2192,11 +2229,11 @@ namespace superbblas {
               const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
               const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q **v1, const MaskType **mask1,
               const Context *ctx1, MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd,
-              Session session = 0) {
+              Request *request = nullptr, Session session = 0) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::copy<Nd0, Nd1>(
+        Request r = detail::copy<Nd0, Nd1>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, mask0, ctx0, ncomponents0, p0, comm, session),
@@ -2204,6 +2241,11 @@ namespace superbblas {
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
             copyadd, co);
+
+        if (request)
+            *request = r;
+        else
+            wait(r);
     }
 #endif // SUPERBBLAS_USE_MPI
 
@@ -2226,6 +2268,7 @@ namespace superbblas {
     /// \param mask1: vector of mask pointers for the origin tensor
     /// \param ctx1: context for each data pointer in v1
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param request: (optional) return a callback to finish the operation later with `wait`
     /// \param session: concurrent calls should have different session
 
     template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
@@ -2234,18 +2277,19 @@ namespace superbblas {
               const T **v0, const MaskType **mask0, const Context *ctx0,
               const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1, const Coor<Nd1> from1,
               const Coor<Nd1> dim1, Q **v1, const MaskType **mask1, const Context *ctx1,
-              CoorOrder co, CopyAdd copyadd, Session session = 0) {
+              CoorOrder co, CopyAdd copyadd, Request *request = nullptr, Session session = 0) {
 
         detail::SelfComm comm = detail::get_comm();
 
-        detail::copy<Nd0, Nd1>(
+        wait(detail::copy<Nd0, Nd1>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
             dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, mask0, ctx0, ncomponents0, p0, comm, session),
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
-            copyadd, co);
+            copyadd, co));
+        if (request) *request = []() {};
     }
 
 #ifdef SUPERBBLAS_USE_MPI
