@@ -48,6 +48,7 @@ test_hip: export PREFIX := ${CURDIR}/test_lib_hip
 test_hip: export BUILDDIR := ${CURDIR}/test_lib_hip
 test_header_only_cpu test_header_only_cuda test_header_only_hip: export SB_LDFLAGS :=
 test_header_only_cpu test_header_only_cuda test_header_only_hip: export SB_INCLUDE := -I../include
+test_cpu test_cuda test_hip: export INSTALL_LINK_SOURCE := yes
 
 format:
 	${MAKE} -C src format

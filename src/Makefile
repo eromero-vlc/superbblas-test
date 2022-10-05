@@ -110,8 +110,12 @@ install_headers: $(BUILDDIR)/superbblas_flags.h
 	install -d $(includedir)
 	install -d $(includedir)/superbblas
 	install -m 644 $(MAIN_HEADER) $(includedir)
-	install -m 644 $(OTHER_HEADERS) $(includedir)/superbblas
 	install -m 644 $(BUILDDIR)/superbblas_flags.h $(includedir)/superbblas
+ifeq ($(INSTALL_LINK_SOURCE), yes)
+	for i in $(OTHER_HEADERS) ; do ln -fs $$PWD/$$i $(includedir)/superbblas/ ; done
+else
+	install -m 644 $(OTHER_HEADERS) $(includedir)/superbblas
+endif
 
 $(pkgconfig_file):
 	install -d $(libdir)/pkgconfig
