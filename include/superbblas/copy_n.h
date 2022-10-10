@@ -313,6 +313,13 @@ namespace superbblas {
         void copy_n_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                     const IndexType *indicesv, IndexType n, Q *w,
                                     const IndexType *indicesw, Gpu xpu, EWOP) {
+            // Shortcut for plain copy
+            if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
+                alpha == typename elem<T>::type{1} && indicesv == nullptr && indicesw == nullptr) {
+                copy_n(v, xpu, n, (T *)w, xpu);
+                return;
+            }
+
             setDevice(xpu);
             if (indicesv == nullptr) {
                 auto itv = encapsulate_pointer(v);
