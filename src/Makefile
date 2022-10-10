@@ -2,7 +2,6 @@ include ../make.inc
 
 MAIN_HEADER := ../include/superbblas.h
 OTHER_HEADERS := \
-  ../include/superbblas/superbblas_flags.h \
   ../include/superbblas/superbblas_lib.h \
   ../include/superbblas/blas_cpu_tmpl.hpp \
   ../include/superbblas/blas.h \
