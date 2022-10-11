@@ -204,7 +204,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
 
     // Copy halos
     {
-	const int power = 1;
+        const int power = 1;
         const Coor<Nd> ext = {power, 0, 0, power, power, power, 0}; // tnsxyzc
         tensor<Nd, Scalar, XPU> th(dim1, procs1, ext, rank, xpu);
         double t = 0;
@@ -242,7 +242,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
 
     // Copy halos
     {
-	const int power = 1;
+        const int power = 1;
         const Coor<Nd> ext = {power, 0, 0, power, power, power, 0}; // tnsxyzc
         tensor<Nd, int, XPU> t1(dim1, procs1, rank, xpu);
         tensor<Nd, int, XPU> th(dim1, procs1, ext, rank, xpu);
@@ -264,7 +264,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
         }
         sync(xpu);
         t = w_time() - t;
-        if (rank == 0) std::cout << "Time in copying halos in for integers " << t / nrep << std::endl;
+        if (rank == 0)
+            std::cout << "Time in copying halos in for integers " << t / nrep << std::endl;
 
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
             if (rep == 1) {
@@ -283,7 +284,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
         }
         sync(xpu);
         t = w_time() - t;
-        if (rank == 0) std::cout << "Time in copying halos out for integers " << t / nrep << std::endl;
+        if (rank == 0)
+            std::cout << "Time in copying halos out for integers " << t / nrep << std::endl;
     }
 
     if (rank == 0) reportTimings(std::cout);

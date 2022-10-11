@@ -616,7 +616,7 @@ namespace superbblas {
                 std::size_t displ = r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
                 for (unsigned int j = 0; j < r.indices[i].size(); j++) {
                     const T *data = r.buf.data() + displ;
-                    copy_n<IndexType, T, T>(alpha, data, Cpu{}, r.indices[i][j].size(),
+                    copy_n<IndexType, T, T>(alpha, data, nullptr, Cpu{}, r.indices[i][j].size(),
                                             v.it.data() + r.indices_disp[i][j],
                                             r.indices[i][j].begin(), v.it.ctx(), EWOP{});
                     displ += r.indices[i][j].size();
@@ -1233,8 +1233,8 @@ namespace superbblas {
                 vector<std::size_t, XPU> r(vol, xpu);
                 vector<std::size_t, Cpu> r_host =
                     get_mock_components(from, size, dim, Cpu{}, co, mf);
-                copy_n<std::size_t>(1, r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
-                                    EWOp::Copy{});
+                copy_n<std::size_t>(1, r_host.data(), nullptr, r_host.ctx(), vol, r.data(), nullptr,
+                                    r.ctx(), EWOp::Copy{});
                 return r;
             }
 

@@ -1,8 +1,8 @@
 #include "superbblas.h"
 #include <cstdio>
 #include <fstream>
-#include <sstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -10,8 +10,7 @@
 using namespace superbblas;
 using namespace superbblas::detail;
 
-template <std::size_t N, typename T>
-void check_storage(const char *filename) {
+template <std::size_t N, typename T> void check_storage(const char *filename) {
     Storage_handle stoh;
     open_storage<N, T>(filename, false /* don't allow writing */, &stoh);
     check_storage<N, T>(stoh);
@@ -61,8 +60,7 @@ Blocks get_blocks(const char *filename, const std::vector<IndexType> &dim) {
 }
 
 template <std::size_t N = 16>
-Blocks get_blocks(const char *filename, values_datatype dtype,
-                                         const std::vector<IndexType> &dim) {
+Blocks get_blocks(const char *filename, values_datatype dtype, const std::vector<IndexType> &dim) {
     if (dim.size() != N) {
         return get_blocks<N - 1>(filename, dtype, dim);
     } else {
@@ -80,7 +78,7 @@ Blocks get_blocks(const char *filename, values_datatype dtype,
 
 template <>
 Blocks get_blocks<0>(const char *filename, values_datatype dtype,
-                                            const std::vector<IndexType> &dim) {
+                     const std::vector<IndexType> &dim) {
     (void)filename;
     (void)dtype;
     (void)dim;

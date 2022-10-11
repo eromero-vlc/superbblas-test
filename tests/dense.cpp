@@ -1,7 +1,7 @@
 #include "superbblas.h"
-#include <vector>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 #ifdef _OPENMP
 #    include <omp.h>
 #endif
@@ -22,7 +22,8 @@ template <typename T, typename XPU> vector<T, XPU> ones(std::size_t size, XPU xp
 }
 
 // Return a vector of all ones
-template <typename T, typename XPU> vector<T, XPU> laplacian(std::size_t n, std::size_t size, XPU xpu) {
+template <typename T, typename XPU>
+vector<T, XPU> laplacian(std::size_t n, std::size_t size, XPU xpu) {
     vector<T, Cpu> r(size, Cpu{});
     if (size % (n * n) != 0)
         throw std::runtime_error("Unsupported the creation of partial square matrices");
@@ -43,7 +44,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
 
     // Create tensor t0 of Nd dims: a lattice color vector
     const Coor<Nd + 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T],
-                               dim[S], dim[C], dim[S], dim[C]}; // xyztscSC
+                               dim[S], dim[C], dim[S], dim[C]};                       // xyztscSC
     const Coor<Nd + 1> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1, 1}; // xyztscSC
     PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
     const Coor<Nd + 1> local_size0 = p0[rank][1];
@@ -90,7 +91,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
 
     // Create tensors tx and ty of Nd dims: a lattice color vector
     const Coor<Nd> dimx = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C], dim[N]}; // xyztscn
-    const Coor<Nd> procsx = {procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // xyztscn
+    const Coor<Nd> procsx = {procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1};      // xyztscn
     PartitionStored<Nd> px = basic_partitioning(dimx, procsx);
     const Coor<Nd> local_sizex = px[rank][1];
     std::size_t volx = detail::volume(local_sizex);
@@ -195,11 +196,10 @@ int main(int argc, char **argv) {
                 return -1;
             }
             procs_was_set = true;
-         } else if(std::strncmp("--help", argv[i], 6) == 0) {
-             std::cout << "Commandline option:\n  " << argv[0]
-                       << " [--dim='x y z t n b'] [--procs='x y z t n c'] [--help]"
-                       << std::endl;
-             return 0;
+        } else if (std::strncmp("--help", argv[i], 6) == 0) {
+            std::cout << "Commandline option:\n  " << argv[0]
+                      << " [--dim='x y z t n b'] [--procs='x y z t n c'] [--help]" << std::endl;
+            return 0;
         } else {
             std::cerr << "Not sure what is this: `" << argv[i] << "`" << std::endl;
             return -1;
