@@ -153,6 +153,9 @@ namespace superbblas {
         template <typename T> struct is_complex<std::complex<T>> {
             static const bool value = true;
         };
+        template <typename T> struct is_complex<const T> {
+            static const bool value = is_complex<T>::value;
+        };
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
@@ -206,7 +209,7 @@ namespace superbblas {
 
         template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
         void deallocate(T *ptr, Cpu cpu) {
-            deallocate<T::value_type>((typename T::value_type *)ptr, cpu);
+            deallocate<typename T::value_type>((typename T::value_type *)ptr, cpu);
         }
 
 #ifdef SUPERBBLAS_USE_CUDA
