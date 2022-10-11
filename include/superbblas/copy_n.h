@@ -136,7 +136,8 @@ namespace superbblas {
                         const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
                         const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Copy) {
             // Make sure we aren't using std::complex
-            static_assert(!is_complex<T>::value);
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
 
             if (indicesv == nullptr && indicesw == nullptr) {
                 /// Case: w[i] = v[i]
@@ -189,7 +190,8 @@ namespace superbblas {
                         const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
                         const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Add) {
             // Make sure we aren't using std::complex
-            static_assert(!is_complex<T>::value);
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
 
             if (is_zero(alpha)) return;
 
@@ -594,7 +596,8 @@ namespace superbblas {
                                  Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw, Cpu,
                                  EWOp::Copy) {
             // Make sure we aren't using std::complex
-            static_assert(!is_complex<T>::value);
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
 
             if (indicesv == nullptr && indicesw != nullptr) {
                 /// Case: w[indicesw[i]] = v[i]
@@ -635,7 +638,8 @@ namespace superbblas {
                                  Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw, Cpu,
                                  EWOp::Add) {
             // Make sure we aren't using std::complex
-            static_assert(!is_complex<T>::value);
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
 
             if (is_zero(alpha)) return;
 
