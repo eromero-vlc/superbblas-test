@@ -32,26 +32,13 @@
 #    include <thrust/transform.h>
 #endif
 
-#ifdef SUPERBBLAS_CREATING_LIB
+#define MAX_COOR_DIMS 36
 
-#    define COOR_DIMS                                                                              \
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, \
-            26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36
-
-/// Generate template instantiations for get_permutation function with template parameters IndexType and Nd
-
-#    define DECL_PERM(...)                                                                         \
-        EMIT REPLACE1(get_permutation, superbblas::detail::get_permutation<IndexType, Nd>)         \
-            REPLACE_IndexType REPLACE(Nd, COOR_DIMS) template __VA_ARGS__;
-
-#else
-#    define DECL_PERM(...) __VA_ARGS__
-#endif
+#define COOR_DIMS                                                                                  \
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, \
+        27, 28, 29, 30, 31, 32, 33, 34, 35, 36
 
 namespace superbblas {
-
-    /// Coordinate Index type
-    using IndexType = int;
 
     /// Mask/boolean element: use a type that work with BLAS
     using MaskType = float;
@@ -70,11 +57,8 @@ namespace superbblas {
 
     namespace detail {
 
-        /// Coordinate type
-        template <typename Nd, typename Idx = IndexType> using Coor = array<Idx, Nd>;
-
         /// Vector of dimension labels
-        template <typename Nd> using Order = array<char, Nd>;
+        template <typename Nd> using Order = array<char, Nd, false>;
 
         /// Vector of `IndexType`
         template <typename XPU> using Indices = vector<IndexType, XPU>;
@@ -218,9 +202,9 @@ namespace superbblas {
             if (order == nullptr) {
                 valid = false;
             } else {
-		struct N {};
-		array_size<N>() = std::strlen(order);
-		valid = check_order(Order<N>(order));
+                struct N {};
+                array_size<N>() = std::strlen(order);
+                valid = check_order<N>(Order<N>((char *)order));
             }
             if (!valid) {
                 std::stringstream ss;
@@ -589,7 +573,7 @@ namespace superbblas {
             new_disp0 = 0;
             for (std::size_t i1 = 0; i1 < perm0.size(); ++i1) {
                 if (perm0[i1] < 0) continue;
-                superbblas::IndexType i0 = perm0[i1];
+                detail::IndexType i0 = perm0[i1];
                 if (size0[i0] > 1) {
                     if (from0[i0] + size0[i0] <= dim0[i0]) {
                         new_from0[i] = 0;
@@ -683,31 +667,37 @@ namespace superbblas {
             }
         };
 
-        template <typename IndexType, std::size_t Nd>
+        template <typename IndexType, std::size_t Nd, typename ClassN>
         IndicesT<IndexType, Gpu>
-        get_permutation_thrust(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
-                               const Coor<Nd, IndexType> &strides, Gpu gpu) {
+        get_permutation_thrust(const Coor<ClassN> &from, const Coor<ClassN> &size,
+                               const Coor<ClassN> &dim, const Coor<ClassN, IndexType> &strides,
+                               Gpu gpu) {
+
+            assert(array_size<ClassN>() == Nd);
 
             // Compute the permutation
             IndexType vol = volume(size);
             IndicesT<IndexType, Gpu> indices(vol, gpu);
-            Coor<Nd, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
+            Coor<ClassN, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
 
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
-                              thrust::make_counting_iterator(IndexType(vol)),
-                              encapsulate_pointer(indices.data()),
-                              perm_elem<IndexType, Nd>(toTCoor(from), toTCoor(size), toTCoor(dim),
-                                                       toTCoor(size_strides), toTCoor(strides)));
+            thrust::transform(
+                thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                thrust::make_counting_iterator(IndexType(vol)), encapsulate_pointer(indices.data()),
+                perm_elem<IndexType, Nd>(toTCoor<Nd>(from), toTCoor<Nd>(size), toTCoor<Nd>(dim),
+                                         toTCoor<Nd>(size_strides), toTCoor<Nd>(strides)));
             return indices;
         }
 #endif
 
 #ifdef SUPERBBLAS_USE_GPU
-        template <typename IndexType, std::size_t Nd>
-        DECL_PERM(IndicesT<IndexType, Gpu> get_permutation(
-            const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
-            const Coor<Nd, IndexType> &strides, Gpu gpu))
-        IMPL({
+        template <typename IndexType, typename ClassN, std::size_t Nd = MAX_COOR_DIMS,
+                  typename std::enable_if<(Nd > 0), bool>::type = true>
+        IndicesT<IndexType, Gpu> get_permutation(const Coor<ClassN> &from, const Coor<ClassN> &size,
+                                                 const Coor<ClassN> &dim,
+                                                 const Coor<ClassN, IndexType> &strides, Gpu gpu) {
+            if (array_size<ClassN>() != Nd)
+                return get_permutation<IndexType, ClassN, Nd - 1>(from, size, dim, strides, gpu);
+
             tracker<Gpu> _t("compute permutations", gpu);
 
             // Check inputs
@@ -722,7 +712,15 @@ namespace superbblas {
 
             // Compute the permutation
             return get_permutation_thrust<IndexType, Nd>(from, size, dim, strides, gpu);
-        })
+        }
+
+        template <typename IndexType, typename ClassN, std::size_t Nd = MAX_COOR_DIMS,
+                  typename std::enable_if<(Nd == 0), bool>::type = true>
+        IndicesT<IndexType, Gpu> get_permutation(const Coor<ClassN> &, const Coor<ClassN> &,
+                                                 const Coor<ClassN> &,
+                                                 const Coor<ClassN, IndexType> &, Gpu) {
+            return IndicesT<IndexType, Gpu>();
+        }
 #endif
 
         /// Return the indices to copy
@@ -1528,20 +1526,20 @@ namespace superbblas {
         else if (ctx0.plat == CPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
                 alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1_,
+                dim1_, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
                 alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, vol1, ctx1.toCpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1_,
+                dim1_, detail::to_vector(v1, vol1, ctx1.toCpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
                 alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1_,
+                dim1_, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
         }
 #endif
@@ -1605,8 +1603,7 @@ namespace superbblas {
                 alpha, o0_, dim0_, conj0,
                 detail::to_vector(v0, detail::volume(dim0_), ctx0.toGpu(session)), o1_, dim1_,
                 conj1, detail::to_vector(v1, detail::volume(dim1_), ctx1.toGpu(session)), beta,
-                o_r_, dimr_, detail::to_vector(vr, detail::volume(dimr_), ctxr.rtoGpu(session)),
-                co);
+                o_r_, dimr_, detail::to_vector(vr, detail::volume(dimr_), ctxr.toGpu(session)), co);
             break;
 #endif
         default: throw std::runtime_error("Unsupported platform");

@@ -1,7 +1,7 @@
 #ifndef __SUPERBBLAS_COOR__
 #define __SUPERBBLAS_COOR__
 
-#include "platform.h"
+#include "blas.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -10,7 +10,6 @@
 namespace superbblas {
 
     namespace detail {
-
         template <typename ClassN> unsigned int &array_size() {
             static unsigned int size;
             return size;
@@ -278,24 +277,26 @@ namespace superbblas {
 
             /// Return the pointer to the first element not in the array
 
-            iterator end() { return iterator(p + element_size() * size()); }
+            iterator end() { return iterator((void *)((char *)p + element_size() * size())); }
 
             /// Return the pointer to the first element not in the array
 
-            const_iterator end() const { return const_iterator(p + element_size() * size()); }
+            const_iterator end() const {
+                return const_iterator((void *)((char *)p + element_size() * size()));
+            }
 
             /// Return the i-th element
 
             T operator[](unsigned int i) {
                 assert(i < size());
-                return T(p + i * element_size());
+                return T((void *)((char *)p + i * element_size()));
             }
 
             /// Return the i-th element
 
             const T operator[](unsigned int i) const {
                 assert(i < size());
-                return T(p + i * element_size());
+                return T((void *)((char *)p + i * element_size()));
             }
 
             /// Return the first element
@@ -308,12 +309,18 @@ namespace superbblas {
 
             /// Return the last element
 
-            T back() { return T(p + element_size() * (size() - 1)); }
+            T back() { return T((void *)((char *)p + element_size() * (size() - 1))); }
 
             /// Return the last element
 
-            const T back() const { return T(p + element_size() * (size() - 1)); }
+            const T back() const { return T((void *)((char *)p + element_size() * (size() - 1))); }
         };
+
+        /// Coordinate Index type
+        using IndexType = int;
+
+        /// Coordinate type
+        template <typename Nd, typename Idx = IndexType> using Coor = array<Idx, Nd>;
 
 #ifdef SUPERBBLAS_USE_THRUST
 
@@ -409,7 +416,7 @@ namespace superbblas {
         template <typename T, typename N>
         array<T, N> max_each(const array<T, N> &a, const array<T, N> &b) {
             array<T, N> r;
-            for (typename i = 0, n =a.size(); i < n; i++) r[i] = std::max(a[i], b[i]);
+            for (std::size_t i = 0, n = a.size(); i < n; i++) r[i] = std::max(a[i], b[i]);
             return r;
         }
 
@@ -444,17 +451,17 @@ namespace superbblas {
         }
 
         struct ns_toTCoor_aux {
-            template <std::size_t I, std::size_t Nr, std::size_t N, typename IndexType,
-                      typename std::enable_if<(I < N && 1 < Nr), bool>::type = true>
-            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<N, IndexType> &a) {
+            template <std::size_t I, std::size_t Nr, typename ClassN, typename IndexType,
+                      typename std::enable_if<(1 < Nr), bool>::type = true>
+            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<ClassN, IndexType> &a) {
                 const auto sl = TCoor<Nr, IndexType>::size_left;
                 const auto sr = TCoor<Nr, IndexType>::size_right;
                 return {toTCoor_aux<I, sl>(a), toTCoor_aux<I + sl, sr>(a)};
             }
 
-            template <std::size_t I, std::size_t Nr, std::size_t N, typename IndexType,
-                      typename std::enable_if<(I < N && 1 == Nr), bool>::type = true>
-            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<N, IndexType> &a) {
+            template <std::size_t I, std::size_t Nr, typename ClassN, typename IndexType,
+                      typename std::enable_if<(1 == Nr), bool>::type = true>
+            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<ClassN, IndexType> &a) {
                 return {a[I]};
             }
         };
@@ -462,8 +469,9 @@ namespace superbblas {
         /// Convert from Coor to TCoor
         /// \param a: input coordinate
 
-        template <std::size_t Nd, typename IndexType>
-        inline TCoor<Nd, IndexType> toTCoor(const Coor<Nd, IndexType> &a) {
+        template <std::size_t Nd, typename IndexType, typename ClassN>
+        inline TCoor<Nd, IndexType> toTCoor(const Coor<ClassN, IndexType> &a) {
+            assert(array_size<ClassN>() == Nd);
             return ns_toTCoor_aux::toTCoor_aux<0, Nd>(a);
         }
 #endif
