@@ -60,6 +60,27 @@ EMIT_define(SUPERBBLAS_USE_MKL)
 #    define SUPERBBLAS_USE_GPU
 #endif
 
+#if (defined(SUPERBBLAS_USE_CUDA) || defined(SUPERBBLAS_USE_HIP)) &&                               \
+    !defined(SUPERBBLAS_CREATING_FLAGS) && !defined(SUPERBBLAS_CREATING_LIB) &&                    \
+    !defined(SUPERBBLAS_LIB)
+#    define SUPERBBLAS_USE_THRUST
+#endif
+#ifdef SUPERBBLAS_USE_THRUST
+#    ifndef SUPERBBLAS_LIB
+#        include <thrust/complex.h>
+#        include <thrust/device_ptr.h>
+#        include <thrust/device_vector.h>
+#        include <thrust/iterator/permutation_iterator.h>
+#        include <thrust/iterator/transform_iterator.h>
+#    endif
+#endif
+
+#ifdef SUPERBBLAS_CREATING_FLAGS
+#    ifdef SUPERBBLAS_USE_CBLAS
+EMIT_define(SUPERBBLAS_USE_CBLAS)
+#    endif
+#endif
+
 namespace superbblas {
 
     /// Where the data is

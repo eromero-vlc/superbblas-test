@@ -3,7 +3,7 @@
 
 #include "blas_cpu_tmpl.hpp"
 #include "performance.h"
-#include "platform.h"
+#include "coors.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -18,27 +18,6 @@
 // `thrust` when the superbblas library is used not as header-only. Use the macro `IMPL` to hide
 // the definition of functions using `thrust` and use DECL_... macros to generate template
 // instantiations to be included in the library.
-
-#if (defined(SUPERBBLAS_USE_CUDA) || defined(SUPERBBLAS_USE_HIP)) &&                               \
-    !defined(SUPERBBLAS_CREATING_FLAGS) && !defined(SUPERBBLAS_CREATING_LIB) &&                    \
-    !defined(SUPERBBLAS_LIB)
-#    define SUPERBBLAS_USE_THRUST
-#endif
-#ifdef SUPERBBLAS_USE_THRUST
-#    ifndef SUPERBBLAS_LIB
-#        include <thrust/complex.h>
-#        include <thrust/device_ptr.h>
-#        include <thrust/device_vector.h>
-#        include <thrust/iterator/permutation_iterator.h>
-#        include <thrust/iterator/transform_iterator.h>
-#    endif
-#endif
-
-#ifdef SUPERBBLAS_CREATING_FLAGS
-#    ifdef SUPERBBLAS_USE_CBLAS
-EMIT_define(SUPERBBLAS_USE_CBLAS)
-#    endif
-#endif
 
 #ifdef SUPERBBLAS_CREATING_LIB
 #    define SUPERBBLAS_INDEX_TYPES superbblas::IndexType, std::size_t

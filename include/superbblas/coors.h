@@ -1,7 +1,7 @@
 #ifndef __SUPERBBLAS_COOR__
 #define __SUPERBBLAS_COOR__
 
-#include "blas.h"
+#include "platform.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -10,9 +10,30 @@
 namespace superbblas {
 
     namespace detail {
-        template <typename ClassN> unsigned int &array_size() {
-            static unsigned int size;
-            return size;
+
+        /// Metaclass for array size tag classes
+        template <typename ClassN> struct array_size_tag { static unsigned int size; };
+
+        /// Return the runtime size of an array
+        /// \tparam ClassN: tag struct
+
+        template <typename ClassN> unsigned int array_size() {
+            return array_size_tag<ClassN>::size;
+        }
+
+        /// Set the runtime size of an array
+	/// \param size: new size of the array
+        /// \tparam ClassN: tag struct
+
+        template <typename ClassN> void set_array_size(unsigned int size) {
+            array_size_tag<ClassN>::size = size;
+        }
+
+        /// Tag type of fix size of two
+        struct two {};
+        template <> inline unsigned int array_size<two>() { return 2; }
+        template <> inline void set_array_size<two>(unsigned int) {
+            throw std::runtime_error("Invalid");
         }
 
         template <typename T> struct array_element_size_ {
@@ -27,9 +48,16 @@ namespace superbblas {
                 return array_element_size_<T>::size() * array_size<ClassN>();
             }
         };
+
+        /// Return the storage size for an array-dependent type
+        /// \tparam T: return the storage size of this type
+
         template <typename T> std::size_t array_element_size() {
             return array_element_size_<T>::size();
         }
+
+        /// Return whether the given type is an array
+        /// \tparam T: type to consider
 
         template <typename T> struct is_array { static constexpr bool value = false; };
         template <typename T, typename ClassN> struct is_array<array<T, ClassN>> {

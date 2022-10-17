@@ -2,7 +2,6 @@
 #define __SUPERBBLAS_TENSOR__
 
 #include "cache.h"
-#include "coors.h"
 #include "copy_n.h"
 #include <algorithm>
 #include <array>
@@ -203,7 +202,7 @@ namespace superbblas {
                 valid = false;
             } else {
                 struct N {};
-                array_size<N>() = std::strlen(order);
+                set_array_size<N>(std::strlen(order));
                 valid = check_order<N>(Order<N>((char *)order));
             }
             if (!valid) {
@@ -890,7 +889,7 @@ namespace superbblas {
 
             // Canonize the copy operation
             struct Nd {};
-            array_size<Nd>() = std::min(array_size<Nd0>(), array_size<Nd1>());
+            set_array_size<Nd>(std::min(array_size<Nd0>(), array_size<Nd1>()));
             IndexType new_disp0, new_disp1;
             std::size_t nblock;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
@@ -963,7 +962,7 @@ namespace superbblas {
 
             // Canonize the copy operation
             struct Nd {};
-            array_size<Nd>() = std::min(array_size<Nd0>(), array_size<Nd1>());
+            set_array_size<Nd>(std::min(array_size<Nd0>(), array_size<Nd1>()));
             std::size_t nblock;
             IndexType new_disp0, new_disp1;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
@@ -999,7 +998,7 @@ namespace superbblas {
 
             // Canonize the copy operation
             struct Nd {};
-            array_size<Nd>() = std::min(array_size<Nd0>(), array_size<Nd1>());
+            set_array_size<Nd>(std::min(array_size<Nd0>(), array_size<Nd1>()));
             IndexType new_disp0, new_disp1;
             std::size_t nblock;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
@@ -1482,9 +1481,9 @@ namespace superbblas {
 
         // Create coordinate dimensions
         struct Nd0 {};
-        detail::array_size<Nd0>() = std::strlen(o0);
+        detail::set_array_size<Nd0>(std::strlen(o0));
         struct Nd1 {};
-        detail::array_size<Nd1>() = std::strlen(o1);
+        detail::set_array_size<Nd1>(std::strlen(o1));
 
         // Get all coordinates and orders
         const detail::Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
@@ -1573,11 +1572,11 @@ namespace superbblas {
                            Session session = 0) {
 
         struct Nd0 {};
-        detail::array_size<Nd0>() = std::strlen(o0);
+        detail::set_array_size<Nd0>(std::strlen(o0));
         struct Nd1 {};
-        detail::array_size<Nd1>() = std::strlen(o1);
+        detail::set_array_size<Nd1>(std::strlen(o1));
         struct Ndo {};
-        detail::array_size<Ndo>() = std::strlen(o_r);
+        detail::set_array_size<Ndo>(std::strlen(o_r));
 
         detail::Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
         const detail::Coor<Nd0> dim0_ = detail::toArray<Nd0>(dim0);
