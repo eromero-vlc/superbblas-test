@@ -2,6 +2,7 @@
 #define __SUPERBBLAS_TENSOR__
 
 #include "cache.h"
+#include "coors.h"
 #include "copy_n.h"
 #include <algorithm>
 #include <array>
@@ -51,10 +52,7 @@ namespace superbblas {
 
     /// Coordinate Index type
     using IndexType = int;
-    /// Coordinate type
-    template <std::size_t Nd, typename Idx = IndexType> using Coor = std::array<Idx, Nd>;
-    /// Vector of dimension labels
-    template <std::size_t Nd> using Order = std::array<char, Nd>;
+
     /// Mask/boolean element: use a type that work with BLAS
     using MaskType = float;
 
@@ -72,57 +70,11 @@ namespace superbblas {
 
     namespace detail {
 
-#ifdef SUPERBBLAS_USE_THRUST
+        /// Coordinate type
+        template <typename Nd, typename Idx = IndexType> using Coor = array<Idx, Nd>;
 
-        /// Thrust does not support std::array container; here we implement a quick-and-dirty array container based on tuples
-
-        template <typename T, std::size_t N> struct tarray;
-        template <typename T, std::size_t N> struct tarray {
-            static const std::size_t size_left = (N + 1) / 2;
-            static const std::size_t size_right = N - size_left;
-            tarray<T, size_left> left;
-            tarray<T, size_right> right;
-        };
-        template <typename T> struct tarray<T, 0ul> {};
-        template <typename T> struct tarray<T, 1ul> { T leaf; };
-
-        /// Return the I-th element on a tarray
-        /// \tparam I: index of the element to return
-        /// \param t: input array
-
-        template <std::size_t I, typename T, std::size_t N,
-                  typename std::enable_if<(I > 0 && I < N), bool>::type = true>
-        inline __HOST__ __DEVICE__ T &tget(tarray<T, N> &t) {
-            return (I < t.size_left ? tget<I>(t.left) : tget<I - t.size_left>(t.right));
-        }
-
-        template <std::size_t I, typename T, std::size_t N,
-                  typename std::enable_if<(I == 0 && N == 1), bool>::type = true>
-        inline __HOST__ __DEVICE__ T &tget(tarray<T, N> &t) {
-            return t.leaf;
-        }
-
-        /// Return the i-th element on a tarray
-        /// \param i: index of the element to return
-        /// \param t: input array
-
-        template <typename T, typename Indx, std::size_t N,
-                  typename std::enable_if<(N > 1), bool>::type = true>
-        inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &t) {
-            return (i < Indx(t.size_left) ? tget(i, t.left) : tget(i - (Indx)t.size_left, t.right));
-        }
-
-        template <typename T, typename Indx, std::size_t N,
-                  typename std::enable_if<(N == 1), bool>::type = true>
-        inline __HOST__ __DEVICE__ T tget(Indx i, const tarray<T, N> &t) {
-            return (i == 0 ? t.leaf : T{0});
-        }
-
-        /// Coordinate based on tarray
-        /// \tparam Nd: number of dimensions
-
-        template <std::size_t Nd, typename Idx = IndexType> using TCoor = tarray<Idx, Nd>;
-#endif
+        /// Vector of dimension labels
+        template <typename Nd> using Order = array<char, Nd>;
 
         /// Vector of `IndexType`
         template <typename XPU> using Indices = vector<IndexType, XPU>;
@@ -131,136 +83,27 @@ namespace superbblas {
         /// Mask vector
         template <typename XPU> using Mask = vector<MaskType, XPU>;
 
-        //
-        // Auxiliary functions
-        //
-
-        template <typename T, std::size_t Na, std::size_t Nb,
-                  typename std::enable_if<Na != Nb, bool>::type = true>
-        bool operator==(const std::array<T, Na> &, const std::array<T, Nb> &) {
-            return false;
-        }
-
-        template <typename T, std::size_t N>
-        std::array<T, N> operator-(const std::array<T, N> &a, const std::array<T, N> &b) {
-            std::array<T, N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = a[i] - b[i];
-            return r;
-        }
-
-        template <typename T, std::size_t N>
-        std::array<T, N> operator/(const std::array<T, N> &a, const std::array<T, N> &b) {
-            std::array<T, N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = a[i] / b[i];
-            return r;
-        }
-
-        template <typename T, std::size_t N>
-        bool all_less_or_equal(const std::array<T, N> &a, const std::array<T, N> &b) {
-            for (std::size_t i = 0; i < N; i++)
-                if (a[i] > b[i]) return false;
-            return true;
-        }
-
-        template <typename T, std::size_t N>
-        std::array<T, N> min_each(const std::array<T, N> &a, const std::array<T, N> &b) {
-            std::array<T, N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = std::min(a[i], b[i]);
-            return r;
-        }
-
-        template <typename T, std::size_t N>
-        std::array<T, N> max_each(const std::array<T, N> &a, const std::array<T, N> &b) {
-            std::array<T, N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = std::max(a[i], b[i]);
-            return r;
-        }
-
-        template <typename T, std::size_t N> std::array<T, N> reverse(const std::array<T, N> v) {
-            std::array<T, N> r = v;
-            std::reverse(r.begin(), r.end());
-            return r;
-        }
-
-#ifdef SUPERBBLAS_USE_THRUST
-        struct ns_plus_aux {
-            template <std::size_t Nd, typename std::enable_if<(Nd > 1), bool>::type = true>
-            static __HOST__ __DEVICE__ inline TCoor<Nd> plus_aux(const TCoor<Nd> &a,
-                                                                 const TCoor<Nd> &b) {
-                return {plus_aux(a.left, b.left), plus_aux(a.right, b.right)};
-            }
-
-            template <std::size_t Nd, typename std::enable_if<(Nd == 1), bool>::type = true>
-            static __HOST__ __DEVICE__ inline TCoor<Nd> plus_aux(const TCoor<Nd> &a,
-                                                                 const TCoor<Nd> &b) {
-                return {a.leaf + b.leaf};
-            }
-        };
-
-        /// Add two arrays
-        /// \param a: first array to add
-        /// \param b: second array to add
-
-        template <std::size_t Nd>
-        __HOST__ __DEVICE__ inline TCoor<Nd> tplus(TCoor<Nd> a, TCoor<Nd> b) {
-            return ns_plus_aux::plus_aux(a, b);
-        }
-
-        struct ns_toTCoor_aux {
-            template <std::size_t I, std::size_t Nr, std::size_t N, typename IndexType,
-                      typename std::enable_if<(I < N && 1 < Nr), bool>::type = true>
-            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<N, IndexType> &a) {
-                const auto sl = TCoor<Nr, IndexType>::size_left;
-                const auto sr = TCoor<Nr, IndexType>::size_right;
-                return {toTCoor_aux<I, sl>(a), toTCoor_aux<I + sl, sr>(a)};
-            }
-
-            template <std::size_t I, std::size_t Nr, std::size_t N, typename IndexType,
-                      typename std::enable_if<(I < N && 1 == Nr), bool>::type = true>
-            static inline TCoor<Nr, IndexType> toTCoor_aux(const Coor<N, IndexType> &a) {
-                return {a[I]};
-            }
-        };
-
-        /// Convert from Coor to TCoor
-        /// \param a: input coordinate
-
-        template <std::size_t Nd, typename IndexType>
-        inline TCoor<Nd, IndexType> toTCoor(const Coor<Nd, IndexType> &a) {
-            return ns_toTCoor_aux::toTCoor_aux<0, Nd>(a);
-        }
-#endif
-
         /// Return whether the point is in the interval
         /// \param from: first coordinate in the interval
         /// \param size: number of consecutive elements in the interval in each direction
         /// \param dim: tensor dimensions
         /// \param coor: coordinate to evaluate whether it is in the interval
 
-        template <std::size_t N, typename IndexType>
-        bool is_in_interval(const Coor<N, IndexType> &from, const Coor<N, IndexType> &size,
-                            const Coor<N, IndexType> &dim, const Coor<N, IndexType> &coor) {
-            for (std::size_t i = 0; i < N; i++)
+        template <typename Coor>
+        bool is_in_interval(const Coor &from, const Coor &size, const Coor &dim, const Coor &coor) {
+            for (unsigned int i = 0, n = from.size(); i < n; i++)
                 if (!((from[i] <= coor[i] && coor[i] < from[i] + size[i]) ||
                       (from[i] <= coor[i] + dim[i] && coor[i] + dim[i] < from[i] + size[i])))
                     return false;
             return true;
         }
 
-        /// Return an array from a string
+        /// Return an array from a null-terminated string
         /// \param v: input string
         /// \param name: name of the variable
 
-        template <std::size_t Nd, typename T>
-        std::array<T, Nd> toArray(const T *v, const char *name) {
-            if ((v == nullptr && Nd > 0) || std::strlen(v) != Nd) {
-                std::stringstream ss;
-                ss << "The length of the order should match the template argument; argument `"
-                   << name << "` should have length " << Nd;
-                throw std::runtime_error(ss.str());
-            }
-            std::array<T, Nd> r;
-            std::copy_n(v, Nd, r.begin());
+        template <typename Nd, typename T> array<T, Nd> toArray(const T *v) {
+            array<T, Nd> r = array<T, Nd>((T *)v);
             return r;
         }
 
@@ -268,10 +111,10 @@ namespace superbblas {
         /// \param dim: lattice dimension
         /// \param co: coordinate linearization order
 
-        template <typename SIdx, std::size_t Nd, typename CIdx>
-        Coor<Nd, SIdx> get_strides(const Coor<Nd, CIdx> dim, CoorOrder co) {
+        template <typename SIdx, typename Nd, typename CIdx>
+        Coor<Nd, SIdx> get_strides(const Coor<Nd, CIdx> &dim, CoorOrder co) {
             Coor<Nd, SIdx> p;
-            if (Nd > 0) {
+            if (p.size() > 0) {
                 if (co == SlowToFast) {
                     // p(i) = prod(dim(end:-1:i))
                     p.back() = 1;
@@ -279,7 +122,7 @@ namespace superbblas {
                 } else {
                     // p(i) = prod(dim(1:i))
                     p[0] = 1;
-                    for (std::size_t i = 1; i < Nd; ++i) p[i] = p[i - 1] * dim[i - 1];
+                    for (std::size_t i = 1; i < p.size(); ++i) p[i] = p[i - 1] * dim[i - 1];
                 }
             }
             return p;
@@ -290,11 +133,11 @@ namespace superbblas {
         /// \param dim: lattice dimensions
         /// \param stride: jump to get to the next coordinate in each dimension
 
-        template <std::size_t Nd, typename CIdx, typename SIdx>
+        template <typename Nd, typename CIdx, typename SIdx>
         SIdx coor2index(const Coor<Nd, CIdx> &coor, const Coor<Nd, CIdx> &dim,
                         const Coor<Nd, SIdx> &stride) {
             IndexType r = 0;
-            for (std::size_t j = 0; j < Nd; j++) r += (coor[j] % dim[j]) * stride[j];
+            for (std::size_t j = 0; j < coor.size(); j++) r += (coor[j] % dim[j]) * stride[j];
             return r;
         }
 
@@ -320,11 +163,11 @@ namespace superbblas {
         /// \param dim: lattice dimensions
         /// \param stride: jump to get to the next coordinate in each dimension
 
-        template <std::size_t Nd, typename CIdx, typename SIdx>
+        template <typename Nd, typename CIdx, typename SIdx>
         inline Coor<Nd, CIdx> index2coor(const SIdx &index, const Coor<Nd, CIdx> &dim,
                                          const Coor<Nd, SIdx> &stride) {
             Coor<Nd, CIdx> r;
-            for (std::size_t j = 0; j < Nd; j++) r[j] = (index / stride[j]) % (SIdx)dim[j];
+            for (std::size_t j = 0; j < dim.size(); j++) r[j] = (index / stride[j]) % (SIdx)dim[j];
             return r;
         }
 
@@ -358,17 +201,39 @@ namespace superbblas {
         ///
         /// Return whether all label dimension are distinct
 
-        template <typename Vector> bool check_order(const Vector &order) {
+        template <typename Nd> bool check_order(const Order<Nd> &order) {
             for (std::size_t i = 0; i < order.size(); ++i)
                 if (std::find(order.begin() + i + 1, order.end(), order[i]) != order.end())
                     return false;
             return true;
         }
 
+        /// Check all dimension labels are distinct
+        /// \param order: dimension labels
+        ///
+        /// Return whether all label dimension are distinct
+
+        void check_order(const char *order, const char *arg_name) {
+            bool valid = true;
+            if (order == nullptr) {
+                valid = false;
+            } else {
+		struct N {};
+		array_size<N>() = std::strlen(order);
+		valid = check_order(Order<N>(order));
+            }
+            if (!valid) {
+                std::stringstream ss;
+                ss << "error in argument `" << arg_name
+                   << "`: the order shouldn't be a null pointer or have repeated letters";
+                throw std::runtime_error(ss.str());
+            }
+        }
+
         /// Return the number of vertices in a lattice
         /// \param dim: lattice dimensions
 
-        template <std::size_t Nd> std::size_t volume(const Coor<Nd> &dim) {
+        template <typename Nd> std::size_t volume(const Coor<Nd> &dim) {
             if (dim.size() <= 0) return 0;
 
             std::size_t vol = dim[0];
@@ -382,7 +247,7 @@ namespace superbblas {
         /// \param starts_with: the first label of the sublattice
         /// \param size: number of consecutive dimension of the sublattice
 
-        template <std::size_t Nd>
+        template <typename Nd>
         std::size_t volume(typename Coor<Nd>::const_iterator begin,
                            typename Coor<Nd>::const_iterator end) {
             if (begin == end) return 0;
@@ -403,10 +268,11 @@ namespace superbblas {
         ///
         /// NOTE: the output array will have zero on negative elements of `perm`.
 
-        template <std::size_t Nd0, std::size_t Nd1>
+        template <typename Nd0, typename Nd1>
         Coor<Nd1> reorder_coor(const Coor<Nd0> &coor, const Coor<Nd1> &perm, IndexType blanck = 0) {
             Coor<Nd1> r;
-            for (std::size_t i = 0; i < Nd1; ++i) r[i] = perm[i] >= 0 ? coor[perm[i]] : blanck;
+            for (std::size_t i = 0; i < perm.size(); ++i)
+                r[i] = perm[i] >= 0 ? coor[perm[i]] : blanck;
             return r;
         }
 
@@ -443,8 +309,8 @@ namespace superbblas {
         /// Return whether all labels with dimension size greater than one in o0 are also in o1 and
         /// and the dimension of the first is smaller or equal than the second
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        bool is_a_subset_of(Order<Nd0> o0, Coor<Nd0> dim0, Order<Nd1> o1) {
+        template <typename Nd0, typename Nd1>
+        bool is_a_subset_of(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1) {
             for (std::size_t i = 0; i < o0.size(); ++i)
                 if (dim0[i] > 1 && std::find(o1.begin(), o1.end(), o0[i]) == o1.end()) return false;
             return true;
@@ -456,10 +322,10 @@ namespace superbblas {
         ///
         /// NOTE: the permutation can be used in function `reorder_coor`.
 
-        template <std::size_t Nd0, std::size_t Nd1>
+        template <typename Nd0, typename Nd1>
         Coor<Nd1> find_permutation(const Order<Nd0> &o0, const Order<Nd1> &o1) {
             Coor<Nd1> r;
-            for (std::size_t i = 0; i < Nd1; ++i) {
+            for (std::size_t i = 0; i < o1.size(); ++i) {
                 const auto j = std::find(o0.begin(), o0.end(), o1[i]);
                 r[i] = (j != o0.end() ? j - o0.begin() : -1);
             }
@@ -469,7 +335,7 @@ namespace superbblas {
         /// Check that all values are positive
         /// \param from: coordinates to check
 
-        template <std::size_t Nd> bool check_positive(const Coor<Nd> &from) {
+        template <typename Nd> bool check_positive(const Coor<Nd> &from) {
             return all_less_or_equal({}, from);
         }
 
@@ -481,7 +347,7 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param dim1: dimension size for the destination tensor
 
-        template <std::size_t Nd0, std::size_t Nd1>
+        template <typename Nd0, typename Nd1>
         bool check_isomorphic(const Order<Nd0> &o0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                               const Order<Nd1> &o1, const Coor<Nd1> dim1) {
 
@@ -521,6 +387,15 @@ namespace superbblas {
             static std::size_t hash(std::array<T, N> const &t) noexcept {
                 std::size_t r = 12345;
                 for (std::size_t i = 0; i < N; ++i) r = r ^ Hash<T>::hash(t[i]);
+                return r;
+            }
+        };
+
+        /// Extend hash to array
+        template <typename T, typename N> struct Hash<array<T, N>> {
+            static std::size_t hash(array<T, N> const &t) noexcept {
+                std::size_t r = 12345;
+                for (std::size_t i = 0, n = t.size(); i < n; ++i) r = r ^ Hash<T>::hash(t[i]);
                 return r;
             }
         };
@@ -592,12 +467,12 @@ namespace superbblas {
         }
 
         /// Check that all dimensions with the same label has the same size
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        template <typename Nd0, typename Nd1, typename Ndo>
         bool check_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
                               const Coor<Nd1> &dim1, const Order<Ndo> &o_r, const Coor<Ndo> &dimr) {
             std::map<char, IndexType> m;
-            for (std::size_t i = 0; i < Nd0; ++i) m[o0[i]] = dim0[i];
-            for (std::size_t i = 0; i < Nd1; ++i) {
+            for (std::size_t i = 0; i < o0.size(); ++i) m[o0[i]] = dim0[i];
+            for (std::size_t i = 0; i < o1.size(); ++i) {
                 auto it = m.find(o1[i]);
                 if (it != m.end()) {
                     if (it->second != dim1[i]) return false;
@@ -605,7 +480,7 @@ namespace superbblas {
                     m[o1[i]] = dim1[i];
                 }
             }
-            for (std::size_t i = 0; i < Ndo; ++i) {
+            for (std::size_t i = 0; i < o_r.size(); ++i) {
                 auto it = m.find(o_r[i]);
                 if (it != m.end()) {
                     if (it->second != dimr[i]) return false;
@@ -643,9 +518,10 @@ namespace superbblas {
         /// the first tensor element (`new_disp0` and `new_disp`) and the `strides`. We only need to consider the
         /// common dimensions between the origin and the destination tensors in the strides. The other dimensions
         /// are captured by the initial displacements, `new_disp0` and `new_disp`.
+        ///
+        /// Note that Nd has to be set to the minimum of Nd0 and Nd1
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1,
-                  std::size_t Nd = std::min(Nd0, Nd1)>
+        template <typename IndexType, typename Nd0, typename Nd1, typename Nd>
         void copy_normalize(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
                             const Coor<Nd1> &dim1, CoorOrder co,
@@ -654,6 +530,8 @@ namespace superbblas {
                             Coor<Nd> &new_dim0, Coor<Nd, IndexType> &new_strides0,
                             IndexType &new_disp1, Coor<Nd> &new_from1, Coor<Nd> &new_dim1,
                             Coor<Nd, IndexType> &new_strides1, std::size_t &nblock) {
+
+            assert(new_from0.size() == std::min(o0.size(), o1.size()));
 
             // Normalize to FastToSlow
             if (co == SlowToFast) {
@@ -680,7 +558,7 @@ namespace superbblas {
             IndexType stride1 = 1;
             new_disp1 = 0;
             std::size_t i = 0;
-            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+            for (std::size_t i1 = 0; i1 < o1.size(); ++i1) {
                 if (size1[i1] > 1) {
                     if (from1[i1] + size1[i1] <= dim1[i1]) {
                         new_from1[i] = 0;
@@ -697,7 +575,7 @@ namespace superbblas {
                 }
                 stride1 *= dim1[i1];
             }
-            for (; i < Nd; ++i) {
+            for (; i < new_from1.size(); ++i) {
                 new_from1[i] = 0;
                 new_size[i] = 1;
                 new_dim1[i] = 1;
@@ -709,7 +587,7 @@ namespace superbblas {
             Coor<Nd0, IndexType> strides0 = get_strides<IndexType>(dim0, FastToSlow);
             i = 0;
             new_disp0 = 0;
-            for (std::size_t i1 = 0; i1 < Nd1; ++i1) {
+            for (std::size_t i1 = 0; i1 < perm0.size(); ++i1) {
                 if (perm0[i1] < 0) continue;
                 superbblas::IndexType i0 = perm0[i1];
                 if (size0[i0] > 1) {
@@ -724,18 +602,18 @@ namespace superbblas {
                     ++i;
                 }
             }
-            for (; i < Nd; ++i) {
+            for (; i < new_from0.size(); ++i) {
                 new_from0[i] = 0;
                 new_dim0[i] = 1;
                 new_strides0[i] = (i > 0 ? new_strides0[i - 1] : 1);
             }
 
-            for (std::size_t i0 = 0; i0 < Nd0; ++i0)
+            for (std::size_t i0 = 0; i0 < size0.size(); ++i0)
                 if (size0[i0] == 1) new_disp0 += from0[i0] * strides0[i0];
 
             nblock = 0;
             IndexType strides = 1;
-            for (std::size_t i = 0; i < Nd; ++i) {
+            for (std::size_t i = 0; i < new_from0.size(); ++i) {
                 if (new_from0[i] != 0 || new_from1[i] != 0 || strides != new_strides0[i] ||
                     strides != new_strides1[i] || new_size[i] != new_dim0[i] ||
                     new_size[i] != new_dim1[i])
@@ -758,7 +636,7 @@ namespace superbblas {
         /// \param strides: strides
         /// \param cpu: device context for the returned vector
 
-        template <typename IndexType, std::size_t Nd>
+        template <typename IndexType, typename Nd>
         IndicesT<IndexType, Cpu> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
                                                  const Coor<Nd> &dim,
                                                  const Coor<Nd, IndexType> &strides, Cpu cpu) {
@@ -855,7 +733,7 @@ namespace superbblas {
         /// \param implicitPermutation: whether to return a null pointer instead of the trivial permutation
         /// \param xpu: device context for the returned vector
 
-        template <typename IndexType, std::size_t Nd, typename XPU>
+        template <typename IndexType, typename Nd, typename XPU>
         IndicesT<IndexType, XPU> get_permutation(const Coor<Nd> &from, const Coor<Nd> &size,
                                                  const Coor<Nd> &dim,
                                                  const Coor<Nd, IndexType> &strides,
@@ -876,7 +754,7 @@ namespace superbblas {
             Coor<Nd, IndexType> dim_strides = get_strides<IndexType>(dim, FastToSlow);
             if (implicitPermutation == AllowImplicitPermutation) {
                 bool fail = true;
-                for (std::size_t i = 0; i < Nd; ++i)
+                for (std::size_t i = 0; i < from.size(); ++i)
                     fail |= (from[i] != 0 || (size[i] > 1 && dim_strides[i] != strides[i]));
                 if (!fail) return IndicesT<IndexType, XPU>(vol, nullptr, xpu);
             }
@@ -914,7 +792,7 @@ namespace superbblas {
         /// \param mask1: mask for the destination tensor (ignored)
         /// \param ewop: either to copy or to add the origin values into the destination values
 
-        template <typename IndexType, std::size_t Nd, typename T, typename Q, typename XPU0,
+        template <typename IndexType, typename Nd, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOP>
         void local_copy_normalize(typename elem<T>::type alpha, IndexType disp0,
                                   const Coor<Nd> &from0, const Coor<Nd> &size, const Coor<Nd> &dim0,
@@ -993,7 +871,7 @@ namespace superbblas {
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+        template <typename IndexType, typename Nd0, typename Nd1, typename T, typename Q,
                   typename XPU0, typename XPU1, typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
@@ -1013,7 +891,8 @@ namespace superbblas {
             }
 
             // Canonize the copy operation
-            constexpr std::size_t Nd = std::min(Nd0, Nd1);
+            struct Nd {};
+            array_size<Nd>() = std::min(array_size<Nd0>(), array_size<Nd1>());
             IndexType new_disp0, new_disp1;
             std::size_t nblock;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
@@ -1046,8 +925,8 @@ namespace superbblas {
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1, typename EWOP>
+        template <typename Nd0, typename Nd1, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename EWOP>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
                         Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -1075,19 +954,18 @@ namespace superbblas {
         /// \param xpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
+        template <typename IndexType, typename Nd0, typename Nd1, typename XPU>
         std::pair<IndicesT<IndexType, XPU>, IndexType>
         get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                                const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
                                const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation,
                                XPU xpu, CoorOrder co) {
-            (void)from1;
-            (void)dim1;
 
             tracker<XPU> _t("compute permutations (origin)", xpu);
 
             // Canonize the copy operation
-            constexpr std::size_t Nd = std::min(Nd0, Nd1);
+            struct Nd {};
+            array_size<Nd>() = std::min(array_size<Nd0>(), array_size<Nd1>());
             std::size_t nblock;
             IndexType new_disp0, new_disp1;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
@@ -1113,19 +991,17 @@ namespace superbblas {
         /// \param cpu: device context for the returned vector
         /// \param co: coordinate linearization order
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
+        template <typename IndexType, typename Nd0, typename Nd1, typename XPU>
         std::pair<IndicesT<IndexType, XPU>, IndexType> get_permutation_destination(
             const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
             const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
             const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation, XPU xpu, CoorOrder co) {
 
-            (void)from0;
-            (void)dim0;
-
             tracker<XPU> _t("compute permutations (destination)", xpu);
 
             // Canonize the copy operation
-            constexpr std::size_t Nd = std::min(Nd0, Nd1);
+            struct Nd {};
+            array_size<Nd>() = std::min(array_size<Nd0>(), array_size<Nd1>());
             IndexType new_disp0, new_disp1;
             std::size_t nblock;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
@@ -1155,7 +1031,7 @@ namespace superbblas {
         /// \param swap_operands: (out) suggest to swap the first and the second operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        template <typename Nd0, typename Nd1, typename Ndo>
         void suggested_orders_for_contraction(
             const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0, const Order<Nd1> &o1,
             const Coor<Nd1> &dim1, bool conj1, const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
@@ -1166,9 +1042,6 @@ namespace superbblas {
             unsigned int &posCr, CoorOrder co) {
 
             // TODO: not consider dimensions with a single element
-            (void)dim0;
-            (void)dim1;
-            (void)dimr;
 
             // The rest of the code is for SlowToFast; so reverse if that is the case
             if (co == FastToSlow) {
@@ -1300,7 +1173,7 @@ namespace superbblas {
         /// \param swap_operands: (out) suggest to swap the first and the second operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        template <typename Nd0, typename Nd1, typename Ndo>
         void
         suggested_orders_for_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
                                          const Order<Nd1> &o1, const Coor<Nd1> &dim1, bool conj1,
@@ -1331,7 +1204,7 @@ namespace superbblas {
         /// \param vr: data for the second operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
+        template <typename Nd0, typename Nd1, typename Ndo, typename T, typename XPU>
         void local_contraction(T alpha, const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
                                vector<const T, XPU> v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
@@ -1384,9 +1257,9 @@ namespace superbblas {
                     if (sug_o0 != o0) {
                         sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
                         vector<T, XPU> sug_v0_(v0.size(), v0.ctx());
-                        local_copy<Nd0, Nd0>(T{1}, o0, {{}}, dim0, dim0, v0, Mask<XPU>{}, sug_o0,
-                                             {{}}, sug_dim0, sug_v0_, Mask<XPU>{}, EWOp::Copy{},
-                                             SlowToFast);
+                        local_copy<Nd0, Nd0, T, T, XPU, XPU>(
+                            T{1}, o0, Coor<Nd0>{}, dim0, dim0, v0, Mask<XPU>{}, sug_o0, Coor<Nd0>{},
+                            sug_dim0, sug_v0_, Mask<XPU>{}, EWOp::Copy{}, SlowToFast);
                         sug_v0 = sug_v0_;
                     }
 
@@ -1395,9 +1268,9 @@ namespace superbblas {
                     if (sug_o1 != o1) {
                         sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
                         vector<T, XPU> sug_v1_(v1.size(), v1.ctx());
-                        local_copy<Nd1, Nd1>(T{1}, o1, {{}}, dim1, dim1, v1, Mask<XPU>{}, sug_o1,
-                                             {{}}, sug_dim1, sug_v1_, Mask<XPU>{}, EWOp::Copy{},
-                                             SlowToFast);
+                        local_copy<Nd1, Nd1, T, T, XPU, XPU>(
+                            T{1}, o1, Coor<Nd1>{}, dim1, dim1, v1, Mask<XPU>{}, sug_o1, Coor<Nd1>{},
+                            sug_dim1, sug_v1_, Mask<XPU>{}, EWOp::Copy{}, SlowToFast);
                         sug_v1 = sug_v1_;
                     }
 
@@ -1407,10 +1280,10 @@ namespace superbblas {
                         sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
                         sug_vr = vector<T, XPU>(vr.size(), vr.ctx());
                         if (std::fabs(beta) != 0)
-                            local_copy<Ndo, Ndo, T, T>(T{1}, o_r, {{}}, dimr, dimr,
-                                                       vector<const T, XPU>(vr), Mask<XPU>{},
-                                                       sug_or, {{}}, sug_dimr, sug_vr, Mask<XPU>{},
-                                                       EWOp::Copy{}, SlowToFast);
+                            local_copy<Ndo, Ndo, T, T, XPU, XPU>(
+                                T{1}, o_r, Coor<Ndo>{}, dimr, dimr, vector<const T, XPU>(vr),
+                                Mask<XPU>{}, sug_or, Coor<Ndo>{}, sug_dimr, sug_vr, Mask<XPU>{},
+                                EWOp::Copy{}, SlowToFast);
                     }
 
                     local_contraction<Nd0, Nd1, Ndo, T, XPU>(alpha, sug_o0, sug_dim0, conj0, sug_v0,
@@ -1418,9 +1291,10 @@ namespace superbblas {
                                                              sug_or, sug_dimr, sug_vr, SlowToFast);
 
                     if (sug_or != o_r)
-                        local_copy<Ndo, Ndo>(T{1}, sug_or, {{}}, sug_dimr, sug_dimr,
-                                             vector<const T, XPU>(sug_vr), Mask<XPU>{}, o_r, {{}},
-                                             dimr, vr, Mask<XPU>{}, EWOp::Copy{}, SlowToFast);
+                        local_copy<Ndo, Ndo, T, T, XPU, XPU>(
+                            T{1}, sug_or, Coor<Ndo>{}, sug_dimr, sug_dimr,
+                            vector<const T, XPU>(sug_vr), Mask<XPU>{}, o_r, Coor<Ndo>{}, dimr, vr,
+                            Mask<XPU>{}, EWOp::Copy{}, SlowToFast);
                     return;
                 }
             }
@@ -1474,17 +1348,17 @@ namespace superbblas {
 
             // Check whether each order starts with T
             bool o0_starts_with_T = (volT <= 1);
-            for (unsigned int i = 0; i < Nd0; ++i) {
+            for (unsigned int i = 0; i < dim0.size(); ++i) {
                 if (i == posT0) o0_starts_with_T = true;
                 if (dim0[i] > 1) break;
             }
             bool o1_starts_with_T = (volT <= 1);
-            for (unsigned int i = 0; i < Nd1; ++i) {
+            for (unsigned int i = 0; i < dim1.size(); ++i) {
                 if (i == posT1) o1_starts_with_T = true;
                 if (dim1[i] > 1) break;
             }
             bool or_starts_with_T = (volT <= 1);
-            for (unsigned int i = 0; i < Ndo; ++i) {
+            for (unsigned int i = 0; i < dimr.size(); ++i) {
                 if (i == posTr) or_starts_with_T = true;
                 if (dimr[i] > 1) break;
             }
@@ -1559,8 +1433,7 @@ namespace superbblas {
         /// \param copyadd: either to copy or to add the origin values into the destination tensor
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
-                  typename XPU1>
+        template <typename Nd0, typename Nd1, typename T, typename Q, typename XPU0, typename XPU1>
         void local_copy(typename elem<T>::type alpha, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
                         Mask<XPU0> mask0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
@@ -1598,59 +1471,75 @@ namespace superbblas {
     /// \param copyadd: either copy or add the origin value to the destination values
     /// \param session: concurrent calls should have different session
 
-    template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void local_copy(typename elem<T>::type alpha, const char *o0, const Coor<Nd0> &from0,
-                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0,
-                    const MaskType *mask0, const Context ctx0, const char *o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, const MaskType *mask1,
-                    const Context ctx1, CoorOrder co, CopyAdd copyadd, Session session = 0) {
+    template <typename T, typename Q>
+    void local_copy(typename elem<T>::type alpha, const char *o0, const int *from0,
+                    const int *size0, const int *dim0, const T *v0, const MaskType *mask0,
+                    const Context ctx0, const char *o1, const int *from1, const int *dim1, Q *v1,
+                    const MaskType *mask1, const Context ctx1, CoorOrder co, CopyAdd copyadd,
+                    Session session = 0) {
 
-        const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
-        const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
+        // Check the orders
+        detail::check_order(o0, "o0");
+        detail::check_order(o1, "o1");
+
+        // Create coordinate dimensions
+        struct Nd0 {};
+        detail::array_size<Nd0>() = std::strlen(o0);
+        struct Nd1 {};
+        detail::array_size<Nd1>() = std::strlen(o1);
+
+        // Get all coordinates and orders
+        const detail::Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
+        const detail::Coor<Nd0> from0_ = detail::toArray<Nd0>(from0);
+        const detail::Coor<Nd0> size0_ = detail::toArray<Nd0>(size0);
+        const detail::Coor<Nd0> dim0_ = detail::toArray<Nd0>(dim0);
+        const detail::Order<Nd1> o1_ = detail::toArray<Nd1>(o1);
+        const detail::Coor<Nd1> from1_ = detail::toArray<Nd1>(from1);
+        const detail::Coor<Nd1> dim1_ = detail::toArray<Nd1>(dim1);
 
         // Check the validity of the operation
-        if (!detail::check_positive<Nd0>(from0))
+        if (!detail::check_positive<Nd0>(from0_))
             throw std::runtime_error("All values in `from0` should be non-negative");
 
-        if (!detail::check_positive<Nd0>(size0))
+        if (!detail::check_positive<Nd0>(size0_))
             throw std::runtime_error("All values in `size0` should be non-negative");
 
-        if (!detail::check_positive<Nd1>(from1))
+        if (!detail::check_positive<Nd1>(from1_))
             throw std::runtime_error("All values in `from1` should be non-negative");
 
-        if (!detail::check_isomorphic<Nd0, Nd1>(o0_, size0, dim0, o1_, dim1))
+        if (!detail::check_isomorphic<Nd0, Nd1>(o0_, size0_, dim0_, o1_, dim1_))
             throw std::runtime_error("The orders and dimensions of the origin tensor are not "
                                      "compatible with the destination tensor");
 
-        std::size_t vol0 = detail::volume(dim0);
-        std::size_t vol1 = detail::volume(dim1);
+        std::size_t vol0 = detail::volume(dim0_);
+        std::size_t vol1 = detail::volume(dim1_);
         std::size_t volmask0 = mask0 ? vol0 : 0;
         std::size_t volmask1 = mask1 ? vol1 : 0;
 
         // Do the operation
         if (ctx0.plat == CPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)),
+                alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
+                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1_,
+                dim1_, detail::to_vector(v1, detail::volume(dim1_), ctx1.toCpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
         }
 #ifdef SUPERBBLAS_USE_GPU
         else if (ctx0.plat == CPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
+                alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
                 detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
                 dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == CPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
+                alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
                 detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
                 dim1, detail::to_vector(v1, vol1, ctx1.toCpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
         } else if (ctx0.plat == GPU && ctx1.plat == GPU) {
             detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
+                alpha, o0_, from0_, size0_, dim0_, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
                 detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
                 dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
                 detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
@@ -1678,31 +1567,46 @@ namespace superbblas {
     /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
     /// \param session: concurrent calls should have different session
 
-    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void local_contraction(T alpha, const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
-                           const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1, T beta,
-                           const char *o_r, const Coor<Ndo> &dimr, T *vr, const Context ctx,
-                           CoorOrder co, Session session = 0) {
+    template <typename T>
+    void local_contraction(T alpha, const int *dim0, const char *o0, bool conj0, const T *v0,
+                           const Context ctx0, const int *dim1, const char *o1, bool conj1,
+                           const T *v1, const Context ctx1, T beta, const int *dimr,
+                           const char *o_r, T *vr, const Context ctxr, CoorOrder co,
+                           Session session = 0) {
 
-        Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
-        Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
-        Order<Ndo> o_r_ = detail::toArray<Ndo>(o_r, "o_r");
+        struct Nd0 {};
+        detail::array_size<Nd0>() = std::strlen(o0);
+        struct Nd1 {};
+        detail::array_size<Nd1>() = std::strlen(o1);
+        struct Ndo {};
+        detail::array_size<Ndo>() = std::strlen(o_r);
 
-        switch (ctx.plat) {
+        detail::Order<Nd0> o0_ = detail::toArray<Nd0>(o0);
+        const detail::Coor<Nd0> dim0_ = detail::toArray<Nd0>(dim0);
+        detail::Order<Nd1> o1_ = detail::toArray<Nd1>(o1);
+        const detail::Coor<Nd1> dim1_ = detail::toArray<Nd1>(dim1);
+        detail::Order<Ndo> o_r_ = detail::toArray<Ndo>(o_r);
+        const detail::Coor<Ndo> dimr_ = detail::toArray<Ndo>(dimr);
+
+        if (ctx0.plat != ctx1.plat || ctx0.plat != ctxr.plat)
+            throw std::runtime_error("Unsupported contraction of tensors from different platform");
+
+        switch (ctx0.plat) {
         case CPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0,
-                detail::to_vector(v0, detail::volume(dim0), ctx.toCpu(session)), o1_, dim1, conj1,
-                detail::to_vector(v1, detail::volume(dim1), ctx.toCpu(session)), beta, o_r_, dimr,
-                detail::to_vector(vr, detail::volume(dimr), ctx.toCpu(session)), co);
+                alpha, o0_, dim0_, conj0,
+                detail::to_vector(v0, detail::volume(dim0_), ctx0.toCpu(session)), o1_, dim1_,
+                conj1, detail::to_vector(v1, detail::volume(dim1_), ctx1.toCpu(session)), beta,
+                o_r_, dimr_, detail::to_vector(vr, detail::volume(dimr_), ctxr.toCpu(session)), co);
             break;
 #ifdef SUPERBBLAS_USE_GPU
         case GPU:
             detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0,
-                detail::to_vector(v0, detail::volume(dim0), ctx.toGpu(session)), o1_, dim1, conj1,
-                detail::to_vector(v1, detail::volume(dim1), ctx.toGpu(session)), beta, o_r_, dimr,
-                detail::to_vector(vr, detail::volume(dimr), ctx.toGpu(session)), co);
+                alpha, o0_, dim0_, conj0,
+                detail::to_vector(v0, detail::volume(dim0_), ctx0.toGpu(session)), o1_, dim1_,
+                conj1, detail::to_vector(v1, detail::volume(dim1_), ctx1.toGpu(session)), beta,
+                o_r_, dimr_, detail::to_vector(vr, detail::volume(dimr_), ctxr.rtoGpu(session)),
+                co);
             break;
 #endif
         default: throw std::runtime_error("Unsupported platform");
