@@ -807,9 +807,9 @@ namespace superbblas {
             if (volume(sizeb) == 1 && mask0.size() == 0) {
                 IndexType extra_disp0 = coor2index(from0, dim0, strides0);
                 IndexType extra_disp1 = coor2index(from1, dim1, strides1);
-                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0 + extra_disp0, v0.ctx(),
-                                        volume(size), v1.data() + disp1 + extra_disp1, v1.ctx(),
-                                        ewop);
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0 + extra_disp0, nullptr, v0.ctx(),
+                                        volume(size), v1.data() + disp1 + extra_disp1, nullptr,
+                                        v1.ctx(), ewop);
                 return;
             }
 
@@ -882,8 +882,8 @@ namespace superbblas {
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() &&
                 mask0.size() == 0 && o0 == o1 && from0 == Coor<Nd0>{{}} && from1 == Coor<Nd1>{{}} &&
                 size0 == dim0 && dim0 == dim1 && std::is_same<EWOP, detail::EWOp::Copy>::value) {
-                copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
-                                        v1.ctx(), ewop);
+                copy_n<IndexType, T, Q>(alpha, v0.data(), nullptr, v0.ctx(), volume(size0),
+                                        v1.data(), nullptr, v1.ctx(), ewop);
                 return;
             }
 

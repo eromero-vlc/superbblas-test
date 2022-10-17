@@ -20,6 +20,14 @@ OTHER_HEADERS := \
   ../include/superbblas/template_types.h \
   ../include/superbblas/template_undef.h \
   ../include/superbblas/tensor.h
+TESTS := \
+  ../tests/blas.cpp \
+  ../tests/bsr.cpp \
+  ../tests/contract.cpp \
+  ../tests/dense.cpp \
+  ../tests/dist.cpp \
+  ../tests/storage.cpp \
+  ../tests/storage_details.cpp
 
 SOURCE := $(MAIN_HEADER) $(OTHER_HEADERS)
 
@@ -135,7 +143,7 @@ ifeq ($(TARGET), hip)
 endif
 
 format:
-	clang-format -i ${MAIN_HEADER} ${OTHER_HEADERS}
+	clang-format -i ${MAIN_HEADER} ${OTHER_HEADERS} $(TESTS)
 
 clean:
 	rm -f $(BUILDDIR)/superbblas_flags.h $(BUILDDIR)/superbblas_lib.cpp $(BUILDDIR)/superbblas_lib.o $(LIBRARY)

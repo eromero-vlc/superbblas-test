@@ -1,7 +1,7 @@
 #include "superbblas.h"
-#include <vector>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 #ifdef _OPENMP
 #    include <omp.h>
 #endif
@@ -119,8 +119,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
 
     // Create tensor t0 of Nd dims: an input lattice color vector
     const Coor<Nd + 1> dim0 = {1,      dim[X], dim[Y], dim[Z],
-                               dim[T], dim[S], dim[C], dim[N]};                          // pxyztscn
-    const Coor<Nd + 1> procs0 = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1};    // pxyztscn
+                               dim[T], dim[S], dim[C], dim[N]};                       // pxyztscn
+    const Coor<Nd + 1> procs0 = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztscn
     PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
     const Coor<Nd + 1> local_size0 = p0[rank][1];
     std::size_t vol0 = detail::volume(local_size0);
@@ -231,11 +231,11 @@ int main(int argc, char **argv) {
                 std::cerr << "The power should greater than zero" << std::endl;
                 return -1;
             }
-         } else if(std::strncmp("--help", argv[i], 6) == 0) {
-             std::cout << "Commandline option:\n  " << argv[0]
-                       << " [--dim='x y z t n b'] [--procs='x y z t n b'] [--power=p] [--help]"
-                       << std::endl;
-             return 0;
+        } else if (std::strncmp("--help", argv[i], 6) == 0) {
+            std::cout << "Commandline option:\n  " << argv[0]
+                      << " [--dim='x y z t n b'] [--procs='x y z t n b'] [--power=p] [--help]"
+                      << std::endl;
+            return 0;
         } else {
             std::cerr << "Not sure what is this: `" << argv[i] << "`" << std::endl;
             return -1;

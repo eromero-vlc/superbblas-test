@@ -31,228 +31,208 @@
 namespace superbblas {
 
     namespace detail {
+        /// Replace std::complex by C complex
+        /// \tparam T: one of float, double, std::complex<T>
+        /// \return ccomplex<T>::type has the new type
+
+        template <typename T> struct ccomplex { using type = T; };
+        template <> struct ccomplex<std::complex<float>> { using type = _Complex float; };
+        template <> struct ccomplex<std::complex<double>> { using type = _Complex double; };
+
+        //template <typename T> struct ccomplex<const T> {
+        //    using type = const typename ccomplex<T>::type;
+        //};
+
+        /// Return whether the value is zero
+        /// \param v: value to test
+
+        template <typename T> bool is_zero(const T &v) { return std::norm(v) == 0; }
+        template <> inline bool is_zero<_Complex float>(const _Complex float &v) {
+            const float *v_ = (const float *)&v;
+            return std::abs(v_[0]) == 0 && std::abs(v_[1]) == 0;
+        }
+        template <> inline bool is_zero<_Complex double>(const _Complex double &v) {
+            const double *v_ = (const double *)&v;
+            return std::abs(v_[0]) == 0 && std::abs(v_[1]) == 0;
+        }
 
         ///
         /// Non-blocking copy on CPU
         ///
 
-        /// Copy n values, w[i] = v[i]
+        template <typename IndexType, typename T, typename Q, typename EWOP>
+        void copy_n(const typename elem<T>::type &alpha, const T *SB_RESTRICT v,
+                    const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
+                    const IndexType *SB_RESTRICT indicesw, Cpu, EWOP) {
 
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
-                    Q *SB_RESTRICT w, Cpu, EWOp::Copy) {
-            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
-            if (alpha == typename elem<T>::type{1}) {
-                if (std::is_same<T, Q>::value && (void *)v == (void *)w) return;
+            // Shortcut for empty copy
+            if (n == 0) return;
+
+            // Shortcut for itself copy
+            if (std::is_same<T, Q>::value && std::is_same<EWOP, EWOp::Copy>::value &&
+                alpha == typename elem<T>::type{1} && (void *)v == (void *)w &&
+                indicesv == indicesw)
+                return;
+
+            // Shortcut for zero addition
+            if (std::is_same<EWOP, EWOp::Add>::value && std::norm(alpha) == 0) return;
+
+            // Transform std::complex into C complex _Complex; std::complex exhibit some
+            // performance problems with clang++
+            using Tc = typename ccomplex<T>::type;
+            using Qc = typename ccomplex<Q>::type;
+            Tc alphac = *(Tc *)&alpha;
+
 #ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                for (IndexType i = 0; i < n; ++i) w[i] = v[i];
-            } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                for (IndexType i = 0; i < n; ++i) w[i] = T{0};
-            } else {
-                if (std::is_same<T, Q>::value && (void *)v == (void *)w) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] *= alpha;
-                } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] = alpha * v[i];
+            if (sizeof(Q) * n > 1024u * 1024u) {
+#    pragma omp parallel
+                {
+                    IndexType num_threads = omp_get_num_threads();
+                    IndexType i = omp_get_thread_num();
+                    IndexType ni = n / num_threads + (n % num_threads > i ? 1 : 0);
+                    IndexType si = n / num_threads * i + std::min(n % num_threads, i);
+                    Tc *vi = (Tc *)v + (indicesv == nullptr ? si : IndexType(0));
+                    const IndexType *indicesvi =
+                        indicesv + (indicesv != nullptr ? si : IndexType(0));
+                    Qc *wi = (Qc *)w + (indicesw == nullptr ? si : IndexType(0));
+                    const IndexType *indiceswi =
+                        indicesw + (indicesw != nullptr ? si : IndexType(0));
+
+                    copy_n_cpu(alphac, vi, indicesvi, Cpu{}, ni, wi, indiceswi, Cpu{}, EWOP{});
                 }
+            } else
+#endif
+            {
+                copy_n_cpu(alphac, (Tc *)v, indicesv, Cpu{}, n, (Qc *)w, indicesw, Cpu{}, EWOP{});
             }
         }
 
-        /// Copy n values, w[i] += v[i]
+#define COPY_N_VW_FOR(S)                                                                           \
+    for (IndexType i = 0; i < n; ++i) {                                                            \
+        IndexType vi = indicesv[i], wi = indicesw[i];                                              \
+        (void)vi;                                                                                  \
+        S;                                                                                         \
+    }
 
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
-                    Q *SB_RESTRICT w, Cpu, EWOp::Add) {
-            assert((n == 0 || (void *)v != (void *)w || std::is_same<T, Q>::value));
-            if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                for (IndexType i = 0; i < n; ++i) w[i] += v[i];
-            } else if (std::norm(alpha) == 0) {
-                // Do nothing
-            } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                for (IndexType i = 0; i < n; ++i) w[i] += alpha * v[i];
-            }
-        }
+#define COPY_N_W_FOR(S)                                                                            \
+    for (IndexType i = 0; i < n; ++i) {                                                            \
+        IndexType wi = indicesw[i];                                                                \
+        S;                                                                                         \
+    }
 
-        /// Copy n values, w[i] = v[indices[i]]
+#define COPY_N_V_FOR(S)                                                                            \
+    for (IndexType i = 0; i < n; ++i) {                                                            \
+        IndexType vi = indicesv[i];                                                                \
+        (void)vi;                                                                                  \
+        S;                                                                                         \
+    }
 
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                    const IndexType *SB_RESTRICT indices, Cpu, IndexType n, Q *SB_RESTRICT w, Cpu,
-                    EWOp::Copy) {
-            if (indices == nullptr) {
-                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
-            } else {
-                assert(n == 0 || (void *)v != (void *)w);
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] = v[indices[i]];
-                } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] = T{0};
-                } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] = alpha * v[indices[i]];
-                }
-            }
-        }
-
-        /// Copy n values, w[i] += v[indices[i]]
-
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                    const IndexType *SB_RESTRICT indices, Cpu, IndexType n, Q *SB_RESTRICT w, Cpu,
-                    EWOp::Add) {
-            if (indices == nullptr) {
-                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
-            } else {
-                assert(n == 0 || (void *)v != (void *)w);
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] += v[indices[i]];
-                } else if (alpha == typename elem<T>::type{1}) {
-                    // Do nothing
-                } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[i] += alpha * v[indices[i]];
-                }
-            }
-        }
-
-        /// Copy n values, w[indices[i]] = v[i]
-
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
-                    Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indices, Cpu, EWOp::Copy) {
-            if (indices == nullptr) {
-                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
-            } else {
-                assert(n == 0 || (void *)v != (void *)w);
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indices[i]] = v[i];
-                } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indices[i]] = T{0};
-                } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indices[i]] = alpha * v[i];
-                }
-            }
-        }
-
-        /// Copy n values, w[indices[i]] += v[i]
-
-        template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v, Cpu, IndexType n,
-                    Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indices, Cpu, EWOp::Add) {
-            if (indices == nullptr) {
-                copy_n<IndexType>(alpha, v, Cpu{}, n, w, Cpu{}, EWOp::Add{});
-            } else {
-                assert(n == 0 || (void *)v != (void *)w);
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indices[i]] += v[i];
-                } else if (std::norm(alpha) == 0) {
-                    // Do nothing
-                } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indices[i]] += alpha * v[i];
-                }
-            }
-        }
+#define COPY_N_FOR(S)                                                                              \
+    for (IndexType i = 0; i < n; ++i) { S; }
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                    const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
-                    const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Copy) {
-            if (indicesv == nullptr) {
-                copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Copy{});
-            } else if (indicesw == nullptr) {
-                copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Copy{});
-            } else {
-                //assert(n == 0 || (void *)v != (void *)w);
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for simd schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] = v[indicesv[i]];
-                } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for simd schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] = T{0};
+        void copy_n_cpu(const T &alpha, const T *SB_RESTRICT v,
+                        const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
+                        const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Copy) {
+            // Make sure we aren't using std::complex
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
+
+            if (indicesv == nullptr && indicesw == nullptr) {
+                /// Case: w[i] = v[i]
+                if (alpha == (T)1) {
+                    if (std::is_same<T, Q>::value)
+                        std::memcpy(w, v, sizeof(T) * n);
+                    else
+                        COPY_N_FOR(w[i] = v[i]);
+                } else if (is_zero(alpha)) {
+                    COPY_N_FOR({ w[i] = (T)0; });
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for simd schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] = alpha * v[indicesv[i]];
+                    COPY_N_FOR(w[i] = alpha * v[i]);
+                }
+
+            } else if (indicesv == nullptr && indicesw != nullptr) {
+                /// Case: w[indicesw[i]] = v[i]
+                if (alpha == (T)1) {
+                    COPY_N_W_FOR(w[wi] = v[i]);
+                } else if (is_zero(alpha)) {
+                    COPY_N_W_FOR({ w[wi] = (T)0; });
+                } else {
+                    COPY_N_W_FOR(w[wi] = alpha * v[i]);
+                }
+
+            } else if (indicesv != nullptr && indicesw == nullptr) {
+                /// Case: w[i] = v[indicesv[i]]
+                if (alpha == (T)1) {
+                    COPY_N_V_FOR(w[i] = v[vi]);
+                } else if (is_zero(alpha)) {
+                    COPY_N_V_FOR({ w[i] = (T)0; });
+                } else {
+                    COPY_N_V_FOR(w[i] = alpha * v[vi]);
+                }
+
+            } else {
+                /// Case: w[indicesw[i]] = v[indicesv[i]]
+                if (alpha == (T)1) {
+                    COPY_N_VW_FOR(w[wi] = v[vi]);
+                } else if (is_zero(alpha)) {
+                    COPY_N_VW_FOR({ w[wi] = (T)0; });
+                } else {
+                    COPY_N_VW_FOR(w[wi] = alpha * v[vi]);
                 }
             }
         }
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
-        void copy_n(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                    const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
-                    const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Add) {
-            if (indicesv == nullptr) {
-                copy_n(alpha, v, Cpu{}, n, w, indicesw, Cpu{}, EWOp::Add{});
-            } else if (indicesw == nullptr) {
-                copy_n(alpha, v, indicesv, Cpu{}, n, w, Cpu{}, EWOp::Add{});
-            } else {
-                assert(n == 0 || (void *)v != (void *)w);
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] += v[indicesv[i]];
-                } else if (std::norm(alpha) == 0) {
-                    // Do nothing
+        void copy_n_cpu(const T &alpha, const T *SB_RESTRICT v,
+                        const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n, Q *SB_RESTRICT w,
+                        const IndexType *SB_RESTRICT indicesw, Cpu, EWOp::Add) {
+            // Make sure we aren't using std::complex
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
+
+            if (is_zero(alpha)) return;
+
+            if (indicesv == nullptr && indicesw == nullptr) {
+                /// Case: w[i] += v[i]
+                if (alpha == (T)1) {
+                    COPY_N_FOR(w[i] += v[i]);
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    for (IndexType i = 0; i < n; ++i) w[indicesw[i]] += alpha * v[indicesv[i]];
+                    COPY_N_FOR(w[i] += alpha * v[i]);
+                }
+
+            } else if (indicesv == nullptr && indicesw != nullptr) {
+                /// Case: w[indicesw[i]] += v[i]
+                if (alpha == (T)1) {
+                    COPY_N_W_FOR(w[wi] += v[i]);
+                } else {
+                    COPY_N_W_FOR(w[wi] += alpha * v[i]);
+                }
+
+            } else if (indicesv != nullptr && indicesw == nullptr) {
+                /// Case: w[i] += v[indicesv[i]]
+                if (alpha == (T)1) {
+                    COPY_N_V_FOR(w[i] += v[vi]);
+                } else {
+                    COPY_N_V_FOR(w[i] += alpha * v[vi]);
+                }
+
+            } else {
+                /// Case: w[indicesw[i]] += v[indicesv[i]]
+                if (alpha == (T)1) {
+                    COPY_N_VW_FOR(w[wi] += v[vi]);
+                } else {
+                    COPY_N_VW_FOR(w[wi] += alpha * v[vi]);
                 }
             }
         }
+
+#undef COPY_N_VW_FOR
+#undef COPY_N_W_FOR
+#undef COPY_N_V_FOR
+#undef COPY_N_FOR
 
         ///
         /// Non-blocking copy on GPU
@@ -531,6 +511,57 @@ namespace superbblas {
         /// Blocking copy on CPU
         ///
 
+        template <typename IndexType, typename T, typename Q, typename EWOP>
+        void copy_n_blocking(typename elem<T>::type alpha, const T *SB_RESTRICT v,
+                             IndexType blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
+                             IndexType n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
+                             Cpu, EWOP) {
+
+            // Shortcut for empty copy
+            if (n == 0) return;
+
+            // Shortcut for no blocking
+            if (blocking == 1) {
+                copy_n(alpha, v, indicesv, Cpu{}, n, w, indicesw, Cpu{}, EWOP{});
+                return;
+            }
+            if (indicesv == nullptr && indicesw == nullptr) {
+                copy_n(alpha, v, indicesv, Cpu{}, n * blocking, w, indicesw, Cpu{}, EWOP{});
+                return;
+            }
+
+            // Transform std::complex into C complex _Complex; std::complex exhibit some
+            // performance problems with clang++
+            using Tc = typename ccomplex<T>::type;
+            using Qc = typename ccomplex<Q>::type;
+            Tc alphac = *(Tc *)&alpha;
+
+#ifdef _OPENMP
+            if (sizeof(Q) * n * blocking > 1024u * 1024u) {
+#    pragma omp parallel
+                {
+                    IndexType num_threads = omp_get_num_threads();
+                    IndexType i = omp_get_thread_num();
+                    IndexType ni = n / num_threads + (n % num_threads > i ? 1 : 0);
+                    IndexType si = n / num_threads * i + std::min(n % num_threads, i);
+                    Tc *vi = (Tc *)v + (indicesv == nullptr ? blocking * si : IndexType(0));
+                    const IndexType *indicesvi =
+                        indicesv + (indicesv != nullptr ? si : IndexType(0));
+                    Qc *wi = (Qc *)w + (indicesw == nullptr ? blocking * si : IndexType(0));
+                    const IndexType *indiceswi =
+                        indicesw + (indicesw != nullptr ? si : IndexType(0));
+
+                    copy_n_blocking_cpu(alphac, vi, blocking, indicesvi, Cpu{}, ni, wi, indiceswi,
+                                        Cpu{}, EWOP{});
+                }
+            } else
+#endif
+            {
+                copy_n_blocking_cpu(alphac, (Tc *)v, blocking, indicesv, Cpu{}, n, (Qc *)w,
+                                    indicesw, Cpu{}, EWOP{});
+            }
+        }
+
 #define COPY_N_BLOCKING_VW_FOR(S)                                                                  \
     for (IndexType i = 0; i < n; ++i) {                                                            \
         for (IndexType j = 0; j < blocking; ++j) {                                                 \
@@ -560,69 +591,41 @@ namespace superbblas {
 
         /// Copy n values, w[indicesw[i]] = v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
-        void copy_n_blocking(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                             IndexType blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
-                             IndexType n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
-                             Cpu, EWOp::Copy) {
+        void copy_n_blocking_cpu(const T &alpha, const T *SB_RESTRICT v, IndexType blocking,
+                                 const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n,
+                                 Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw, Cpu,
+                                 EWOp::Copy) {
+            // Make sure we aren't using std::complex
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
 
-            if (indicesv == nullptr && indicesw == nullptr) {
-                /// Case: w[i] = v[i]
-                copy_n<IndexType>(alpha, v, Cpu{}, blocking * n, w, Cpu{}, EWOp::Copy{});
-
-            } else if (indicesv == nullptr && indicesw != nullptr) {
+            if (indicesv == nullptr && indicesw != nullptr) {
                 /// Case: w[indicesw[i]] = v[i]
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
+                if (alpha == (T)1) {
                     COPY_N_BLOCKING_W_FOR(w[wj] = v[idx]);
-                } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    COPY_N_BLOCKING_W_FOR({ w[wj] = T{0}; });
+                } else if (is_zero(alpha)) {
+                    COPY_N_BLOCKING_W_FOR({ w[wj] = (T)0; });
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
                     COPY_N_BLOCKING_W_FOR(w[wj] = alpha * v[idx]);
                 }
 
             } else if (indicesv != nullptr && indicesw == nullptr) {
                 /// Case: w[i] = v[indicesv[i]]
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
+                if (alpha == (T)1) {
                     COPY_N_BLOCKING_V_FOR(w[idx] = v[vj]);
-                } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    COPY_N_BLOCKING_V_FOR({ w[idx] = T{0}; });
+                } else if (is_zero(alpha)) {
+                    COPY_N_BLOCKING_V_FOR({ w[idx] = (T)0; });
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
                     COPY_N_BLOCKING_V_FOR(w[idx] = alpha * v[vj]);
                 }
 
             } else {
                 /// Case: w[indicesw[i]] = v[indicesv[i]]
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
+                if (alpha == (T)1) {
                     COPY_N_BLOCKING_VW_FOR(w[wj] = v[vj]);
-                } else if (std::norm(alpha) == 0) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
-                    COPY_N_BLOCKING_VW_FOR({ w[wj] = T{0}; });
+                } else if (is_zero(alpha)) {
+                    COPY_N_BLOCKING_VW_FOR({ w[wj] = (T)0; });
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
                     COPY_N_BLOCKING_VW_FOR(w[wj] = alpha * v[vj]);
                 }
             }
@@ -630,61 +633,45 @@ namespace superbblas {
 
         /// Copy n values, w[indicesw[i]] += v[indicesv[i]]
         template <typename IndexType, typename T, typename Q>
-        void copy_n_blocking(typename elem<T>::type alpha, const T *SB_RESTRICT v,
-                             IndexType blocking, const IndexType *SB_RESTRICT indicesv, Cpu,
-                             IndexType n, Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw,
-                             Cpu, EWOp::Add) {
+        void copy_n_blocking_cpu(const T &alpha, const T *SB_RESTRICT v, IndexType blocking,
+                                 const IndexType *SB_RESTRICT indicesv, Cpu, IndexType n,
+                                 Q *SB_RESTRICT w, const IndexType *SB_RESTRICT indicesw, Cpu,
+                                 EWOp::Add) {
+            // Make sure we aren't using std::complex
+            static_assert(!is_complex<T>::value && !is_complex<Q>::value,
+                          "don't use std::complex here; use C complex if needed");
 
-            if (std::norm(alpha) == 0) return;
+            if (is_zero(alpha)) return;
 
-            if (indicesv == nullptr && indicesw == nullptr) {
-                /// Case: w[i] += v[i]
-                copy_n<IndexType>(alpha, v, Cpu{}, blocking * n, w, Cpu{}, EWOp::Add{});
-
-            } else if (indicesv == nullptr && indicesw != nullptr) {
+            if (indicesv == nullptr && indicesw != nullptr) {
                 /// Case: w[indicesw[i]] += v[i]
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
+                if (alpha == (T)1) {
                     COPY_N_BLOCKING_W_FOR(w[wj] += v[idx]);
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
                     COPY_N_BLOCKING_W_FOR(w[wj] += alpha * v[idx]);
                 }
 
             } else if (indicesv != nullptr && indicesw == nullptr) {
                 /// Case: w[i] += v[indicesv[i]]
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
+                if (alpha == (T)1) {
                     COPY_N_BLOCKING_V_FOR(w[idx] += v[vj]);
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
                     COPY_N_BLOCKING_V_FOR(w[idx] += alpha * v[vj]);
                 }
 
             } else {
                 /// Case: w[indicesw[i]] += v[indicesv[i]]
-                if (alpha == typename elem<T>::type{1}) {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
+                if (alpha == (T)1) {
                     COPY_N_BLOCKING_VW_FOR(w[wj] += v[vj]);
                 } else {
-#ifdef _OPENMP
-#    pragma omp parallel for schedule(static)
-#endif
                     COPY_N_BLOCKING_VW_FOR(w[wj] += alpha * v[vj]);
                 }
             }
         }
-#undef COPY_N_BLOCKING_FOR
+
+#undef COPY_N_BLOCKING_VW_FOR
+#undef COPY_N_BLOCKING_W_FOR
+#undef COPY_N_BLOCKING_V_FOR
 
         ///
         /// Blocking copy on GPU
