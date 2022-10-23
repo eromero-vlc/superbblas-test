@@ -24,6 +24,9 @@ template <std::size_t N> Order<N + 1> toStr(Order<N> o) {
     return r;
 }
 
+static std::size_t progress = 0;
+static char progress_mark = 0;
+
 template <std::size_t NA, std::size_t NB, std::size_t NC, typename T>
 Operator<NA + NB + NC, T> generate_tensor(char a, char b, char c, const std::map<char, int> &dims) {
     // Build the operator with A,B,C
@@ -43,10 +46,22 @@ Operator<NA + NB + NC, T> generate_tensor(char a, char b, char c, const std::map
 }
 
 const char sT = 'A', sA = sT + 8, sB = sA + 8, sC = sB + 8;
+enum distribution { OnMaster, OnEveryone, OnEveryoneReplicated };
 
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T>
 void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> op2, bool conj0,
                       bool conj1, char dist_dir) {
+    std::array<distribution, 3> d{OnMaster, OnEveryone, OnEveryoneReplicated};
+    for (unsigned int i = 0; i < d.size(); ++i)
+        test_contraction(op0, d[i], op1, d[i], op2, d[i], conj0, conj1, dist_dir);
+    for (unsigned int i = 0; i < d.size(); ++i)
+        for (unsigned int j = i + 1; j < d.size(); ++j)
+            test_contraction(op0, d[i], op1, d[j], op2, d[i], conj0, conj1, dist_dir);
+}
+
+template <std::size_t N0, std::size_t N1, std::size_t N2, typename T>
+void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1, distribution d1,
+                      Operator<N2, T> op2, distribution d2, bool conj0, bool conj1, char dist_dir) {
     int nprocs, rank;
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
@@ -71,8 +86,9 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
     // Distribute op0, op1, and a zeroed op2 along the `dist_dir` direction
 
     Coor<N0> procs0;
-    for (std::size_t i = 0; i < N0; ++i) procs0[i] = o0[i] == dist_dir ? nprocs : 1;
-    PartitionStored<N0> p0 = basic_partitioning(dim0, procs0, nprocs, true);
+    for (std::size_t i = 0; i < N0; ++i)
+        procs0[i] = (d0 == OnEveryone && o0[i] == dist_dir ? nprocs : 1);
+    PartitionStored<N0> p0 = basic_partitioning(dim0, procs0, nprocs, d0 == OnEveryoneReplicated);
     std::vector<T> v0(detail::volume(p0[rank][1]));
     PartitionStored<N0> p0_(nprocs, {{{{}}, dim0}}); // tensor replicated partitioning
     T const *ptrv0_ = v0_.data();
@@ -85,8 +101,9 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
          SlowToFast, Copy);
 
     Coor<N1> procs1;
-    for (std::size_t i = 0; i < N1; ++i) procs1[i] = o1[i] == dist_dir ? nprocs : 1;
-    PartitionStored<N1> p1 = basic_partitioning(dim1, procs1, nprocs, true);
+    for (std::size_t i = 0; i < N1; ++i)
+        procs1[i] = (d1 == OnEveryone && o1[i] == dist_dir ? nprocs : 1);
+    PartitionStored<N1> p1 = basic_partitioning(dim1, procs1, nprocs, d1 == OnEveryoneReplicated);
     std::vector<T> v1(detail::volume(p1[rank][1]));
     PartitionStored<N1> p1_(nprocs, {{{{}}, dim1}}); // tensor replicated partitioning
     T const *ptrv1_ = v1_.data();
@@ -99,8 +116,9 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
          SlowToFast, Copy);
 
     Coor<N2> procs2;
-    for (std::size_t i = 0; i < N2; ++i) procs2[i] = o2[i] == dist_dir ? nprocs : 1;
-    PartitionStored<N2> p2 = basic_partitioning(dim2, procs2, nprocs, true);
+    for (std::size_t i = 0; i < N2; ++i)
+        procs2[i] = (d2 == OnEveryone && o2[i] == dist_dir ? nprocs : 1);
+    PartitionStored<N2> p2 = basic_partitioning(dim2, procs2, nprocs, d2 == OnEveryoneReplicated);
     std::vector<T> v2(detail::volume(p2[rank][1]));
     T *ptrv2 = v2.data();
 
@@ -128,25 +146,36 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
 
     // Test the resulting tensor
 
+    int is_correct = 1;
     if (rank == 0) {
         double diff_fn = 0, fn = 0; // Frob-norm of the difference and the correct tensor
         for (std::size_t i = 0; i < v2_.size(); ++i)
             diff_fn += std::norm(v2_[i] - vr[i]), fn += std::norm(v2_[i]);
         diff_fn = std::sqrt(diff_fn);
         fn = std::sqrt(fn);
-        if (diff_fn > fn * 1e-4) {
-            // NOTE: Put a breakpoint here to debug the cases producing wrong answers!
-            contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx,
-                        p1.data(), dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0},
-                        p2.data(), dim2, 1, &o2[0], &ptrv2, &ctx,
-#ifdef SUPERBBLAS_USE_MPI
-                        MPI_COMM_WORLD,
-#endif
-                        SlowToFast);
-
-            throw std::runtime_error(
-                "Result of contraction does not match with the correct answer");
+        if (diff_fn > fn * 1e-4) is_correct = 0;
+        progress++;
+        if (progress > 770000) {
+            std::cout << std::string(1, '0' + progress_mark);
+            std::cout.flush();
+            progress = 0;
+            progress_mark++;
         }
+    }
+#ifdef SUPERBBLAS_USE_MPI
+    MPI_Bcast(&is_correct, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+    if (!is_correct) {
+        // NOTE: Put a breakpoint here to debug the cases producing wrong answers!
+        contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(),
+                    dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), dim2, 1,
+                    &o2[0], &ptrv2, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                    MPI_COMM_WORLD,
+#endif
+                    SlowToFast);
+
+        throw std::runtime_error("Result of contraction does not match with the correct answer");
     }
 }
 
@@ -288,8 +317,10 @@ template <typename T> void test() {
 }
 
 int main(int argc, char **argv) {
+    int rank = 0;
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #else
     (void)argc;
     (void)argv;
@@ -297,6 +328,8 @@ int main(int argc, char **argv) {
 
     test<double>();
     test<std::complex<double>>();
+
+    if (rank == 0) std::cout << " Everything went ok!" << std::endl;
 
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Finalize();

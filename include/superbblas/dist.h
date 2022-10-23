@@ -1987,8 +1987,7 @@ namespace superbblas {
                                              const From_size<Nd1> &p1, const Coor<Nd1> &dim1,
                                              const Order<Nd1> &o1, const Order<Nd1> &sug_o1) {
 
-            // Change the partition of the smaller tensor in volume, and normalize the second tensor
-            // as the smaller one
+            // Normalize the first tensor as the larger of the two in volume
             if (volume(dim0) < volume(dim1)) {
                 auto p10 = get_input_partitions_for_contraction(p1, dim1, o1, sug_o1, p0, dim0, o0,
                                                                 sug_o0);
@@ -2007,11 +2006,12 @@ namespace superbblas {
                 p0r = p0r_;
             }
 
-            // Create partition
+            // Change the second partition by using the same distribution as the first tensor
+            // for the shared labels and replicated for the remaining labels
             From_size_out<Nd1> p1r(p0.size(), p0.ctx());
             for (unsigned int i = 0; i < p0.size(); ++i) {
-                p1r[i][0] = get_dimensions(o0, p0[i][0], o1, p1[i][0], sug_o1, false);
-                p1r[i][1] = get_dimensions(o0, p0[i][1], o1, p1[i][1], sug_o1, false);
+                p1r[i][0] = get_dimensions(o0, p0[i][0], o1, Coor<Nd1>{{}}, sug_o1, false);
+                p1r[i][1] = get_dimensions(o0, p0[i][1], o1, dim1, sug_o1, false);
             }
             bool changed1 = (o1 != sug_o1 || p1 != (From_size<Nd1>)p1r);
 
