@@ -27,12 +27,13 @@ template <std::size_t N, typename T, typename XPU> struct tensor {
         : dim(dim), p(p), v(vector<T, XPU>(volume(p[rank][1]), xpu)), rank(rank) {}
 
     /// Constructor for a distributed tensor
-    tensor(const Coor<N> &dim, const Coor<N> &procs, int rank, XPU xpu)
-        : tensor(dim, basic_partitioning(dim, procs), rank, xpu) {}
+    tensor(const Coor<N> &dim, const Coor<N> &procs, int nprocs, int rank, XPU xpu)
+        : tensor(dim, basic_partitioning(dim, procs, nprocs), rank, xpu) {}
 
     /// Constructor for a distributed tensor with power
-    tensor(const Coor<N> &dim, const Coor<N> &procs, const Coor<N> &power, int rank, XPU xpu)
-        : tensor(dim, basic_partitioning(dim, procs, -1, false, power), rank, xpu) {}
+    tensor(const Coor<N> &dim, const Coor<N> &procs, const Coor<N> &power, int nprocs, int rank,
+           XPU xpu)
+        : tensor(dim, basic_partitioning(dim, procs, nprocs, false, power), rank, xpu) {}
 
     /// Constructor for a tensor with support only on the root process
     tensor(const Coor<N> &dim, int nprocs, int rank, XPU xpu)
@@ -46,12 +47,19 @@ template <std::size_t N, typename T, typename XPU> void dummyFill(tensor<N, T, X
     copy_n(v.data(), v.ctx(), v.size(), t.v.data(), t.v.ctx());
 }
 
+void test_distribution() {
+    Coor<5> dim{4, 4, 4, 4, 3};
+    partitioning_distributed("xyztc", dim, "xyzt", 6);
+    partitioning_distributed("xyztc", dim, "xyzt", 7);
+}
+
 constexpr std::size_t Nd = 7;          // xyztscn
 constexpr unsigned int nS = 4, nC = 3; // length of dimension spin and color dimensions
 constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
 
 template <typename XPU>
-void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned int nrep) {
+void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU xpu,
+          unsigned int nrep) {
 
     using Scalar = std::complex<float>;
     using ScalarD = std::complex<double>;
@@ -59,13 +67,13 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
     // Create tensor t0 of Nd-1 dims: a lattice color vector
     const Coor<Nd - 1> dim0 = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
     const Coor<Nd - 1> procs0 = {procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // xyztsc
-    tensor<Nd - 1, Scalar, XPU> t0(dim0, procs0, rank, xpu);
+    tensor<Nd - 1, Scalar, XPU> t0(dim0, procs0, nprocs, rank, xpu);
     dummyFill(t0);
 
     // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
     const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]};   // tnsxyzc
     const Coor<Nd> procs1 = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z], 1}; // tnsxyzc
-    tensor<Nd, Scalar, XPU> t1(dim1, procs1, rank, xpu);
+    tensor<Nd, Scalar, XPU> t1(dim1, procs1, nprocs, rank, xpu);
 
     const bool is_cpu = deviceId(xpu) == CPU_DEVICE_ID;
     if (rank == 0) std::cout << ">>> " << (is_cpu ? "CPU" : "GPU") << " tests:" << std::endl;
@@ -125,7 +133,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
 
     // Copy tensor t0 into each of the c components of tensor 1 in double
     {
-        tensor<Nd, ScalarD, XPU> t1(dim1, procs1, rank, xpu);
+        tensor<Nd, ScalarD, XPU> t1(dim1, procs1, nprocs, rank, xpu);
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
             if (rep == 1) {
@@ -153,7 +161,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
     }
 
     // Shift tensor 1 on the z-direction and store it on tensor 2
-    tensor<Nd, Scalar, XPU> t2(dim1, procs1, rank, xpu);
+    tensor<Nd, Scalar, XPU> t2(dim1, procs1, nprocs, rank, xpu);
     {
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
@@ -180,7 +188,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
     // Create tensor t3 of 5 dims
     {
         const Coor<5> dimc = {dim[T], dim[N], dim[S], dim[N], dim[S]}; // tnsns
-        tensor<5, Scalar, XPU> tc(dimc, volume(procs), rank, xpu);
+        tensor<5, Scalar, XPU> tc(dimc, nprocs, rank, xpu);
 
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
@@ -206,7 +214,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
     {
         const int power = 1;
         const Coor<Nd> ext = {power, 0, 0, power, power, power, 0}; // tnsxyzc
-        tensor<Nd, Scalar, XPU> th(dim1, procs1, ext, rank, xpu);
+        tensor<Nd, Scalar, XPU> th(dim1, procs1, ext, nprocs, rank, xpu);
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
             if (rep == 1) t = w_time();
@@ -244,8 +252,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu, unsigned
     {
         const int power = 1;
         const Coor<Nd> ext = {power, 0, 0, power, power, power, 0}; // tnsxyzc
-        tensor<Nd, int, XPU> t1(dim1, procs1, rank, xpu);
-        tensor<Nd, int, XPU> th(dim1, procs1, ext, rank, xpu);
+        tensor<Nd, int, XPU> t1(dim1, procs1, nprocs, rank, xpu);
+        tensor<Nd, int, XPU> th(dim1, procs1, ext, nprocs, rank, xpu);
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
             if (rep == 1) {
@@ -305,6 +313,8 @@ int main(int argc, char **argv) {
     rank = 0;
 #endif
 
+    test_distribution();
+
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1};
     unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
@@ -350,7 +360,7 @@ int main(int argc, char **argv) {
     }
 
     // If --procs isn't set, put all processes on the first dimension
-    if (!procs_was_set) procs[X] = nprocs;
+    if (!procs_was_set) procs = partitioning_distributed("xyztscn", dim, "xyzt", nprocs);
 
     // Show lattice dimensions and processes arrangement
     if (rank == 0) {
@@ -370,12 +380,12 @@ int main(int argc, char **argv) {
 
     {
         Context ctx = createCpuContext();
-        test(dim, procs, rank, ctx, ctx.toCpu(0), nrep);
+        test(dim, procs, rank, nprocs, ctx, ctx.toCpu(0), nrep);
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
-        test(dim, procs, rank, ctx, ctx.toGpu(0), nrep);
+        test(dim, procs, rank, npros, ctx, ctx.toGpu(0), nrep);
     }
 #endif
 

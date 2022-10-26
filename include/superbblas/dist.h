@@ -6,7 +6,6 @@
 #include <functional>
 #include <iostream>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -2153,6 +2152,139 @@ namespace superbblas {
             if (Nd == 0) return to_vector(p = nullptr, n, Cpu{session});
             return clone(to_vector(p, n, Cpu{session}));
         }
+    }
+
+    namespace detail {
+        /// Approximate factorization of a number with factors of 2 and 3.
+        /// The returning value is largest than 0.75 times the original value.
+
+        struct factors_2_3 {
+            unsigned int two;   ///< powers of two
+            unsigned int three; ///< powers of three
+            unsigned int value; ///< 2^two * 3^three
+
+            /// Empty construction; initialize to 1
+            factors_2_3() : two(0), three(0), value(1) {}
+
+            /// Constructor
+            /// \param number: value to factorize
+
+            factors_2_3(unsigned int number) {
+                if (number == 0) throw std::runtime_error("unsupported value");
+
+                // Find as many powers as possible of tree and then two
+                two = three = 0;
+                value = 1;
+                unsigned int remaining = number;
+                for (; remaining >= 3; ++three, remaining /= 3, value *= 3)
+                    ;
+                if (remaining >= 2) ++two, remaining /= 2, value *= 2;
+
+                // Try to exchange factors of 3 by 4
+                for (; three > 0 && value * 4 / 3 <= number;
+                     --three, two += 2, value = value * 4 / 3)
+                    ;
+            }
+
+            /// Internal constructor
+            factors_2_3(unsigned int two, unsigned int three, unsigned int value)
+                : two(two), three(three), value(value) {}
+
+            factors_2_3 operator*(const factors_2_3 &v) const {
+                return {two + v.two, three + v.three, value * v.value};
+            }
+        };
+    }
+
+    /// Return the number of processes in each direction to partition the tensor
+    /// \param order: dimension labels
+    /// \param dim: dimension size for the tensor
+    /// \param dist_labels: labels to distribute
+    /// \param nprocs: number of precesses
+
+    template <std::size_t Nd, typename std::enable_if<(Nd > 0), bool>::type = true>
+    Coor<Nd> partitioning_distributed(const char *order, const Coor<Nd> &dim,
+                                      const char *dist_labels, unsigned int nprocs) {
+
+        Coor<Nd> p; // returning value
+
+        // The default is no distribution, which is one proc in each direction
+        for (std::size_t i = 0; i < Nd; ++i) p[i] = 1;
+
+        // Get the labels that are going to be distributed
+        Order<Nd> order_ = detail::toArray<Nd>(order, "order");
+        Coor<Nd> dist_perm;
+        unsigned int dist_n = 0;
+        for (unsigned int i = 0, n = std::strlen(dist_labels); i < n; ++i) {
+            const auto &it = std::find(order_.begin(), order_.end(), dist_labels[i]);
+            if (it != order_.end() && dim[it - order_.begin()] > 1)
+                dist_perm[dist_n++] = it - order_.begin();
+        }
+
+        // Return the default distribution If no dimension is going to be distributed or the tensor is empty
+        if (dist_n == 0 || detail::volume(dim) == 0 || nprocs <= 1) return p;
+
+        // Compute the ideal length of a hypercube in each process with total volume equal to the tensor volume
+        std::size_t vol = 1;
+        for (unsigned int i = 0; i < dist_n; ++i) vol *= dim[dist_perm[i]];
+        double r = std::exp(std::log((double)vol / nprocs) / dist_n);
+
+        // Put as many processes in each direction to get close to the ideal length
+        int remaining_procs = nprocs;
+        for (unsigned int i = 0; i < dist_n; ++i) {
+            p[dist_perm[i]] = std::min(
+                dim[dist_perm[i]],
+                std::min(remaining_procs, (int)std::max(1.0, std::round(dim[dist_perm[i]] / r))));
+            remaining_procs /= p[dist_perm[i]];
+        }
+
+        // Return the partition if the fraction of unused processes is small
+        assert(detail::volume(p) <= nprocs);
+        if (detail::volume(p) >= nprocs * 0.75) return p;
+
+        std::array<detail::factors_2_3, Nd> p_f23;
+        for (unsigned int i = 0; i < dist_n; ++i) p_f23[i] = detail::factors_2_3(1);
+        detail::factors_2_3 vol_p(1);
+
+        // Iteratively put factors 2 and 3 on the coordinates with largest size per process
+        detail::factors_2_3 nprocs_f23(nprocs);
+        std::array<detail::factors_2_3, 2> factors{3u, 2u};
+        while (true) {
+            // Sort the dimensions by local size from largest to smalles
+            Coor<Nd> perm;
+            for (unsigned int j = 0; j < dist_n; ++j) perm[j] = j;
+            for (unsigned int j = 0; j < dist_n; ++j) {
+                unsigned int large_i = j;
+                std::size_t large_val = dim[dist_perm[perm[j]]] / p_f23[perm[j]].value;
+                for (unsigned int i = j + 1; i < dist_n; ++i) {
+                    std::size_t val = dim[dist_perm[perm[i]]] / p_f23[perm[i]].value;
+                    if (large_val < val) large_i = i, large_val = val;
+                }
+                std::swap(perm[j], perm[large_i]);
+            }
+
+            // Try to put a factor of three or two in that direction
+            bool factor_applied = false;
+            for (unsigned int j = 0; j < dist_n; ++j) {
+                for (const auto &factor : factors) {
+                    if (nprocs_f23.value % (vol_p.value * factor.value) == 0) {
+                        p_f23[perm[j]] = p_f23[perm[j]] * factor;
+                        vol_p = vol_p * factor;
+                        factor_applied = true;
+                        break;
+                    }
+                }
+                if (factor_applied) break;
+            }
+            if (factor_applied) continue;
+
+            // Get out if we cannot put more factors
+            break;
+        }
+
+        for (unsigned int i = 0; i < dist_n; ++i) p[dist_perm[i]] = p_f23[i].value;
+        assert(detail::volume(p) <= nprocs && detail::volume(p) >= nprocs * 3 / 4);
+        return p;
     }
 
     /// Return a partitioning for a tensor of `dim` dimension onto a grid of processes
