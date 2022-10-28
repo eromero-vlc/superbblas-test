@@ -2203,8 +2203,8 @@ namespace superbblas {
     /// \param nprocs: number of precesses
 
     template <std::size_t Nd, typename std::enable_if<(Nd > 0), bool>::type = true>
-    Coor<Nd> partitioning_distributed(const char *order, const Coor<Nd> &dim,
-                                      const char *dist_labels, unsigned int nprocs) {
+    Coor<Nd> partitioning_distributed_procs(const char *order, const Coor<Nd> &dim,
+                                            const char *dist_labels, unsigned int nprocs) {
 
         Coor<Nd> p; // returning value
 
@@ -2223,24 +2223,6 @@ namespace superbblas {
 
         // Return the default distribution If no dimension is going to be distributed or the tensor is empty
         if (dist_n == 0 || detail::volume(dim) == 0 || nprocs <= 1) return p;
-
-        // Compute the ideal length of a hypercube in each process with total volume equal to the tensor volume
-        std::size_t vol = 1;
-        for (unsigned int i = 0; i < dist_n; ++i) vol *= dim[dist_perm[i]];
-        double r = std::exp(std::log((double)vol / nprocs) / dist_n);
-
-        // Put as many processes in each direction to get close to the ideal length
-        int remaining_procs = nprocs;
-        for (unsigned int i = 0; i < dist_n; ++i) {
-            p[dist_perm[i]] = std::min(
-                dim[dist_perm[i]],
-                std::min(remaining_procs, (int)std::max(1.0, std::round(dim[dist_perm[i]] / r))));
-            remaining_procs /= p[dist_perm[i]];
-        }
-
-        // Return the partition if the fraction of unused processes is small
-        assert(detail::volume(p) <= nprocs);
-        if (detail::volume(p) >= nprocs * 0.75) return p;
 
         std::array<detail::factors_2_3, Nd> p_f23;
         for (unsigned int i = 0; i < dist_n; ++i) p_f23[i] = detail::factors_2_3(1);
@@ -2285,6 +2267,64 @@ namespace superbblas {
         for (unsigned int i = 0; i < dist_n; ++i) p[dist_perm[i]] = p_f23[i].value;
         assert(detail::volume(p) <= nprocs && detail::volume(p) >= nprocs * 3 / 4);
         return p;
+    }
+
+    /// Return a partitioning for a tensor of `dim` dimension onto a grid of processes
+    /// \param order: (can be null) dimension labels
+    /// \param dim: dimension size for the tensor
+    /// \param procs: number of processes in each direction
+    /// \param dist_labels: (can be null) order use to assign the processes to each subtensor
+    /// \param nprocs: (optional) number of precesses
+
+    template <std::size_t Nd>
+    std::vector<PartitionItem<Nd>> basic_partitioning(const char *order, Coor<Nd> dim,
+                                                      Coor<Nd> procs, const char *dist_labels,
+                                                      int nprocs = -1) {
+        // Check other arguments
+        int vol_procs = (int)detail::volume<Nd>(procs);
+        if (nprocs >= 0 && vol_procs > nprocs)
+            std::runtime_error(
+                "The total number of processes from `procs` is greater than `nprocs`");
+
+        // Reorder the labels starting with dist_labels
+        Coor<Nd> perm;
+        if (order != nullptr && dist_labels != nullptr) {
+            if (std::strlen(order) != Nd)
+                throw std::runtime_error("basic_partitioning: invalid `order`, its length doesn't "
+                                         "match the template parameter");
+            const unsigned int n = std::strlen(dist_labels);
+            unsigned int dist_n = 0;
+            for (unsigned int i = 0; i < n; ++i) {
+                const auto &it = std::find(order, order + Nd, dist_labels[i]);
+                if (it != order + Nd) perm[dist_n++] = it - order;
+            }
+            for (unsigned int i = 0; i < Nd; ++i) {
+                const auto &it = std::find(dist_labels, dist_labels + n, order[i]);
+                if (it == dist_labels + n) perm[dist_n++] = i;
+            }
+        } else {
+            for (unsigned int i = 0; i < Nd; ++i) perm[i] = i;
+        }
+
+        std::vector<PartitionItem<Nd>> fs(nprocs < 0 ? vol_procs : nprocs);
+        Coor<Nd> procs_perm = detail::reorder_coor(procs, perm);
+        Coor<Nd> stride_perm = detail::get_strides<IndexType>(procs_perm, SlowToFast);
+        for (int rank = 0; rank < vol_procs; ++rank) {
+            Coor<Nd> cproc = detail::index2coor(rank, procs_perm, stride_perm);
+            for (std::size_t i = 0; i < Nd; ++i) {
+                // Number of elements in process with rank 'cproc[i]' on dimension 'i'
+                fs[rank][1][perm[i]] = dim[perm[i]] / procs_perm[i] +
+                                       (dim[perm[i]] % procs_perm[i] > cproc[i] ? 1 : 0);
+
+                // First coordinate in process with rank 'rank' on dimension 'i'
+                fs[rank][0][perm[i]] = fs[rank][1][perm[i]] == dim[perm[i]]
+                                           ? 0
+                                           : dim[perm[i]] / procs_perm[i] * cproc[i] +
+                                                 std::min(cproc[i], dim[perm[i]] % procs_perm[i]);
+            }
+        }
+
+        return fs;
     }
 
     /// Return a partitioning for a tensor of `dim` dimension onto a grid of processes

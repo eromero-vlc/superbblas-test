@@ -49,8 +49,10 @@ template <std::size_t N, typename T, typename XPU> void dummyFill(tensor<N, T, X
 
 void test_distribution() {
     Coor<5> dim{4, 4, 4, 4, 3};
-    partitioning_distributed("xyztc", dim, "xyzt", 6);
-    partitioning_distributed("xyztc", dim, "xyzt", 7);
+    basic_partitioning("xyztc", dim, partitioning_distributed_procs("xyztc", dim, "xyzt", 6),
+                       "xyzt", 6);
+    basic_partitioning("xyztc", dim, partitioning_distributed_procs("xyztc", dim, "xyzt", 7),
+                       "xyzt", 7);
 }
 
 constexpr std::size_t Nd = 7;          // xyztscn
@@ -360,7 +362,7 @@ int main(int argc, char **argv) {
     }
 
     // If --procs isn't set, put all processes on the first dimension
-    if (!procs_was_set) procs = partitioning_distributed("xyztscn", dim, "xyzt", nprocs);
+    if (!procs_was_set) procs = partitioning_distributed_procs("xyztscn", dim, "xyzt", nprocs);
 
     // Show lattice dimensions and processes arrangement
     if (rank == 0) {
