@@ -2172,15 +2172,21 @@ namespace superbblas {
             factors_2_3(unsigned int number) {
                 if (number == 0) throw std::runtime_error("unsupported value");
 
-                // Find as many powers as possible of tree and then two
+                // a) Try to exactly factorize the number with powers of two and three
                 two = three = 0;
                 value = 1;
                 unsigned int remaining = number;
+                for (; remaining % 2 == 0; ++two, remaining /= 2, value *= 2)
+                    ;
+                for (; remaining % 3 == 0; ++three, remaining /= 3, value *= 3)
+                    ;
+
+                // b) Find as many powers as possible of tree and then two
                 for (; remaining >= 3; ++three, remaining /= 3, value *= 3)
                     ;
                 if (remaining >= 2) ++two, remaining /= 2, value *= 2;
 
-                // Try to exchange factors of 3 by 4
+                // c) Try to exchange factors of 3 by 4
                 for (; three > 0 && value * 4 / 3 <= number;
                      --three, two += 2, value = value * 4 / 3)
                     ;

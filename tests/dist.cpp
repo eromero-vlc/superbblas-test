@@ -48,11 +48,27 @@ template <std::size_t N, typename T, typename XPU> void dummyFill(tensor<N, T, X
 }
 
 void test_distribution() {
-    Coor<5> dim{4, 4, 4, 4, 3};
-    basic_partitioning("xyztc", dim, partitioning_distributed_procs("xyztc", dim, "xyzt", 6),
-                       "xyzt", 6);
-    basic_partitioning("xyztc", dim, partitioning_distributed_procs("xyztc", dim, "xyzt", 7),
-                       "xyzt", 7);
+    {
+        Coor<5> dim{4, 4, 4, 4, 3};
+        Coor<5> procs = partitioning_distributed_procs("xyztc", dim, "xyzt", 6);
+        if (procs != Coor<5>{3, 2, 1, 1, 1})
+            throw std::runtime_error("Unexpected result for partitioning_distributed_procs");
+        basic_partitioning("xyztc", dim, procs, "xyzt", 6);
+    }
+    {
+        Coor<5> dim{4, 4, 4, 4, 3};
+        Coor<5> procs = partitioning_distributed_procs("xyztc", dim, "xyzt", 7);
+        if (procs != Coor<5>{3, 2, 1, 1, 1})
+            throw std::runtime_error("Unexpected result for partitioning_distributed_procs");
+        basic_partitioning("xyztc", dim, procs, "xyzt", 7);
+    }
+    {
+        Coor<5> dim{4, 4, 4, 1, 3};
+        Coor<5> procs = partitioning_distributed_procs("xyztc", dim, "tzyx", 32);
+        if (procs != Coor<5>{2, 4, 4, 1, 1})
+            throw std::runtime_error("Unexpected result for partitioning_distributed_procs");
+        basic_partitioning("xyztc", dim, procs, "tzyx", 32);
+    }
 }
 
 constexpr std::size_t Nd = 7;          // xyztscn
