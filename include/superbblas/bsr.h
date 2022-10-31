@@ -44,8 +44,11 @@ namespace superbblas {
     namespace detail {
 
         template <typename XPU> struct CsrIndices {
-            Indices<XPU> i; ///< Where the columns indices (j) for the ith row start
-            Indices<XPU> j; ///< Column indices
+            Indices<XPU> i;              ///< Where the columns indices (j) for the ith row start
+            Indices<XPU> j;              ///< Column indices
+            bool j_has_negative_indices; ///< whether j has -1 to skip these nonzeros
+            int num_nnz_per_row;         ///< either the number of block nnz per row or
+                                         ///< -1 if not all rows has the same number of nonzeros
         };
 
         /// Component of a BSR tensor
@@ -121,6 +124,8 @@ namespace superbblas {
                 auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
+                if (bsr.j_has_negative_indices)
+                    throw std::runtime_error("bsr: unsupported -1 column indices when using MKL");
                 A = std::shared_ptr<sparse_matrix_t>(new sparse_matrix_t, [=](sparse_matrix_t *A) {
                     checkMKLSparse(mkl_sparse_destroy(*A));
                     delete A;
@@ -195,6 +200,7 @@ namespace superbblas {
 #    endif
                 for (IndexType i = 0; i < block_rows; ++i) {
                     for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
+                        if (jj[j] == -1) continue;
                         if (ly == ColumnMajor)
                             xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
                                   nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, T{1}, y + i * bi,
@@ -216,7 +222,11 @@ namespace superbblas {
             BSRComponent<Nd, Ni, T, Gpu> v; ///< BSR general information
             vector<IndexType, Gpu> ii, jj;  ///< BSR row and column nonzero indices
 #    ifdef SUPERBBLAS_USE_CUDA
-            cusparseMatDescr_t descrA; ///< cuSparse descriptor
+            cusparseMatDescr_t descrA; ///< cuSparse descriptor for BSR matrices
+            std::shared_ptr<cusparseSpMatDescr_t>
+                descrAell; ///< cuSparse descriptor for ELL matrices
+            bool isELL;    ///< whether the matrix is in ELL format; otherwise is BSR
+            mutable vector<T, Gpu> buffer; ///< Auxiliary memory used by cusparseSpMM
 #    else
             hipsparseMatDescr_t descrA; ///< hipSparse descriptor
 #    endif
@@ -231,10 +241,33 @@ namespace superbblas {
                 auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
+                cudaDeviceProp prop;
+                cudaCheck(cudaGetDeviceProperties(&prop, deviceId(v.i.ctx())));
+                isELL = bsr.num_nnz_per_row >= 0 && !is_complex<T>::value && prop.major >= 8;
+                if (bsr.j_has_negative_indices && !isELL)
+                    throw std::runtime_error("bsr: unsupported -1 column indices when using "
+                                             "cu/hipSPARSE and not using ELL");
+
 #    ifdef SUPERBBLAS_USE_CUDA
-                cusparseCheck(cusparseCreateMatDescr(&descrA));
-                cusparseCheck(cusparseSetMatIndexBase(descrA, CUSPARSE_INDEX_BASE_ZERO));
-                cusparseCheck(cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL));
+                if (!isELL) {
+                    cusparseCheck(cusparseCreateMatDescr(&descrA));
+                    cusparseCheck(cusparseSetMatIndexBase(descrA, CUSPARSE_INDEX_BASE_ZERO));
+                    cusparseCheck(cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL));
+                } else {
+                    static_assert(sizeof(IndexType) == 4);
+                    IndexType block_size = volume(v.blocki);
+                    IndexType num_cols = volume(v.dimd);
+                    IndexType num_rows = volume(v.dimi);
+                    descrAell = std::shared_ptr<cusparseSpMatDescr_t>(new cusparseSpMatDescr_t,
+                                                                      [](cusparseSpMatDescr_t *p) {
+                                                                          cusparseDestroySpMat(*p);
+                                                                          delete p;
+                                                                      });
+                    cusparseCheck(cusparseCreateBlockedEll(
+                        &*descrAell, num_rows, num_cols, block_size,
+                        block_size * bsr.num_nnz_per_row, jj.data(), v.it.data(),
+                        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                }
 #    else
                 hipsparseCheck(hipsparseCreateMatDescr(&descrA));
                 hipsparseCheck(hipsparseSetMatIndexBase(descrA, HIPSPARSE_INDEX_BASE_ZERO));
@@ -253,19 +286,49 @@ namespace superbblas {
                     throw std::runtime_error(
                         "Unsupported row-major on Y with cu/hipSPARSE's bsrmm");
                 IndexType block_size = volume(v.blocki);
-                IndexType block_cols = volume(v.dimd) / block_size;
-                IndexType block_rows = volume(v.dimi) / block_size;
+                IndexType num_cols = volume(v.dimd);
+                IndexType num_rows = volume(v.dimi);
+                IndexType block_cols = num_cols / block_size;
+                IndexType block_rows = num_rows / block_size;
                 IndexType num_blocks = jj.size();
 #    ifdef SUPERBBLAS_USE_CUDA
-                cusparseCheck(cusparseXbsrmm(
-                    ii.ctx().cusparseHandle,
-                    v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
-                    !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
-                           : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                    lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
-                                      : CUSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols, num_blocks, alpha, descrA, v.it.data(),
-                    ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
+                if (!isELL) {
+                    cusparseCheck(cusparseXbsrmm(
+                        ii.ctx().cusparseHandle,
+                        v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
+                        !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                               : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                        lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                                          : CUSPARSE_OPERATION_TRANSPOSE,
+                        block_rows, ncols, block_cols, num_blocks, alpha, descrA, v.it.data(),
+                        ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
+                } else {
+                    cusparseDnMatDescr_t matx, maty;
+                    cudaDataType cudaType = toCudaDataType<T>();
+                    cusparseCheck(cusparseCreateDnMat(
+                        &matx, num_rows, ncols, ldx, (void *)x, cudaType,
+                        lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                    cusparseCheck(cusparseCreateDnMat(
+                        &maty, num_rows, ncols, ldy, (void *)y, cudaType,
+                        ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                    std::size_t bufferSize;
+                    cusparseCheck(cusparseSpMM_bufferSize(
+                        ii.ctx().cusparseHandle,
+                        !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                               : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                        CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrAell, matx, &beta, maty,
+                        cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
+                    if (bufferSize > buffer.size() * sizeof(T))
+                        buffer = vector<T, Gpu>((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx());
+                    cusparseCheck(cusparseSpMM(ii.ctx().cusparseHandle,
+                                               !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                                                      : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                                               CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrAell,
+                                               matx, &beta, maty, cudaType,
+                                               CUSPARSE_SPMM_ALG_DEFAULT, buffer.data()));
+                    cusparseDestroyDnMat(matx);
+                    cusparseDestroyDnMat(maty);
+                }
 #    else
                 hipsparseCheck(hipsparseXbsrmm(
                     ii.ctx().hipsparseHandle,
@@ -447,10 +510,13 @@ namespace superbblas {
         // Auxiliary functions
         //
 
-        /// Return BSR indices for a given tensor BSR
-        ///
+        /// Return BSR indices for a given tensor BSR and whether the nonzero
+        /// pattern is compatible with blocked ELL, all rows has the same number
+        /// of nonzeros, and unused nonzeros may be reported with a -1 on the
+        /// the first domain coordinate.
 
-        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU>
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
+                  typename std::enable_if<(Nd > 0 && Ni > 0), bool>::type = true>
         CsrIndices<XPU> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
                                         bool return_jj_blocked = false) {
             // Check that IndexType is big enough
@@ -461,6 +527,12 @@ namespace superbblas {
             Indices<Cpu> vi = makeSure(v.i, Cpu{});
             vector<Coor<Nd>, Cpu> vj = makeSure(v.j, Cpu{});
 
+            // Check if all rows has the same number of nonzeros
+            bool same_nnz_per_row = true;
+            for (std::size_t i = 1; i < vi.size(); ++i)
+                if (vi[i] != vi[0]) same_nnz_per_row = false;
+            int num_nnz_per_row = vi.size() > 0 && same_nnz_per_row ? vi[0] : -1;
+
             // Compute index for the first nonzero on the ith row
             ii[0] = 0;
             for (std::size_t i = 0; i < vi.size(); ++i) ii[i + 1] = ii[i] + vi[i];
@@ -468,15 +540,32 @@ namespace superbblas {
             // Transform the domain coordinates into indices
             Coor<Nd> strided = get_strides<IndexType>(v.dimd, v.co);
             IndexType block_nnz = v.j.size();
-            std::size_t bd = return_jj_blocked ? volume(v.blockd) : 1;
+            IndexType bd = return_jj_blocked ? volume(v.blockd) : 1;
+            bool there_are_minus_ones_in_columns = false;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
             for (IndexType i = 0; i < block_nnz; ++i) {
-                jj[i] = coor2index(vj[i], v.dimd, strided) / bd;
+                if (vj[i][0] == -1) there_are_minus_ones_in_columns = true;
+                jj[i] = (vj[i][0] == -1 ? -1 : coor2index(vj[i], v.dimd, strided) / bd);
             }
 
-            return {makeSure(ii, v.i.ctx()), makeSure(jj, v.j.ctx())};
+            // Unsupported -1 in the domain coordinate unless using the ELL format, which
+            // requires all rows to have the same number of nonzeros
+            if (there_are_minus_ones_in_columns && !same_nnz_per_row)
+                throw std::runtime_error(
+                    "bsr: unsupported nonzero pattern specification, some domain coordinates have "
+                    "-1 but not all block rows have the same number of nonzero blocks");
+
+            return {makeSure(ii, v.i.ctx()), makeSure(jj, v.j.ctx()),
+                    there_are_minus_ones_in_columns, num_nnz_per_row};
+        }
+
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
+                  typename std::enable_if<(Nd == 0 || Ni == 0), bool>::type = true>
+        std::pair<CsrIndices<XPU>, int> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
+                                                        bool return_jj_blocked = false) {
+            return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1};
         }
 
         /// Return splitting of dimension labels for the RSB operator - tensor multiplication

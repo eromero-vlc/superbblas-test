@@ -262,6 +262,7 @@ int main(int argc, char **argv) {
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
+        test<float, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
         test<std::complex<float>, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
     }
 #endif
