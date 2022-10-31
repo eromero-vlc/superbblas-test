@@ -387,7 +387,7 @@ int main(int argc, char **argv) {
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
-        test(dim, procs, rank, npros, ctx, ctx.toGpu(0), nrep);
+        test(dim, procs, rank, nprocs, ctx, ctx.toGpu(0), nrep);
     }
 #endif
 
