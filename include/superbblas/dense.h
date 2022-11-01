@@ -109,6 +109,8 @@ namespace superbblas {
         void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m, T alpha,
                         vector<T, Cpu> a, vector<T, Cpu> x) {
 
+            if (n == 0 || k == 0 || m == 0) return;
+
             tracker<Cpu> _t("local trsm (Cpu)", a.ctx());
             _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
 

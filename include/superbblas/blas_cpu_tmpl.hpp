@@ -183,6 +183,7 @@ namespace superbblas {
 #    endif // SUPERBBLAS_USE_MKL
 
         inline void xcopy(BLASINT n, const SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
+            if (n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XCOPY(&n, x, &incx, y, &incy);
 #    else
@@ -191,6 +192,7 @@ namespace superbblas {
         }
 
         inline void xswap(BLASINT n, SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
+            if (n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XSWAP(&n, x, &incx, y, &incy);
 #    else
@@ -201,6 +203,7 @@ namespace superbblas {
         inline void xgemm(char transa, char transb, BLASINT m, BLASINT n, BLASINT k, SCALAR alpha,
                           const SCALAR *a, BLASINT lda, const SCALAR *b, BLASINT ldb, SCALAR beta,
                           SCALAR *c, BLASINT ldc, Cpu) {
+            if (m == 0 || n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XGEMM(&transa, &transb, &m, &n, &k, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 #    else
@@ -212,6 +215,7 @@ namespace superbblas {
         inline void xgemv(char transa, BLASINT m, BLASINT n, SCALAR alpha, const SCALAR *a,
                           BLASINT lda, const SCALAR *x, BLASINT incx, SCALAR beta, SCALAR *y,
                           BLASINT incy, Cpu) {
+            if (m == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XGEMV(&transa, &m, &n, &alpha, a, &lda, x, &incx, &beta, y, &incy);
 #    else
@@ -222,6 +226,7 @@ namespace superbblas {
 
         inline void xtrmm(char side, char uplo, char transa, char diag, BLASINT m, BLASINT n,
                           SCALAR alpha, SCALAR *a, BLASINT lda, SCALAR *b, BLASINT ldb, Cpu) {
+            if (m == 0 || n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XTRMM(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 #    else
@@ -232,6 +237,7 @@ namespace superbblas {
 
         inline void xtrsm(char side, char uplo, char transa, char diag, BLASINT m, BLASINT n,
                           SCALAR alpha, const SCALAR *a, BLASINT lda, SCALAR *b, BLASINT ldb, Cpu) {
+            if (m == 0 || n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XTRSM(&side, &uplo, &transa, &diag, &m, &n, &alpha, a, &lda, b, &ldb);
 #    else
@@ -243,6 +249,7 @@ namespace superbblas {
         inline void xhemm(char side, char uplo, BLASINT m, BLASINT n, SCALAR alpha, SCALAR *a,
                           BLASINT lda, SCALAR *b, BLASINT ldb, SCALAR beta, SCALAR *c, BLASINT ldc,
                           Cpu) {
+            if (m == 0 || n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XHEMM(&side, &uplo, &m, &n, &alpha, a, &lda, b, &ldb, &beta, c, &ldc);
 #    else
@@ -253,6 +260,7 @@ namespace superbblas {
 
         inline void xhemv(char uplo, BLASINT n, SCALAR alpha, SCALAR *a, BLASINT lda, SCALAR *x,
                           BLASINT incx, SCALAR beta, SCALAR *y, BLASINT incy, Cpu) {
+            if (n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XHEMV(&uplo, &n, &alpha, a, &lda, x, &incx, &beta, y, &incy);
 #    else
@@ -263,6 +271,7 @@ namespace superbblas {
 
         inline void xaxpy(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy,
                           Cpu) {
+            if (n == 0) return;
 #    ifndef SUPERBBLAS_USE_CBLAS
             XAXPY(&n, &alpha, x, &incx, y, &incy);
 #    else
@@ -271,6 +280,7 @@ namespace superbblas {
         }
 
         inline SCALAR xdot(BLASINT n, SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
+            if (n == 0) return (SCALAR)0;
 #    ifndef __SUPERBBLAS_USE_COMPLEX
 #        ifndef SUPERBBLAS_USE_CBLAS
             return XDOT(&n, x, &incx, y, &incy);
@@ -288,6 +298,7 @@ namespace superbblas {
         }
 
         inline void xscal(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, Cpu) {
+            if (n == 0) return;
             if (std::fabs(alpha) == SCALAR{0.0}) {
 #    ifdef _OPENMP
 #        pragma omp parallel for schedule(static)

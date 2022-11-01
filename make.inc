@@ -19,8 +19,8 @@ else
   BLAS_LDFLAGS ?= -L${MKLROOT}/lib/intel64 -lmkl_rt -lpthread -lm -ldl
 endif
 
-#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
-CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+#CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
 LDFLAGS ?= $(BLAS_LDFLAGS)
 
 #
@@ -28,8 +28,8 @@ LDFLAGS ?= $(BLAS_LDFLAGS)
 #
 NVCC ?= $(shell which nvcc)
 CUDADIR ?= $(shell dirname $(NVCC))/..
-#NVCCFLAGS ?= -x cu -g -G -arch=sm_75
-NVCCFLAGS ?= -x cu -O3 -arch=sm_75
+NVCCFLAGS ?= -x cu -g -G -arch=sm_75
+#NVCCFLAGS ?= -x cu -O3 -arch=sm_75
 NVCCLDFLAGS ?= -lcusolver -lcusparse -lcublas -lcudart
 
 #
