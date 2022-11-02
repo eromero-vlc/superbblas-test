@@ -69,7 +69,7 @@ ifeq ($(TARGET), cuda)
 	${NVCC} -E ${MPISBFLAG} ${NVCCFLAGS} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
 ifeq ($(TARGET), hip)
-	${HIP} -x c++ -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate >> $@
+	${HIP} -x c++ -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
 
 $(SOURCE_LIB): $(LIB_SOURCE_STEM).split
