@@ -432,6 +432,13 @@ namespace superbblas {
             vector(std::size_t n, T *ptr_aligned, std::shared_ptr<T_no_const> ptr, XPU xpu)
                 : n(n), ptr_aligned(ptr_aligned), ptr(ptr), xpu(xpu) {}
 
+            /// Conversion from `vector<T, XPU>` to `vector<const T, XPU>`
+            template <typename U = T_no_const,
+                      typename std::enable_if<!std::is_const<U>::value && std::is_const<T>::value &&
+                                                  std::is_same<const U, T>::value,
+                                              bool>::type = true>
+            vector(const vector<U, XPU> &v) : vector{v.n, (T *)v.ptr_aligned, v.ptr, v.xpu} {}
+
             /// Return the number of allocated elements
             std::size_t size() const { return n; }
 
@@ -460,13 +467,6 @@ namespace superbblas {
                 return ptr_aligned[i];
             }
 
-            /// Conversion from `vector<T, XPU>` to `vector<const T, XPU>`
-            template <typename U = T, typename std::enable_if<std::is_same<U, T_no_const>::value,
-                                                              bool>::type = true>
-            operator vector<const T, XPU>() const {
-                return {n, (const T *)ptr_aligned, ptr, xpu};
-            }
-
             /// Operator == compares size and content
             template <typename U = XPU,
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
@@ -484,7 +484,6 @@ namespace superbblas {
                 return !operator==(v);
             }
 
-        private:
             std::size_t n;                   ///< Number of allocated `T` elements
             T *ptr_aligned;                  ///< Pointer aligned
             std::shared_ptr<T_no_const> ptr; ///< Pointer to the allocated memory
