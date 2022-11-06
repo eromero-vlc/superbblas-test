@@ -463,7 +463,8 @@ namespace superbblas {
             }
 
             // Do the copy
-            tracker<XPU0> _t("local copy", v0.ctx());
+            tracker<XPU0> _t(std::string("local copy to cpu from ") + platformToStr(v0.ctx()),
+                             v0.ctx());
             _t.cost = (double)(sizeof(T) + sizeof(Q)) * indices0_xpu.size();
             copy_n<IndexType, T, Q>(1.0, v0.data(), indices0_xpu.begin(), v0.ctx(),
                                     indices0_xpu.size(), v1.data(), indices1.begin(), v1.ctx(),
@@ -605,7 +606,7 @@ namespace superbblas {
         void unpack(const UnpackedValues<IndexType, T, XPU> &r, const Component<Nd, T, XPU> &v,
                     MpiComm comm, EWOP, typename elem<T>::type alpha) {
 
-            tracker<XPU> _t("unpack", v.it.ctx());
+            tracker<XPU> _t(std::string("unpack ") + platformToStr(v.it.ctx()), v.it.ctx());
 
             // Do the addition
             std::size_t ncomponents = r.indices.size() / comm.nprocs;

@@ -113,6 +113,7 @@ namespace superbblas {
 
             static const SpMMAllowedLayout allowLayout = SameLayoutForXAndY;
             static const MatrixLayout preferredLayout = RowMajor;
+            static std::string implementation() { return "MKL"; }
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -168,6 +169,7 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T> struct BSR<Nd, Ni, T, Cpu> {
             BSRComponent<Nd, Ni, T, Cpu> v; ///< BSR general information
             vector<IndexType, Cpu> ii, jj;  ///< BSR row and column nonzero indices
+            static std::string implementation() { return "builtin_cpu"; }
 
             static const SpMMAllowedLayout allowLayout = AnyLayoutForXAndY;
             static const MatrixLayout preferredLayout = RowMajor;
@@ -233,6 +235,8 @@ namespace superbblas {
 
             static const SpMMAllowedLayout allowLayout = ColumnMajorForY;
             static const MatrixLayout preferredLayout = ColumnMajor;
+            std::string implementation_;
+            const std::string &implementation() const { return implementation_; }
 
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -250,11 +254,13 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (!isELL) {
+                    implementation_ = "cusparse_bsr";
                     cusparseCheck(cusparseCreateMatDescr(&descrA));
                     cusparseCheck(cusparseSetMatIndexBase(descrA, CUSPARSE_INDEX_BASE_ZERO));
                     cusparseCheck(cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL));
                 } else {
                     static_assert(sizeof(IndexType) == 4);
+                    implementation_ = "cusparse_ell";
                     IndexType block_size = volume(v.blocki);
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
@@ -269,6 +275,7 @@ namespace superbblas {
                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                 }
 #    else
+		implementation_ = "hipsparse_bsr";
                 hipsparseCheck(hipsparseCreateMatDescr(&descrA));
                 hipsparseCheck(hipsparseSetMatIndexBase(descrA, HIPSPARSE_INDEX_BASE_ZERO));
                 hipsparseCheck(hipsparseSetMatType(descrA, HIPSPARSE_MATRIX_TYPE_GENERAL));
@@ -937,7 +944,9 @@ namespace superbblas {
                               vector<T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
                               char okr, vector<T, XPU> vy) {
 
-            tracker<XPU> _t("local BSR matvec", vx.ctx());
+            tracker<XPU> _t(std::string("local BSR matvec (") + bsr.implementation() +
+                                std::string(")"),
+                            vx.ctx());
 
             // Quick exit
             if (volume(dimx) == 0 && volume(dimy) == 0) return;

@@ -1001,7 +1001,9 @@ namespace superbblas {
                         const Coor<Nd1> &dim1, vector<Q, XPU1> v1, Mask<XPU1> mask1, EWOP ewop,
                         CoorOrder co) {
 
-            tracker<XPU1> _t("local copy", v1.ctx());
+            tracker<XPU1> _t(std::string("local copy ") + platformToStr(v0.ctx()) +
+                                 std::string("-") + platformToStr(v1.ctx()),
+                             v1.ctx());
 
             // Shortcut to scale or zero out a tensor
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() &&
@@ -1337,7 +1339,8 @@ namespace superbblas {
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
-            tracker<XPU> _t("local contraction", vr.ctx());
+            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()),
+                            vr.ctx());
 
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))

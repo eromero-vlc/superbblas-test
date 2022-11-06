@@ -109,6 +109,11 @@ namespace superbblas {
         /// \param cuda: context
         inline void setDevice(Cpu) {}
 
+	/// Return a string identifying the platform
+        inline std::string platformToStr(Cpu) {
+            return "CPU";
+        }
+
 #ifdef SUPERBBLAS_USE_CUDA
 
         /// Throw exception if the given error isn't success
@@ -239,6 +244,11 @@ namespace superbblas {
             if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
         }
 
+	/// Return a string identifying the platform
+        inline std::string platformToStr(Cuda) {
+            return "CUDA";
+        }
+
 #elif defined(SUPERBBLAS_USE_HIP)
         inline void hipCheck(hipError_t err) {
             if (err != hipSuccess) {
@@ -361,6 +371,11 @@ namespace superbblas {
             int currentDevice;
             hipCheck(hipGetDevice(&currentDevice));
             if (currentDevice != deviceId(hip)) hipCheck(hipSetDevice(deviceId(hip)));
+        }
+
+	/// Return a string identifying the platform
+        inline std::string platformToStr(Hip) {
+            return "HIP";
         }
 
 #else
