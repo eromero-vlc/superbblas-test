@@ -166,6 +166,8 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
+            tracker<Cpu> _t("allocating CPU", cpu);
+
             // Do the allocation
             T *r = new T[n];
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
@@ -196,6 +198,8 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
+            tracker<Cpu> _t("deallocating CPU", cpu);
+
             // Remove annotation
             if (getTrackingMemory() && getAllocations(cpu.session).count((void *)ptr) > 0) {
                 const auto &it = getAllocations(cpu.session).find((void *)ptr);
@@ -222,13 +226,19 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
+            tracker<Cuda> _t("allocating CUDA", cuda);
+
             // Do the allocation
             setDevice(cuda);
             T *r = nullptr;
             if (cuda.alloc) {
                 r = (T *)cuda.alloc(sizeof(T) * n, CUDA);
             } else {
+#    if CUDART_VERSION >= 11020
+                cudaCheck(cudaMallocAsync(&r, sizeof(T) * n, cuda.stream));
+#    else
                 cudaCheck(cudaMalloc(&r, sizeof(T) * n));
+#    endif
             }
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
@@ -252,6 +262,8 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
+            tracker<Cuda> _t("deallocating CUDA", cuda);
+
             // Remove annotation
             if (getTrackingMemory() && getAllocations(cuda.session).count((void *)ptr) > 0) {
                 const auto &it = getAllocations(cuda.session).find((void *)ptr);
@@ -261,10 +273,15 @@ namespace superbblas {
 
             // Deallocate the pointer
             setDevice(cuda);
-            if (cuda.dealloc)
+            if (cuda.dealloc) {
                 cuda.dealloc((void *)ptr, CUDA);
-            else
+            } else {
+#    if CUDART_VERSION >= 11020
+                detail::cudaCheck(cudaFreeAsync((void *)ptr, cuda.stream));
+#    else
                 detail::cudaCheck(cudaFree((void *)ptr));
+#    endif
+            }
         }
 
 #elif defined(SUPERBBLAS_USE_HIP)
@@ -277,13 +294,19 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
+            tracker<Hip> _t("allocating HIP", hip);
+
             // Do the allocation
             setDevice(hip);
             T *r = nullptr;
             if (hip.alloc) {
                 r = (T *)hip.alloc(sizeof(T) * n, HIP);
             } else {
+#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+                hipCheck(hipMallocAsync(&r, sizeof(T) * n, hip.stream));
+#    else
                 hipCheck(hipMalloc(&r, sizeof(T) * n));
+#    endif
             }
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
@@ -307,6 +330,8 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (!ptr) return;
 
+            tracker<Hip> _t("deallocating HIP", hip);
+
             // Remove annotation
             if (getTrackingMemory() && getAllocations(hip.session).count((void *)ptr) > 0) {
                 const auto &it = getAllocations(hip.session).find((void *)ptr);
@@ -316,10 +341,15 @@ namespace superbblas {
 
             // Deallocate the pointer
             setDevice(hip);
-            if (hip.dealloc)
+            if (hip.dealloc) {
                 hip.dealloc((void *)ptr, HIP);
-            else
+            } else {
+#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+                detail::hipCheck(hipFreeAsync((void *)ptr, hip.stream));
+#    else
                 detail::hipCheck(hipFree((void *)ptr));
+#    endif
+            }
         }
 #endif
 
@@ -362,11 +392,18 @@ namespace superbblas {
                 setDevice(xpu1);
 #ifdef SUPERBBLAS_USE_CUDA
                 cudaCheck(
-                    cudaMemcpy(w, v, sizeof(T) * n,
-                               !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice));
+                    cudaMemcpyAsync(w, v, sizeof(T) * n,
+                                    !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice,
+                                    !v_is_on_cpu ? getStream(xpu0) : getStream(xpu1)));
+                sync(xpu0);
+                sync(xpu1);
 #elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipMemcpy(w, v, sizeof(T) * n,
-                                   !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice));
+                hipCheck(
+                    hipMemcpyAsync(w, v, sizeof(T) * n,
+                                   !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice,
+                                   !v_is_on_cpu ? getStream(xpu0) : getStream(xpu1)));
+                sync(xpu0);
+                sync(xpu1);
 #else
                 throw std::runtime_error("superbblas compiled with GPU support!");
 #endif
@@ -374,10 +411,13 @@ namespace superbblas {
             } else if (deviceId(xpu0) == deviceId(xpu1)) {
                 // Both are on the same device
                 setDevice(xpu0);
+                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
 #ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaMemcpy(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice));
+                cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
+                                          getStream(xpu1)));
 #elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipMemcpy(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice));
+                hipCheck(
+                    hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice, getStream(xpu1)));
 #else
                 throw std::runtime_error("superbblas compiled with GPU support!");
 #endif
@@ -385,10 +425,13 @@ namespace superbblas {
             } else {
                 // Each pointer is on a different device
                 setDevice(xpu1);
+                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
 #ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaMemcpyPeer(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n));
+                cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
+                                              getStream(xpu1)));
 #elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipMemcpyPeer(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n));
+                hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
+                                            getStream(xpu1)));
 #else
                 throw std::runtime_error("superbblas compiled with GPU support!");
 #endif
@@ -514,18 +557,32 @@ namespace superbblas {
             return thrust::device_pointer_cast(
                 reinterpret_cast<typename cuda_complex<T>::type *>(ptr));
         }
+
+#    ifdef SUPERBBLAS_USE_CUDA
+        /// Return the strema encapsulated for thrust
+        /// \param cuda: cuda context
+
+        inline auto thrust_par_on(Cuda cuda) { return thrust::cuda::par.on(cuda.stream); }
+#    elif defined(SUPERBBLAS_USE_HIP)
+        inline auto thrust_par_on(Hip hip) { return thrust::hip::par.on(hip.stream); }
+#    endif
 #endif
 
         inline void sync(Cpu) {}
 
 #ifdef SUPERBBLAS_USE_CUDA
-        inline void sync(Cuda cuda) {
+        inline void sync(Cuda cuda) { cudaCheck(cudaStreamSynchronize(cuda.stream)); }
+
+        inline void syncLegacyStream(Cuda cuda) {
             setDevice(cuda);
             cudaCheck(cudaDeviceSynchronize());
         }
 
+
 #elif defined(SUPERBBLAS_USE_HIP)
-        inline void sync(Hip hip) {
+        inline void sync(Hip hip) { hipCheck(hipStreamSynchronize(hip.stream)); }
+
+        inline void syncLegacyStream(Hip hip) {
             setDevice(hip);
             hipCheck(hipDeviceSynchronize());
         }
@@ -580,7 +637,7 @@ namespace superbblas {
         template <typename T> void zero_n(T *v, std::size_t n, Cuda cuda) {
             if (n == 0) return;
             setDevice(cuda);
-            cudaCheck(cudaMemset(v, 0, sizeof(T) * n));
+            cudaCheck(cudaMemsetAsync(v, 0, sizeof(T) * n, cuda.stream));
         }
 
 #elif defined(SUPERBBLAS_USE_HIP)
@@ -592,7 +649,7 @@ namespace superbblas {
         template <typename T> void zero_n(T *v, std::size_t n, Hip hip) {
             if (n == 0) return;
             setDevice(hip);
-            hipCheck(hipMemset(v, 0, sizeof(T) * n));
+            hipCheck(hipMemsetAsync(v, 0, sizeof(T) * n, hip.stream));
         }
 
 #endif // SUPERBBLAS_USE_CUDA
@@ -635,7 +692,7 @@ namespace superbblas {
         inline void xscal(int n, T alpha, T *x, int incx, Cuda cuda) {
             if (std::fabs(alpha) == 0.0) {
                 setDevice(cuda);
-                cudaMemset2D(x, sizeof(T) * incx, 0, sizeof(T), n);
+                cudaMemset2DAsync(x, sizeof(T) * incx, 0, sizeof(T), n, cuda.stream);
                 return;
             }
             if (alpha == typename elem<T>::type{1}) return;
@@ -662,7 +719,7 @@ namespace superbblas {
         inline void xscal(int n, T alpha, T *x, int incx, Hip hip) {
             if (std::fabs(alpha) == 0.0) {
                 setDevice(hip);
-                hipMemset2D(x, sizeof(T) * incx, 0, sizeof(T), n);
+                hipMemset2DAsync(x, sizeof(T) * incx, 0, sizeof(T), n, hip.stream);
                 return;
             }
             if (alpha == typename elem<T>::type{1}) return;
@@ -830,8 +887,9 @@ namespace superbblas {
         template <typename T>
         DECL_SUM_T(T sum(const vector<T, Gpu> &v))
         IMPL({
+            setDevice(v.ctx());
             auto it = encapsulate_pointer(v.begin());
-            return thrust::reduce(it, it + v.size());
+            return thrust::reduce(thrust_par_on(v.ctx()), it, it + v.size());
         })
 #endif
 
@@ -874,13 +932,15 @@ namespace superbblas {
         DECL_SELECT_T(vector<IndexType, Gpu> select(const vector<IndexType, Gpu> &v, T *m,
                                                     const vector<IndexType, Gpu> &w))
         IMPL({
+            setDevice(v.ctx());
             vector<IndexType, Gpu> r{w.size(), v.ctx()};
             auto itv = encapsulate_pointer(v.begin());
             auto itm = encapsulate_pointer(m);
             auto itw = encapsulate_pointer(w.begin());
             auto itr = encapsulate_pointer(r.begin());
             auto itmv = thrust::make_permutation_iterator(itm, itv);
-            auto itr_end = thrust::copy_if(itw, itw + w.size(), itmv, itr, not_zero<T>{});
+            auto itr_end = thrust::copy_if(thrust_par_on(v.ctx()), itw, itw + w.size(), itmv, itr,
+                                           not_zero<T>{});
             r.resize(itr_end - itr);
             return r;
         })
@@ -912,6 +972,34 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_GPU
         case CUDA: // Do the same as with HIP
         case HIP: detail::deallocate(ptr, ctx.toGpu(0)); break;
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+    }
+
+    /// Force a synchronization on the device for superbblas stream
+    /// \param ctx: context
+
+    inline void sync(Context ctx) {
+        switch (ctx.plat) {
+        case CPU: detail::sync(ctx.toCpu(0)); break;
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with HIP
+        case HIP: detail::sync(ctx.toGpu(0)); break;
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+    }
+
+    /// Force a synchronization on the device for the legacy/default stream
+    /// \param ctx: context
+
+    inline void syncLegacyStream(Context ctx) {
+        switch (ctx.plat) {
+        case CPU: /* do nothing */ break;
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with HIP
+        case HIP: detail::syncLegacyStream(ctx.toGpu(0)); break;
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }

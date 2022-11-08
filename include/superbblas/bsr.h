@@ -245,14 +245,16 @@ namespace superbblas {
                 auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
+
+#    ifdef SUPERBBLAS_USE_CUDA
                 cudaDeviceProp prop;
                 cudaCheck(cudaGetDeviceProperties(&prop, deviceId(v.i.ctx())));
                 isELL = bsr.num_nnz_per_row >= 0 && !is_complex<T>::value && prop.major >= 8;
+                isELL = false; /// TODO: check ELL format, it isn't correct currently
                 if (bsr.j_has_negative_indices && !isELL)
                     throw std::runtime_error("bsr: unsupported -1 column indices when using "
-                                             "cu/hipSPARSE and not using ELL");
+                                             "cuSPARSE and not using ELL");
 
-#    ifdef SUPERBBLAS_USE_CUDA
                 if (!isELL) {
                     implementation_ = "cusparse_bsr";
                     cusparseCheck(cusparseCreateMatDescr(&descrA));
@@ -275,7 +277,11 @@ namespace superbblas {
                         CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                 }
 #    else
-		implementation_ = "hipsparse_bsr";
+                if (bsr.j_has_negative_indices)
+                    throw std::runtime_error("bsr: unsupported -1 column indices when using "
+                                             "hipSPARSE");
+
+                implementation_ = "hipsparse_bsr";
                 hipsparseCheck(hipsparseCreateMatDescr(&descrA));
                 hipsparseCheck(hipsparseSetMatIndexBase(descrA, HIPSPARSE_INDEX_BASE_ZERO));
                 hipsparseCheck(hipsparseSetMatType(descrA, HIPSPARSE_MATRIX_TYPE_GENERAL));
@@ -572,6 +578,7 @@ namespace superbblas {
                   typename std::enable_if<(Nd == 0 || Ni == 0), bool>::type = true>
         std::pair<CsrIndices<XPU>, int> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
                                                         bool return_jj_blocked = false) {
+            (void)return_jj_blocked;
             return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1};
         }
 

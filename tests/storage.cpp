@@ -576,16 +576,15 @@ int main(int argc, char **argv) {
     {
         Context ctx = createCpuContext();
         test(dim, checksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        clearCaches();
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
         test(dim, checksum, procs, nprocs, rank, ctx, ctx.toGpu(0), nrep);
+        clearCaches();
     }
 #endif
-
-    // Clear internal superbblas caches
-    clearCaches();
 
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Finalize();

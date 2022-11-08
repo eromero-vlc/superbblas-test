@@ -265,27 +265,27 @@ namespace superbblas {
 
         template <typename T, typename Q, typename IteratorV, typename IteratorW>
         void copy_n_same_dev_thrust(const IteratorV &itv, std::size_t n, const IteratorW &itw,
-                                    EWOp::Copy) {
-            thrust::copy_n(itv, n, itw);
+                                    EWOp::Copy, Gpu gpu) {
+            thrust::copy_n(thrust_par_on(gpu), itv, n, itw);
         }
 
         template <typename T, typename Q, typename IteratorV, typename IteratorW>
         void copy_n_same_dev_thrust(const IteratorV &itv, std::size_t n, const IteratorW &itw,
-                                    EWOp::Add) {
+                                    EWOp::Add, Gpu gpu) {
             thrust::transform(
-                itv, itv + n, itw, itw,
+                thrust_par_on(gpu), itv, itv + n, itw, itw,
                 plus<typename cuda_complex<T>::type, typename cuda_complex<Q>::type>());
         }
 
         template <typename IndexType, typename T, typename Q, typename IteratorV, typename EWOP>
         void copy_n_same_dev_thrust(const IteratorV &itv, IndexType n, Q *w,
-                                    const IndexType *indicesw, EWOP) {
+                                    const IndexType *indicesw, EWOP, Gpu gpu) {
             if (indicesw == nullptr) {
-                copy_n_same_dev_thrust<T, Q>(itv, n, encapsulate_pointer(w), EWOP{});
+                copy_n_same_dev_thrust<T, Q>(itv, n, encapsulate_pointer(w), EWOP{}, gpu);
             } else {
                 auto itw = thrust::make_permutation_iterator(encapsulate_pointer(w),
                                                              encapsulate_pointer(indicesw));
-                copy_n_same_dev_thrust<T, Q>(itv, n, itw, EWOP{});
+                copy_n_same_dev_thrust<T, Q>(itv, n, itw, EWOP{}, gpu);
             }
         }
 
@@ -304,21 +304,21 @@ namespace superbblas {
             if (indicesv == nullptr) {
                 auto itv = encapsulate_pointer(v);
                 if (alpha == typename elem<T>::type{1}) {
-                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{});
+                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{}, xpu);
                 } else {
                     copy_n_same_dev_thrust<IndexType, T, Q>(
                         thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
-                        EWOP{});
+                        EWOP{}, xpu);
                 }
             } else {
                 auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indicesv));
                 if (alpha == typename elem<T>::type{1}) {
-                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{});
+                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{}, xpu);
                 } else {
                     copy_n_same_dev_thrust<IndexType, T, Q>(
                         thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
-                        EWOP{});
+                        EWOP{}, xpu);
                 }
             }
         }
@@ -337,7 +337,7 @@ namespace superbblas {
                 setDevice(xpu);
                 auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
                                                              encapsulate_pointer(indices));
-                thrust::fill_n(itv, n, T{0});
+                thrust::fill_n(thrust_par_on(xpu), itv, n, T{0});
             }
         }
 
@@ -824,24 +824,24 @@ namespace superbblas {
             };
         }
 
-        template <typename IndexType, typename T, typename Q, typename XPU, typename EWOP>
+        template <typename IndexType, typename T, typename Q, typename EWOP>
         void copy_n_blocking_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                              IndexType blocking, const IndexType *indicesv,
-                                             IndexType n, Q *w, const IndexType *indicesw, XPU xpu,
+                                             IndexType n, Q *w, const IndexType *indicesw, Gpu xpu,
                                              EWOP) {
             using namespace copy_n_blocking_same_dev_thrust_ns;
             setDevice(xpu);
             if (indicesv == nullptr && indicesw == nullptr) {
                 copy_n<IndexType>(alpha, v, xpu, n * blocking, w, xpu, EWOP{});
             } else if (indicesv == nullptr && indicesw != nullptr) {
-                thrust::for_each_n(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                thrust::for_each_n(thrust_par_on(xpu), thrust::make_counting_iterator(IndexType(0)),
                                    blocking * n,
                                    copy_n_blocking_elem_w<IndexType, typename cuda_complex<T>::type,
                                                           typename cuda_complex<Q>::type, EWOP>(
                                        alpha, (typename cuda_complex<T>::type *)v, blocking,
                                        (typename cuda_complex<Q>::type *)w, indicesw));
             } else if (indicesv != nullptr && indicesw == nullptr) {
-                thrust::for_each_n(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+                thrust::for_each_n(thrust_par_on(xpu), thrust::make_counting_iterator(IndexType(0)),
                                    blocking * n,
                                    copy_n_blocking_elem_v<IndexType, typename cuda_complex<T>::type,
                                                           typename cuda_complex<Q>::type, EWOP>(
@@ -849,7 +849,7 @@ namespace superbblas {
                                        indicesv, (typename cuda_complex<Q>::type *)w));
             } else {
                 thrust::for_each_n(
-                    thrust::device, thrust::make_counting_iterator(IndexType(0)), blocking * n,
+                    thrust_par_on(xpu), thrust::make_counting_iterator(IndexType(0)), blocking * n,
                     copy_n_blocking_elem_v_and_w<IndexType, typename cuda_complex<T>::type,
                                                  typename cuda_complex<Q>::type, EWOP>(
                         alpha, (typename cuda_complex<T>::type *)v, blocking, indicesv,

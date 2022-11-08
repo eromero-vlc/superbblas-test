@@ -815,7 +815,7 @@ namespace superbblas {
             IndicesT<IndexType, Gpu> indices(vol, gpu);
             Coor<Nd, IndexType> size_strides = get_strides<IndexType>(size, FastToSlow);
 
-            thrust::transform(thrust::device, thrust::make_counting_iterator(IndexType(0)),
+            thrust::transform(thrust_par_on(gpu), thrust::make_counting_iterator(IndexType(0)),
                               thrust::make_counting_iterator(IndexType(vol)),
                               encapsulate_pointer(indices.data()),
                               perm_elem<IndexType, Nd>(toTCoor(from), toTCoor(size), toTCoor(dim),
@@ -1339,8 +1339,7 @@ namespace superbblas {
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
-            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()),
-                            vr.ctx());
+            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()), vr.ctx());
 
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))

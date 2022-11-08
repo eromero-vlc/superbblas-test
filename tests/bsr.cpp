@@ -258,17 +258,16 @@ int main(int argc, char **argv) {
     {
         Context ctx = createCpuContext();
         test<std::complex<float>, Cpu>(dim, procs, rank, max_power, ctx, ctx.toCpu(0));
+        clearCaches();
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
         test<float, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
         test<std::complex<float>, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
+        clearCaches();
     }
 #endif
-
-    // Clear internal superbblas caches
-    clearCaches();
 
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Finalize();
