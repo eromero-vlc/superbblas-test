@@ -28,8 +28,8 @@ LDFLAGS ?= $(BLAS_LDFLAGS)
 #
 NVCC ?= $(shell which nvcc)
 CUDADIR ?= $(shell dirname $(NVCC))/..
-NVCCFLAGS ?= -x cu -g -G -arch=sm_75
-#NVCCFLAGS ?= -x cu -O3 -arch=sm_75
+#NVCCFLAGS ?= -x cu -g -G -arch=sm_75
+NVCCFLAGS ?= -x cu -O3 -arch=sm_75
 NVCCLDFLAGS ?= -lcusolver -lcusparse -lcublas -lcudart
 
 #
