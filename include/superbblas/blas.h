@@ -578,7 +578,6 @@ namespace superbblas {
             cudaCheck(cudaDeviceSynchronize());
         }
 
-
 #elif defined(SUPERBBLAS_USE_HIP)
         inline void sync(Hip hip) { hipCheck(hipStreamSynchronize(hip.stream)); }
 

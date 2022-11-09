@@ -453,10 +453,11 @@ namespace superbblas {
                 int currentDevice = -1;
                 detail::cudaCheck(cudaGetDevice(&currentDevice));
                 if (currentDevice != device) detail::cudaCheck(cudaSetDevice(device));
-                const auto this_stream = stream = std::shared_ptr<cudaStream_t>(new cudaStream_t, [](cudaStream_t *p) {
-                    detail::cudaCheck(cudaStreamDestroy(*p));
-                    delete p;
-                });
+                const auto this_stream = stream =
+                    std::shared_ptr<cudaStream_t>(new cudaStream_t, [](cudaStream_t *p) {
+                        detail::cudaCheck(cudaStreamDestroy(*p));
+                        delete p;
+                    });
                 detail::cudaCheck(cudaStreamCreate(stream.get()));
                 cublasHandle = std::shared_ptr<cublasHandle_t>(
                     new cublasHandle_t, [this_stream](cublasHandle_t *p) {
