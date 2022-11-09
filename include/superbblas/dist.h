@@ -608,6 +608,9 @@ namespace superbblas {
 
             tracker<XPU> _t(std::string("unpack ") + platformToStr(v.it.ctx()), v.it.ctx());
 
+            // Transfer the buffer to the destination device
+            vector<T, XPU> buf = makeSure(r.buf, v.it.ctx());
+
             // Do the addition
             std::size_t ncomponents = r.indices.size() / comm.nprocs;
             _t.cost = 0;
@@ -615,8 +618,9 @@ namespace superbblas {
                 if (i / ncomponents == comm.rank) continue;
                 std::size_t displ = r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
                 for (unsigned int j = 0; j < r.indices[i].size(); j++) {
-                    const T *data = r.buf.data() + displ;
-                    copy_n<IndexType, T, T>(alpha, data, nullptr, Cpu{}, r.indices[i][j].size(),
+                    const T *data = buf.data() + displ;
+                    copy_n<IndexType, T, T>(alpha, data, nullptr, v.it.ctx(),
+                                            r.indices[i][j].size(),
                                             v.it.data() + r.indices_disp[i][j],
                                             r.indices[i][j].begin(), v.it.ctx(), EWOP{});
                     displ += r.indices[i][j].size();
