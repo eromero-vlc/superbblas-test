@@ -307,8 +307,8 @@ namespace superbblas {
         /// Vectors used in MPI communications
         template <typename T> struct PackedValues {
             vector<T, Cpu> buf;         ///< pointer to data
-            std::vector<MpiInt> counts; ///< number of items send/receive for rank i
-            std::vector<MpiInt> displ;  ///< index of the first element to send/receive for rank i
+            vector<MpiInt, Cpu> counts; ///< number of items send/receive for rank i
+            vector<MpiInt, Cpu> displ;  ///< index of the first element to send/receive for rank i
         };
 
         /// Allocate buffers and prepare arrays from a list of ranges to be used in a MPI communication
@@ -323,10 +323,10 @@ namespace superbblas {
             // Allocate PackedValues
             static_assert(MpiTypeSize % sizeof(T) == 0,
                           "Please change MpiTypeSize to be a power of two!");
-            PackedValues<T> r{vector<T, Cpu>(), std::vector<MpiInt>(comm.nprocs),
-                              std::vector<MpiInt>(comm.nprocs)};
 
             // Prepare counts and displ
+            vector<MpiInt, Cpu> counts(comm.nprocs, Cpu{});
+            vector<MpiInt, Cpu> displ(comm.nprocs, Cpu{});
             std::size_t nranges = toSend.size();
             unsigned int ncomponents = 1;
             std::size_t n = 0; // accumulate total number of T elements
@@ -345,16 +345,16 @@ namespace superbblas {
                     }
                 }
                 n += (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize * MpiTypeSize / sizeof(T);
-                r.counts[rank] = (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
-                r.displ[rank] = d;
-                d += r.counts[rank];
+                counts[rank] = (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                displ[rank] = d;
+                d += counts[rank];
             }
             if (d * MpiTypeSize != n * sizeof(T))
                 throw std::runtime_error(
                     "Exceeded the maximum package size: increase `MpiTypeSize`");
-            r.buf = vector<T, Cpu>(n, Cpu{}, MpiTypeSize);
+            vector<T, Cpu> buf(n, Cpu{}, MpiTypeSize);
 
-            return r;
+            return PackedValues<T>{buf, counts, displ};
         }
 
         /// Pack a list of subtensors contiguously in memory
@@ -510,7 +510,7 @@ namespace superbblas {
                                                         ncomponents1, comm, co);
             }
 
-            // Update the counts when using maskin
+            // Update the counts when using mask
             if (v.first.size() > 0 && v.first[0].mask_it.size() > 0)
                 for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
                     r.counts[rank] = (buf_disp[rank] * sizeof(Q) + MpiTypeSize - 1) / MpiTypeSize -
@@ -521,16 +521,13 @@ namespace superbblas {
         /// Vectors used in MPI communications
         template <typename IndexType, typename T, typename XPU>
         struct UnpackedValues : public PackedValues<T> {
-            std::vector<std::vector<IndicesT<IndexType, XPU>>>
-                indices; ///< indices of the destination elements
-            std::vector<std::vector<IndexType>> indices_disp; ///< constant added to all indices
-            UnpackedValues(vector<T, Cpu> buf, const std::vector<MpiInt> &counts,
-                           const std::vector<MpiInt> &displ,
-                           const std::vector<std::vector<IndicesT<IndexType, XPU>>> &indices,
-                           const std::vector<std::vector<IndexType>> &indices_disp)
-                : PackedValues<T>{buf, counts, displ},
-                  indices{indices},
-                  indices_disp{indices_disp} {}
+            IndicesT<IndexType, Cpu> indices_buf; ///< indices of the buffer
+            IndicesT<IndexType, XPU> indices;     ///< indices of the destination elements
+            UnpackedValues(const vector<T, Cpu> &buf, const vector<MpiInt, Cpu> &counts,
+                           const vector<MpiInt, Cpu> &displ,
+                           const IndicesT<IndexType, Cpu> &indices_buf,
+                           const IndicesT<IndexType, XPU> &indices)
+                : PackedValues<T>{buf, counts, displ}, indices_buf(indices_buf), indices(indices) {}
         };
 
         /// Allocate buffers for the receiving tensor pieces from a MPI communication
@@ -548,50 +545,96 @@ namespace superbblas {
 
             tracker<XPU> _t("prepare unpack", v.it.ctx());
 
-            UnpackedValues<IndexType, T, XPU> r{
-                vector<T, Cpu>(),                                                     // buf
-                std::vector<MpiInt>(comm.nprocs, 0),                                  // counts
-                std::vector<MpiInt>(comm.nprocs, 0),                                  // displ
-                std::vector<std::vector<IndicesT<IndexType, XPU>>>(toReceive.size()), // indices
-                std::vector<std::vector<IndexType>>(toReceive.size()) // indices_disp
-            };
+            // Find indices on cache
+            using Key = std::tuple<Proc_ranges<Nd>, Coor<Nd>, int, CoorOrder>;
+            using Value = std::tuple<vector<MpiInt, Cpu>,       // counts
+                                     vector<MpiInt, Cpu>,       // displ
+                                     IndicesT<IndexType, Cpu>,  // indices for the buffer
+                                     IndicesT<IndexType, XPU>>; // indices
+            struct cache_tag {};
+            auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(v.it.ctx());
+            Key key{toReceive, v.dim, deviceId(v.it.ctx()), co};
+            auto it = v.mask_it.size() == 0 ? cache.find(key) : cache.end();
 
-            // Compute the destination indices and the total number of elements received from each process
-            Order<Nd> o = trivial_order<Nd>();
-            std::size_t ncomponents = toReceive.size() / comm.nprocs;
-            for (std::size_t i = 0; i < toReceive.size(); ++i) {
-                if (i / ncomponents == comm.rank) continue;
-                std::size_t n = 0;
-                for (const auto &fsi : toReceive[i]) {
-                    Coor<Nd> fromi = fsi[0], sizei = fsi[1];
-                    auto indices1_pair = get_permutation_destination<IndexType>(
-                        o, {{}}, sizei, sizei, o, fromi, v.dim, AllowImplicitPermutation,
-                        v.it.ctx(), co);
-                    IndicesT<IndexType, XPU> indices1 = indices1_pair.first;
-                    IndexType disp = indices1_pair.second;
+            // If they are not, compute the permutation vectors
+            vector<MpiInt, Cpu> counts;
+            vector<MpiInt, Cpu> displ;
+            IndicesT<IndexType, Cpu> indices_buf;
+            IndicesT<IndexType, XPU> indices;
+            if (it == cache.end()) {
+                counts = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
+                displ = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
+                std::vector<IndicesT<IndexType, Cpu>> indices0;
+                auto mask_cpu = makeSure(v.mask_it, Cpu{});
 
-                    // Apply the masks
-                    if (v.mask_it.size() > 0)
-                        indices1 = select(indices1, v.mask_it.data() + disp, indices1);
+                // Compute the destination indices and the total number of elements received from each process
+                Order<Nd> o = trivial_order<Nd>();
+                std::size_t ncomponents = toReceive.size() / comm.nprocs;
+                std::size_t num_elems = 0;
+                for (std::size_t i = 0; i < toReceive.size(); ++i) counts[i] = 0;
+                for (std::size_t i = 0; i < toReceive.size(); ++i) {
+                    if (i / ncomponents == comm.rank) continue;
 
-                    // Store the number of permutation and the number of elements
-                    n += indices1.size();
-                    r.indices[i].push_back(indices1);
-                    r.indices_disp[i].push_back(disp);
+                    std::size_t n = 0;
+                    for (const auto &fsi : toReceive[i]) {
+                        Coor<Nd> fromi = fsi[0], sizei = fsi[1];
+                        auto indices1_pair = get_permutation_destination<IndexType>(
+                            o, {{}}, sizei, sizei, o, fromi, v.dim, DontAllowImplicitPermutation,
+                            Cpu{}, co);
+                        IndicesT<IndexType, Cpu> indices1 = indices1_pair.first;
+                        IndexType disp = indices1_pair.second;
+
+                        // Apply the masks
+                        if (v.mask_it.size() > 0)
+                            indices1 = select(indices1, mask_cpu.data() + disp, indices1);
+                        else
+                            indices1 = clone(indices1);
+
+                        // Apply the displacement
+                        std::for_each(indices1.begin(), indices1.end(),
+                                      [=](IndexType &d) { d += disp; });
+
+                        // Store the number of permutation and the number of elements
+                        n += indices1.size();
+                        num_elems += indices1.size();
+                        indices0.push_back(indices1);
+                    }
+                    counts[i / ncomponents] += (n * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
                 }
-                r.counts[i / ncomponents] += (n * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+
+                // Compute the displacements
+                displ[0] = 0;
+                for (std::size_t i = 1; i < comm.nprocs; ++i)
+                    displ[i] = displ[i - 1] + counts[i - 1];
+
+                // Create the permutation for the buffer
+                indices_buf = IndicesT<IndexType, Cpu>(num_elems, Cpu{});
+                const std::size_t num_T = MpiTypeSize / sizeof(T);
+                for (std::size_t i = 0, i0 = 0, i1 = 0; i < indices0.size();
+                     i0 += (indices0[i].size() + num_T - 1) / num_T * num_T,
+                                 i1 += indices0[i].size(), ++i) {
+                    for (IndexType j = 0, j1 = indices0[i].size(); j < j1; ++j)
+                        indices_buf[i1 + j] = i0 + j;
+                }
+
+                // Concatenate all indices into a single permutation vector
+                IndicesT<IndexType, Cpu> indices_cpu(num_elems, Cpu{});
+                for (std::size_t i = 0, i0 = 0; i < indices0.size(); i0 += indices0[i].size(), ++i)
+                    copy_n<IndexType>(indices0[i].data(), Cpu{}, indices0[i].size(),
+                                      indices_cpu.data() + i0, Cpu{});
+
+                indices = makeSure(indices_cpu, v.it.ctx());
+            } else {
+                counts = std::get<0>(it->second.value);
+                displ = std::get<1>(it->second.value);
+                indices_buf = std::get<2>(it->second.value);
+                indices = std::get<3>(it->second.value);
             }
 
-            // Compute the displacements
-            r.displ[0] = 0;
-            for (std::size_t i = 1; i < comm.nprocs; ++i)
-                r.displ[i] = r.displ[i - 1] + r.counts[i - 1];
-
             // Allocate the buffer
-            r.buf = vector<T, Cpu>((r.displ.back() + r.counts.back()) * (MpiTypeSize / sizeof(T)),
-                                   Cpu{});
+            vector<T, Cpu> buf((displ.back() + counts.back()) * (MpiTypeSize / sizeof(T)), Cpu{});
 
-            return r;
+            return UnpackedValues<IndexType, T, XPU>{buf, counts, displ, indices_buf, indices};
         }
 
         /// Unpack and copy packed tensors from a MPI communication
@@ -604,29 +647,15 @@ namespace superbblas {
 
         template <typename IndexType, std::size_t Nd, typename T, typename XPU, typename EWOP>
         void unpack(const UnpackedValues<IndexType, T, XPU> &r, const Component<Nd, T, XPU> &v,
-                    MpiComm comm, EWOP, typename elem<T>::type alpha) {
+                    EWOP, typename elem<T>::type alpha) {
 
             tracker<XPU> _t(std::string("unpack ") + platformToStr(v.it.ctx()), v.it.ctx());
 
             // Transfer the buffer to the destination device
-            vector<T, XPU> buf = makeSure(r.buf, v.it.ctx());
-
-            // Do the addition
-            std::size_t ncomponents = r.indices.size() / comm.nprocs;
-            _t.cost = 0;
-            for (std::size_t i = 0; i < r.indices.size(); ++i) {
-                if (i / ncomponents == comm.rank) continue;
-                std::size_t displ = r.displ[i / ncomponents] * (MpiTypeSize / sizeof(T));
-                for (unsigned int j = 0; j < r.indices[i].size(); j++) {
-                    const T *data = buf.data() + displ;
-                    copy_n<IndexType, T, T>(alpha, data, nullptr, v.it.ctx(),
-                                            r.indices[i][j].size(),
-                                            v.it.data() + r.indices_disp[i][j],
-                                            r.indices[i][j].begin(), v.it.ctx(), EWOP{});
-                    displ += r.indices[i][j].size();
-                }
-                _t.cost += (double)sizeof(T) * 2 * displ;
-            }
+            copy_n<IndexType, T, T>(alpha, r.buf.data(), r.indices_buf.data(), r.buf.ctx(),
+                                    r.indices.size(), v.it.data(), r.indices.data(), v.it.ctx(),
+                                    EWOP{});
+            _t.cost = (double)sizeof(T) * r.indices.size();
         }
 
         /// Asynchronous sending and receiving
@@ -654,59 +683,58 @@ namespace superbblas {
             if (comm.nprocs <= 1) return [] {};
 
             // Pack v0 and prepare for receiving data from other processes
-            std::shared_ptr<PackedValues<Q>> v0ToSend = std::make_shared<PackedValues<Q>>(
-                pack<IndexType, Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co));
-            std::shared_ptr<UnpackedValues<IndexType, Q, XPUr>> v1ToReceive =
-                std::make_shared<UnpackedValues<IndexType, Q, XPUr>>(
-                    prepare_unpack<IndexType>(toReceive, v1, comm, co));
+            PackedValues<Q> v0ToSend =
+                pack<IndexType, Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co);
+            UnpackedValues<IndexType, Q, XPUr> v1ToReceive =
+                prepare_unpack<IndexType>(toReceive, v1, comm, co);
 
             // Do the MPI communication
             static MPI_Datatype dtype = get_mpi_datatype();
             MPI_Request r = MPI_REQUEST_NULL;
-            assert(v0ToSend->counts.size() == comm.nprocs);
-            assert(v0ToSend->displ.size() == comm.nprocs);
-            assert(v1ToReceive->counts.size() == comm.nprocs);
-            assert(v1ToReceive->displ.size() == comm.nprocs);
+            assert(v0ToSend.counts.size() == comm.nprocs);
+            assert(v0ToSend.displ.size() == comm.nprocs);
+            assert(v1ToReceive.counts.size() == comm.nprocs);
+            assert(v1ToReceive.displ.size() == comm.nprocs);
             int dtype_size = 0;
             MPI_check(MPI_Type_size(dtype, &dtype_size));
             (void)dtype_size;
             assert((std::size_t)dtype_size == MpiTypeSize);
-            assert((v0ToSend->displ.back() + v0ToSend->counts.back()) * MpiTypeSize <=
-                   v0ToSend->buf.size() * sizeof(Q));
-            assert((v1ToReceive->displ.back() + v1ToReceive->counts.back()) * MpiTypeSize <=
-                   v1ToReceive->buf.size() * sizeof(Q));
-            assert(v0ToSend->counts[comm.rank] == 0);
-            assert(v1ToReceive->counts[comm.rank] == 0);
+            assert((v0ToSend.displ.back() + v0ToSend.counts.back()) * MpiTypeSize <=
+                   v0ToSend.buf.size() * sizeof(Q));
+            assert((v1ToReceive.displ.back() + v1ToReceive.counts.back()) * MpiTypeSize <=
+                   v1ToReceive.buf.size() * sizeof(Q));
+            assert(v0ToSend.counts[comm.rank] == 0);
+            assert(v1ToReceive.counts[comm.rank] == 0);
             if (getUseAsyncAlltoall()) {
                 // NOTE: detected hung of MPI_Ialltoallv in some cases; still exploring the source of the problem
-                MPI_check(MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
-                                         v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
-                                         v1ToReceive->counts.data(), v1ToReceive->displ.data(),
-                                         dtype, comm.comm, &r));
+                MPI_check(MPI_Ialltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
+                                         v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
+                                         v1ToReceive.counts.data(), v1ToReceive.displ.data(), dtype,
+                                         comm.comm, &r));
             } else {
                 tracker<Cpu> _t("alltoall", Cpu{});
-                MPI_check(MPI_Alltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
-                                        v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
-                                        v1ToReceive->counts.data(), v1ToReceive->displ.data(),
-                                        dtype, comm.comm));
-                v0ToSend.reset();
+                MPI_check(MPI_Alltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
+                                        v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
+                                        v1ToReceive.counts.data(), v1ToReceive.displ.data(), dtype,
+                                        comm.comm));
+                unpack(v1ToReceive, v1, ewop, Q(alpha));
+                return {};
             }
 
             // Do this later
-            return [=] {
+            // NOTE: keep `v0ToSend` and `v1ToReceive` around until `MPI_Ialltoallv` is finished
+            return [=]() mutable {
                 // Wait for the MPI communication to finish
-                if (getUseAsyncAlltoall()) {
+                {
                     tracker<Cpu> _t("alltoall", Cpu{});
-                    MPI_Request r0 = r; // this copy avoid compiler warnings
-                    MPI_check(MPI_Wait(&r0, MPI_STATUS_IGNORE));
+                    MPI_check(MPI_Wait(&r, MPI_STATUS_IGNORE));
                 }
 
-                // Do this copy is unnecessary, but v0ToSend needs to be captured to avoid
-                // being released until this point
-                std::shared_ptr<PackedValues<Q>> v0ToSend_dummy = v0ToSend;
+                // Clear origin buffer
+                v0ToSend.buf.clear();
 
                 // Copy back to v1
-                unpack(*v1ToReceive, v1, comm, ewop, Q(alpha));
+                unpack(v1ToReceive, v1, ewop, Q(alpha));
             };
         }
 #else
