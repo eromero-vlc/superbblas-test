@@ -41,7 +41,9 @@ namespace superbblas {
     /// Wait until the operation is finished
     /// \param request: operation to finish
 
-    inline void wait(const Request &request) { request(); }
+    inline void wait(const Request &request) {
+        if (request) request();
+    }
 
     namespace detail {
 
@@ -610,6 +612,7 @@ namespace superbblas {
 
             // Transfer the buffer to the destination device
             vector<T, XPU> buf = makeSure(r.buf, v.it.ctx());
+            _t.cost += (double)sizeof(T) * buf.size();
 
             // Do the addition
             std::size_t ncomponents = r.indices.size() / comm.nprocs;
@@ -625,7 +628,6 @@ namespace superbblas {
                                             r.indices[i][j].begin(), v.it.ctx(), EWOP{});
                     displ += r.indices[i][j].size();
                 }
-                _t.cost += (double)sizeof(T) * 2 * displ;
             }
         }
 
@@ -1491,13 +1493,13 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename XPU, typename EWOP>
-        std::array<Request, 2>
-        copy(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-             const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-             unsigned int ncomponents1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-             const Order<Nd1> &o1, const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop,
-             CoorOrder co) {
+        std::array<Request, 2> copy_request_dest_component(
+            typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+            unsigned int ncomponents1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+            const Order<Nd1> &o1, const Component<Nd1, Q, XPU> &v1, Comm comm, EWOP ewop,
+            CoorOrder co) {
 
             // Find precomputed pieces on cache
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
@@ -1552,7 +1554,7 @@ namespace superbblas {
             }
 
             // Do the sending and receiving
-            Request mpi_req = [] {};
+            Request mpi_req;
             if (need_comms)
                 mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
                                                  comm, ewop, co, alpha);
@@ -1661,25 +1663,30 @@ namespace superbblas {
             for (unsigned int i = 0; i < ncomponents1; ++i) {
                 for (const Component<Nd1, Q, XPU0> &c : v1.first) {
                     if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
-                                                            p1, ncomponents1, from1, dim1, o1, c,
-                                                            comm, ewop, co));
+                        reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
+                            alpha, p0, from0, size0, dim0, o0, v0, p1, ncomponents1, from1, dim1,
+                            o1, c, comm, ewop, co));
                 }
                 for (const Component<Nd1, Q, XPU1> &c : v1.second) {
                     if (c.componentId == i)
-                        reqs.push_back(copy<Nd0, Nd1, T, Q>(alpha, p0, from0, size0, dim0, o0, v0,
-                                                            p1, ncomponents1, from1, dim1, o1, c,
-                                                            comm, ewop, co));
+                        reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
+                            alpha, p0, from0, size0, dim0, o0, v0, p1, ncomponents1, from1, dim1,
+                            o1, c, comm, ewop, co));
                 }
             }
 
             // Do the local part
             for (const auto &r : reqs) wait(r[0]);
 
-            // Finish the rest later
-            return [=] {
-                for (const auto &r : reqs) wait(r[1]);
-            };
+            // Finish the rest later if there's something pending
+            bool pending_request = false;
+            for (const auto &r : reqs)
+                if (r[1]) pending_request = true;
+            if (pending_request)
+                return [=] {
+                    for (const auto &r : reqs) wait(r[1]);
+                };
+            return Request();
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -1907,6 +1914,37 @@ namespace superbblas {
             }
         }
 
+        /// Return a new components based on a partition
+        /// \param p: partitioning
+        /// \param v: tensor components
+        /// \param co: coordinate linearization order
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        Components_tmpl<N, T, XPU0, XPU1>
+        like_this_components(const From_size<N> &p, const Components_tmpl<N, T, XPU0, XPU1> &v,
+                             Comm comm) {
+
+            // Allocate the tensor
+            unsigned int ncomponents = v.first.size() + v.second.size();
+            Components_tmpl<N, T, XPU0, XPU1> v1;
+            for (unsigned int i = 0; i < v.first.size(); ++i) {
+                const unsigned int componentId = v.first[i].componentId;
+                const unsigned int pi = comm.rank * ncomponents + componentId;
+                const Coor<N> &dimi = p[pi][1];
+                vector<T, XPU0> v1i(volume(dimi), v.first[i].it.ctx());
+                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId, Mask<XPU0>{}});
+            }
+            for (unsigned int i = 0; i < v.second.size(); ++i) {
+                const unsigned int componentId = v.second[i].componentId;
+                const unsigned int pi = comm.rank * ncomponents + componentId;
+                const Coor<N> &dimi = p[pi][1];
+                vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx());
+                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId, Mask<XPU1>{}});
+            }
+
+            return v1;
+        }
+
         /// Return a tensor with a given partitioning and ordering
         /// \param p0: partitioning of the input tensor
         /// \param o0: dimension labels for the input tensor
@@ -1928,28 +1966,41 @@ namespace superbblas {
             if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
 
             // Allocate the tensor
-            unsigned int ncomponents = v0.first.size() + v0.second.size();
-            Components_tmpl<N, T, XPU0, XPU1> v1;
-            for (unsigned int i = 0; i < v0.first.size(); ++i) {
-                const unsigned int componentId = v0.first[i].componentId;
-                const unsigned int pi = comm.rank * ncomponents + componentId;
-                const Coor<N> &dimi = p1[pi][1];
-                vector<T, XPU0> v1i(volume(dimi), v0.first[i].it.ctx());
-                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId, Mask<XPU0>{}});
-            }
-            for (unsigned int i = 0; i < v0.second.size(); ++i) {
-                const unsigned int componentId = v0.second[i].componentId;
-                const unsigned int pi = comm.rank * ncomponents + componentId;
-                const Coor<N> &dimi = p1[pi][1];
-                vector<T, XPU1> v1i(volume(dimi), v0.second[i].it.ctx());
-                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId, Mask<XPU1>{}});
-            }
+            auto v1 = like_this_components(p1, v0, comm);
 
             // Copy the content of v0 into v1
             copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {{}}, dim1, o1, v1,
                           comm, EWOp::Copy{}, co);
 
             return v1;
+        }
+
+        /// Return a tensor with a given partitioning and ordering
+        /// \param p0: partitioning of the input tensor
+        /// \param o0: dimension labels for the input tensor
+        /// \param v0: input tensor components
+        /// \param p1: partitioning of the output tensor in consecutive ranges
+        /// \param o1: dimension labels for the output tensor
+        /// \param co: coordinate linearization order
+        /// \param force_copy: whether to NOT avoid copy if the partition is the same
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        std::pair<Components_tmpl<N, T, XPU0, XPU1>, Request>
+        reorder_tensor_request(const From_size<N> &p0, const Order<N> &o0, const Coor<N> &from0,
+                               const Coor<N> &size0, const Coor<N> &dim0,
+                               const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
+                               const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
+                               bool force_copy = false) {
+
+            // If the two orderings and partitions are equal, return the tensor
+            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request()};
+
+            // Allocate the tensor
+            auto v1 = like_this_components(p1, v0, comm);
+
+            // Copy the content of v0 into v1
+            return {v1, copy_request<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1,
+                                              {{}}, dim1, o1, v1, comm, EWOp::Copy{}, co)};
         }
 
         /// Check that the given components are compatible
@@ -2472,7 +2523,7 @@ namespace superbblas {
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
             copyadd, co));
-        if (request) *request = []() {};
+        if (request) *request = Request{};
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -2597,6 +2648,57 @@ namespace superbblas {
                      const PartitionItem<Ndo> *, const Coor<Ndo> &, int, const char, T **,
                      const Context *, CoorOrder, Session = 0) {
         throw std::runtime_error("contraction: unsupported type");
+    }
+
+    /// Return the subranges resulting from subtracting a range, that is, making a hole
+    /// \param from: first element of the range to subtract
+    /// \param size: number of elements in each direction of the range to subtract
+    /// \param dim: total number of elements in each direction
+
+    template <std::size_t N>
+    std::vector<std::array<Coor<N>, 2>> make_hole(const Coor<N> &from, const Coor<N> &size,
+                                                       const Coor<N> &dim) {
+        /// Shortcut when N == 0
+        if (N == 0) return {};
+
+        /// Shortcut when subtracting an empty range
+        if (detail::volume(size) == 0)
+            return std::vector<std::array<Coor<N>, 2>>(1, std::array<Coor<N>, 2>{Coor<N>{{}}, dim});
+
+        // In the general case, return as many subranges as dimensions, each of the subranges
+        // follows the pattern
+        //  returned |  Coor 0  |  Coor 1  |  Coor 2  |
+        //  subrange | subrange | subrange | subrange | ...
+        //  --------------------------------------------
+        //      0    | antihole |   full   |  full    | ...
+        //      1    |   hole   | antihole |  full    | ...
+        //      2    |   hole   |   hole   | antihole | ...
+        //    ...
+
+        std::vector<std::array<Coor<N>, 2>> r; // subranges to return
+        r.reserve(N);
+        for (std::size_t i = 0; i < N; ++i) {
+            Coor<N> nfrom, nsize;
+            // Fill with hole
+            for (std::size_t j = 0; j < i; j++) {
+                nfrom[j] = from[j];
+                nsize[j] = size[j];
+            }
+
+            // Fill with the antihole
+            nfrom[i] = detail::normalize_coor(from[i] + size[i], dim[i]);
+            nsize[i] = dim[i] - size[i];
+
+            // Fill with full
+            for (std::size_t j = i + 1; j < N; j++) {
+                nfrom[j] = 0;
+                nsize[j] = dim[j];
+            }
+
+            r.push_back({nfrom, nsize});
+        }
+
+	return r;
     }
 }
 

@@ -167,7 +167,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
 #endif
-                    SlowToFast, Copy);
+                    SlowToFast);
             }
         }
         sync(xpu);

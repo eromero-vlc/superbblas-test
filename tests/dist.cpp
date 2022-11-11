@@ -71,6 +71,36 @@ void test_distribution() {
     }
 }
 
+template <std::size_t N>
+void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &dim) {
+
+    auto r_ = make_hole(from, size, dim);
+    From_size_out<N> r(r_.size(), Cpu{});
+    std::copy_n(r_.begin(), r_.size(), r.begin());
+
+    for (const auto &it : r) {
+        // Make sure that the resulting range has fully support on (0, dim)
+        if (volume(intersection(it[0], it[1], Coor<N>{{}}, dim, dim)) != volume(it[1]))
+            throw std::runtime_error("Unexpected result in `subtract_range`");
+
+	// Make sure that the resulting range has no support on (from, size)
+        if (volume(intersection(it[0], it[1], from, size, dim)) != 0)
+            throw std::runtime_error("Unexpected result in `subtract_range`");
+    }
+
+    // Check that the resulting ranges have no overlap
+    for (std::size_t i = 0; i < r.size() - 1; ++i) {
+        From_size_out<N> ri(r.size() - i - 1, Cpu{});
+        std::copy(r.begin() + i + 1, r.end(), ri.begin());
+        if (volume(intersection(ri, r[i][0], r[i][1], dim)) != 0)
+            throw std::runtime_error("Unexpected result in `subtract_range`");
+    }
+
+    // Check the resulting ranges together with the hole covers the whole positive range
+    if (volume(r) + volume(size) != volume(dim))
+        throw std::runtime_error("Unexpected result in `subtract_range`");
+}
+
 constexpr std::size_t Nd = 7;          // xyztscn
 constexpr unsigned int nS = 4, nC = 3; // length of dimension spin and color dimensions
 constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
@@ -332,6 +362,9 @@ int main(int argc, char **argv) {
 #endif
 
     test_distribution();
+
+    test_make_hole<1>({2}, {3}, {8});
+    test_make_hole<2>(Coor<2>{2, 0}, Coor<2>{3, 1}, Coor<2>{8, 1});
 
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1};
