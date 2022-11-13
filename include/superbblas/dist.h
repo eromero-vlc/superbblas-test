@@ -1884,6 +1884,7 @@ namespace superbblas {
                                                          report_inconsistencies);
                 pr[i][1] = get_dimensions<Nd0, Nd1, Ndo>(o0, p0[i][1], o1, p1[i][1], o_r,
                                                          report_inconsistencies);
+                if (volume(pr[i][1]) == 0) pr[i][0] = pr[i][1] = Coor<Ndo>{{}};
             }
             Coor<Ndo> dimr =
                 get_dimensions<Nd0, Nd1, Ndo>(o0, dim0, o1, dim1, o_r, report_inconsistencies);
@@ -2027,15 +2028,14 @@ namespace superbblas {
             }
 
             // Reorder the first tensor if needed
-            From_size<Nd0> p0r = p0;
+            From_size_out<Nd0> p0r;
             if (o0 != sug_o0) {
-                From_size_out<Nd0> p0r_ = From_size_out<Nd0>(p0.size(), p0.ctx());
+                p0r = From_size_out<Nd0>(p0.size(), p0.ctx());
                 Coor<Nd0> perm = find_permutation(o0, sug_o0);
                 for (unsigned int i = 0; i < p0.size(); ++i) {
-                    p0r_[i][0] = reorder_coor(p0[i][0], perm);
-                    p0r_[i][1] = reorder_coor(p0[i][1], perm);
+                    p0r[i][0] = reorder_coor(p0[i][0], perm);
+                    p0r[i][1] = reorder_coor(p0[i][1], perm);
                 }
-                p0r = p0r_;
             }
 
             // Change the second partition by using the same distribution as the first tensor
@@ -2044,11 +2044,23 @@ namespace superbblas {
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 p1r[i][0] = get_dimensions(o0, p0[i][0], o1, Coor<Nd1>{{}}, sug_o1, false);
                 p1r[i][1] = get_dimensions(o0, p0[i][1], o1, dim1, sug_o1, false);
+
+                // Avoid the contraction of empty tensors
+                if (volume(p0[i][1]) == 0 || volume(p1r[i][1]) == 0) {
+                    if (p0[i][0] != Coor<Nd0>{{}} || p0[i][1] != Coor<Nd0>{{}}) {
+                        if (p0r.size() == 0) {
+                            p0r = From_size_out<Nd0>(p0.size(), p0.ctx());
+                            std::copy_n(p0.data(), p0.size(), p0r.data());
+                        }
+                        p0r[i][0] = p0r[i][1] = Coor<Nd0>{{}};
+                    }
+                    p1r[i][0] = p1r[i][1] = Coor<Nd1>{{}};
+                }
             }
             bool changed1 = (o1 != sug_o1 || p1 != (From_size<Nd1>)p1r);
 
             // Return the change on the second tensor
-            return {p0r, changed1 ? (From_size<Nd1>)p1r : p1};
+            return {p0r.size() > 0 ? (From_size<Nd0>)p0r : p0, changed1 ? (From_size<Nd1>)p1r : p1};
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
@@ -2361,6 +2373,9 @@ namespace superbblas {
                                            : dim[perm[i]] / procs_perm[i] * cproc[i] +
                                                  std::min(cproc[i], dim[perm[i]] % procs_perm[i]);
             }
+
+            // Normalize empty ranges
+            if (detail::volume(fs[rank][1])) fs[rank][0] = fs[rank][1] = Coor<Nd>{{}};
         }
 
         return fs;
