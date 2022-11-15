@@ -14,6 +14,21 @@
 
 #ifdef SUPERBBLAS_USE_MPI
 #    include "mpi.h"
+
+// If using Open-MPI check if supporting GPU aware API
+#    if OMPI_MAJOR_VERSION >= 4 || MPICH_NUMVERSION >= 30201000
+#        include "mpi-ext.h"
+#    endif // OMPI_MAJOR_VERSION >= 4
+#    if defined(SUPERBBLAS_USE_CUDA) &&                                                            \
+        (defined(MPIX_CUDA_AWARE_SUPPORT) ||                                                       \
+         (defined(OMPI_HAVE_MPI_EXT_CUDA) && OMPI_HAVE_MPI_EXT_CUDA))
+#        define SUPERBBLAS_TEST_MPI_GPU
+#    endif
+#    if defined(SUPERBBLAS_USE_HIP) &&                                                             \
+        (defined(MPIX_ROCM_AWARE_SUPPORT) ||                                                       \
+         (defined(OMPI_HAVE_MPI_EXT_ROCM) && OMPI_HAVE_MPI_EXT_ROCM))
+#        define SUPERBBLAS_TEST_MPI_GPU
+#    endif
 #endif // SUPERBBLAS_USE_MPI
 
 namespace superbblas {
@@ -41,7 +56,9 @@ namespace superbblas {
     /// Wait until the operation is finished
     /// \param request: operation to finish
 
-    inline void wait(const Request &request) { request(); }
+    inline void wait(const Request &request) {
+        if (request) request();
+    }
 
     namespace detail {
 
@@ -305,8 +322,8 @@ namespace superbblas {
         inline void barrier(MpiComm comm) { MPI_Barrier(comm.comm); }
 
         /// Vectors used in MPI communications
-        template <typename T> struct PackedValues {
-            vector<T, Cpu> buf;         ///< pointer to data
+        template <typename T, typename XPUbuff> struct PackedValues {
+            vector<T, XPUbuff> buf;     ///< pointer to data
             vector<MpiInt, Cpu> counts; ///< number of items send/receive for rank i
             vector<MpiInt, Cpu> displ;  ///< index of the first element to send/receive for rank i
         };
@@ -317,8 +334,9 @@ namespace superbblas {
         /// \param ncomponents: comm.nprocs * ncomponents == the length of each element in `ranges`
         /// \param comm: communicator
 
-        template <std::size_t Nd, typename T>
-        PackedValues<T> prepare_pack(const std::vector<Proc_ranges<Nd>> &toSend, MpiComm comm) {
+        template <typename T, typename XPUbuff, std::size_t Nd>
+        PackedValues<T, XPUbuff> prepare_pack(const std::vector<Proc_ranges<Nd>> &toSend,
+                                              MpiComm comm, XPUbuff xpu) {
 
             // Allocate PackedValues
             static_assert(MpiTypeSize % sizeof(T) == 0,
@@ -352,9 +370,12 @@ namespace superbblas {
             if (d * MpiTypeSize != n * sizeof(T))
                 throw std::runtime_error(
                     "Exceeded the maximum package size: increase `MpiTypeSize`");
-            vector<T, Cpu> buf(n, Cpu{}, MpiTypeSize);
 
-            return PackedValues<T>{buf, counts, displ};
+            // NOTE: MPI calls have problems mixing null pointers with GPU pointers
+            // if (deviceId(xpu) != CPU_DEVICE_ID && n == 0) n = MpiTypeSize / sizeof(T);
+            vector<T, XPUbuff> buf(n, xpu, MpiTypeSize);
+
+            return PackedValues<T, XPUbuff>{buf, counts, displ};
         }
 
         /// Pack a list of subtensors contiguously in memory
@@ -369,26 +390,26 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
-                  typename XPU0>
-        void pack(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, const Coor<Nd0> &dim0,
-                  vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
-                  typename Indices<Cpu>::iterator disp1, vector<Q, Cpu> &v1,
-                  unsigned int ncomponents1, MpiComm comm, CoorOrder co) {
+                  typename XPU0, typename XPUbuff>
+        void pack_component(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, const Coor<Nd0> &dim0,
+                            vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
+                            typename Indices<Cpu>::iterator disp1, vector<Q, XPUbuff> &v1,
+                            unsigned int ncomponents1, MpiComm comm, CoorOrder co) {
 
             assert(fs.size() == comm.nprocs * ncomponents1);
 
             // Find indices on cache
             using Key =
-                std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, CoorOrder>;
-            using PairIndices = std::pair<IndicesT<IndexType, XPU0>, IndicesT<IndexType, Cpu>>;
+                std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, int, CoorOrder>;
+            using PairIndices = std::pair<IndicesT<IndexType, XPU0>, IndicesT<IndexType, XPUbuff>>;
             struct cache_tag {};
             auto cache = getCache<Key, PairIndices, TupleHash<Key>, cache_tag>(v0.ctx());
-            Key key{fs, dim0, get_perms(o0, o1), deviceId(v0.ctx()), co};
+            Key key{fs, dim0, get_perms(o0, o1), deviceId(v0.ctx()), deviceId(v1.ctx()), co};
             auto it = mask0.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
             IndicesT<IndexType, XPU0> indices0_xpu;
-            IndicesT<IndexType, Cpu> indices1;
+            IndicesT<IndexType, XPUbuff> indices1;
             if (it == cache.end()) {
                 tracker<XPU0> _t("comp. pack permutation", v0.ctx());
 
@@ -400,7 +421,7 @@ namespace superbblas {
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
                 IndicesT<IndexType, Cpu> indices0{vol, Cpu{}};
-                indices1 = IndicesT<IndexType, Cpu>{vol, Cpu{}};
+                IndicesT<IndexType, Cpu> indices1_cpu{vol, Cpu{}};
                 Mask<Cpu> mask0_cpu = makeSure(mask0, Cpu{});
                 std::size_t n = 0;
                 for (std::size_t i = 0; i < fs.size(); ++i) {
@@ -437,7 +458,7 @@ namespace superbblas {
                                 indices0i.first, mask0_cpu.data() + indices0i_disp, indices1i_mask);
                         IndexType dispi = disp1[i / ncomponents1] + indices1i_disp;
                         std::transform(indices1i_mask.begin(), indices1i_mask.end(),
-                                       indices1.begin() + n,
+                                       indices1_cpu.begin() + n,
                                        [=](IndexType d) { return d + dispi; });
 
                         disp1[i / ncomponents1] += indices1i_mask.size();
@@ -446,15 +467,16 @@ namespace superbblas {
                     }
                 }
                 indices0.resize(n);
-                indices1.resize(n);
+                indices1_cpu.resize(n);
                 indices0_xpu = makeSure(indices0, v0.ctx());
+                indices1 = makeSure(indices1_cpu, v1.ctx());
 
                 // The cache trackers consider that all cache entries are on the same device; so just track the
                 // indices0_xpu when using gpus
                 if (mask0.size() == 0) {
                     std::size_t size =
                         storageSize(indices0_xpu) +
-                        (deviceId(v0.ctx()) == CPU_DEVICE_ID ? storageSize(indices1) : 0ul);
+                        (deviceId(v0.ctx()) == deviceId(v1.ctx()) ? storageSize(indices1) : 0ul);
                     cache.insert(key, PairIndices{indices0_xpu, indices1}, size);
                 }
             } else {
@@ -481,17 +503,18 @@ namespace superbblas {
         /// \param comm: communicator
         /// \param co: coordinate linearization order
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
-                  typename XPU0, typename XPU1>
-        PackedValues<Q> pack(const std::vector<Proc_ranges<Nd0>> &toSend,
-                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
-                             const Order<Nd0> &o0, const Order<Nd1> &o1, unsigned int ncomponents1,
-                             MpiComm comm, CoorOrder co) {
+        template <typename IndexType, typename Q, std::size_t Nd0, std::size_t Nd1, typename T,
+                  typename XPU0, typename XPU1, typename XPUbuff>
+        PackedValues<Q, XPUbuff> pack(const std::vector<Proc_ranges<Nd0>> &toSend,
+                                      const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
+                                      const Order<Nd0> &o0, const Order<Nd1> &o1,
+                                      unsigned int ncomponents1, MpiComm comm, XPUbuff xpu,
+                                      CoorOrder co) {
 
             tracker<Cpu> _t("prepare and pack", Cpu{});
 
             unsigned int ncomponents0 = toSend.size();
-            PackedValues<Q> r = prepare_pack<Nd0, Q>(toSend, comm);
+            PackedValues<Q, XPUbuff> r = prepare_pack<Q>(toSend, comm, xpu);
 
             Indices<Cpu> buf_disp(comm.nprocs, Cpu{});
             for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
@@ -500,14 +523,14 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first)
                     if (c.componentId == componentId0)
-                        pack<IndexType, Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it,
-                                                        c.mask_it, o1, buf_disp.begin(), r.buf,
-                                                        ncomponents1, comm, co);
+                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
+                                                  o1, buf_disp.begin(), r.buf, ncomponents1, comm,
+                                                  co);
                 for (const Component<Nd0, const T, XPU1> &c : v.second)
                     if (c.componentId == componentId0)
-                        pack<IndexType, Nd0, Nd1, T, Q>(o0, toSend[componentId0], c.dim, c.it,
-                                                        c.mask_it, o1, buf_disp.begin(), r.buf,
-                                                        ncomponents1, comm, co);
+                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
+                                                  o1, buf_disp.begin(), r.buf, ncomponents1, comm,
+                                                  co);
             }
 
             // Update the counts when using mask
@@ -519,15 +542,17 @@ namespace superbblas {
         }
 
         /// Vectors used in MPI communications
-        template <typename IndexType, typename T, typename XPU>
-        struct UnpackedValues : public PackedValues<T> {
-            IndicesT<IndexType, Cpu> indices_buf; ///< indices of the buffer
-            IndicesT<IndexType, XPU> indices;     ///< indices of the destination elements
-            UnpackedValues(const vector<T, Cpu> &buf, const vector<MpiInt, Cpu> &counts,
+        template <typename IndexType, typename T, typename XPUbuff, typename XPU>
+        struct UnpackedValues : public PackedValues<T, XPUbuff> {
+            IndicesT<IndexType, XPUbuff> indices_buf; ///< indices of the buffer
+            IndicesT<IndexType, XPU> indices;         ///< indices of the destination elements
+            UnpackedValues(const vector<T, XPUbuff> &buf, const vector<MpiInt, Cpu> &counts,
                            const vector<MpiInt, Cpu> &displ,
-                           const IndicesT<IndexType, Cpu> &indices_buf,
+                           const IndicesT<IndexType, XPUbuff> &indices_buf,
                            const IndicesT<IndexType, XPU> &indices)
-                : PackedValues<T>{buf, counts, displ}, indices_buf(indices_buf), indices(indices) {}
+                : PackedValues<T, XPUbuff>{buf, counts, displ},
+                  indices_buf(indices_buf),
+                  indices(indices) {}
         };
 
         /// Allocate buffers for the receiving tensor pieces from a MPI communication
@@ -538,28 +563,28 @@ namespace superbblas {
         /// \param comm: communication
         /// \param co: coordinate linearization order
 
-        template <typename IndexType, std::size_t Nd, typename T, typename XPU>
-        UnpackedValues<IndexType, T, XPU> prepare_unpack(const Proc_ranges<Nd> &toReceive,
-                                                         const Component<Nd, T, XPU> &v,
-                                                         MpiComm comm, CoorOrder co) {
+        template <typename IndexType, std::size_t Nd, typename T, typename XPU, typename XPUbuff>
+        UnpackedValues<IndexType, T, XPUbuff, XPU>
+        prepare_unpack(const Proc_ranges<Nd> &toReceive, const Component<Nd, T, XPU> &v,
+                       XPUbuff xpu, MpiComm comm, CoorOrder co) {
 
             tracker<XPU> _t("prepare unpack", v.it.ctx());
 
             // Find indices on cache
-            using Key = std::tuple<Proc_ranges<Nd>, Coor<Nd>, int, CoorOrder>;
-            using Value = std::tuple<vector<MpiInt, Cpu>,       // counts
-                                     vector<MpiInt, Cpu>,       // displ
-                                     IndicesT<IndexType, Cpu>,  // indices for the buffer
-                                     IndicesT<IndexType, XPU>>; // indices
+            using Key = std::tuple<Proc_ranges<Nd>, Coor<Nd>, int, int, CoorOrder>;
+            using Value = std::tuple<vector<MpiInt, Cpu>,          // counts
+                                     vector<MpiInt, Cpu>,          // displ
+                                     IndicesT<IndexType, XPUbuff>, // indices for the buffer
+                                     IndicesT<IndexType, XPU>>;    // indices
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(v.it.ctx());
-            Key key{toReceive, v.dim, deviceId(v.it.ctx()), co};
+            Key key{toReceive, v.dim, deviceId(xpu), deviceId(v.it.ctx()), co};
             auto it = v.mask_it.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
             vector<MpiInt, Cpu> counts;
             vector<MpiInt, Cpu> displ;
-            IndicesT<IndexType, Cpu> indices_buf;
+            IndicesT<IndexType, XPUbuff> indices_buf;
             IndicesT<IndexType, XPU> indices;
             if (it == cache.end()) {
                 counts = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
@@ -608,14 +633,15 @@ namespace superbblas {
                     displ[i] = displ[i - 1] + counts[i - 1];
 
                 // Create the permutation for the buffer
-                indices_buf = IndicesT<IndexType, Cpu>(num_elems, Cpu{});
+                IndicesT<IndexType, Cpu> indices_buf_cpu(num_elems, Cpu{});
                 const std::size_t num_T = MpiTypeSize / sizeof(T);
                 for (std::size_t i = 0, i0 = 0, i1 = 0; i < indices0.size();
                      i0 += (indices0[i].size() + num_T - 1) / num_T * num_T,
                                  i1 += indices0[i].size(), ++i) {
                     for (IndexType j = 0, j1 = indices0[i].size(); j < j1; ++j)
-                        indices_buf[i1 + j] = i0 + j;
+                        indices_buf_cpu[i1 + j] = i0 + j;
                 }
+                indices_buf = makeSure(indices_buf_cpu, xpu);
 
                 // Concatenate all indices into a single permutation vector
                 IndicesT<IndexType, Cpu> indices_cpu(num_elems, Cpu{});
@@ -631,10 +657,15 @@ namespace superbblas {
                 indices = std::get<3>(it->second.value);
             }
 
-            // Allocate the buffer
-            vector<T, Cpu> buf((displ.back() + counts.back()) * (MpiTypeSize / sizeof(T)), Cpu{});
+            // NOTE: MPI calls have problems mixing null pointers with GPU pointers
+            std::size_t buf_count = (displ.back() + counts.back()) * (MpiTypeSize / sizeof(T));
+            //if (deviceId(xpu) != CPU_DEVICE_ID && buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
-            return UnpackedValues<IndexType, T, XPU>{buf, counts, displ, indices_buf, indices};
+            // Allocate the buffer
+            vector<T, XPUbuff> buf(buf_count, xpu);
+
+            return UnpackedValues<IndexType, T, XPUbuff, XPU>{buf, counts, displ, indices_buf,
+                                                              indices};
         }
 
         /// Unpack and copy packed tensors from a MPI communication
@@ -645,9 +676,10 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to packed tensors
 
-        template <typename IndexType, std::size_t Nd, typename T, typename XPU, typename EWOP>
-        void unpack(const UnpackedValues<IndexType, T, XPU> &r, const Component<Nd, T, XPU> &v,
-                    EWOP, typename elem<T>::type alpha) {
+        template <typename IndexType, std::size_t Nd, typename T, typename XPUbuff, typename XPU,
+                  typename EWOP>
+        void unpack(const UnpackedValues<IndexType, T, XPUbuff, XPU> &r,
+                    const Component<Nd, T, XPU> &v, EWOP, typename elem<T>::type alpha) {
 
             tracker<XPU> _t(std::string("unpack ") + platformToStr(v.it.ctx()), v.it.ctx());
 
@@ -670,27 +702,28 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
-                  typename XPU0, typename XPU1, typename XPUr, typename EWOp>
+        template <typename IndexType, typename XPUbuff0, typename XPUbuff1, std::size_t Nd0,
+                  std::size_t Nd1, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
-                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, XPUbuff0 xpubuff0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
-                             MpiComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
+                             XPUbuff1 xpubuff1, MpiComm comm, EWOp ewop, CoorOrder co,
+                             typename elem<T>::type alpha) {
 
             tracker<Cpu> _t("packing", Cpu{});
 
             if (comm.nprocs <= 1) return [] {};
 
             // Pack v0 and prepare for receiving data from other processes
-            PackedValues<Q> v0ToSend =
-                pack<IndexType, Nd0, Nd1, T, Q>(toSend, v0, o0, o1, ncomponents1, comm, co);
-            UnpackedValues<IndexType, Q, XPUr> v1ToReceive =
-                prepare_unpack<IndexType>(toReceive, v1, comm, co);
+            PackedValues<Q, XPUbuff0> v0ToSend =
+                pack<IndexType, Q>(toSend, v0, o0, o1, ncomponents1, comm, xpubuff0, co);
+            UnpackedValues<IndexType, Q, XPUbuff1, XPUr> v1ToReceive =
+                prepare_unpack<IndexType>(toReceive, v1, xpubuff1, comm, co);
 
             // Do the MPI communication
             static MPI_Datatype dtype = get_mpi_datatype();
-            MPI_Request r = MPI_REQUEST_NULL;
             assert(v0ToSend.counts.size() == comm.nprocs);
             assert(v0ToSend.displ.size() == comm.nprocs);
             assert(v1ToReceive.counts.size() == comm.nprocs);
@@ -705,18 +738,51 @@ namespace superbblas {
                    v1ToReceive.buf.size() * sizeof(Q));
             assert(v0ToSend.counts[comm.rank] == 0);
             assert(v1ToReceive.counts[comm.rank] == 0);
-            if (getUseAsyncAlltoall()) {
-                // NOTE: detected hung of MPI_Ialltoallv in some cases; still exploring the source of the problem
-                MPI_check(MPI_Ialltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
-                                         v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
-                                         v1ToReceive.counts.data(), v1ToReceive.displ.data(), dtype,
-                                         comm.comm, &r));
+            std::vector<MPI_Request> r;
+            const int tag = 0;
+            const unsigned int T_num = dtype_size / sizeof(T);
+            sync(v0ToSend.buf.ctx());
+            if (getUseMPINonBlock()) {
+                if (getUseAlltoall()) {
+                    r.resize(1);
+                    MPI_check(MPI_Ialltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
+                                             v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
+                                             v1ToReceive.counts.data(), v1ToReceive.displ.data(),
+                                             dtype, comm.comm, &r.front()));
+                } else {
+                    r.reserve(comm.nprocs * 2);
+                    for (unsigned int p = 0; p < comm.nprocs; ++p) {
+                        if (v1ToReceive.counts[p] == 0) continue;
+                        r.push_back(MPI_REQUEST_NULL);
+                        MPI_check(MPI_Irecv(v1ToReceive.buf.data() + v1ToReceive.displ[p] * T_num,
+                                            v1ToReceive.counts[p], dtype, p, tag, comm.comm,
+                                            &r.back()));
+                    }
+                    for (unsigned int p = 0; p < comm.nprocs; ++p) {
+                        if (v0ToSend.counts[p] == 0) continue;
+                        r.push_back(MPI_REQUEST_NULL);
+                        MPI_check(MPI_Isend(v0ToSend.buf.data() + v0ToSend.displ[p] * T_num,
+                                            v0ToSend.counts[p], dtype, p, tag, comm.comm,
+                                            &r.back()));
+                    }
+                }
             } else {
                 tracker<Cpu> _t("alltoall", Cpu{});
-                MPI_check(MPI_Alltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
-                                        v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
-                                        v1ToReceive.counts.data(), v1ToReceive.displ.data(), dtype,
-                                        comm.comm));
+                if (getUseAlltoall()) {
+                    MPI_check(MPI_Alltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
+                                            v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
+                                            v1ToReceive.counts.data(), v1ToReceive.displ.data(),
+                                            dtype, comm.comm));
+                } else {
+                    for (unsigned int p = 0; p < comm.nprocs; ++p) {
+                        if (v0ToSend.counts[p] == 0 && v1ToReceive.counts[p] == 0) continue;
+                        MPI_check(MPI_Sendrecv(
+                            v0ToSend.buf.data() + v0ToSend.displ[p] * T_num, v0ToSend.counts[p],
+                            dtype, p, tag, v1ToReceive.buf.data() + v1ToReceive.displ[p] * T_num,
+                            v1ToReceive.counts[p], dtype, p, tag, comm.comm, MPI_STATUS_IGNORE));
+                    }
+                }
+                syncLegacyStream(v1ToReceive.buf.ctx());
                 unpack(v1ToReceive, v1, ewop, Q(alpha));
                 return {};
             }
@@ -726,14 +792,15 @@ namespace superbblas {
             return [=]() mutable {
                 // Wait for the MPI communication to finish
                 {
-                    tracker<Cpu> _t("alltoall", Cpu{});
-                    MPI_check(MPI_Wait(&r, MPI_STATUS_IGNORE));
+                    tracker<Cpu> _t("MPI wait", Cpu{});
+                    MPI_check(MPI_Waitall((int)r.size(), r.data(), MPI_STATUS_IGNORE));
                 }
 
                 // Clear origin buffer
                 v0ToSend.buf.clear();
 
                 // Copy back to v1
+                syncLegacyStream(v1ToReceive.buf.ctx());
                 unpack(v1ToReceive, v1, ewop, Q(alpha));
             };
         }
@@ -755,20 +822,24 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
 
-        template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
-                  typename XPU0, typename XPU1, typename XPUr, typename EWOp>
+        template <typename IndexType, typename XPUbuff0, typename XPUbuff1, std::size_t Nd0,
+                  std::size_t Nd1, typename T, typename Q, typename XPU0, typename XPU1,
+                  typename XPUr, typename EWOp>
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
-                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                             const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, XPUbuff0 xpubuff0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
                              const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
-                             SelfComm comm, EWOp ewop, CoorOrder co, typename elem<T>::type alpha) {
+                             XPUbuff1 xpubuff1, SelfComm comm, EWOp ewop, CoorOrder co,
+                             typename elem<T>::type alpha) {
             (void)o0;
             (void)toSend;
             (void)v0;
+            (void)xpubuff0;
             (void)o1;
             (void)toReceive;
             (void)v1;
             (void)ncomponents1;
+            (void)xpubuff1;
             (void)ewop;
             (void)co;
             (void)alpha;
@@ -784,6 +855,25 @@ namespace superbblas {
             for (auto const &r : ranges)
                 for (auto const &it : r) vol = std::max(vol, volume(it[1]));
             return vol;
+        }
+
+        /// Return whether some MPI calls support GPU pointers
+
+        bool test_support_for_mpi_gpu() {
+#ifdef SUPERBBLAS_TEST_MPI_GPU
+            static const bool test_mpi_gpu = [] {
+#    ifdef SUPERBBLAS_USE_CUDA
+                return (bool)MPIX_Query_cuda_support();
+#    elif defined(SUPERBBLAS_USE_HIP)
+                return (bool)MPIX_Query_rocm_support();
+#    else
+                return false;
+#    endif
+            }();
+            return test_mpi_gpu;
+#else
+            return false;
+#endif // SUPERBBLAS_TEST_MPI_GPU
         }
 
         /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
@@ -813,12 +903,39 @@ namespace superbblas {
             if (maximum_volume(toReceive) >= (std::size_t)std::numeric_limits<IndexType>::max())
                 use_size_t = true;
 
-            if (!use_size_t) {
-                return send_receive<IndexType>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
-                                               comm, EWOp{}, co, alpha);
+            static const bool use_mpi_gpu = [] {
+                if (getUseMPIGpu() == 0) return test_support_for_mpi_gpu();
+                return getUseMPIGpu() > 0;
+            }();
+
+            if (!use_mpi_gpu || (v0.first.size() == 0 && v0.second.size() == 0)) {
+                if (!use_size_t) {
+                    return send_receive<IndexType>(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
+                                                   ncomponents1, Cpu{}, comm, EWOp{}, co, alpha);
+                } else {
+                    return send_receive<std::size_t>(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
+                                                     ncomponents1, Cpu{}, comm, EWOp{}, co, alpha);
+                }
+            } else if (v0.second.size() == 0) {
+                if (!use_size_t) {
+                    return send_receive<IndexType>(o0, toSend, v0, v0.first.front().it.ctx(), o1,
+                                                   toReceive, v1, ncomponents1, v1.it.ctx(), comm,
+                                                   EWOp{}, co, alpha);
+                } else {
+                    return send_receive<std::size_t>(o0, toSend, v0, v0.first.front().it.ctx(), o1,
+                                                     toReceive, v1, ncomponents1, v1.it.ctx(), comm,
+                                                     EWOp{}, co, alpha);
+                }
             } else {
-                return send_receive<std::size_t>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
-                                                 comm, EWOp{}, co, alpha);
+                if (!use_size_t) {
+                    return send_receive<IndexType>(o0, toSend, v0, v0.second.front().it.ctx(), o1,
+                                                   toReceive, v1, ncomponents1, v1.it.ctx(), comm,
+                                                   EWOp{}, co, alpha);
+                } else {
+                    return send_receive<std::size_t>(o0, toSend, v0, v0.second.front().it.ctx(), o1,
+                                                     toReceive, v1, ncomponents1, v1.it.ctx(), comm,
+                                                     EWOp{}, co, alpha);
+                }
             }
         }
 

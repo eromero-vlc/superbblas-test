@@ -82,19 +82,49 @@ namespace superbblas {
         return track_time_sync;
     }
 
-    /// Return whether to use asynchronous MPI_Alltoall in `copy`, which may have been set by the environment variable SB_ASYNC_ALLTOALL
-    /// \return bool: whether to use the asynchronous version of MPI_Alltoall
-    /// The accepted value in the environment variable SB_ASYNC_ALLTOALL are:
-    ///   * 0: use the synchronous version MPI_Alltoallv
-    ///   * != 0: use the asynchronous version MPI_Ialltoallv (default)
+    /// Return whether to use immediate MPI calls instead of blocking
+    /// \return bool: whether to use immediate MPI calls instead of blocking
+    /// The accepted value in the environment variable SB_MPI_NONBLOCK are:
+    ///   * 0: use blocking MPI calls
+    ///   * != 0: use the immediate MPI calls (default)
 
-    inline bool getUseAsyncAlltoall() {
-        static bool async_alltoall = []() {
-            const char *l = std::getenv("SB_ASYNC_ALLTOALL");
+    inline bool getUseMPINonBlock() {
+        static bool mpi_nonblock = []() {
+            const char *l = std::getenv("SB_MPI_NONBLOCK");
             if (l) return (0 != std::atoi(l));
             return true;
         }();
-        return async_alltoall;
+        return mpi_nonblock;
+    }
+
+    /// Return whether to use MPI_Alltoall instead of MPI_Send/Recv, which may have been set by the environment variable SB_USE_ALLTOALL
+    /// \return bool: whether to use MPI_Alltoall instead of MPI_Send/Recv
+    /// The accepted value in the environment variable SB_USE_ALLTOALL are:
+    ///   * 0: use MPI_Send/Recv
+    ///   * != 0: use MPI_Alltoallv (default)
+
+    inline bool getUseAlltoall() {
+        static bool use_alltoall = []() {
+            const char *l = std::getenv("SB_USE_ALLTOALL");
+            if (l) return (0 != std::atoi(l));
+            return true;
+        }();
+        return use_alltoall;
+    }
+
+    /// Return whether to allow passing GPU pointers to MPI calls
+    /// \return int: unspecified by the user when zero and greater than zero when allowing passing GPU pointers to MPI calls
+    /// The accepted value in the environment variable SB_MPI_GPU are:
+    ///   * 0: don't allow passing GPU pointers to MPI calls
+    ///   * != 0: allow passing GPU pointers to MPI calls
+
+    inline int getUseMPIGpu() {
+        static int use_mpi_gpu = []() {
+            const char *l = std::getenv("SB_MPI_GPU");
+            if (l) return (0 != std::atoi(l) ? 1 : -1);
+            return 0;
+        }();
+        return use_mpi_gpu;
     }
 
     /// Return the maximum size of the cache permutation for CPU in GiB
