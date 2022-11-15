@@ -264,12 +264,7 @@ namespace superbblas {
                         }
 
                         // Create the caches for the gpu objects and set the maximum size
-                        int numDevices = 0;
-#    ifdef SUPERBBLAS_USE_CUDA
-                        cudaCheck(cudaGetDeviceCount(&numDevices));
-#    else
-                        hipCheck(hipGetDeviceCount(&numDevices));
-#    endif
+                        int numDevices = getGpuDevicesCount();
                         cache_s.resize(numDevices + 1);
                         for (int d = 0; d < numDevices; ++d)
                             cache_s[d + 1].setMaxCacheSize(cacheMaxSizeGpu);
