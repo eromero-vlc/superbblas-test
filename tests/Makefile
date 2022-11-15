@@ -29,11 +29,11 @@ HIP_LIB_TARGETS := $(patsubst %.cpp,%_hip_lib,$(SOURCES))
 SB_INCLUDE ?= -I$(BUILDDIR)/include
 MPISBFLAG ?= $(if $(findstring mpi,${CXX}),-DSUPERBBLAS_USE_MPI,)
 
-MPIINCFLAGS ?= $(if $(findstring mpi,${CXX}),$(shell ${CXX} -showme:compile),)
 comma := ,
+MPIINCFLAGS ?= $(if $(findstring mpi,${CXX}),$(patsubst -Wl$(comma)%,,$(shell ${CXX} -showme:compile 2>/dev/null || ${CXX} -show -CC=)),)
 MPILDFLAGS ?= $(if $(findstring mpi,${CXX}),\
         $(filter-out -pthread -fexceptions, \
-            $(subst -Wl$(comma),-Xlinker ,$(shell ${CXX} -showme:link))),)
+            $(subst -Wl$(comma),-Xlinker ,$(shell ${CXX} -showme:link 2>/dev/null || ${CXX} -show -CC=))),)
 SB_LDFLAGS := -L$(BUILDDIR)/lib -lsuperbblas
 CUDAINCLUDE ?= -I$(CUDADIR)/include
 CUDALDFLAGS ?= -L$(CUDADIR)/lib64
