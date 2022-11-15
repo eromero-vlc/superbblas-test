@@ -592,6 +592,7 @@ namespace superbblas {
 #endif
 
         inline void sync(Cpu) {}
+        inline void syncLegacyStream(Cpu) {}
 
 #ifdef SUPERBBLAS_USE_CUDA
         inline void sync(Cuda cuda) { cudaCheck(cudaStreamSynchronize(cuda.stream)); }
