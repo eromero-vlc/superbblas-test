@@ -233,7 +233,7 @@ namespace superbblas {
             hipsparseMatDescr_t descrA; ///< hipSparse descriptor
 #    endif
 
-            static const SpMMAllowedLayout allowLayout = ColumnMajorForY;
+            SpMMAllowedLayout allowLayout;
             static const MatrixLayout preferredLayout = ColumnMajor;
             std::string implementation_;
             const std::string &implementation() const { return implementation_; }
@@ -257,12 +257,14 @@ namespace superbblas {
 
                 if (!isELL) {
                     implementation_ = "cusparse_bsr";
+                    allowLayout = ColumnMajorForY;
                     cusparseCheck(cusparseCreateMatDescr(&descrA));
                     cusparseCheck(cusparseSetMatIndexBase(descrA, CUSPARSE_INDEX_BASE_ZERO));
                     cusparseCheck(cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL));
                 } else {
                     static_assert(sizeof(IndexType) == 4);
                     implementation_ = "cusparse_ell";
+                    allowLayout = SameLayoutForXAndY;
                     IndexType block_size = volume(v.blocki);
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
@@ -319,10 +321,10 @@ namespace superbblas {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
                     cusparseCheck(cusparseCreateDnMat(
-                        &matx, num_rows, ncols, ldx, (void *)x, cudaType,
+                        &matx, !conjA ? num_cols : num_rows, ncols, ldx, (void *)x, cudaType,
                         lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     cusparseCheck(cusparseCreateDnMat(
-                        &maty, num_rows, ncols, ldy, (void *)y, cudaType,
+                        &maty, !conjA ? num_rows : num_cols, ncols, ldy, (void *)y, cudaType,
                         ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     cusparseCheck(cusparseSpMM_bufferSize(
