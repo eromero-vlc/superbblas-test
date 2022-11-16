@@ -242,8 +242,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    // If --procs isn't set, put all processes on the first dimension
-    if (!procs_was_set) procs[X] = nprocs;
+    // If --procs isn't set, distributed the processes automatically
+    if (!procs_was_set) procs = partitioning_distributed_procs("xyztscn", dim, "xyzt", nprocs);
 
     // Show lattice dimensions and processes arrangement
     if (rank == 0) {
@@ -262,7 +262,7 @@ int main(int argc, char **argv) {
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
-        Context ctx = createGpuContext();
+        Context ctx = createGpuContext(rank % getGpuDevicesCount());
         test<float, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
         test<std::complex<float>, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
         clearCaches();

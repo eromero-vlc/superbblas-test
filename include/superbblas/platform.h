@@ -579,6 +579,17 @@ namespace superbblas {
     template <typename T> struct supported_type {
         static constexpr bool value = detail::supported_type<T>::value;
     };
+
+    // Return the number of GPU devices available
+    inline unsigned int getGpuDevicesCount() {
+        int numDevices = 0;
+#ifdef SUPERBBLAS_USE_CUDA
+        detail::cudaCheck(cudaGetDeviceCount(&numDevices));
+#elif defined(SUPERBBLAS_USE_HIP)
+        detail::hipCheck(hipGetDeviceCount(&numDevices));
+#endif
+        return (unsigned int)numDevices;
+    }
 }
 
 #endif // __SUPERBBLAS_PLATFORM__

@@ -411,11 +411,12 @@ namespace superbblas {
             } else if (deviceId(xpu0) == deviceId(xpu1)) {
                 // Both are on the same device
                 setDevice(xpu0);
-                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
 #ifdef SUPERBBLAS_USE_CUDA
+                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
                 cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
                                           getStream(xpu1)));
 #elif defined(SUPERBBLAS_USE_HIP)
+                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
                 hipCheck(
                     hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice, getStream(xpu1)));
 #else
@@ -425,11 +426,12 @@ namespace superbblas {
             } else {
                 // Each pointer is on a different device
                 setDevice(xpu1);
-                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
 #ifdef SUPERBBLAS_USE_CUDA
+                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
                 cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
                                               getStream(xpu1)));
 #elif defined(SUPERBBLAS_USE_HIP)
+                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
                 hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
                                             getStream(xpu1)));
 #else
@@ -482,6 +484,13 @@ namespace superbblas {
                                               bool>::type = true>
             vector(const vector<U, XPU> &v) : vector{v.n, (T *)v.ptr_aligned, v.ptr, v.xpu} {}
 
+            /// Release all elements in the vector
+            void clear() {
+                n = 0;
+                ptr.reset();
+                ptr_aligned = nullptr;
+            }
+
             /// Return the number of allocated elements
             std::size_t size() const { return n; }
 
@@ -506,8 +515,22 @@ namespace superbblas {
             /// Return a reference to i-th allocated element, for Cpu `vector`
             template <typename U = XPU,
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
-            T &operator[](std::size_t i) const {
+            const T &operator[](std::size_t i) const {
                 return ptr_aligned[i];
+            }
+
+            /// Return a reference to i-th allocated element, for Cpu `vector`
+            template <typename U = XPU,
+                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
+            T &operator[](std::size_t i) {
+                return ptr_aligned[i];
+            }
+
+            /// Return a reference to the last element, for Cpu `vector`
+            template <typename U = XPU,
+                      typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
+            const T &back() const {
+                return ptr_aligned[n - 1];
             }
 
             /// Operator == compares size and content
@@ -569,6 +592,7 @@ namespace superbblas {
 #endif
 
         inline void sync(Cpu) {}
+        inline void syncLegacyStream(Cpu) {}
 
 #ifdef SUPERBBLAS_USE_CUDA
         inline void sync(Cuda cuda) { cudaCheck(cudaStreamSynchronize(cuda.stream)); }

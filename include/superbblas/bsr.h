@@ -49,6 +49,7 @@ namespace superbblas {
             bool j_has_negative_indices; ///< whether j has -1 to skip these nonzeros
             int num_nnz_per_row;         ///< either the number of block nnz per row or
                                          ///< -1 if not all rows has the same number of nonzeros
+            IndexType nnz;               ///< total number of nonzero blocks
         };
 
         /// Component of a BSR tensor
@@ -224,16 +225,17 @@ namespace superbblas {
             BSRComponent<Nd, Ni, T, Gpu> v; ///< BSR general information
             vector<IndexType, Gpu> ii, jj;  ///< BSR row and column nonzero indices
 #    ifdef SUPERBBLAS_USE_CUDA
-            cusparseMatDescr_t descrA; ///< cuSparse descriptor for BSR matrices
+            std::shared_ptr<cusparseMatDescr_t>
+                descrA_bsr; ///< cuSparse descriptor for BSR matrices
             std::shared_ptr<cusparseSpMatDescr_t>
-                descrAell; ///< cuSparse descriptor for ELL matrices
-            bool isELL;    ///< whether the matrix is in ELL format; otherwise is BSR
+                descrA_other; ///< cuSparse descriptor for CSR and ELL matrices
+            enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
             mutable vector<T, Gpu> buffer; ///< Auxiliary memory used by cusparseSpMM
 #    else
-            hipsparseMatDescr_t descrA; ///< hipSparse descriptor
+            std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
 #    endif
 
-            static const SpMMAllowedLayout allowLayout = ColumnMajorForY;
+            SpMMAllowedLayout allowLayout;
             static const MatrixLayout preferredLayout = ColumnMajor;
             std::string implementation_;
             const std::string &implementation() const { return implementation_; }
@@ -241,40 +243,59 @@ namespace superbblas {
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 if (volume(v.blocki) != volume(v.blockd))
-                    throw std::runtime_error(" MKL Sparse does not support non-square blocks");
+                    throw std::runtime_error("cuSPARSE does not support non-square blocks");
                 auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
 
 #    ifdef SUPERBBLAS_USE_CUDA
+                IndexType block_size = volume(v.blocki);
                 cudaDeviceProp prop;
                 cudaCheck(cudaGetDeviceProperties(&prop, deviceId(v.i.ctx())));
-                isELL = bsr.num_nnz_per_row >= 0 && !is_complex<T>::value && prop.major >= 8;
-                isELL = false; /// TODO: check ELL format, it isn't correct currently
-                if (bsr.j_has_negative_indices && !isELL)
+                /// TODO: ELL format is disable, it isn't correct currently
+                if (false && bsr.num_nnz_per_row >= 0 && !is_complex<T>::value && prop.major >= 8) {
+                    spFormat = FORMAT_ELL;
+                } else if (!bsr.j_has_negative_indices) {
+                    spFormat = block_size == 1 ? FORMAT_CSR : FORMAT_BSR;
+                } else {
                     throw std::runtime_error("bsr: unsupported -1 column indices when using "
                                              "cuSPARSE and not using ELL");
+                }
 
-                if (!isELL) {
+                if (spFormat == FORMAT_BSR) {
                     implementation_ = "cusparse_bsr";
-                    cusparseCheck(cusparseCreateMatDescr(&descrA));
-                    cusparseCheck(cusparseSetMatIndexBase(descrA, CUSPARSE_INDEX_BASE_ZERO));
-                    cusparseCheck(cusparseSetMatType(descrA, CUSPARSE_MATRIX_TYPE_GENERAL));
+                    allowLayout = ColumnMajorForY;
+                    descrA_bsr = std::shared_ptr<cusparseMatDescr_t>(
+                        new cusparseMatDescr_t, [](cusparseMatDescr_t *p) {
+                            cusparseDestroyMatDescr(*p);
+                            delete p;
+                        });
+                    cusparseCheck(cusparseCreateMatDescr(&*descrA_bsr));
+                    cusparseCheck(cusparseSetMatIndexBase(*descrA_bsr, CUSPARSE_INDEX_BASE_ZERO));
+                    cusparseCheck(cusparseSetMatType(*descrA_bsr, CUSPARSE_MATRIX_TYPE_GENERAL));
                 } else {
                     static_assert(sizeof(IndexType) == 4);
-                    implementation_ = "cusparse_ell";
-                    IndexType block_size = volume(v.blocki);
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
-                    descrAell = std::shared_ptr<cusparseSpMatDescr_t>(new cusparseSpMatDescr_t,
-                                                                      [](cusparseSpMatDescr_t *p) {
-                                                                          cusparseDestroySpMat(*p);
-                                                                          delete p;
-                                                                      });
-                    cusparseCheck(cusparseCreateBlockedEll(
-                        &*descrAell, num_rows, num_cols, block_size,
-                        block_size * bsr.num_nnz_per_row, jj.data(), v.it.data(),
-                        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                    descrA_other = std::shared_ptr<cusparseSpMatDescr_t>(
+                        new cusparseSpMatDescr_t, [](cusparseSpMatDescr_t *p) {
+                            cusparseDestroySpMat(*p);
+                            delete p;
+                        });
+                    allowLayout = SameLayoutForXAndY;
+                    if (spFormat == FORMAT_CSR) {
+                        implementation_ = "cusparse_csr";
+                        cusparseCheck(cusparseCreateCsr(
+                            &*descrA_other, num_rows, num_cols, bsr.nnz, ii.data(), jj.data(),
+                            v.it.data(), CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                            CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                    } else {
+                        implementation_ = "cusparse_ell";
+                        cusparseCheck(cusparseCreateBlockedEll(
+                            &*descrA_other, num_rows, num_cols, block_size,
+                            block_size * bsr.num_nnz_per_row, jj.data(), v.it.data(),
+                            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                    }
                 }
 #    else
                 if (bsr.j_has_negative_indices)
@@ -282,9 +303,15 @@ namespace superbblas {
                                              "hipSPARSE");
 
                 implementation_ = "hipsparse_bsr";
-                hipsparseCheck(hipsparseCreateMatDescr(&descrA));
-                hipsparseCheck(hipsparseSetMatIndexBase(descrA, HIPSPARSE_INDEX_BASE_ZERO));
-                hipsparseCheck(hipsparseSetMatType(descrA, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                allowLayout = ColumnMajorForY;
+                descrA_bsr = std::shared_ptr<hipsparseMatDescr_t>(new hipsparseMatDescr_t,
+                                                                  [](hipsparseMatDescr_t *p) {
+                                                                      hipsparseDestroyMatDescr(*p);
+                                                                      delete p;
+                                                                  });
+                hipsparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
+                hipsparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
+                hipsparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
 #    endif
             }
 
@@ -295,9 +322,11 @@ namespace superbblas {
 
             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
-                if (ly == RowMajor)
-                    throw std::runtime_error(
-                        "Unsupported row-major on Y with cu/hipSPARSE's bsrmm");
+                // Check layout
+                if ((allowLayout == SameLayoutForXAndY && lx != ly) ||
+                    (allowLayout == ColumnMajorForY && ly == RowMajor))
+                    throw std::runtime_error("BSR operator(): Unexpected layout");
+
                 IndexType block_size = volume(v.blocki);
                 IndexType num_cols = volume(v.dimd);
                 IndexType num_rows = volume(v.dimi);
@@ -305,7 +334,7 @@ namespace superbblas {
                 IndexType block_rows = num_rows / block_size;
                 IndexType num_blocks = jj.size();
 #    ifdef SUPERBBLAS_USE_CUDA
-                if (!isELL) {
+                if (spFormat == FORMAT_BSR) {
                     cusparseCheck(cusparseXbsrmm(
                         ii.ctx().cusparseHandle,
                         v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
@@ -313,31 +342,31 @@ namespace superbblas {
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                           : CUSPARSE_OPERATION_TRANSPOSE,
-                        block_rows, ncols, block_cols, num_blocks, alpha, descrA, v.it.data(),
+                        block_rows, ncols, block_cols, num_blocks, alpha, *descrA_bsr, v.it.data(),
                         ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
                     cusparseCheck(cusparseCreateDnMat(
-                        &matx, num_rows, ncols, ldx, (void *)x, cudaType,
+                        &matx, !conjA ? num_cols : num_rows, ncols, ldx, (void *)x, cudaType,
                         lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     cusparseCheck(cusparseCreateDnMat(
-                        &maty, num_rows, ncols, ldy, (void *)y, cudaType,
+                        &maty, !conjA ? num_rows : num_cols, ncols, ldy, (void *)y, cudaType,
                         ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     cusparseCheck(cusparseSpMM_bufferSize(
                         ii.ctx().cusparseHandle,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                        CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrAell, matx, &beta, maty,
+                        CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrA_other, matx, &beta, maty,
                         cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
                     if (bufferSize > buffer.size() * sizeof(T))
                         buffer = vector<T, Gpu>((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx());
                     cusparseCheck(cusparseSpMM(ii.ctx().cusparseHandle,
                                                !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                                       : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                                               CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrAell,
-                                               matx, &beta, maty, cudaType,
+                                               CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+                                               *descrA_other, matx, &beta, maty, cudaType,
                                                CUSPARSE_SPMM_ALG_DEFAULT, buffer.data()));
                     cusparseDestroyDnMat(matx);
                     cusparseDestroyDnMat(maty);
@@ -350,7 +379,7 @@ namespace superbblas {
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                     lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                                       : HIPSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols, num_blocks, alpha, descrA, v.it.data(),
+                    block_rows, ncols, block_cols, num_blocks, alpha, *descrA_bsr, v.it.data(),
                     ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
 #    endif
             }
@@ -571,7 +600,7 @@ namespace superbblas {
                     "-1 but not all block rows have the same number of nonzero blocks");
 
             return {makeSure(ii, v.i.ctx()), makeSure(jj, v.j.ctx()),
-                    there_are_minus_ones_in_columns, num_nnz_per_row};
+                    there_are_minus_ones_in_columns, num_nnz_per_row, ii[vi.size()]};
         }
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
@@ -579,7 +608,7 @@ namespace superbblas {
         std::pair<CsrIndices<XPU>, int> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
                                                         bool return_jj_blocked = false) {
             (void)return_jj_blocked;
-            return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1};
+            return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1, 0};
         }
 
         /// Return splitting of dimension labels for the RSB operator - tensor multiplication

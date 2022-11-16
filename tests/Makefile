@@ -29,11 +29,11 @@ HIP_LIB_TARGETS := $(patsubst %.cpp,%_hip_lib,$(SOURCES))
 SB_INCLUDE ?= -I$(BUILDDIR)/include
 MPISBFLAG ?= $(if $(findstring mpi,${CXX}),-DSUPERBBLAS_USE_MPI,)
 
-MPIINCFLAGS ?= $(if $(findstring mpi,${CXX}),$(shell ${CXX} -showme:compile),)
 comma := ,
+MPIINCFLAGS ?= $(if $(findstring mpi,${CXX}),$(patsubst -Wl$(comma)%,,$(shell ${CXX} -showme:compile 2>/dev/null || ${CXX} -show -CC=)),)
 MPILDFLAGS ?= $(if $(findstring mpi,${CXX}),\
         $(filter-out -pthread -fexceptions, \
-            $(subst -Wl$(comma),-Xlinker ,$(shell ${CXX} -showme:link))),)
+            $(subst -Wl$(comma),-Xlinker ,$(shell ${CXX} -showme:link 2>/dev/null || ${CXX} -show -CC=))),)
 SB_LDFLAGS := -L$(BUILDDIR)/lib -lsuperbblas
 CUDAINCLUDE ?= -I$(CUDADIR)/include
 CUDALDFLAGS ?= -L$(CUDADIR)/lib64
@@ -76,6 +76,7 @@ all_cpu all_cpu_lib all_cuda all_cuda_lib all_hip all_hip_lib: all_%:
 	SB_DEBUG=5 ./bsr_$* --dim='2 2 2 2 2 2'
 ifeq ($(SUPERBBLAS_WITH_MPI), yes)
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./dist_$*  --procs='1 1 2 3' --dim='4 4 4 4 64'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 3 --oversubscribe ./dist_$*  --procs='1 1 1 3' --dim='4 4 4 2 64'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./contract_$*  --procs='1 1 2 3' --dim='2 2 4 4 2'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
