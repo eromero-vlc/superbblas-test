@@ -83,7 +83,7 @@ void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &dim
         if (volume(intersection(it[0], it[1], Coor<N>{{}}, dim, dim)) != volume(it[1]))
             throw std::runtime_error("Unexpected result in `subtract_range`");
 
-	// Make sure that the resulting range has no support on (from, size)
+        // Make sure that the resulting range has no support on (from, size)
         if (volume(intersection(it[0], it[1], from, size, dim)) != 0)
             throw std::runtime_error("Unexpected result in `subtract_range`");
     }

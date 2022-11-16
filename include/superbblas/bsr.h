@@ -748,7 +748,7 @@ namespace superbblas {
             std::size_t nIs = 0, nis = 0;
             for (std::size_t i = 0; i < Ni; ++i) {
                 if (blocki[i] > 1) {
-                    if (blocki[i] != dimi[i])
+                    if (dimi[i] > 0 && blocki[i] != dimi[i])
                         throw std::runtime_error(
                             "Still not supported partially blocking a dimension");
                     ois[nis] = oi[i];
@@ -1101,7 +1101,7 @@ namespace superbblas {
                            const Order<Ni> oim, const Order<Nd> odm, const From_size<Nx> &px,
                            const Order<Nx> &ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
                            const Coor<Nx> &dimx, const Components_tmpl<Nx, T, XPU0, XPU1> &vx,
-                           const From_size<Ny> py, const Order<Ny> oy, const Coor<Ny> fromy,
+                           T beta, const From_size<Ny> py, const Order<Ny> oy, const Coor<Ny> fromy,
                            const Coor<Ny> sizey, const Coor<Ny> dimy, char okr,
                            const Components_tmpl<Ny, T, XPU0, XPU1> vy, Comm comm, CoorOrder co) {
 
@@ -1181,48 +1181,59 @@ namespace superbblas {
                                        co, power > 1 /* force copy when power > 1 */);
             Components_tmpl<Nx, T, XPU0, XPU1> vx_ = vx_and_req.first;
 
-            Request bsr_req =
-                [=] {
-                    // Wait for the data to be ready
-                    wait(vx_and_req.second);
+            // Scale the output vector if beta isn't 0 or 1
+            if (std::norm(beta) != 0 && beta != T{1})
+                copy<Ny, Ny, T>(beta, py, {{}}, dimy, dimy, oy, toConst(vy), py, {{}}, dimy, oy, vy,
+                                comm, EWOp::Copy{}, co);
 
-                    // Allocate the output tensor
-                    From_size<Ny> py_ = pxy_.second;
-                    Components_tmpl<Ny, T, XPU0, XPU1> vy_ = like_this_components(py_, vx_, comm);
+            Request bsr_req = [=] {
+                tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
 
-                    // Do contraction
-                    for (unsigned int p = 0; p < power; ++p) {
-                        for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
-                            const unsigned int componentId = bsr.c.first[i].v.componentId;
-                            const unsigned int pi = comm.rank * ncomponents + componentId;
-                            local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                                p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm, px_[pi][1], sug_ox,
-                                vx_.first[i].it, py_[pi][1], sug_oy, okr, vy_.first[i].it);
-                        }
-                        for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
-                            const unsigned int componentId = bsr.c.second[i].v.componentId;
-                            const unsigned int pi = comm.rank * ncomponents + componentId;
-                            local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                                p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm, px_[pi][1],
-                                sug_ox, vx_.second[i].it, py_[pi][1], sug_oy, okr,
-                                vy_.second[i].it);
-                        }
+                // Wait for the data to be ready
+                wait(vx_and_req.second);
 
-                        // Copy the result to final tensor
-                        Coor<Ny> fromyi = fromy;
-                        if (p > 0) fromyi[power_pos] += p;
+                // Allocate the output tensor
+                From_size<Ny> py_ = pxy_.second;
+                Components_tmpl<Ny, T, XPU0, XPU1> vy_ = like_this_components(py_, vx_, comm);
+
+                // Do contraction
+                for (unsigned int p = 0; p < power; ++p) {
+                    for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
+                        const unsigned int componentId = bsr.c.first[i].v.componentId;
+                        const unsigned int pi = comm.rank * ncomponents + componentId;
+                        local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
+                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm, px_[pi][1], sug_ox,
+                            vx_.first[i].it, py_[pi][1], sug_oy, okr, vy_.first[i].it);
+                    }
+                    for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
+                        const unsigned int componentId = bsr.c.second[i].v.componentId;
+                        const unsigned int pi = comm.rank * ncomponents + componentId;
+                        local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
+                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm, px_[pi][1], sug_ox,
+                            vx_.second[i].it, py_[pi][1], sug_oy, okr, vy_.second[i].it);
+                    }
+
+                    // Copy the result to final tensor
+                    Coor<Ny> fromyi = fromy;
+                    if (p > 0) fromyi[power_pos] += p;
+                    if (std::norm(beta) == 0)
                         copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
                                         py, fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co);
+                    else
+                        copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
+                                        py, fromyi, dimy, oy, vy, comm, EWOp::Add{}, co);
 
-                        // Copy the result into x for doing the next power
-                        if (p == power - 1) break;
-                        copy<Nx, Nx, T>(T{0}, px_, {{}}, sug_dimx, sug_dimx, sug_ox, toConst(vx_),
-                                        px_, {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
-                        copy<Ny, Nx, T>(T{1}, py_, {{}}, sug_sizey, sug_sizey, sug_oy_trans,
-                                        toConst(vy_), px_, {{}}, sug_dimx, sug_ox, vx_, comm,
-                                        EWOp::Copy{}, co);
-                    }
-                };
+                    // Copy the result into x for doing the next power
+                    if (p == power - 1) break;
+                    copy<Nx, Nx, T>(T{0}, px_, {{}}, sug_dimx, sug_dimx, sug_ox, toConst(vx_), px_,
+                                    {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
+                    copy<Ny, Nx, T>(T{1}, py_, {{}}, sug_sizey, sug_sizey, sug_oy_trans,
+                                    toConst(vy_), px_, {{}}, sug_dimx, sug_ox, vx_, comm,
+                                    EWOp::Copy{}, co);
+                }
+            };
+
+            _t.stop();
 
             // Do the contraction now if we have all the data ready; otherwise, postpone
             Request r;
@@ -1231,7 +1242,6 @@ namespace superbblas {
             else
                 wait(bsr_req);
 
-            _t.stop();
             if (getDebugLevel() >= 1) {
                 for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
                 for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
@@ -1292,7 +1302,7 @@ namespace superbblas {
     void bsr_krylov(T alpha, BSR_handle *bsrh, const char *oim, const char *odm,
                     const PartitionItem<Nx> *px, int ncomponents, const char *ox,
                     const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
-                    const T **vx, const PartitionItem<Ny> *py, const char *oy,
+                    const T **vx, T beta, const PartitionItem<Ny> *py, const char *oy,
                     const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
                     T **vy, const Context *ctx, MPI_Comm mpicomm, CoorOrder co,
                     Request *request = nullptr, Session session = 0) {
@@ -1311,9 +1321,9 @@ namespace superbblas {
             alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
             ox_, fromx, sizex, dimx,
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
-            detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey, dimy,
-            okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session), comm,
-            co);
+            beta, detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey,
+            dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
+            comm, co);
 
         if (request)
             *request = r;
@@ -1382,7 +1392,7 @@ namespace superbblas {
     void bsr_krylov(T alpha, BSR_handle *bsrh, const char *oim, const char *odm,
                     const PartitionItem<Nx> *px, int ncomponents, const char *ox,
                     const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
-                    const T **vx, const PartitionItem<Ny> *py, const char *oy,
+                    const T **vx, T beta, const PartitionItem<Ny> *py, const char *oy,
                     const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
                     T **vy, const Context *ctx, CoorOrder co, Request *request = nullptr,
                     Session session = 0) {
@@ -1401,9 +1411,9 @@ namespace superbblas {
             alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
             ox_, fromx, sizex, dimx,
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
-            detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey, dimy,
-            okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session), comm,
-            co));
+            beta, detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey,
+            dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
+            comm, co));
         if (request) *request = Request{};
     }
 }

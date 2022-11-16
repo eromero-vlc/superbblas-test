@@ -102,6 +102,128 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     return {bsrh, data_xpu};
 }
 
+/// Create a 4D lattice with dimensions tzyxsc
+template <typename T, typename XPU>
+std::pair<std::vector<BSR_handle *>, std::vector<vector<T, XPU>>>
+create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim, Context ctx,
+                     XPU xpu) {
+    // Compute the domain ranges
+    PartitionStored<6> pd = pi;
+    for (auto &i : pd) {
+        for (int dim = 0; dim < 4; ++dim) {
+            i[1][dim] = std::min(op_dim[dim], i[1][dim] + 2);
+            if (i[1][dim] < op_dim[dim])
+                i[0][dim]--;
+            else
+                i[0][dim] = 0;
+        }
+        i[0] = normalize_coor(i[0], op_dim);
+    }
+
+    // Split the local part into the halo and the core
+    PartitionStored<6> zero_part(pd.size());
+    std::vector<PartitionStored<6>> pd_s(6, zero_part);
+    for (unsigned int i = 0; i < pd.size(); ++i) {
+        auto parts = make_hole(normalize_coor(pi[i][0] - pd[i][0], pd[i][1]), pi[i][1], pd[i][1]);
+        for (unsigned int j = 0; j < parts.size(); ++j)
+            pd_s[j][i] = volume(parts[j][1]) == 0
+                             ? std::array<Coor<6>, 2>{Coor<6>{{}}, Coor<6>{{}}}
+                             : std::array<Coor<6>, 2>{
+                                   normalize_coor(parts[j][0] + pd[i][0], op_dim), parts[j][1]};
+    }
+    {
+        std::vector<PartitionStored<6>> pd_s_aux;
+        for (const auto &p : pd_s)
+            if (p != zero_part) pd_s_aux.push_back(p);
+        pd_s = pd_s_aux;
+    }
+    pd_s.push_back(pi);
+    std::vector<PartitionStored<6>> pi_s(pd_s.size(), zero_part);
+    for (unsigned int i = 0; i < pd.size(); ++i) {
+        for (unsigned int p = 0; p < pd_s.size(); ++p) {
+            intersection(pi[i][0], pi[i][1], pd_s[p][i][0], pd_s[p][i][1], op_dim, pi_s[p][i][0],
+                         pi_s[p][i][1]);
+            if (volume(pi_s[p][i][1]) == 0 || volume(pd_s[p][i][1]))
+                pi_s[p][i][0] = pi_s[p][i][1] = pd_s[p][i][0] = pd_s[p][i][1] = Coor<6>{{}};
+        }
+    }
+
+    // Compute the coordinates for all nonzeros
+    std::vector<BSR_handle *> bsrh_s;
+    std::vector<vector<T, XPU>> data_s;
+    std::size_t total_vol_data = 0;
+    for (unsigned int p = 0; p < pd_s.size(); ++p) {
+        // Compute how many neighbors
+        int neighbors = 1;
+        Coor<6> dimd = pd_s[p][rank][1];
+        for (int dim = 0; dim < 4; ++dim) {
+            int d = dimd[dim];
+            if (d <= 0) {
+                neighbors = 0;
+                break;
+            }
+            if (d > 1) neighbors++;
+            if (d > 2) neighbors++;
+        }
+
+        // Allocate and fill the row indices
+        Coor<6> dimi = pi_s[p][rank][1]; // nonblock dimensions of the RSB image
+        dimi[4] = dimi[5] = 1;
+        std::size_t voli = volume(dimi);
+        vector<IndexType, Cpu> ii(voli, Cpu{});
+        for (auto &i : ii) i = neighbors;
+
+        // Allocate and fill the column indices
+        vector<Coor<6>, Cpu> jj(voli * neighbors, Cpu{});
+        Coor<6> from = pi_s[p][rank][0]; // first nonblock dimensions of the RSB image
+        Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
+        Coor<6, std::size_t> strided = get_strides<std::size_t>(dimd, SlowToFast);
+        for (std::size_t i = 0, j = 0; i < voli; ++i) {
+            std::size_t j0 = j;
+            Coor<6> c = index2coor(i, dimi, stride) + from;
+            jj[j++] = c;
+            for (int dim = 0; dim < 4; ++dim) {
+                if (dimd[dim] == 1) continue;
+                for (int dir = -1; dir < 2; dir += 2) {
+                    Coor<6> c0 = c;
+                    c0[dim] += dir;
+                    jj[j++] = normalize_coor(c0 - pd_s[p][rank][0], op_dim);
+                    if (dimd[dim] <= 2) break;
+                }
+            }
+            std::sort(&jj[j0], &jj[j], [&](const Coor<6> &a, const Coor<6> &b) {
+                return coor2index(a, dimd, strided) < coor2index(b, dimd, strided);
+            });
+        }
+
+        std::size_t vol_data = voli * neighbors * op_dim[4] * op_dim[5] * op_dim[4] * op_dim[5];
+        Coor<6> block{{1, 1, 1, 1, op_dim[4], op_dim[5]}};
+        BSR_handle *bsrh = nullptr;
+        vector<int, XPU> ii_xpu = makeSure(ii, xpu);
+        vector<Coor<6>, XPU> jj_xpu = makeSure(jj, xpu);
+        vector<T, XPU> data_xpu = ones<T>(vol_data, xpu);
+        IndexType *iiptr = ii_xpu.data();
+        Coor<6> *jjptr = jj_xpu.data();
+        T *dataptr = data_xpu.data();
+        create_bsr<6, 6, T>(pi_s[p].data(), op_dim, pd_s[p].data(), op_dim, 1, block, block, false,
+                            &iiptr, &jjptr, (const T **)&dataptr, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                            MPI_COMM_WORLD,
+#endif
+                            SlowToFast, &bsrh);
+        bsrh_s.push_back(bsrh);
+        data_s.push_back(data_xpu);
+        total_vol_data += vol_data;
+    }
+
+    // Number of nonzeros
+    if (rank == 0)
+        std::cout << "Size of the sparse tensor per process: "
+                  << total_vol_data * 1.0 * sizeof(T) / 1024 / 1024 << " MiB" << std::endl;
+
+    return {bsrh_s, data_s};
+}
+
 template <typename Q, typename XPU>
 void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nrep, Context ctx,
           XPU xpu) {
@@ -158,7 +280,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
             Q *ptr0 = t0.data(), *ptr1 = t1.data();
             bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
                 Q{1}, op, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}}, dim0, dim0,
-                (const Q **)&ptr0, is_cpu ? p1_rm.data() : p1_cm.data(),
+                (const Q **)&ptr0, Q{0}, is_cpu ? p1_rm.data() : p1_cm.data(),
                 is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
                 is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
@@ -168,10 +290,57 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         }
         sync(xpu);
         t = w_time() - t;
-        if (rank == 0) std::cout << "Time in mavec per rhs " << t / nrep / dim[N] << std::endl;
+        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     destroy_bsr(op);
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
+
+    // Create split tensor
+    auto op_pair_s = create_lattice_split<Q>(po, rank, dimo, ctx, xpu);
+
+    // Copy tensor t0 into each of the c components of tensor 1
+    resetTimings();
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            Q *ptr0 = t0.data(), *ptr1 = t1.data();
+
+            // Set the output tensor to zero
+            copy(0, is_cpu ? p1_rm.data() : p1_cm.data(), 1, is_cpu ? "pxyztscn" : "pnxyztsc", {{}},
+                 is_cpu ? dim1_rm : dim1_cm, is_cpu ? dim1_rm : dim1_cm, (const Q **)&ptr1, nullptr,
+                 &ctx, is_cpu ? p1_rm.data() : p1_cm.data(), 1, is_cpu ? "pxyztscn" : "pnxyztsc",
+                 {{}}, is_cpu ? dim1_rm : dim1_cm, &ptr1, nullptr, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                 MPI_COMM_WORLD,
+#endif
+                 SlowToFast, Copy);
+
+            // Do the contractions on each part
+            std::vector<Request> r(op_pair_s.first.size());
+            for (unsigned int p = 0; p < op_pair_s.first.size(); ++p) {
+                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                    Q{1}, op_pair_s.first[p], "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}},
+                    dim0, dim0, (const Q **)&ptr0, Q{1}, is_cpu ? p1_rm.data() : p1_cm.data(),
+                    is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
+                    is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                    MPI_COMM_WORLD,
+#endif
+                    SlowToFast, &r[p]);
+            }
+            for (const auto &ri : r) wait(ri);
+        }
+
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0)
+            std::cout << "Time in mavec per rhs (split): " << t / nrep / dim[N] << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    for (const auto op : op_pair_s.first) destroy_bsr(op);
 
     if (rank == 0) reportTimings(std::cout);
     if (rank == 0) reportCacheUsage(std::cout);
@@ -270,7 +439,7 @@ int main(int argc, char **argv) {
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext(rank % getGpuDevicesCount());
-        test<float, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
+        test<float, Gpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toGpu(0));
         test<std::complex<double>, Gpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toGpu(0));
         clearCaches();
     }

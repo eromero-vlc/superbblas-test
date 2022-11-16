@@ -2815,7 +2815,7 @@ namespace superbblas {
 
     template <std::size_t N>
     std::vector<std::array<Coor<N>, 2>> make_hole(const Coor<N> &from, const Coor<N> &size,
-                                                       const Coor<N> &dim) {
+                                                  const Coor<N> &dim) {
         /// Shortcut when N == 0
         if (N == 0) return {};
 
@@ -2856,7 +2856,7 @@ namespace superbblas {
             r.push_back({nfrom, nsize});
         }
 
-	return r;
+        return r;
     }
 }
 
