@@ -662,7 +662,7 @@ namespace superbblas {
             //if (deviceId(xpu) != CPU_DEVICE_ID && buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
             // Allocate the buffer
-            vector<T, XPUbuff> buf(buf_count, xpu);
+            vector<T, XPUbuff> buf(buf_count, xpu, MpiTypeSize);
 
             return UnpackedValues<IndexType, T, XPUbuff, XPU>{buf, counts, displ, indices_buf,
                                                               indices};
