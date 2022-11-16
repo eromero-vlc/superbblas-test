@@ -103,10 +103,8 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
 }
 
 template <typename Q, typename XPU>
-void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XPU xpu) {
-
-    // Set number of repetitions
-    const unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
+void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nrep, Context ctx,
+          XPU xpu) {
 
     // Create a lattice operator of Nd-1 dims
     const Coor<Nd - 1> dimo = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
@@ -157,22 +155,20 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, Context ctx, XP
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
-            for (int n = 0; n < dim[N]; ++n) {
-                Q *ptr0 = t0.data(), *ptr1 = t1.data();
-                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-                    Q{1}, op, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}}, dim0, dim0,
-                    (const Q **)&ptr0, is_cpu ? p1_rm.data() : p1_cm.data(),
-                    is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
-                    is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
+            Q *ptr0 = t0.data(), *ptr1 = t1.data();
+            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                Q{1}, op, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}}, dim0, dim0,
+                (const Q **)&ptr0, is_cpu ? p1_rm.data() : p1_cm.data(),
+                is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
+                is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                    MPI_COMM_WORLD,
+                MPI_COMM_WORLD,
 #endif
-                    SlowToFast);
-            }
+                SlowToFast);
         }
         sync(xpu);
         t = w_time() - t;
-        if (rank == 0) std::cout << "Time in mavec " << t / nrep << std::endl;
+        if (rank == 0) std::cout << "Time in mavec per rhs " << t / nrep / dim[N] << std::endl;
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     destroy_bsr(op);
@@ -197,6 +193,7 @@ int main(int argc, char **argv) {
     Coor<Nd> dim = {16, 16, 16, 32, 1, 12, 64}; // xyztscn
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1};
     int max_power = 1;
+    int nrep = getDebugLevel() == 0 ? 10 : 1;
 
     // Get options
     bool procs_was_set = false;
@@ -231,6 +228,15 @@ int main(int argc, char **argv) {
                 std::cerr << "The power should greater than zero" << std::endl;
                 return -1;
             }
+        } else if (std::strncmp("--rep=", argv[i], 6) == 0) {
+            if (sscanf(argv[i] + 6, "%d", &nrep) != 1) {
+                std::cerr << "--rep= should follow a number, for instance --rep=3" << std::endl;
+                return -1;
+            }
+            if (nrep < 1) {
+                std::cerr << "The rep should greater than zero" << std::endl;
+                return -1;
+            }
         } else if (std::strncmp("--help", argv[i], 6) == 0) {
             std::cout << "Commandline option:\n  " << argv[0]
                       << " [--dim='x y z t n b'] [--procs='x y z t n b'] [--power=p] [--help]"
@@ -253,18 +259,19 @@ int main(int argc, char **argv) {
         std::cout << "Processes arrangement xyzt= " << procs[X] << " " << procs[Y] << " "
                   << procs[Z] << " " << procs[T] << std::endl;
         std::cout << "Max power " << max_power << std::endl;
+        std::cout << "Repetitions " << nrep << std::endl;
     }
 
     {
         Context ctx = createCpuContext();
-        test<std::complex<float>, Cpu>(dim, procs, rank, max_power, ctx, ctx.toCpu(0));
+        test<std::complex<double>, Cpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toCpu(0));
         clearCaches();
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext(rank % getGpuDevicesCount());
         test<float, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
-        test<std::complex<float>, Gpu>(dim, procs, rank, max_power, ctx, ctx.toGpu(0));
+        test<std::complex<double>, Gpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toGpu(0));
         clearCaches();
     }
 #endif
