@@ -859,7 +859,7 @@ namespace superbblas {
 
         /// Return whether some MPI calls support GPU pointers
 
-        bool test_support_for_mpi_gpu() {
+        inline bool test_support_for_mpi_gpu() {
 #ifdef SUPERBBLAS_TEST_MPI_GPU
             static const bool test_mpi_gpu = [] {
 #    ifdef SUPERBBLAS_USE_CUDA
