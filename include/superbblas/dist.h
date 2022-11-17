@@ -650,6 +650,11 @@ namespace superbblas {
                                       indices_cpu.data() + i0, Cpu{});
 
                 indices = makeSure(indices_cpu, v.it.ctx());
+
+                if (v.mask_it.size() == 0) {
+                    std::size_t size = storageSize(indices_buf) + storageSize(indices);
+                    cache.insert(key, Value{counts, displ, indices_buf, indices}, size);
+                }
             } else {
                 counts = std::get<0>(it->second.value);
                 displ = std::get<1>(it->second.value);
@@ -662,7 +667,7 @@ namespace superbblas {
             //if (deviceId(xpu) != CPU_DEVICE_ID && buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
             // Allocate the buffer
-            vector<T, XPUbuff> buf(buf_count, xpu);
+            vector<T, XPUbuff> buf(buf_count, xpu, MpiTypeSize);
 
             return UnpackedValues<IndexType, T, XPUbuff, XPU>{buf, counts, displ, indices_buf,
                                                               indices};
