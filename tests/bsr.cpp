@@ -21,6 +21,34 @@ template <typename T, typename XPU> vector<T, XPU> ones(std::size_t size, XPU xp
     return makeSure(r, xpu);
 }
 
+/// Extend the region one element in each direction
+std::array<Coor<6>, 2> extend(std::array<Coor<6>, 2> fs, const Coor<6> &dim) {
+    for (int i = 0; i < 4; ++i) {
+        fs[1][i] = std::min(dim[i], fs[1][i] + 2);
+        if (fs[1][i] < dim[i])
+            fs[0][i]--;
+        else
+            fs[0][i] = 0;
+    }
+    fs[0] = normalize_coor(fs[0], dim);
+    return fs;
+}
+
+// Return the maximum number of neighbors
+unsigned int max_neighbors(const Coor<6> &op_dim) {
+    unsigned int neighbors = 1;
+    for (int dim = 0; dim < 4; ++dim) {
+        int d = op_dim[dim];
+        if (d <= 0) {
+            neighbors = 0;
+            break;
+        }
+        if (d > 1) neighbors++;
+        if (d > 2) neighbors++;
+    }
+    return neighbors;
+}
+
 /// Create a 4D lattice with dimensions tzyxsc
 template <typename T, typename XPU>
 std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> &pi, int rank,
@@ -32,29 +60,11 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     vector<IndexType, Cpu> ii(voli, Cpu{});
 
     // Compute how many neighbors
-    int neighbors = 1;
-    for (int dim = 0; dim < 4; ++dim) {
-        int d = op_dim[dim];
-        if (d <= 0) {
-            neighbors = 0;
-            break;
-        }
-        if (d > 1) neighbors++;
-        if (d > 2) neighbors++;
-    }
+    int neighbors = max_neighbors(op_dim);
 
     // Compute the domain ranges
     PartitionStored<6> pd = pi;
-    for (auto &i : pd) {
-        for (int dim = 0; dim < 4; ++dim) {
-            i[1][dim] = std::min(op_dim[dim], i[1][dim] + 2);
-            if (i[1][dim] < op_dim[dim])
-                i[0][dim]--;
-            else
-                i[0][dim] = 0;
-        }
-        i[0] = normalize_coor(i[0], op_dim);
-    }
+    for (auto &i : pd) i = extend(i, op_dim);
 
     // Compute the coordinates for all nonzeros
     for (auto &i : ii) i = neighbors;
@@ -102,19 +112,6 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     return {bsrh, data_xpu};
 }
 
-/// Extend the region one element in each direction
-std::array<Coor<6>, 2> extend(std::array<Coor<6>, 2> fs, const Coor<6> &dim) {
-    for (int i = 0; i < 4; ++i) {
-        fs[1][i] = std::min(dim[i], fs[1][i] + 2);
-        if (fs[1][i] < dim[i])
-            fs[0][i]--;
-        else
-            fs[0][i] = 0;
-    }
-    fs[0] = normalize_coor(fs[0], dim);
-    return fs;
-}
-
 /// Create a 4D lattice with dimensions tzyxsc
 template <typename T, typename XPU>
 std::pair<std::vector<BSR_handle *>, std::vector<vector<T, XPU>>>
@@ -153,52 +150,56 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
     std::vector<BSR_handle *> bsrh_s;
     std::vector<vector<T, XPU>> data_s;
     std::size_t total_vol_data = 0;
+    int global_neighbors = max_neighbors(op_dim);
     for (unsigned int p = 0; p < pd_s.size(); ++p) {
-        // Compute how many neighbors
-        int neighbors = 1;
-        Coor<6> dimd = pd_s[p][rank][1];
-        for (int dim = 0; dim < 4; ++dim) {
-            int d = dimd[dim];
-            if (d <= 0) {
-                neighbors = 0;
-                break;
-            }
-            if (d > 1) neighbors++;
-            if (d > 2) neighbors++;
-        }
-
-        // Allocate and fill the row indices
         Coor<6> dimi = pi_s[p][rank][1]; // nonblock dimensions of the RSB image
         dimi[4] = dimi[5] = 1;
+        Coor<6> dimd = pd_s[p][rank][1];
+
+        // Allocate and fill the column indices
         std::size_t voli = volume(dimi);
+        vector<Coor<6>, Cpu> jj(voli * global_neighbors, Cpu{});
+        Coor<6> fromi = pi_s[p][rank][0]; // first nonblock element of the RSB image
+        Coor<6> fromd = pd_s[p][rank][0]; // first element of the domain
+        Coor<6, std::size_t> stridei = get_strides<std::size_t>(dimi, SlowToFast);
+        Coor<6, std::size_t> strided = get_strides<std::size_t>(dimd, SlowToFast);
+        std::size_t neighbors = 0;
+        Coor<6> block{{1, 1, 1, 1, op_dim[4], op_dim[5]}};
+        for (unsigned int k = 0; k < 2; ++k) {
+            for (std::size_t i = 0, j = 0; i < voli; ++i) {
+                std::size_t j0 = j;
+                Coor<6> c = index2coor(i, dimi, stridei) + fromi;
+                jj[j++] = c;
+                for (int dim = 0; dim < 4; ++dim) {
+                    if (op_dim[dim] == 1) continue;
+                    for (int dir = -1; dir < 2; dir += 2) {
+                        Coor<6> c0 = c;
+                        c0[dim] += dir;
+                        c0 = normalize_coor(c0, op_dim);
+                        Coor<6> from0, size0;
+                        intersection(c0, block, fromd, dimd, op_dim, from0, size0);
+                        if (volume(size0) > 0)
+                            jj[j++] = normalize_coor(c0 - pd_s[p][rank][0], op_dim);
+                        if (op_dim[dim] <= 2) break;
+                    }
+                }
+                neighbors = std::max(neighbors, j - j0);
+                if (k == 1) {
+                    if (j == j0 && neighbors > 0) jj[j++] = Coor<6>{{}};
+                    for (std::size_t j1 = j0 + neighbors; j < j1; ++j) jj[j] = jj[j - 1];
+                    std::sort(&jj[j0], &jj[j], [&](const Coor<6> &a, const Coor<6> &b) {
+                        return coor2index(a, dimd, strided) < coor2index(b, dimd, strided);
+                    });
+                }
+            }
+        }
+        jj.resize(voli * neighbors);
+
+        // Allocate and fill the row indices
         vector<IndexType, Cpu> ii(voli, Cpu{});
         for (auto &i : ii) i = neighbors;
 
-        // Allocate and fill the column indices
-        vector<Coor<6>, Cpu> jj(voli * neighbors, Cpu{});
-        Coor<6> from = pi_s[p][rank][0]; // first nonblock dimensions of the RSB image
-        Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
-        Coor<6, std::size_t> strided = get_strides<std::size_t>(dimd, SlowToFast);
-        for (std::size_t i = 0, j = 0; i < voli; ++i) {
-            std::size_t j0 = j;
-            Coor<6> c = index2coor(i, dimi, stride) + from;
-            jj[j++] = c;
-            for (int dim = 0; dim < 4; ++dim) {
-                if (dimd[dim] == 1) continue;
-                for (int dir = -1; dir < 2; dir += 2) {
-                    Coor<6> c0 = c;
-                    c0[dim] += dir;
-                    jj[j++] = normalize_coor(c0 - pd_s[p][rank][0], op_dim);
-                    if (dimd[dim] <= 2) break;
-                }
-            }
-            std::sort(&jj[j0], &jj[j], [&](const Coor<6> &a, const Coor<6> &b) {
-                return coor2index(a, dimd, strided) < coor2index(b, dimd, strided);
-            });
-        }
-
         std::size_t vol_data = voli * neighbors * op_dim[4] * op_dim[5] * op_dim[4] * op_dim[5];
-        Coor<6> block{{1, 1, 1, 1, op_dim[4], op_dim[5]}};
         BSR_handle *bsrh = nullptr;
         vector<int, XPU> ii_xpu = makeSure(ii, xpu);
         vector<Coor<6>, XPU> jj_xpu = makeSure(jj, xpu);
