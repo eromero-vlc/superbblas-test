@@ -2554,7 +2554,7 @@ namespace superbblas {
             }
 
             // Normalize empty ranges
-            if (detail::volume(fs[rank][1])) fs[rank][0] = fs[rank][1] = Coor<Nd>{{}};
+            if (detail::volume(fs[rank][1]) == 0) fs[rank][0] = fs[rank][1] = Coor<Nd>{{}};
         }
 
         return fs;
