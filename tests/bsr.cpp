@@ -141,7 +141,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
         for (unsigned int p = 0; p < pd_s.size(); ++p) {
             auto fs = extend(pd_s[p][i], op_dim);
             intersection(pi[i][0], pi[i][1], fs[0], fs[1], op_dim, pi_s[p][i][0], pi_s[p][i][1]);
-            if (volume(pi_s[p][i][1]) == 0 || volume(pd_s[p][i][1]))
+            if (volume(pi_s[p][i][1]) == 0 || volume(pd_s[p][i][1]) == 0)
                 pi_s[p][i][0] = pi_s[p][i][1] = pd_s[p][i][0] = pd_s[p][i][1] = Coor<6>{{}};
         }
     }
@@ -178,8 +178,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
                         c0 = normalize_coor(c0, op_dim);
                         Coor<6> from0, size0;
                         intersection(c0, block, fromd, dimd, op_dim, from0, size0);
-                        if (volume(size0) > 0)
-                            jj[j++] = normalize_coor(c0 - pd_s[p][rank][0], op_dim);
+                        if (volume(size0) > 0) jj[j++] = normalize_coor(c0 - fromd, op_dim);
                         if (op_dim[dim] <= 2) break;
                     }
                 }
