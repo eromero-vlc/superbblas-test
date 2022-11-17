@@ -2821,54 +2821,90 @@ namespace superbblas {
         throw std::runtime_error("contraction: unsupported type");
     }
 
-    /// Return the subranges resulting from subtracting a range, that is, making a hole
-    /// \param from: first element of the range to subtract
-    /// \param size: number of elements in each direction of the range to subtract
+    namespace detail {
+        /// Return the subranges resulting from subtracting a range, that is, making a hole
+        /// \param from: first element of the range to subtract
+        /// \param size: number of elements in each direction of the range to subtract
+        /// \param dim: total number of elements in each direction
+
+        template <std::size_t N>
+        vector<std::array<Coor<N>, 2>, Cpu> make_hole(const Coor<N> &from, const Coor<N> &size,
+                                                      const Coor<N> &dim) {
+            /// Shortcut when N == 0
+            if (N == 0) return {};
+
+            /// Shortcut when subtracting an empty range
+            if (detail::volume(size) == 0) {
+                vector<std::array<Coor<N>, 2>, Cpu> r(1, Cpu{});
+                r[0] = std::array<Coor<N>, 2>{Coor<N>{{}}, dim};
+                return r;
+            }
+
+            // In the general case, return as many subranges as dimensions, each of the subranges
+            // follows the pattern
+            //  returned |  Coor 0  |  Coor 1  |  Coor 2  |
+            //  subrange | subrange | subrange | subrange | ...
+            //  --------------------------------------------
+            //      0    | antihole |   full   |  full    | ...
+            //      1    |   hole   | antihole |  full    | ...
+            //      2    |   hole   |   hole   | antihole | ...
+            //    ...
+
+            vector<std::array<Coor<N>, 2>, Cpu> r(N, Cpu{}); // subranges to return
+            for (std::size_t i = 0; i < N; ++i) {
+                Coor<N> nfrom, nsize;
+                // Fill with hole
+                for (std::size_t j = 0; j < i; j++) {
+                    nfrom[j] = from[j];
+                    nsize[j] = size[j];
+                }
+
+                // Fill with the antihole
+                nfrom[i] = detail::normalize_coor(from[i] + size[i], dim[i]);
+                nsize[i] = dim[i] - size[i];
+
+                // Fill with full
+                for (std::size_t j = i + 1; j < N; j++) {
+                    nfrom[j] = 0;
+                    nsize[j] = dim[j];
+                }
+
+                r[i] = std::array<Coor<N>, 2>{nfrom, nsize};
+            }
+
+            return r;
+        }
+    }
+
+    /// Return the subranges resulting from subtracting a range from another range, that is, making a hole
+    /// \param from: first element of the range to subtract from
+    /// \param size: number of elements in each direction of the range to subtract from
+    /// \param hole_from: first element of the range to subtract
+    /// \param hole_size: number of elements in each direction of the range to subtract
     /// \param dim: total number of elements in each direction
 
     template <std::size_t N>
     std::vector<std::array<Coor<N>, 2>> make_hole(const Coor<N> &from, const Coor<N> &size,
-                                                  const Coor<N> &dim) {
+                                                  const Coor<N> &hole_from,
+                                                  const Coor<N> &hole_size, const Coor<N> &dim) {
         /// Shortcut when N == 0
         if (N == 0) return {};
 
         /// Shortcut when subtracting an empty range
-        if (detail::volume(size) == 0)
-            return std::vector<std::array<Coor<N>, 2>>(1, std::array<Coor<N>, 2>{Coor<N>{{}}, dim});
+        if (detail::volume(hole_size) == 0)
+            return std::vector<std::array<Coor<N>, 2>>(1, std::array<Coor<N>, 2>{from, size});
 
-        // In the general case, return as many subranges as dimensions, each of the subranges
-        // follows the pattern
-        //  returned |  Coor 0  |  Coor 1  |  Coor 2  |
-        //  subrange | subrange | subrange | subrange | ...
-        //  --------------------------------------------
-        //      0    | antihole |   full   |  full    | ...
-        //      1    |   hole   | antihole |  full    | ...
-        //      2    |   hole   |   hole   | antihole | ...
-        //    ...
+        // Make a hole on the whole tensor
+        auto parts = detail::make_hole(hole_from, hole_size, dim);
 
-        std::vector<std::array<Coor<N>, 2>> r; // subranges to return
-        r.reserve(N);
-        for (std::size_t i = 0; i < N; ++i) {
-            Coor<N> nfrom, nsize;
-            // Fill with hole
-            for (std::size_t j = 0; j < i; j++) {
-                nfrom[j] = from[j];
-                nsize[j] = size[j];
-            }
+        // Intersect the parts with the range
+        auto final_parts = detail::intersection(parts, from, size, dim);
 
-            // Fill with the antihole
-            nfrom[i] = detail::normalize_coor(from[i] + size[i], dim[i]);
-            nsize[i] = dim[i] - size[i];
-
-            // Fill with full
-            for (std::size_t j = i + 1; j < N; j++) {
-                nfrom[j] = 0;
-                nsize[j] = dim[j];
-            }
-
-            r.push_back({nfrom, nsize});
-        }
-
+        // Filter out empty subregions
+        std::vector<std::array<Coor<N>, 2>> r;
+        r.reserve(final_parts.size());
+        for (const auto &fs : final_parts)
+            if (detail::volume(fs[1]) > 0) r.push_back(fs);
         return r;
     }
 }

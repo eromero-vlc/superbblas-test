@@ -72,19 +72,20 @@ void test_distribution() {
 }
 
 template <std::size_t N>
-void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &dim) {
+void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &hole_from,
+                    const Coor<N> &hole_size, const Coor<N> &dim) {
 
-    auto r_ = make_hole(from, size, dim);
+    auto r_ = make_hole(from, size, hole_from, hole_size, dim);
     From_size_out<N> r(r_.size(), Cpu{});
     std::copy_n(r_.begin(), r_.size(), r.begin());
 
     for (const auto &it : r) {
-        // Make sure that the resulting range has fully support on (0, dim)
-        if (volume(intersection(it[0], it[1], Coor<N>{{}}, dim, dim)) != volume(it[1]))
+        // Make sure that the resulting range has fully support on (from, size)
+        if (volume(intersection(it[0], it[1], from, size, dim)) != volume(it[1]))
             throw std::runtime_error("Unexpected result in `subtract_range`");
 
-        // Make sure that the resulting range has no support on (from, size)
-        if (volume(intersection(it[0], it[1], from, size, dim)) != 0)
+        // Make sure that the resulting range has no support on (hole_from, hole_size)
+        if (volume(intersection(it[0], it[1], hole_from, hole_size, dim)) != 0)
             throw std::runtime_error("Unexpected result in `subtract_range`");
     }
 
@@ -96,8 +97,8 @@ void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &dim
             throw std::runtime_error("Unexpected result in `subtract_range`");
     }
 
-    // Check the resulting ranges together with the hole covers the whole positive range
-    if (volume(r) + volume(size) != volume(dim))
+    // Check the resulting ranges together with the hole covers the region (from, size)
+    if (volume(r) + volume(intersection(from, size, hole_from, hole_size, dim)) != volume(size))
         throw std::runtime_error("Unexpected result in `subtract_range`");
 }
 
@@ -363,8 +364,10 @@ int main(int argc, char **argv) {
 
     test_distribution();
 
-    test_make_hole<1>({2}, {3}, {8});
-    test_make_hole<2>(Coor<2>{2, 0}, Coor<2>{3, 1}, Coor<2>{8, 1});
+    test_make_hole<1>({1}, {4}, {2}, {3}, {8});
+    test_make_hole<1>({1}, {3}, {2}, {4}, {8});
+    test_make_hole<2>(Coor<2>{1, 1}, Coor<2>{4, 4}, Coor<2>{2, 2}, Coor<2>{1, 1}, Coor<2>{5, 5});
+    test_make_hole<2>(Coor<2>{1, 1}, Coor<2>{4, 4}, Coor<2>{4, 4}, Coor<2>{3, 3}, Coor<2>{5, 5});
 
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1};

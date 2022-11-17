@@ -126,14 +126,11 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
 
     // Split the local part into the halo and the core
     PartitionStored<6> zero_part(pd.size());
-    std::vector<PartitionStored<6>> pd_s(6, zero_part);
+    std::vector<PartitionStored<6>> pd_s(6 * 2, zero_part);
     for (unsigned int i = 0; i < pd.size(); ++i) {
-        auto parts = make_hole(normalize_coor(pi[i][0] - pd[i][0], pd[i][1]), pi[i][1], pd[i][1]);
-        for (unsigned int j = 0; j < parts.size(); ++j)
-            pd_s[j][i] = volume(parts[j][1]) == 0
-                             ? std::array<Coor<6>, 2>{Coor<6>{{}}, Coor<6>{{}}}
-                             : std::array<Coor<6>, 2>{
-                                   normalize_coor(parts[j][0] + pd[i][0], op_dim), parts[j][1]};
+        auto parts = make_hole(pd[i][0], pd[i][1], pi[i][0], pi[i][1], op_dim);
+        if (parts.size() > pd_s.size()) throw std::runtime_error("this shouldn't happen");
+        for (unsigned int j = 0; j < parts.size(); ++j) pd_s[j][i] = parts[j];
     }
     {
         std::vector<PartitionStored<6>> pd_s_aux;
