@@ -287,7 +287,15 @@ namespace superbblas {
         }
 
         template <typename Ostream, typename T, std::size_t N>
-        Ostream &operator<<(Ostream &s, std::array<T, N> v) {
+        Ostream &operator<<(Ostream &s, const std::array<T, N> &v) {
+            s << "{";
+            for (const auto &i : v) s << " " << i;
+            s << "}";
+            return s;
+        }
+
+        template <typename Ostream, typename T>
+        Ostream &operator<<(Ostream &s, const vector<T, Cpu> &v) {
             s << "{";
             for (const auto &i : v) s << " " << i;
             s << "}";
@@ -650,6 +658,11 @@ namespace superbblas {
                                       indices_cpu.data() + i0, Cpu{});
 
                 indices = makeSure(indices_cpu, v.it.ctx());
+
+                if (v.mask_it.size() == 0) {
+                    std::size_t size = storageSize(indices_buf) + storageSize(indices);
+                    cache.insert(key, Value{counts, displ, indices_buf, indices}, size);
+                }
             } else {
                 counts = std::get<0>(it->second.value);
                 displ = std::get<1>(it->second.value);
