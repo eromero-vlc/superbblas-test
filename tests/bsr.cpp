@@ -102,6 +102,19 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     return {bsrh, data_xpu};
 }
 
+/// Extend the region one element in each direction
+std::array<Coor<6>, 2> extend(std::array<Coor<6>, 2> fs, const Coor<6> &dim) {
+    for (int i = 0; i < 4; ++i) {
+        fs[1][i] = std::min(dim[i], fs[1][i] + 2);
+        if (fs[1][i] < dim[i])
+            fs[0][i]--;
+        else
+            fs[0][i] = 0;
+    }
+    fs[0] = normalize_coor(fs[0], dim);
+    return fs;
+}
+
 /// Create a 4D lattice with dimensions tzyxsc
 template <typename T, typename XPU>
 std::pair<std::vector<BSR_handle *>, std::vector<vector<T, XPU>>>
@@ -109,16 +122,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
                      XPU xpu) {
     // Compute the domain ranges
     PartitionStored<6> pd = pi;
-    for (auto &i : pd) {
-        for (int dim = 0; dim < 4; ++dim) {
-            i[1][dim] = std::min(op_dim[dim], i[1][dim] + 2);
-            if (i[1][dim] < op_dim[dim])
-                i[0][dim]--;
-            else
-                i[0][dim] = 0;
-        }
-        i[0] = normalize_coor(i[0], op_dim);
-    }
+    for (auto &i : pd) i = extend(i, op_dim);
 
     // Split the local part into the halo and the core
     PartitionStored<6> zero_part(pd.size());
@@ -141,8 +145,8 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
     std::vector<PartitionStored<6>> pi_s(pd_s.size(), zero_part);
     for (unsigned int i = 0; i < pd.size(); ++i) {
         for (unsigned int p = 0; p < pd_s.size(); ++p) {
-            intersection(pi[i][0], pi[i][1], pd_s[p][i][0], pd_s[p][i][1], op_dim, pi_s[p][i][0],
-                         pi_s[p][i][1]);
+            auto fs = extend(pd_s[p][i], op_dim);
+            intersection(pi[i][0], pi[i][1], fs[0], fs[1], op_dim, pi_s[p][i][0], pi_s[p][i][1]);
             if (volume(pi_s[p][i][1]) == 0 || volume(pd_s[p][i][1]))
                 pi_s[p][i][0] = pi_s[p][i][1] = pd_s[p][i][0] = pd_s[p][i][1] = Coor<6>{{}};
         }
