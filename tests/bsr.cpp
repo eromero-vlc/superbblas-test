@@ -247,16 +247,28 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
     std::size_t vol0 = detail::volume(local_size0);
     vector<Q, XPU> t0 = ones<Q>(vol0, xpu);
 
+    // Get preferred layout for the output tensor
+    MatrixLayout preferred_layout_for_x, preferred_layout_for_y;
+    bsr_get_preferred_layout<Nd - 1, Nd - 1, Q>(op, 1, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                                MPI_COMM_WORLD,
+#endif
+                                                SlowToFast, &preferred_layout_for_x,
+                                                &preferred_layout_for_y);
+
     // Create tensor t1 of Nd+1 dims: an output lattice color vector
-    const Coor<Nd + 1> dim1_rm = {max_power, dim[X], dim[Y], dim[Z],
-                                  dim[T],    dim[S], dim[C], dim[N]};                    // pxyztscn
-    const Coor<Nd + 1> procs1_rm = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztscn
-    PartitionStored<Nd + 1> p1_rm = basic_partitioning(dim1_rm, procs1_rm);
-    const Coor<Nd + 1> dim1_cm = {max_power, dim[N], dim[X], dim[Y],
-                                  dim[Z],    dim[T], dim[S], dim[C]};                    // pnxyztsc
-    const Coor<Nd + 1> procs1_cm = {1, 1, procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // pnxyztsc
-    PartitionStored<Nd + 1> p1_cm = basic_partitioning(dim1_cm, procs1_cm);
-    std::size_t vol1 = detail::volume(p1_rm[rank][1]);
+    const char *o1 = preferred_layout_for_y == RowMajor ? "pxyztscn" : "pnxyztsc";
+    Coor<Nd + 1> dim1 = preferred_layout_for_y == RowMajor
+                            ? Coor<Nd + 1>{max_power, dim[X], dim[Y], dim[Z],
+                                           dim[T],    dim[S], dim[C], dim[N]} // pxyztscn
+                            : Coor<Nd + 1>{max_power, dim[N], dim[X], dim[Y],
+                                           dim[Z],    dim[T], dim[S], dim[C]}; // pnxyztsc
+    const Coor<Nd + 1> procs1 =
+        preferred_layout_for_y == RowMajor
+            ? Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}  // pxyztscn
+            : Coor<Nd + 1>{1, 1, procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // pnxyztsc
+    PartitionStored<Nd + 1> p1 = basic_partitioning(dim1, procs1);
+    std::size_t vol1 = detail::volume(p1[rank][1]);
     vector<Q, XPU> t1 = ones<Q>(vol1, xpu);
 
     const bool is_cpu = deviceId(xpu) == CPU_DEVICE_ID;
@@ -281,9 +293,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
             Q *ptr0 = t0.data(), *ptr1 = t1.data();
             bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
                 Q{1}, op, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}}, dim0, dim0,
-                (const Q **)&ptr0, Q{0}, is_cpu ? p1_rm.data() : p1_cm.data(),
-                is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
-                is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
+                (const Q **)&ptr0, Q{0}, p1.data(), o1, {{}}, dim1, dim1, 'p', &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                 MPI_COMM_WORLD,
 #endif
@@ -310,10 +320,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
             Q *ptr0 = t0.data(), *ptr1 = t1.data();
 
             // Set the output tensor to zero
-            copy(0, is_cpu ? p1_rm.data() : p1_cm.data(), 1, is_cpu ? "pxyztscn" : "pnxyztsc", {{}},
-                 is_cpu ? dim1_rm : dim1_cm, is_cpu ? dim1_rm : dim1_cm, (const Q **)&ptr1, nullptr,
-                 &ctx, is_cpu ? p1_rm.data() : p1_cm.data(), 1, is_cpu ? "pxyztscn" : "pnxyztsc",
-                 {{}}, is_cpu ? dim1_rm : dim1_cm, &ptr1, nullptr, &ctx,
+            copy(0, p1.data(), 1, o1, {{}}, dim1, dim1, (const Q **)&ptr1, nullptr, &ctx, p1.data(),
+                 1, o1, {{}}, dim1, &ptr1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                  MPI_COMM_WORLD,
 #endif
@@ -324,9 +332,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
             for (unsigned int p = 0; p < op_pair_s.first.size(); ++p) {
                 bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
                     Q{1}, op_pair_s.first[p], "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSCn", {{}},
-                    dim0, dim0, (const Q **)&ptr0, Q{1}, is_cpu ? p1_rm.data() : p1_cm.data(),
-                    is_cpu ? "pxyztscn" : "pnxyztsc", {{}}, is_cpu ? dim1_rm : dim1_cm,
-                    is_cpu ? dim1_rm : dim1_cm, 'p', &ptr1, &ctx,
+                    dim0, dim0, (const Q **)&ptr0, Q{1}, p1.data(), o1, {{}}, dim1, dim1, 'p',
+                    &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
 #endif

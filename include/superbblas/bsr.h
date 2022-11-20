@@ -20,6 +20,9 @@ namespace superbblas {
         };
     }
 
+    /// Matrix layout
+    enum MatrixLayout { RowMajor, ColumnMajor };
+
     // /// Handle for a BSR operator
     struct BSR_handle {
         /// Return number of dimensions of the image space
@@ -84,9 +87,6 @@ namespace superbblas {
             ColumnMajorForY,  //< X can be either way but Y should be column-major
             AnyLayoutForXAndY //< X and Y can be either way
         };
-
-        /// Matrix layout
-        enum MatrixLayout { RowMajor, ColumnMajor };
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSR;
 
@@ -236,7 +236,7 @@ namespace superbblas {
 #    endif
 
             SpMMAllowedLayout allowLayout;
-            static const MatrixLayout preferredLayout = ColumnMajor;
+            static const MatrixLayout preferredLayout = RowMajor;
             std::string implementation_;
             const std::string &implementation() const { return implementation_; }
 
@@ -1330,6 +1330,44 @@ namespace superbblas {
         else
             wait(r);
     }
+
+    /// Return the preferred layout for the input and output tensor in `bsr_krylov`
+    /// \param bsrh: BSR handle
+    /// \param ncomponents: number of components in the BSR handle
+    /// \param ctx: context for each data pointer in the BSR handle
+    /// \param comm: MPI communicator
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param preferred_layout_for_x: (out) preferred layout for the input tensor for each component
+    /// \param preferred_layout_for_y: (out) preferred layout for the output tensor for each component
+
+    template <std::size_t Nd, std::size_t Ni, typename T>
+    void bsr_get_preferred_layout(BSR_handle *bsrh, int ncomponents, const Context *ctx,
+                                  MPI_Comm mpicomm, CoorOrder co,
+                                  MatrixLayout *preferred_layout_for_x,
+                                  MatrixLayout *preferred_layout_for_y) {
+
+        detail::MpiComm comm = detail::get_comm(mpicomm);
+
+        detail::BSRComponents<Nd, Ni, T> *bsr =
+            detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
+
+        for (unsigned int i = 0; i < bsr->c.first.size(); ++i) {
+            const unsigned int componentId = bsr->c.first[i].v.componentId;
+            preferred_layout_for_x[componentId] = bsr->c.first[i].preferredLayout;
+            preferred_layout_for_y[componentId] =
+                bsr->c.first[i].allowLayout == detail::ColumnMajorForY
+                    ? ColumnMajor
+                    : bsr->c.first[i].preferredLayout;
+        }
+        for (unsigned int i = 0; i < bsr->c.second.size(); ++i) {
+            const unsigned int componentId = bsr->c.second[i].v.componentId;
+            preferred_layout_for_x[componentId] = bsr->c.second[i].preferredLayout;
+            preferred_layout_for_y[componentId] =
+                bsr->c.second[i].allowLayout == detail::ColumnMajorForY
+                    ? ColumnMajor
+                    : bsr->c.second[i].preferredLayout;
+        }
+    }
 #endif // SUPERBBLAS_USE_MPI
 
     /// Create BSR sparse operator
@@ -1415,6 +1453,43 @@ namespace superbblas {
             dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
             comm, co));
         if (request) *request = Request{};
+    }
+
+    /// Return the preferred layout for the input and output tensor in `bsr_krylov`
+    /// \param bsrh: BSR handle
+    /// \param ncomponents: number of components in the BSR handle
+    /// \param ctx: context for each data pointer in the BSR handle
+    /// \param comm: MPI communicator
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param preferred_layout_for_x: (out) preferred layout for the input tensor for each component
+    /// \param preferred_layout_for_y: (out) preferred layout for the output tensor for each component
+
+    template <std::size_t Nd, std::size_t Ni, typename T>
+    void bsr_get_preferred_layout(BSR_handle *bsrh, int ncomponents, const Context *ctx,
+                                  CoorOrder co, MatrixLayout *preferred_layout_for_x,
+                                  MatrixLayout *preferred_layout_for_y) {
+
+        detail::SelfComm comm = detail::get_comm();
+
+        detail::BSRComponents<Nd, Ni, T> *bsr =
+            detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
+
+        for (unsigned int i = 0; i < bsr->c.first.size(); ++i) {
+            const unsigned int componentId = bsr->c.first[i].v.componentId;
+            preferred_layout_for_x[componentId] = bsr->c.first[i].preferredLayout;
+            preferred_layout_for_y[componentId] =
+                bsr->c.first[i].allowLayout == detail::ColumnMajorForY
+                    ? ColumnMajor
+                    : bsr->c.first[i].preferredLayout;
+        }
+        for (unsigned int i = 0; i < bsr->c.second.size(); ++i) {
+            const unsigned int componentId = bsr->c.second[i].v.componentId;
+            preferred_layout_for_x[componentId] = bsr->c.second[i].preferredLayout;
+            preferred_layout_for_y[componentId] =
+                bsr->c.second[i].allowLayout == detail::ColumnMajorForY
+                    ? ColumnMajor
+                    : bsr->c.second[i].preferredLayout;
+        }
     }
 }
 #endif // __SUPERBBLAS_BSR__
