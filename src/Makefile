@@ -23,6 +23,7 @@ OTHER_HEADERS := \
 TESTS := \
   ../tests/blas.cpp \
   ../tests/bsr.cpp \
+  ../tests/bsr_hist.cpp \
   ../tests/contract.cpp \
   ../tests/dense.cpp \
   ../tests/dist.cpp \

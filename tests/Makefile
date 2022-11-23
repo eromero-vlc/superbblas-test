@@ -17,7 +17,7 @@ SB_LDFLAGS ?=
 
 include ../make.inc
 
-SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp
+SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp bsr_hist.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
@@ -81,6 +81,25 @@ ifeq ($(SUPERBBLAS_WITH_MPI), yes)
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 endif
+
+hist_cpu hist_cuda hist_hip: hist_%:
+	@rm -rf repo
+	@git clone https://github.com/eromero-vlc/superbblas repo &> /dev/null
+	@echo "#" commit mpi_1rhs mpi_12rhs mpi_48rhs thr_1rhs thr_12rhs thr_48rhs
+	@for commit in `git log --pretty='%h' 411a5e0fd172fc2e12ddc17907cbb820e3e8576b..HEAD`; do \
+		( cd repo && git checkout $$commit &> /dev/null ); \
+		for ver in 0 1 2; do \
+			make bsr_hist_$* BUILDDIR=repo CXX=${CXX} CXXFLAGS="${CXXFLAGS} -DVER=$$ver" &> /dev/null || continue; \
+			r1="`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1   mpirun -np 8 ./bsr_hist_$* --dim='8 8 8 8 1 12' --procs='1 2 2 2'`"; \
+			r12="`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1  mpirun -np 8 ./bsr_hist_$* --dim='8 8 8 8 12 12' --procs='1 2 2 2'`"; \
+			r48="`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1  mpirun -np 8 ./bsr_hist_$* --dim='8 8 8 8 48 12' --procs='1 2 2 2'`"; \
+			r1t="`OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=1  mpirun --bind-to none -np 1 ./bsr_hist_$* --dim='8 8 8 8 1 12' --procs='1 1 1 1'`"; \
+			r12t="`OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=1 mpirun --bind-to none -np 1 ./bsr_hist_$* --dim='8 8 8 8 12 12' --procs='1 1 1 1'`"; \
+			r48t="`OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=1 mpirun --bind-to none -np 1 ./bsr_hist_$* --dim='8 8 8 8 48 12' --procs='1 1 1 1'`"; \
+			echo $$commit $$r1 $$r12 $$r48 $$r1t $$r12t $$r48t; \
+			break; \
+		done; \
+	done
 
 clean:
 	rm -f ${CPU_TARGETS} ${CPU_LIB_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS} ${HIP_LIB_TARGETS} storage_details
