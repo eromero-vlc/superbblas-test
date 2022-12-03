@@ -164,7 +164,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 #endif
                                       SlowToFast);
             for (int m = 0; m < dim[M]; ++m) {
-                const Coor<Nd - 1> from0{};
+                const Coor<Nd - 1> from0{{}};
                 const Coor<Nd> from1{m};
                 Scalar *ptr0 = t0.data();
                 save<Nd - 1, Nd, Scalar, Scalar>(1.0, p0.data(), 1, "dtgsSnN", from0, dim0, dim0,
@@ -220,13 +220,13 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 for (auto req : reqs) {
-                    Coor<Nd> from0{};
+                    Coor<Nd> from0{{}};
                     std::copy_n(detail::index2coor(req, dimr, stride).begin(), Nd - 2,
                                 from0.begin());
-                    Coor<Nd> size0{};
+                    Coor<Nd> size0{{}};
                     for (auto &c : size0) c = 1;
                     size0[Nd - 2] = size0[Nd - 1] = n;
-                    const Coor<2> from1{};
+                    const Coor<2> from1{{}};
                     Scalar *ptr1 = t1.data();
                     load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
                                                 "nN", from1, dim1, &ptr1, &ctx,
@@ -258,7 +258,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                                    MPI_COMM_WORLD,
 #endif
                                    &stoh);
-        std::array<Coor<Nd>, 2> fs{Coor<Nd>{}, dim};
+        std::array<Coor<Nd>, 2> fs{Coor<Nd>{{}}, dim};
         append_blocks<Nd, Scalar>(&fs, 1, dim, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                   MPI_COMM_WORLD,
@@ -276,7 +276,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 detail::get_strides<std::size_t>(local_size0, co);
             Coor<Nd, std::size_t> strides1 = detail::get_strides<std::size_t>(dim, co);
             for (int m = 0; m < dim[M]; ++m) {
-                const Coor<Nd - 1> from0{};
+                const Coor<Nd - 1> from0{{}};
                 const Coor<Nd> from1{m};
                 for (std::size_t i = 0; i < vol0; ++i) {
                     Coor<Nd - 1> c0 = index2coor(i, local_size0, local_strides0) + p0[rank][0];
@@ -349,13 +349,13 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 vector<Scalar, XPU> t1(vol1, xpu);
 
                 for (auto req : reqs) {
-                    Coor<Nd> from0{};
+                    Coor<Nd> from0{{}};
                     std::copy_n(detail::index2coor(req, dimr, stridesr).begin(), Nd - 2,
                                 from0.begin());
-                    Coor<Nd> size0{};
+                    Coor<Nd> size0{{}};
                     for (auto &c : size0) c = 1;
                     size0[Nd - 2] = size0[Nd - 1] = n;
-                    const Coor<2> from1{};
+                    const Coor<2> from1{{}};
                     copy_n(t1_m1.data(), Cpu{}, vol1, t1.data(), xpu);
                     Scalar *ptr1 = t1.data();
                     load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
@@ -367,7 +367,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                     vector<Scalar, Cpu> t1_cpu = makeSure(t1, Cpu{});
                     for (std::size_t i = 0; i < vol1; ++i) {
                         Coor<2> cnn = index2coor(i, dimnn, stridesnn) + p1[rank][0];
-                        Coor<Nd> c{};
+                        Coor<Nd> c{{}};
                         c[Nd - 2] = cnn[0];
                         c[Nd - 1] = cnn[1];
                         if (t1_cpu[i].real() != coor2index(from0 + c, dim, strides))
@@ -402,11 +402,11 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 detail::get_strides<std::size_t>(local_size0, co);
             Coor<Nd, std::size_t> strides1 = detail::get_strides<std::size_t>(dim, co);
             for (int m = 0; m < dim[M]; ++m) {
-                const Coor<Nd - 1> from0{};
+                const Coor<Nd - 1> from0{{}};
                 const Coor<Nd> from1{m};
 
-                append_blocks<Nd - 1, Nd, Scalar>(p0.data(), nprocs, "dtgsSnN", {}, dim0, dim0,
-                                                  "mdtgsSnN", from1, stoh,
+                append_blocks<Nd - 1, Nd, Scalar>(p0.data(), nprocs, "dtgsSnN", Coor<Nd - 1>{{}},
+                                                  dim0, dim0, "mdtgsSnN", from1, stoh,
 #ifdef SUPERBBLAS_USE_MPI
                                                   MPI_COMM_WORLD,
 #endif
@@ -449,13 +449,13 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 vector<Scalar, XPU> t1(vol1, xpu);
 
                 for (auto req : reqs) {
-                    Coor<Nd> from0{};
+                    Coor<Nd> from0{{}};
                     std::copy_n(detail::index2coor(req, dimr, stridesr).begin(), Nd - 2,
                                 from0.begin());
-                    Coor<Nd> size0{};
+                    Coor<Nd> size0{{}};
                     for (auto &c : size0) c = 1;
                     size0[Nd - 2] = size0[Nd - 1] = n;
-                    const Coor<2> from1{};
+                    const Coor<2> from1{{}};
                     copy_n(t1_m1.data(), Cpu{}, vol1, t1.data(), xpu);
                     Scalar *ptr1 = t1.data();
                     load<Nd, 2, Scalar, Scalar>(1.0, stoh, "mdtgsSnN", from0, size0, p1.data(), 1,
@@ -467,7 +467,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                     vector<Scalar, Cpu> t1_cpu = makeSure(t1, Cpu{});
                     for (std::size_t i = 0; i < vol1; ++i) {
                         Coor<2> cnn = index2coor(i, dimnn, stridesnn) + p1[rank][0];
-                        Coor<Nd> c{};
+                        Coor<Nd> c{{}};
                         c[Nd - 2] = cnn[0];
                         c[Nd - 1] = cnn[1];
                         if (t1_cpu[i].real() != coor2index(from0 + c, dim, strides))
