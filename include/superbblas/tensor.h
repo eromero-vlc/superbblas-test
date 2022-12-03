@@ -942,9 +942,7 @@ namespace superbblas {
             // Also, performance reported by blas test shows that blocking in copy is worth it for
             // blocking at least 8
             std::size_t vol_sizeb = volume(sizeb);
-            if (mask0.size() != 0 || vol_sizeb <= 1 ||
-                (deviceId(v0.ctx()) == CPU_DEVICE_ID && deviceId(v1.ctx()) == CPU_DEVICE_ID &&
-                 vol_sizeb < 8)) {
+            if (mask0.size() != 0 || vol_sizeb <= 1) {
                 nblock = 0;
                 sizeb = size;
             }
@@ -1082,7 +1080,7 @@ namespace superbblas {
         get_permutation_origin(const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
                                const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
                                const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation,
-                               XPU xpu, CoorOrder co) {
+                               XPU xpu, CoorOrder co, std::size_t nblock = 0) {
             (void)from1;
             (void)dim1;
 
@@ -1090,13 +1088,15 @@ namespace superbblas {
 
             // Canonize the copy operation
             constexpr std::size_t Nd = std::min(Nd0, Nd1);
-            std::size_t nblock;
+            std::size_t nblock1;
             IndexType new_disp0, new_disp1;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
             Coor<Nd, IndexType> new_strides0, new_strides1;
             copy_normalize(o0, from0, size0, dim0, o1, from1, dim1, co, new_disp0, new_from0,
                            new_size, new_dim0, new_strides0, new_disp1, new_from1, new_dim1,
-                           new_strides1, nblock);
+                           new_strides1, nblock1);
+
+            for (std::size_t i = 0; i < nblock; ++i) new_size[i] = 1;
 
             // Compute the permutation
             return {get_permutation(new_from0, new_size, new_dim0, new_strides0,
@@ -1116,10 +1116,12 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename XPU>
-        std::pair<IndicesT<IndexType, XPU>, IndexType> get_permutation_destination(
-            const Order<Nd0> &o0, const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-            const Coor<Nd0> &dim0, const Order<Nd1> &o1, const Coor<Nd1> &from1,
-            const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation, XPU xpu, CoorOrder co) {
+        std::pair<IndicesT<IndexType, XPU>, IndexType>
+        get_permutation_destination(const Order<Nd0> &o0, const Coor<Nd0> &from0,
+                                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                    const Order<Nd1> &o1, const Coor<Nd1> &from1,
+                                    const Coor<Nd1> &dim1, ImplicitPermutation implicitPermutation,
+                                    XPU xpu, CoorOrder co, std::size_t nblock = 0) {
 
             (void)from0;
             (void)dim0;
@@ -1129,12 +1131,14 @@ namespace superbblas {
             // Canonize the copy operation
             constexpr std::size_t Nd = std::min(Nd0, Nd1);
             IndexType new_disp0, new_disp1;
-            std::size_t nblock;
+            std::size_t nblock0;
             Coor<Nd> new_from0, new_size, new_dim0, new_from1, new_dim1;
             Coor<Nd, IndexType> new_strides0, new_strides1;
             copy_normalize(o0, from0, size0, dim0, o1, from1, dim1, co, new_disp0, new_from0,
                            new_size, new_dim0, new_strides0, new_disp1, new_from1, new_dim1,
-                           new_strides1, nblock);
+                           new_strides1, nblock0);
+
+            for (std::size_t i = 0; i < nblock; ++i) new_size[i] = 1;
 
             // Compute the permutation
             return {get_permutation(new_from1, new_size, new_dim1, new_strides1,
