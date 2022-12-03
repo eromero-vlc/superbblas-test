@@ -195,23 +195,39 @@ namespace superbblas {
                 IndexType block_rows = volume(v.dimi) / bi;
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
+                const IndexType nnz = jj.size();
                 const bool tx = lx == RowMajor;
+                const bool ty = ly == RowMajor;
                 const bool tb = !v.blockImFast;
                 const IndexType xs = lx == ColumnMajor ? 1 : ldx;
+                if (ncols > 1) {
 #    ifdef _OPENMP
 #        pragma omp parallel for schedule(static)
 #    endif
-                for (IndexType i = 0; i < block_rows; ++i) {
-                    for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
-                        if (jj[j] == -1) continue;
-                        if (ly == ColumnMajor)
-                            xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
-                                  nonzeros + j * bi * bd, bi, x + jj[j] * xs, ldx, T{1}, y + i * bi,
-                                  ldy, Cpu{});
-                        else
-                            xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
-                                  x + jj[j] * xs, ldx, nonzeros + j * bi * bd, bi, T{1},
-                                  y + i * bi * ldy, ldy, Cpu{});
+                    for (IndexType i = 0; i < block_rows; ++i) {
+                        for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
+                            if (jj[j] == -1) continue;
+                            if (ly == ColumnMajor)
+                                xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
+                                      nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs, ldx,
+                                      T{1}, y + i * bi, ldy, Cpu{});
+                            else
+                                xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
+                                      x + jj[j] * xs, ldx, nonzeros + j * bi * bd, tb ? bd : bi,
+                                      T{1}, y + i * bi * ldy, ldy, Cpu{});
+                        }
+                    }
+                } else {
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
+#    endif
+                    for (IndexType i = 0; i < block_rows; ++i) {
+                        for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
+                            if (jj[j] == -1) continue;
+                            xgemv(tb ? 'T' : 'N', tb ? bd : bi, tb ? bi : bd, alpha,
+                                  nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs,
+                                  tx ? ldx : 1, T{1}, y + i * bi, ty ? ldy : 1, Cpu{});
+                        }
                     }
                 }
             }
