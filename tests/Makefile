@@ -77,7 +77,7 @@ all_cpu all_cpu_lib all_cuda all_cuda_lib all_hip all_hip_lib: all_%:
 ifeq ($(SUPERBBLAS_WITH_MPI), yes)
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./dist_$*  --procs='1 1 2 3' --dim='4 4 4 4 64'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 3 --oversubscribe ./dist_$*  --procs='1 1 1 3' --dim='4 4 4 2 64'
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./contract_$*  --procs='1 1 2 3' --dim='2 2 4 4 2'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=0 mpirun -np 6 --oversubscribe ./contract_$*  --procs='1 1 2 3' --dim='2 2 4 4 2'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 endif
@@ -86,10 +86,14 @@ hist_cpu hist_cuda hist_hip: hist_%:
 	@rm -rf repo
 	@git clone https://github.com/eromero-vlc/superbblas repo &> /dev/null
 	@echo "#" commit mpi_1rhs mpi_12rhs mpi_48rhs thr_1rhs thr_12rhs thr_48rhs
-	@for commit in `git log --pretty='%h' 411a5e0fd172fc2e12ddc17907cbb820e3e8576b..HEAD`; do \
+	@for commit in _local_ `git log --pretty='%h' 411a5e0fd172fc2e12ddc17907cbb820e3e8576b..HEAD`; do \
 		( cd repo && git checkout $$commit &> /dev/null ); \
 		for ver in 0 1 2; do \
-			make bsr_hist_$* BUILDDIR=repo CXX=${CXX} CXXFLAGS="${CXXFLAGS} -DVER=$$ver" &> /dev/null || continue; \
+			if [ $$commit == _local_ ]; then \
+				make bsr_hist_$* BUILDDIR=.. CXX=${CXX} CXXFLAGS="${CXXFLAGS} -DVER=$$ver" &> /dev/null || continue; \
+			else \
+				make bsr_hist_$* BUILDDIR=repo CXX=${CXX} CXXFLAGS="${CXXFLAGS} -DVER=$$ver" &> /dev/null || continue; \
+			fi; \
 			r1="`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1   mpirun -np 8 ./bsr_hist_$* --dim='8 8 8 8 1 12' --procs='1 2 2 2'`"; \
 			r12="`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1  mpirun -np 8 ./bsr_hist_$* --dim='8 8 8 8 12 12' --procs='1 2 2 2'`"; \
 			r48="`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1  mpirun -np 8 ./bsr_hist_$* --dim='8 8 8 8 48 12' --procs='1 2 2 2'`"; \
