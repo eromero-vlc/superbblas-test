@@ -671,7 +671,7 @@ namespace superbblas {
 
                 for (const auto &fsi : toReceive[i]) {
                     Coor<Nd> fromi = fsi[0], sizei = fsi[1];
-                    for (std::size_t j = 0; j < toReceive.size(); ++j) {
+                    for (std::size_t j = i + 1; j < toReceive.size(); ++j) {
                         if (j / ncomponents == comm.rank) continue;
 
                         if (volume(intersection(toReceive[j], fromi, sizei, dim)) > 0) return true;
