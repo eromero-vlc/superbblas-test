@@ -195,7 +195,6 @@ namespace superbblas {
                 IndexType block_rows = volume(v.dimi) / bi;
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
-                const IndexType nnz = jj.size();
                 const bool tx = lx == RowMajor;
                 const bool ty = ly == RowMajor;
                 const bool tb = !v.blockImFast;
