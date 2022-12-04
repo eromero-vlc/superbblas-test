@@ -554,7 +554,7 @@ namespace superbblas {
                                        indices1_cpu.begin() + n,
                                        [=](IndexType d) { return d + dispi; });
 
-                        disp1[i / ncomponents1] += indices1i_mask.size();
+                        disp1[i / ncomponents1] += indices1i_mask.size() * blocksize;
                         n += indices1i_mask.size();
                         assert(n <= vol);
                     }
@@ -719,7 +719,7 @@ namespace superbblas {
             if (it == cache.end()) {
                 counts = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
                 displ = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
-                std::vector<IndicesT<IndexType, Cpu>> indices0;
+                std::vector<std::vector<IndicesT<IndexType, Cpu>>> indices0_groups;
                 auto mask_cpu = makeSure(v.mask_it, Cpu{});
 
                 // Figure out the common blocksize
@@ -737,6 +737,7 @@ namespace superbblas {
                     if (i / ncomponents == comm.rank) continue;
 
                     std::size_t n = 0;
+                    std::vector<IndicesT<IndexType, Cpu>> indices0;
                     for (const auto &fsi : toReceive[i]) {
                         Coor<Nd> fromi = fsi[0], sizei = fsi[1];
                         auto indices1_pair = get_permutation_destination<IndexType>(
@@ -760,6 +761,7 @@ namespace superbblas {
                         num_elems += indices1.size();
                         indices0.push_back(indices1);
                     }
+                    indices0_groups.push_back(indices0);
                     counts[i / ncomponents] += (n * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
                 }
 
@@ -771,19 +773,28 @@ namespace superbblas {
                 // Create the permutation for the buffer
                 IndicesT<IndexType, Cpu> indices_buf_cpu(num_elems, Cpu{});
                 const std::size_t num_T = MpiTypeSize / sizeof(T);
-                for (std::size_t i = 0, i0 = 0, i1 = 0; i < indices0.size();
-                     i0 += (indices0[i].size() * blocksize + num_T - 1) / num_T * num_T,
-                                 i1 += indices0[i].size(), ++i) {
-                    for (IndexType j = 0, j1 = indices0[i].size(); j < j1; ++j)
-                        indices_buf_cpu[i1 + j] = i0 + j * blocksize;
+                for (std::size_t i = 0, i_buf = 0, disp_buf = 0; i < indices0_groups.size(); ++i) {
+                    std::size_t num_blocks = 0;
+                    for (std::size_t ii = 0; ii < indices0_groups[i].size(); ++ii) {
+                        for (IndexType j = 0, j1 = indices0_groups[i][ii].size(); j < j1; ++j)
+                            indices_buf_cpu[i_buf++] = disp_buf + (num_blocks++) * blocksize;
+                    }
+                    disp_buf += (num_blocks * blocksize + num_T - 1) / num_T * num_T;
                 }
                 indices_buf = makeSure(indices_buf_cpu, xpu);
 
                 // Concatenate all indices into a single permutation vector
                 IndicesT<IndexType, Cpu> indices_cpu(num_elems, Cpu{});
-                for (std::size_t i = 0, i0 = 0; i < indices0.size(); i0 += indices0[i].size(), ++i)
-                    copy_n<IndexType>(indices0[i].data(), Cpu{}, indices0[i].size(),
-                                      indices_cpu.data() + i0, Cpu{});
+                {
+                    std::size_t i0 = 0;
+                    for (const auto &indices0 : indices0_groups) {
+                        for (const auto &indices : indices0) {
+                            copy_n<IndexType>(indices.data(), Cpu{}, indices.size(),
+                                              indices_cpu.data() + i0, Cpu{});
+                            i0 += indices.size();
+                        }
+                    }
+                }
 
                 indices = makeSure(indices_cpu, v.it.ctx());
 
@@ -791,9 +802,12 @@ namespace superbblas {
                 // in undefined behaviour as several threads may add on the same destination element
                 if (std::is_same<EWOP, EWOp::Add>::value &&
                     does_self_intersect(toReceive, v.dim, comm)) {
-                    indices_groups = IndicesT<IndexType, Cpu>(indices0.size(), Cpu{});
-                    for (std::size_t i = 0; i < indices0.size(); ++i)
-                        indices_groups[i] = indices0[i].size();
+                    std::size_t num_groups = 0;
+                    for (const auto &indices0 : indices0_groups) num_groups += indices0.size();
+                    indices_groups = IndicesT<IndexType, Cpu>(num_groups, Cpu{});
+                    std::size_t i0 = 0;
+                    for (const auto &indices0 : indices0_groups)
+                        for (const auto &indices : indices0) indices_groups[i0++] = indices.size();
                 } else {
                     indices_groups = IndicesT<IndexType, Cpu>(1, Cpu{});
                     indices_groups[0] = indices.size();
