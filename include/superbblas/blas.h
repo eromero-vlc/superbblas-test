@@ -157,6 +157,26 @@ namespace superbblas {
             static const bool value = is_complex<T>::value;
         };
 
+        inline void sync(Cpu) {}
+        inline void syncLegacyStream(Cpu) {}
+
+#ifdef SUPERBBLAS_USE_CUDA
+        inline void sync(Cuda cuda) { cudaCheck(cudaStreamSynchronize(cuda.stream)); }
+
+        inline void syncLegacyStream(Cuda cuda) {
+            setDevice(cuda);
+            cudaCheck(cudaDeviceSynchronize());
+        }
+
+#elif defined(SUPERBBLAS_USE_HIP)
+        inline void sync(Hip hip) { hipCheck(hipStreamSynchronize(hip.stream)); }
+
+        inline void syncLegacyStream(Hip hip) {
+            setDevice(hip);
+            hipCheck(hipDeviceSynchronize());
+        }
+#endif
+
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param cpu: context
@@ -277,9 +297,10 @@ namespace superbblas {
                 cuda.dealloc((void *)ptr, CUDA);
             } else {
 #    if CUDART_VERSION >= 11020
-                detail::cudaCheck(cudaFreeAsync((void *)ptr, cuda.stream));
+                cudaCheck(cudaFreeAsync((void *)ptr, cuda.stream));
 #    else
-                detail::cudaCheck(cudaFree((void *)ptr));
+                sync(cuda);
+                cudaCheck(cudaFree((void *)ptr));
 #    endif
             }
         }
@@ -345,9 +366,10 @@ namespace superbblas {
                 hip.dealloc((void *)ptr, HIP);
             } else {
 #    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                detail::hipCheck(hipFreeAsync((void *)ptr, hip.stream));
+                hipCheck(hipFreeAsync((void *)ptr, hip.stream));
 #    else
-                detail::hipCheck(hipFree((void *)ptr));
+                sync(hip);
+                hipCheck(hipFree((void *)ptr));
 #    endif
             }
         }
@@ -589,26 +611,6 @@ namespace superbblas {
 #    elif defined(SUPERBBLAS_USE_HIP)
         inline auto thrust_par_on(Hip hip) { return thrust::hip::par.on(hip.stream); }
 #    endif
-#endif
-
-        inline void sync(Cpu) {}
-        inline void syncLegacyStream(Cpu) {}
-
-#ifdef SUPERBBLAS_USE_CUDA
-        inline void sync(Cuda cuda) { cudaCheck(cudaStreamSynchronize(cuda.stream)); }
-
-        inline void syncLegacyStream(Cuda cuda) {
-            setDevice(cuda);
-            cudaCheck(cudaDeviceSynchronize());
-        }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-        inline void sync(Hip hip) { hipCheck(hipStreamSynchronize(hip.stream)); }
-
-        inline void syncLegacyStream(Hip hip) {
-            setDevice(hip);
-            hipCheck(hipDeviceSynchronize());
-        }
 #endif
 
         template <typename T, std::size_t N>
