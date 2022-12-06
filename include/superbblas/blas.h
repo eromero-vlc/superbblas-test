@@ -279,6 +279,7 @@ namespace superbblas {
 #    if CUDART_VERSION >= 11020
                 detail::cudaCheck(cudaFreeAsync((void *)ptr, cuda.stream));
 #    else
+                detail::sync(cuda);
                 detail::cudaCheck(cudaFree((void *)ptr));
 #    endif
             }
@@ -347,6 +348,7 @@ namespace superbblas {
 #    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
                 detail::hipCheck(hipFreeAsync((void *)ptr, hip.stream));
 #    else
+                detail::sync(hip);
                 detail::hipCheck(hipFree((void *)ptr));
 #    endif
             }
