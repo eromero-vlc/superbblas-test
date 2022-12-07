@@ -64,6 +64,9 @@ namespace superbblas {
             Coor<Ni> dimi;           ///< dimensions of the image space
             Coor<Nd> blockd;         ///< dimensions of a block in the domain space
             Coor<Ni> blocki;         ///< dimensions of a block in the image space
+            Coor<Nd> krond;          ///< dimensions of Kronecker in the domain space
+            Coor<Ni> kroni;          ///< dimensions of Kronecker in the image space
+            vector<T, XPU> kron_it;  ///< nonzero values
             bool blockImFast; ///< whether the image indices are the fastest on the dense blocks
             CoorOrder co;     ///< Coordinate order of ii and jj
             unsigned int componentId; ///< Component Id
@@ -71,7 +74,8 @@ namespace superbblas {
             template <typename Q = T, typename = typename std::enable_if<std::is_same<
                                           Q, typename std::remove_const<Q>::type>::value>::type>
             operator BSRComponent<Nd, Ni, const Q, XPU>() const {
-                return {i, j, it, dimd, dimi, blockd, blocki, blockImFast, co, componentId};
+                return {i,     j,     it,      dimd,        dimi, blockd,     blocki,
+                        krond, kroni, kron_it, blockImFast, co,   componentId};
             }
         };
 
@@ -119,7 +123,9 @@ namespace superbblas {
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 if (volume(v.blocki) != volume(v.blockd))
-                    throw std::runtime_error(" MKL Sparse does not support non-square blocks");
+                    throw std::runtime_error("MKL Sparse does not support non-square blocks");
+                if (v.kron_it.size() > 0)
+                    throw std::runtime_error("MKL Sparse does not support Kronecker BSR format");
                 IndexType block_size = volume(v.blocki);
                 IndexType block_rows = volume(v.dimi) / block_size;
                 IndexType block_cols = volume(v.dimd) / block_size;
@@ -147,6 +153,9 @@ namespace superbblas {
 
             double getCostPerMatvec() const {
                 double block_size = (double)volume(v.blocki);
+                double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+                if (ki > 1 || kd > 1)
+                    return (kd * block_size * block_size + kd * ki * block_size) * jj.size();
                 return block_size * block_size * jj.size();
             }
 
@@ -177,13 +186,15 @@ namespace superbblas {
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
-                auto bsr = get_bsr_indices(v);
+                auto bsr = get_bsr_indices(v); // column indices aren't blocked
                 ii = bsr.i;
                 jj = bsr.j;
             }
 
             double getCostPerMatvec() const {
                 double bi = (double)volume(v.blocki), bd = (double)volume(v.blockd);
+                double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+                if (ki > 1 || kd > 1) return (kd * bi * bd + kd * ki * bi) * jj.size();
                 return bi * bd * jj.size();
             }
 
@@ -192,40 +203,68 @@ namespace superbblas {
                 if (conjA) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
                 IndexType bd = volume(v.blockd);
-                IndexType block_rows = volume(v.dimi) / bi;
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_rows = volume(v.dimi) / bi / ki;
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
                 const bool tx = lx == RowMajor;
                 const bool ty = ly == RowMajor;
                 const bool tb = !v.blockImFast;
                 const IndexType xs = lx == ColumnMajor ? 1 : ldx;
-                if (ncols > 1) {
+                if (v.kron_it.size() == 0) {
+                    if (ncols > 1) {
 #    ifdef _OPENMP
 #        pragma omp parallel for schedule(static)
 #    endif
-                    for (IndexType i = 0; i < block_rows; ++i) {
-                        for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
-                            if (jj[j] == -1) continue;
-                            if (ly == ColumnMajor)
-                                xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
-                                      nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs, ldx,
-                                      T{1}, y + i * bi, ldy, Cpu{});
-                            else
-                                xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
-                                      x + jj[j] * xs, ldx, nonzeros + j * bi * bd, tb ? bd : bi,
-                                      T{1}, y + i * bi * ldy, ldy, Cpu{});
+                        for (IndexType i = 0; i < block_rows; ++i) {
+                            for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
+                                if (jj[j] == -1) continue;
+                                if (ly == ColumnMajor)
+                                    xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
+                                          nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs, ldx,
+                                          T{1}, y + i * bi, ldy, Cpu{});
+                                else
+                                    xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
+                                          x + jj[j] * xs, ldx, nonzeros + j * bi * bd, tb ? bd : bi,
+                                          T{1}, y + i * bi * ldy, ldy, Cpu{});
+                            }
+                        }
+                    } else {
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
+#    endif
+                        for (IndexType i = 0; i < block_rows; ++i) {
+                            for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
+                                if (jj[j] == -1) continue;
+                                xgemv(tb ? 'T' : 'N', tb ? bd : bi, tb ? bi : bd, alpha,
+                                      nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs,
+                                      tx ? ldx : 1, T{1}, y + i * bi, ty ? ldy : 1, Cpu{});
+                            }
                         }
                     }
                 } else {
+                    // With Kronecker product
 #    ifdef _OPENMP
-#        pragma omp parallel for schedule(static)
+#        pragma omp parallel
 #    endif
-                    for (IndexType i = 0; i < block_rows; ++i) {
-                        for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
-                            if (jj[j] == -1) continue;
-                            xgemv(tb ? 'T' : 'N', tb ? bd : bi, tb ? bi : bd, alpha,
-                                  nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs,
-                                  tx ? ldx : 1, T{1}, y + i * bi, ty ? ldy : 1, Cpu{});
+                    {
+                        std::vector<T> aux(kd * ncols * bi);
+#    ifdef _OPENMP
+#        pragma omp for schedule(static)
+#    endif
+                        for (IndexType i = 0; i < block_rows; ++i) {
+                            for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1; ++j, ++j0) {
+                                if (jj[j] == -1) continue;
+                                // Contract with the blocking: (kd,n,bd) x (bi,bd) -> (kd,n,bi) ; note (fast,slow)
+                                xgemm('N', !tb ? 'T' : 'N', kd * ncols, bi, bd, alpha,
+                                      x + jj[j] * ncols, kd * ncols, nonzeros + j * bi * bd,
+                                      tb ? bd : bi, T{0}, aux.data(), kd * ncols, Cpu{});
+                                // Contract with the Kronecker blocking: (ki,kd) x (kd,n,bi) -> (ki,n,bi) ; note (fast,slow)
+                                xgemm(!tb ? 'T' : 'N', 'N', ki, ncols * bi, kd, T{1},
+                                      v.kron_it.data() + ki * kd * j0, tb ? kd : ki, aux.data(), kd,
+                                      T{1}, y + i * ki * ncols * bi, ki, Cpu{});
+                            }
                         }
                     }
                 }
@@ -332,6 +371,9 @@ namespace superbblas {
 
             double getCostPerMatvec() const {
                 double block_size = (double)volume(v.blocki);
+                double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+                if (ki > 1 || kd > 1)
+                    return (kd * block_size * block_size + kd * ki * block_size) * jj.size();
                 return block_size * block_size * jj.size();
             }
 
@@ -418,11 +460,9 @@ namespace superbblas {
             std::pair<std::vector<BSR<Nd, Ni, T, XPU0>>, std::vector<BSR<Nd, Ni, T, XPU1>>> c;
             Coor<Nd> blockd; ///< dimensions of a block in the domain space
             Coor<Ni> blocki; ///< dimensions of a block in the image space
+            Coor<Nd> krond;  ///< dimensions of Kronecker in the domain space
+            Coor<Ni> kroni;  ///< dimensions of Kronecker in the image space
             CoorOrder co;    ///< Coordinate order of ii and jj
-            /// Reference to a BSR operator with extra rows to compute power without extra communications
-            std::shared_ptr<BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1>> ext;
-            /// Power of the `ext` operator
-            unsigned int ext_power;
 
             bool check(std::size_t Nd_, std::size_t Ni_, detail::num_type type, const Context *ctx,
                        int ncomponents, unsigned int nprocs, unsigned int rank,
@@ -451,11 +491,12 @@ namespace superbblas {
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm>
         BSRComponents<Nd, Ni, T>
-        get_bsr_components(T **v, IndexType **ii, Coor<Nd> **jj, const Context *ctx,
+        get_bsr_components(T **v, IndexType **ii, Coor<Nd> **jj, T **kronv, const Context *ctx,
                            unsigned int ncomponents, From_size_iterator<Ni> pi,
                            const Coor<Ni> &dimi, From_size_iterator<Nd> pd, const Coor<Nd> &dimd,
-                           Coor<Nd> blockd, Coor<Ni> blocki, bool blockImFast, Comm comm,
-                           CoorOrder co, Session session) {
+                           const Coor<Nd> &blockd, const Coor<Ni> &blocki, const Coor<Nd> &krond,
+                           const Coor<Ni> &kroni, bool blockImFast, Comm comm, CoorOrder co,
+                           Session session) {
             // Get components on the local process
             From_size_iterator<Nd> fsd = pd + comm.rank * ncomponents;
             From_size_iterator<Ni> fsi = pi + comm.rank * ncomponents;
@@ -467,9 +508,11 @@ namespace superbblas {
             r.pi = detail::get_from_size(pi, ncomponents * comm.nprocs, session);
             r.blockd = blockd;
             r.blocki = blocki;
+            r.krond = krond;
+            r.kroni = kroni;
             r.co = co;
             for (unsigned int i = 0; i < ncomponents; ++i) {
-                std::size_t nii = volume(fsi[i][1]) / volume(blocki);
+                std::size_t nii = volume(fsi[i][1]) / volume(blocki) / volume(kroni);
                 std::size_t njj =
                     ctx[i].plat == CPU ? sum(to_vector(ii[i], nii, ctx[i].toCpu(session))) :
 #ifdef SUPERBBLAS_USE_GPU
@@ -479,6 +522,8 @@ namespace superbblas {
 #endif
                     ;
                 std::size_t nvalues = njj * volume(blockd) * volume(blocki);
+                T *kronvi = kronv ? kronv[i] : (T *)nullptr;
+                std::size_t nkronvalues = (kronv ? volume(krond) * volume(kroni) * (njj / nii) : 0);
                 switch (ctx[i].plat) {
 #ifdef SUPERBBLAS_USE_GPU
                 case CPU:
@@ -486,7 +531,9 @@ namespace superbblas {
                         to_vector(ii[i], nii, ctx[i].toCpu(session)),
                         to_vector(jj[i], njj, ctx[i].toCpu(session)),
                         to_vector(v[i], nvalues, ctx[i].toCpu(session)), fsd[i][1], fsi[i][1],
-                        blockd, blocki, blockImFast, co, i}});
+                        blockd, blocki, krond, kroni,
+                        to_vector(kronvi, nkronvalues, ctx[i].toCpu(session)), blockImFast, co,
+                        i}});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case GPU:
@@ -494,7 +541,9 @@ namespace superbblas {
                         to_vector(ii[i], nii, ctx[i].toGpu(session)),
                         to_vector(jj[i], njj, ctx[i].toGpu(session)),
                         to_vector(v[i], nvalues, ctx[i].toGpu(session)), fsd[i][1], fsi[i][1],
-                        blockd, blocki, blockImFast, co, i}});
+                        blockd, blocki, krond, kroni,
+                        to_vector(kronvi, nkronvalues, ctx[i].toGpu(session)), blockImFast, co,
+                        i}});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_GPU
@@ -503,7 +552,9 @@ namespace superbblas {
                         to_vector(ii[i], nii, ctx[i].toCpu(session)),
                         to_vector(jj[i], njj, ctx[i].toCpu(session)),
                         to_vector(v[i], nvalues, ctx[i].toCpu(session)), fsd[i][1], fsi[i][1],
-                        blockd, blocki, blockImFast, co, i}});
+                        blockd, blocki, krond, kroni,
+                        to_vector(kronvi, nkronvalues, ctx[i].toCpu(session)), blockImFast, co,
+                        i}});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
 #endif
@@ -523,16 +574,6 @@ namespace superbblas {
                     "Given BSR handle doesn't match the template parameters Nd, Ni, or T, does not "
                     "match contexts, or does not match MPI communicator");
             return static_cast<BSRComponents<Nd, Ni, T> *>(bsrh);
-        }
-
-        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU0, typename XPU1>
-        std::vector<Coor<Ni>>
-        get_bsr_dim_image_space(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr) {
-            unsigned int ncomponents = bsr.c.first.size() + bsr.c.second.size();
-            std::vector<Coor<Ni>> r(ncomponents);
-            for (const auto &c : bsr.c.first) r[c.componentId] = c.dimi;
-            for (const auto &c : bsr.c.second) r[c.componentId] = c.dimi;
-            return r;
         }
 
         //
@@ -560,6 +601,25 @@ namespace superbblas {
             std::copy_n(a.begin(), na, r.begin() + np);
             std::copy_n(b.begin(), nb, r.begin() + np + na);
             std::copy_n(c.begin(), nc, r.begin() + np + na + nb);
+            return r;
+        }
+
+        /// Concatenate p (if it isn't zero), a, b, c, and d
+
+        template <std::size_t N, typename T, std::size_t Na, std::size_t Nb, std::size_t Nc,
+                  std::size_t Nd>
+        std::array<T, N> concat(char p, const std::array<T, Na> &a, std::size_t na,
+                                const std::array<T, Nb> &b, std::size_t nb,
+                                const std::array<T, Nc> &c, std::size_t nc,
+                                const std::array<T, Nd> &d, std::size_t nd) {
+            std::array<T, N> r;
+            int np = p == 0 ? 0 : 1;
+            if (N != np + na + nb + nc + nd) throw std::runtime_error("concat: invalid arguments");
+            if (p != 0) r[0] = p;
+            std::copy_n(a.begin(), na, r.begin() + np);
+            std::copy_n(b.begin(), nb, r.begin() + np + na);
+            std::copy_n(c.begin(), nc, r.begin() + np + na + nb);
+            std::copy_n(d.begin(), nd, r.begin() + np + na + nb + nc);
             return r;
         }
 
@@ -633,6 +693,8 @@ namespace superbblas {
         /// \param od: dimension labels for the RSB operator domain space
         /// \param blocki: image dimensions of the block
         /// \param blockd: domain dimensions of the block
+        /// \param kroni: image dimensions of the Kronecker block
+        /// \param krond: domain dimensions of the Kronecker block
         /// \param dimx: dimension of the right tensor in consecutive ranges
         /// \param ox: dimension labels for the right operator
         /// \param dimy: dimension of the resulting tensor in consecutive ranges
@@ -649,7 +711,7 @@ namespace superbblas {
         /// \param sug_oy: (output) suggested order for the y
         /// \param sug_oy_trans: (output) suggested order for copying y into x
         ///
-        /// For SlowToFast, it supports:
+        /// For SlowToFast and no Kronecker blocking, it supports:
         ///   (I,D,i,d) x (C,D,d) -> (C,I,i)
         /// where
         /// - (D,d) are the domain RSB dimensions labels, od;
@@ -658,11 +720,16 @@ namespace superbblas {
         /// - (C,I,i) are the dimensions labels of the output tensor, oy
         /// - D and I has dimensions labels that are not blocked
         /// - d and i has all blocked dimensions labels
+        ///
+        /// For SlowToFast and no Kronecker blocking, it supports:
+        ///   (ki,kd) x (I,D,i,d) x (D,kd,C,d) -> (I,i,C,ki)
+        ///
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny>
         void local_bsr_krylov_check(const Coor<Ni> &dimi, const Coor<Nd> &dimd, const Order<Ni> &oi,
                                     const Order<Nd> &od, const Coor<Ni> &blocki,
-                                    const Coor<Nd> &blockd, const Coor<Nx> &dimx,
+                                    const Coor<Nd> &blockd, const Coor<Ni> &kroni,
+                                    const Coor<Nd> &krond, const Coor<Nx> &dimx,
                                     const Order<Nx> &ox, const Coor<Ny> &dimy, const Order<Ny> &oy,
                                     char okr, SpMMAllowedLayout xylayout,
                                     MatrixLayout preferred_layout, CoorOrder co, bool &transSp,
@@ -674,10 +741,10 @@ namespace superbblas {
                 Order<Ny> sug_oy0;
                 Order<Ny> sug_oy_trans0;
                 local_bsr_krylov_check(reverse(dimi), reverse(dimd), reverse(oi), reverse(od),
-                                       reverse(blocki), reverse(blockd), reverse(dimx), reverse(ox),
-                                       reverse(dimy), reverse(oy), okr, xylayout, preferred_layout,
-                                       SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0,
-                                       sug_oy_trans0);
+                                       reverse(blocki), reverse(blockd), reverse(kroni),
+                                       reverse(krond), reverse(dimx), reverse(ox), reverse(dimy),
+                                       reverse(oy), okr, xylayout, preferred_layout, SlowToFast,
+                                       transSp, lx, ly, volC, sug_ox0, sug_oy0, sug_oy_trans0);
                 sug_ox = reverse(sug_ox0);
                 sug_oy = reverse(sug_oy0);
                 sug_oy_trans = reverse(sug_oy_trans0);
@@ -740,17 +807,26 @@ namespace superbblas {
                 std::runtime_error("Still not supported common dimensions between the sparse input "
                                    "matrix, the dense input matrix, and the dense output matrix");
 
-            // Split the od into the non-blocked dimensions (Ds) and the blocked ones (ds)
-            Order<Nd> oDs, ods;
-            Coor<Nd> dimDs, dimds;
-            std::size_t nDs = 0, nds = 0;
+            // Split the od into the non-blocked dimensions (Ds) and the blocked ones (ds) and the Kronecker ones (kds)
+            Order<Nd> oDs, ods, okds;
+            Coor<Nd> dimDs, dimds, dimkds;
+            std::size_t nDs = 0, nds = 0, nkds = 0;
             for (std::size_t i = 0; i < Nd; ++i) {
                 if (blockd[i] > 1) {
                     if (blockd[i] != dimd[i])
                         throw std::runtime_error(
                             "Still not supported partially blocking a dimension");
+                    if (krond[i] > 1)
+                        throw std::runtime_error(
+                            "Invalid simultaneous blocking and Kronecker blocking");
                     ods[nds] = od[i];
                     dimds[nds++] = dimd[i];
+                } else if (krond[i] > 1) {
+                    if (krond[i] != dimd[i])
+                        throw std::runtime_error(
+                            "Still not supported partially blocking a dimension");
+                    okds[nkds] = od[i];
+                    dimkds[nkds++] = dimd[i];
                 } else {
                     oDs[nDs] = od[i];
                     dimDs[nDs++] = dimd[i];
@@ -758,16 +834,25 @@ namespace superbblas {
             }
 
             // Split the oi into the non-blocked dimensions (Is) and the blocked ones (is)
-            Order<Ni> oIs, ois;
-            Coor<Ni> dimIs, dimis;
-            std::size_t nIs = 0, nis = 0;
+            Order<Ni> oIs, ois, okis;
+            Coor<Ni> dimIs, dimis, dimkis;
+            std::size_t nIs = 0, nis = 0, nkis = 0;
             for (std::size_t i = 0; i < Ni; ++i) {
                 if (blocki[i] > 1) {
                     if (dimi[i] > 0 && blocki[i] != dimi[i])
                         throw std::runtime_error(
                             "Still not supported partially blocking a dimension");
+                    if (kroni[i] > 1)
+                        throw std::runtime_error(
+                            "Invalid simultaneous blocking and Kronecker blocking");
                     ois[nis] = oi[i];
                     dimis[nis++] = dimi[i];
+                } else if (kroni[i] > 1) {
+                    if (kroni[i] != dimi[i])
+                        throw std::runtime_error(
+                            "Still not supported partially blocking a dimension");
+                    okis[nkis] = oi[i];
+                    dimkis[nkis++] = dimi[i];
                 } else {
                     oIs[nIs] = oi[i];
                     dimIs[nIs++] = dimi[i];
@@ -872,101 +957,124 @@ namespace superbblas {
                     "tensors has no common dimension with the sparse tensor");
             if (kindx == kindy) throw std::runtime_error("Invalid contraction");
 
-            // Check that ox should one of (okr,C,D,d) or (okr,D,d,C) or (okr,C,I,i) or (okr,I,i,C)
-            if (kindx == ContractWithDomain) {
-                auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
-                auto sDx = std::search(ox.begin(), ox.end(), oDs.begin(), oDs.begin() + nDs);
-                auto sdx = std::search(ox.begin(), ox.end(), ods.begin(), ods.begin() + nds);
-                if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
-                    (nDs > 0 && sDx == ox.end()) || (nds > 0 && sdx == ox.end()) ||
-                    (nDs > 0 && nds > 0 && sDx > sdx) ||
-                    (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx)) {
-                    lx = preferred_layout;
-                    sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oDs, nDs, ods, nds)
-                                                : concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC));
-                } else {
-                    lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
+            if (nkds == 0 && nkis == 0) {
+                // Contraction with the blocking:
+                // Check that ox should one of (okr,C,D,d) or (okr,D,d,C) or (okr,C,I,i) or (okr,I,i,C)
+
+                if (kindx == ContractWithDomain) {
+                    auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
+                    auto sDx = std::search(ox.begin(), ox.end(), oDs.begin(), oDs.begin() + nDs);
+                    auto sdx = std::search(ox.begin(), ox.end(), ods.begin(), ods.begin() + nds);
+                    if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
+                        (nDs > 0 && sDx == ox.end()) || (nds > 0 && sdx == ox.end()) ||
+                        (nDs > 0 && nds > 0 && sDx > sdx) ||
+                        (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx)) {
+                        lx = preferred_layout;
+                        sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oDs, nDs, ods, nds)
+                                                    : concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC));
+                    } else {
+                        lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
+                                 ? ColumnMajor
+                                 : RowMajor;
+                        sug_ox = ox;
+                    }
+
+                    auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
+                    auto sIy = std::search(oy.begin(), oy.end(), oIs.begin(), oIs.begin() + nIs);
+                    auto siy = std::search(oy.begin(), oy.end(), ois.begin(), ois.begin() + nis);
+                    ly = (nC == 0 || ((nIs == 0 || sCy < sIy) && (nds == 0 || sCy < siy)))
                              ? ColumnMajor
                              : RowMajor;
-                    sug_ox = ox;
-                }
-
-                auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
-                auto sIy = std::search(oy.begin(), oy.end(), oIs.begin(), oIs.begin() + nIs);
-                auto siy = std::search(oy.begin(), oy.end(), ois.begin(), ois.begin() + nis);
-                ly = (nC == 0 || ((nIs == 0 || sCy < sIy) && (nds == 0 || sCy < siy))) ? ColumnMajor
-                                                                                       : RowMajor;
-                if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
-                    (nIs > 0 && sIy == oy.end()) || (nis > 0 && siy == oy.end()) ||
-                    (nIs > 0 && nis > 0 && sIy > siy) ||
-                    (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
-                    (lx != ly && xylayout == SameLayoutForXAndY) ||
-                    (ly == RowMajor && xylayout == ColumnMajorForY)) {
-                    ly = (xylayout == SameLayoutForXAndY
-                              ? lx
-                              : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
-                    sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oIs, nIs, ois, nis)
-                                                : concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC));
-                } else {
-                    sug_oy = oy;
-                }
-
-                if (okr != 0 && power > 1) {
-                    sug_oy_trans = sug_oy;
-                    for (unsigned int i = 0; i < Ny; ++i) {
-                        auto s = std::find(oi.begin(), oi.end(), sug_oy_trans[i]);
-                        if (s != oi.end()) sug_oy_trans[i] = od[s - oi.begin()];
+                    if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
+                        (nIs > 0 && sIy == oy.end()) || (nis > 0 && siy == oy.end()) ||
+                        (nIs > 0 && nis > 0 && sIy > siy) ||
+                        (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
+                        (lx != ly && xylayout == SameLayoutForXAndY) ||
+                        (ly == RowMajor && xylayout == ColumnMajorForY)) {
+                        ly = (xylayout == SameLayoutForXAndY
+                                  ? lx
+                                  : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
+                        sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oIs, nIs, ois, nis)
+                                                    : concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC));
+                    } else {
+                        sug_oy = oy;
                     }
-                }
 
-                transSp = false;
+                    if (okr != 0 && power > 1) {
+                        sug_oy_trans = sug_oy;
+                        for (unsigned int i = 0; i < Ny; ++i) {
+                            auto s = std::find(oi.begin(), oi.end(), sug_oy_trans[i]);
+                            if (s != oi.end()) sug_oy_trans[i] = od[s - oi.begin()];
+                        }
+                    }
+
+                    transSp = false;
+                } else {
+                    auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
+                    auto sIx = std::search(ox.begin(), ox.end(), oIs.begin(), oIs.begin() + nIs);
+                    auto six = std::search(ox.begin(), ox.end(), ois.begin(), ois.begin() + nis);
+                    if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
+                        (nIs > 0 && sIx == ox.end()) || (nis > 0 && six == ox.end()) ||
+                        (nIs > 0 && nis > 0 && sIx > six) ||
+                        (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six)) {
+                        lx = preferred_layout;
+                        sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
+                                                    : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
+                    } else {
+                        lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
+                                 ? ColumnMajor
+                                 : RowMajor;
+                        sug_ox = ox;
+                    }
+
+                    auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
+                    auto sDy = std::search(oy.begin(), oy.end(), oDs.begin(), oDs.begin() + nDs);
+                    auto sdy = std::search(oy.begin(), oy.end(), ods.begin(), ods.begin() + nds);
+                    ly = (nC == 0 || ((nDs == 0 || sCy < sDy) && (nds == 0 || sCy < sdy)))
+                             ? ColumnMajor
+                             : RowMajor;
+                    if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
+                        (nDs > 0 && sDy == oy.end()) || (nds > 0 && sdy == oy.end()) ||
+                        (nDs > 0 && nds > 0 && sDy > sdy) ||
+                        (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
+                        (lx != ly && xylayout == SameLayoutForXAndY) ||
+                        (ly == RowMajor && xylayout == ColumnMajorForY)) {
+
+                    } else {
+                        ly = (xylayout == SameLayoutForXAndY
+                                  ? lx
+                                  : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
+                        sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oDs, nDs, ods, nds)
+                                                    : concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC));
+                    }
+
+                    if (okr != 0 && power > 1) {
+                        sug_oy_trans = sug_oy;
+                        for (unsigned int i = 0; i < Ny; ++i) {
+                            auto s = std::find(od.begin(), od.end(), sug_oy_trans[i]);
+                            if (s != od.end()) sug_oy_trans[i] = oi[s - od.begin()];
+                        }
+                    }
+
+                    transSp = true;
+                }
             } else {
-                auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
-                auto sIx = std::search(ox.begin(), ox.end(), oIs.begin(), oIs.begin() + nIs);
-                auto six = std::search(ox.begin(), ox.end(), ois.begin(), ois.begin() + nis);
-                if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
-                    (nIs > 0 && sIx == ox.end()) || (nis > 0 && six == ox.end()) ||
-                    (nIs > 0 && nis > 0 && sIx > six) ||
-                    (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six)) {
-                    lx = preferred_layout;
-                    sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
-                                                : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
+                // Contraction with the blocking and the Kronecker blocking
+                // Check that ox should (okr,D,kd,C,d) or (okr,I,ki,C,i)
+
+                if (kindx == ContractWithDomain) {
+                    sug_ox = concat<Nx>(okr, oDs, nDs, okds, nkds, oC, nC, ods, nds);
+                    sug_oy_trans = sug_oy = concat<Ny>(okr, oIs, nIs, okis, nkis, oC, nC, ois, nis);
+                    transSp = false;
                 } else {
-                    lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
-                             ? ColumnMajor
-                             : RowMajor;
-                    sug_ox = ox;
+                    sug_ox = concat<Nx>(okr, oIs, nIs, okis, nkis, oC, nC, ois, nis);
+                    sug_oy_trans = sug_oy = concat<Ny>(okr, oDs, nDs, okds, nkds, oC, nC, ods, nds);
+                    transSp = true;
                 }
 
-                auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
-                auto sDy = std::search(oy.begin(), oy.end(), oDs.begin(), oDs.begin() + nDs);
-                auto sdy = std::search(oy.begin(), oy.end(), ods.begin(), ods.begin() + nds);
-                ly = (nC == 0 || ((nDs == 0 || sCy < sDy) && (nds == 0 || sCy < sdy))) ? ColumnMajor
-                                                                                       : RowMajor;
-                if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
-                    (nDs > 0 && sDy == oy.end()) || (nds > 0 && sdy == oy.end()) ||
-                    (nDs > 0 && nds > 0 && sDy > sdy) ||
-                    (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
-                    (lx != ly && xylayout == SameLayoutForXAndY) ||
-                    (ly == RowMajor && xylayout == ColumnMajorForY)) {
-
-                } else {
-                    ly = (xylayout == SameLayoutForXAndY
-                              ? lx
-                              : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
-                    sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oDs, nDs, ods, nds)
-                                                : concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC));
-                }
-
-                if (okr != 0 && power > 1) {
-                    sug_oy_trans = sug_oy;
-                    for (unsigned int i = 0; i < Ny; ++i) {
-                        auto s = std::find(od.begin(), od.end(), sug_oy_trans[i]);
-                        if (s != od.end()) sug_oy_trans[i] = oi[s - od.begin()];
-                    }
-                }
-
-                transSp = true;
+                // For now, only row major is supported, but the column dimensions should be sandwiched
+                // between the block and the Kronecker block dimensions
+                lx = ly = RowMajor;
             }
         }
 
@@ -1010,8 +1118,9 @@ namespace superbblas {
             Order<Ny> sug_oy;
             Order<Ny> sug_oy_trans;
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   dimx, ox, dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout,
-                                   bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                   bsr.v.kroni, bsr.v.krond, dimx, ox, dimy, oy, okr,
+                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
+                                   volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -1167,18 +1276,18 @@ namespace superbblas {
                 bool transSp;
                 MatrixLayout lx, ly;
                 std::size_t volC;
-                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd, sizex,
-                                       ox, sizey, oy, okr, bsr.c.first[0].allowLayout,
-                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
-                                       sug_ox, sug_oy, sug_oy_trans);
+                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
+                                       bsr.kroni, bsr.krond, sizex, ox, sizey, oy, okr,
+                                       bsr.c.first[0].allowLayout, bsr.c.first[0].preferredLayout,
+                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             } else if (bsr.c.second.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
                 std::size_t volC;
-                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd, sizex,
-                                       ox, sizey, oy, okr, bsr.c.second[0].allowLayout,
-                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
-                                       sug_ox, sug_oy, sug_oy_trans);
+                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
+                                       bsr.kroni, bsr.krond, sizex, ox, sizey, oy, okr,
+                                       bsr.c.second[0].allowLayout, bsr.c.second[0].preferredLayout,
+                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             }
             Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
             Coor<Ny> sizey0 = sizey;
@@ -1295,8 +1404,44 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm, blockim,
-                blockImFast, comm, co, session)};
+                (T **)v, ii, jj, nullptr, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm, blockim,
+                detail::ones<Nd>(), detail::ones<Ni>(), blockImFast, comm, co, session)};
+        *bsrh = r;
+    }
+
+    /// Create Kronecker BSR sparse operator
+    /// \param pim: partitioning of the RSB operator image in consecutive ranges
+    /// \param pdm: pseudo-partitioning of the RSB operator domain in consecutive ranges
+    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param blockim: image dimensions of the block
+    /// \param blockdm: domain dimensions of the block
+    /// \param kronim: image dimensions of the Kronecker block
+    /// \param krondm: domain dimensions of the Kronecker block
+    /// \param blockImFast: whether the blocks and Kronecker blocks are stored with the image indices the fastest
+    /// \param ii: ii[i] is the index of the first nonzero block on the i-th blocked image operator element
+    /// \param jj: domain coordinates of the nonzero blocks of RSB operator
+    /// \param v: nonzero values for the blocks
+    /// \param kronv: nonzero values for the Kronecker blocks
+    /// \param ctx: context
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param bsrh (out) handle to BSR nonzero pattern
+    ///
+    /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
+
+    template <std::size_t Nd, std::size_t Ni, typename T>
+    void create_kron_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
+                         const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
+                         const Coor<Ni> &blockim, const Coor<Nd> &blockdm, const Coor<Ni> &kronim,
+                         const Coor<Nd> &krondm, bool blockImFast, IndexType **ii, Coor<Nd> **jj,
+                         const T **v, const T **kronv, const Context *ctx, MPI_Comm mpicomm,
+                         CoorOrder co, BSR_handle **bsrh, Session session = 0) {
+
+        detail::MpiComm comm = detail::get_comm(mpicomm);
+
+        detail::BSRComponents<Nd, Ni, T> *r =
+            new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
+                (T **)v, ii, jj, (T **)kronv, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm,
+                blockim, krondm, kronim, blockImFast, comm, co, session)};
         *bsrh = r;
     }
 
@@ -1412,8 +1557,44 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm, blockim,
-                blockImFast, comm, co, session)};
+                (T **)v, ii, jj, nullptr, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm, blockim,
+                detail::ones<Nd>(), detail::ones<Ni>(), blockImFast, comm, co, session)};
+        *bsrh = r;
+    }
+
+    /// Create Kronecker BSR sparse operator
+    /// \param pim: partitioning of the RSB operator image in consecutive ranges
+    /// \param pdm: pseudo-partitioning of the RSB operator domain in consecutive ranges
+    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param blockim: image dimensions of the block
+    /// \param blockdm: domain dimensions of the block
+    /// \param kronim: image dimensions of the Kronecker block
+    /// \param krondm: domain dimensions of the Kronecker block
+    /// \param blockImFast: whether the blocks are stored with the image indices the fastest
+    /// \param ii: ii[i] is the index of the first nonzero block on the i-th blocked image operator element
+    /// \param jj: domain coordinates of the nonzero blocks of RSB operator
+    /// \param v: nonzero values
+    /// \param kronv: nonzero values for the Kronecker blocks
+    /// \param ctx: context
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param bsrh (out) handle to BSR nonzero pattern
+    ///
+    /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
+
+    template <std::size_t Nd, std::size_t Ni, typename T>
+    void create_kron_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
+                         const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
+                         const Coor<Ni> &blockim, const Coor<Nd> &blockdm, const Coor<Ni> &kronim,
+                         const Coor<Nd> &krondm, bool blockImFast, IndexType **ii, Coor<Nd> **jj,
+                         const T **v, const T **kronv, const Context *ctx, CoorOrder co,
+                         BSR_handle **bsrh, Session session = 0) {
+
+        detail::SelfComm comm = detail::get_comm();
+
+        detail::BSRComponents<Nd, Ni, T> *r =
+            new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
+                (T **)v, ii, jj, (T **)kronv, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm,
+                blockim, krondm, kronim, blockImFast, comm, co, session)};
         *bsrh = r;
     }
 

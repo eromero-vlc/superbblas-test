@@ -225,6 +225,70 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
     return {bsrh_s, data_s};
 }
 
+/// Create a 4D lattice with dimensions tzyxsc and Kronecker products
+template <typename T, typename XPU>
+std::pair<BSR_handle *, std::array<vector<T, XPU>, 2>>
+create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim, Context ctx,
+                    XPU xpu) {
+    Coor<6> from = pi[rank][0]; // first nonblock dimensions of the RSB image
+    Coor<6> dimi = pi[rank][1]; // nonblock dimensions of the RSB image
+    dimi[4] = dimi[5] = 1;
+    std::size_t voli = volume(dimi);
+    vector<IndexType, Cpu> ii(voli, Cpu{});
+
+    // Compute how many neighbors
+    int neighbors = max_neighbors(op_dim);
+
+    // Compute the domain ranges
+    PartitionStored<6> pd = pi;
+    for (auto &i : pd) i = extend(i, op_dim);
+
+    // Compute the coordinates for all nonzeros
+    for (auto &i : ii) i = neighbors;
+    vector<Coor<6>, Cpu> jj(neighbors * voli, Cpu{});
+    Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
+    for (std::size_t i = 0, j = 0; i < voli; ++i) {
+        Coor<6> c = index2coor(i, dimi, stride) + from;
+        jj[j++] = c;
+        for (int dim = 0; dim < 4; ++dim) {
+            if (op_dim[dim] == 1) continue;
+            for (int dir = -1; dir < 2; dir += 2) {
+                Coor<6> c0 = c;
+                c0[dim] += dir;
+                jj[j++] = normalize_coor(c0 - pd[rank][0], op_dim);
+                if (op_dim[dim] <= 2) break;
+            }
+        }
+    }
+
+    // Number of nonzeros
+    std::size_t vol_data = voli * neighbors * op_dim[5] * op_dim[5];
+    if (rank == 0)
+        std::cout << "Size of the sparse tensor per process: "
+                  << vol_data * 1.0 * sizeof(T) / 1024 / 1024 << " MiB" << std::endl;
+    std::size_t vol_kron = neighbors * op_dim[4] * op_dim[4];
+
+    Coor<6> block{{1, 1, 1, 1, 1, op_dim[5]}};
+    Coor<6> kron{{1, 1, 1, 1, op_dim[4], 1}};
+    BSR_handle *bsrh = nullptr;
+    vector<int, XPU> ii_xpu = makeSure(ii, xpu);
+    vector<Coor<6>, XPU> jj_xpu = makeSure(jj, xpu);
+    vector<T, XPU> data_xpu = ones<T>(vol_data, xpu);
+    vector<T, XPU> kron_xpu = ones<T>(vol_kron, xpu);
+    IndexType *iiptr = ii_xpu.data();
+    Coor<6> *jjptr = jj_xpu.data();
+    T *dataptr = data_xpu.data();
+    T *kronptr = kron_xpu.data();
+    create_kron_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, 1, block, block, kron, kron,
+                             false, &iiptr, &jjptr, (const T **)&dataptr, (const T **)&kronptr,
+                             &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                             MPI_COMM_WORLD,
+#endif
+                             SlowToFast, &bsrh);
+    return {bsrh, {data_xpu, kron_xpu}};
+}
+
 template <typename Q, typename XPU>
 void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nrep, Context ctx,
           XPU xpu) {
@@ -352,6 +416,43 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
 
     if (rank == 0) reportTimings(std::cout);
     if (rank == 0) reportCacheUsage(std::cout);
+
+    // Create the Kronecker operator
+    auto op_kron_s = create_lattice_kron<Q>(po, rank, dimo, ctx, xpu);
+
+    const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
+                                dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
+    PartitionStored<Nd + 1> kp0 = basic_partitioning(kdim0, procs0);
+    Coor<Nd + 1> kdim1 =
+        Coor<Nd + 1>{max_power, dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
+    const Coor<Nd + 1> kprocs1 =
+        Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztscn
+    PartitionStored<Nd + 1> kp1 = basic_partitioning(kdim1, kprocs1);
+
+    // Copy tensor t0 into each of the c components of tensor 1
+    resetTimings();
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            Q *ptr0 = t0.data(), *ptr1 = t1.data();
+            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSnC", {{}}, kdim0,
+                kdim0, (const Q **)&ptr0, Q{0}, kp1.data(), "pxyztsnc", {{}}, kdim1, kdim1, 'p',
+                &ptr1, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                MPI_COMM_WORLD,
+#endif
+                SlowToFast);
+        }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    destroy_bsr(op_kron_s.first);
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
 }
 
 int main(int argc, char **argv) {
@@ -425,8 +526,14 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Simulate spin and color as LQCD
+    if (dim[C] % 4 == 0) {
+        dim[S] = 4;
+        dim[C] /= 4;
+    }
+
     // If --procs isn't set, distributed the processes automatically
-    if (!procs_was_set) procs = partitioning_distributed_procs("xyztscn", dim, "xyzt", nprocs);
+    if (!procs_was_set) procs = partitioning_distributed_procs("xyztscn", dim, "tzyx", nprocs);
 
     // Show lattice dimensions and processes arrangement
     if (rank == 0) {
