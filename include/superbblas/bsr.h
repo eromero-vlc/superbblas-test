@@ -21,7 +21,10 @@ namespace superbblas {
     }
 
     /// Matrix layout
-    enum MatrixLayout { RowMajor, ColumnMajor };
+    enum MatrixLayout {
+        RowMajor,   // the Kronecker labels and the column index are the fastest indices
+        ColumnMajor // the column index and Kronecker labels are the slowest indices
+    };
 
     // /// Handle for a BSR operator
     struct BSR_handle {
@@ -87,9 +90,10 @@ namespace superbblas {
         /// sparse-dense tensor contraction
 
         enum SpMMAllowedLayout {
-            SameLayoutForXAndY, //< X and Y should have the same layout, either row-major or column-major
-            ColumnMajorForY,  //< X can be either way but Y should be column-major
-            AnyLayoutForXAndY //< X and Y can be either way
+            SameLayoutForXAndY, ///< X and Y should have the same layout, either row-major or column-major
+            ColumnMajorForY,     ///< X can be either way but Y should be column-major
+            ColumnMajorForXandY, ///< X and Y should be column-major
+            AnyLayoutForXAndY    ///< X and Y can be either way
         };
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSR;
@@ -115,34 +119,42 @@ namespace superbblas {
             BSRComponent<Nd, Ni, T, Cpu> v;     ///< BSR general information
             vector<MKL_INT, Cpu> ii, jj;        ///< BSR row and column nonzero indices
             std::shared_ptr<sparse_matrix_t> A; ///< MKL BSR descriptor
+            unsigned int num_nnz_per_row;       ///< Number of nnz per row (for Kronecker BSR)
 
             static const SpMMAllowedLayout allowLayout = SameLayoutForXAndY;
             static const MatrixLayout preferredLayout = RowMajor;
-            static std::string implementation() { return "MKL"; }
+            std::string implementation() const {
+                return (volume(v.krond) > 1 || volume(v.kroni) > 1) ? "mkl_kron_bsr" : "mkl_bsr";
+            }
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 if (volume(v.blocki) != volume(v.blockd))
                     throw std::runtime_error("MKL Sparse does not support non-square blocks");
-                if (v.kron_it.size() > 0)
-                    throw std::runtime_error("MKL Sparse does not support Kronecker BSR format");
+                if (v.blockImFast)
+                    throw std::runtime_error("MKL Sparse does not support column major as the "
+                                             "nonzero BSR blocks layout");
                 IndexType block_size = volume(v.blocki);
-                IndexType block_rows = volume(v.dimi) / block_size;
-                IndexType block_cols = volume(v.dimd) / block_size;
-                auto bsr = get_bsr_indices(v, true);
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_rows = volume(v.dimi) / block_size / ki;
+                IndexType block_cols = volume(v.dimd) / block_size / kd;
+                bool is_kron = v.kron_it.size() > 0;
+                auto bsr = !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
+                num_nnz_per_row = bsr.num_nnz_per_row;
                 if (bsr.j_has_negative_indices)
                     throw std::runtime_error("bsr: unsupported -1 column indices when using MKL");
                 A = std::shared_ptr<sparse_matrix_t>(new sparse_matrix_t, [=](sparse_matrix_t *A) {
                     checkMKLSparse(mkl_sparse_destroy(*A));
                     delete A;
                 });
-                checkMKLSparse(mkl_sparse_create_bsr(&*A, SPARSE_INDEX_BASE_ZERO,
-                                                     v.blockImFast ? SPARSE_LAYOUT_COLUMN_MAJOR
-                                                                   : SPARSE_LAYOUT_ROW_MAJOR,
-                                                     block_rows, block_cols, block_size, ii.data(),
-                                                     ii.data() + 1, jj.data(), v.it.data()));
+                checkMKLSparse(mkl_sparse_create_bsr(
+                    &*A, SPARSE_INDEX_BASE_ZERO,
+                    v.blockImFast ? SPARSE_LAYOUT_COLUMN_MAJOR : SPARSE_LAYOUT_ROW_MAJOR,
+                    block_rows, block_cols * (is_kron ? bsr.num_nnz_per_row : 1), block_size,
+                    ii.data(), ii.data() + 1, jj.data(), v.it.data()));
                 checkMKLSparse(mkl_sparse_set_mm_hint(
                     *A, SPARSE_OPERATION_NON_TRANSPOSE,
                     (struct matrix_descr){.type = SPARSE_MATRIX_TYPE_GENERAL,
@@ -154,7 +166,7 @@ namespace superbblas {
             double getCostPerMatvec() const {
                 double block_size = (double)volume(v.blocki);
                 double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
-                if (ki > 1 || kd > 1)
+                if (v.kron_it.size() > 0)
                     return (kd * block_size * block_size + kd * ki * block_size) * jj.size();
                 return block_size * block_size * jj.size();
             }
@@ -162,14 +174,80 @@ namespace superbblas {
             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
-                checkMKLSparse(mkl_sparse_mm(
-                    !conjA ? SPARSE_OPERATION_NON_TRANSPOSE : SPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                    alpha, *A,
-                    (struct matrix_descr){.type = SPARSE_MATRIX_TYPE_GENERAL,
-                                          .mode = SPARSE_FILL_MODE_LOWER /* Not used */,
-                                          .diag = SPARSE_DIAG_NON_UNIT},
-                    lx == ColumnMajor ? SPARSE_LAYOUT_COLUMN_MAJOR : SPARSE_LAYOUT_ROW_MAJOR, x,
-                    ncols, ldx, beta, y, ldy));
+                IndexType block_size = volume(v.blocki);
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_cols = volume(v.dimd) / block_size / kd;
+                IndexType block_rows = volume(v.dimi) / block_size / ki;
+                bool is_kron = v.kron_it.size() > 0;
+                xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
+                if (!is_kron) {
+                    checkMKLSparse(mkl_sparse_mm(
+                        !conjA ? SPARSE_OPERATION_NON_TRANSPOSE
+                               : SPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                        alpha, *A,
+                        (struct matrix_descr){.type = SPARSE_MATRIX_TYPE_GENERAL,
+                                              .mode = SPARSE_FILL_MODE_LOWER /* Not used */,
+                                              .diag = SPARSE_DIAG_NON_UNIT},
+                        lx == ColumnMajor ? SPARSE_LAYOUT_COLUMN_MAJOR : SPARSE_LAYOUT_ROW_MAJOR, x,
+                        ncols, ldx, beta, y, ldy));
+                } else if (lx == RowMajor) {
+                    if (conjA) throw std::runtime_error("kron BSR: unsupported conjugation");
+
+                    // Contract the Kronecker part: for each direction mu do:
+                    //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
+                    vector<T, Cpu> aux(ki * ncols * block_size * block_cols * num_nnz_per_row,
+                                       Cpu{});
+                    zero_n(aux.data(), aux.size(), Cpu{});
+                    const bool tb = !v.blockImFast;
+                    for (unsigned int i = 0; i < num_nnz_per_row; ++i)
+                        xgemm(!tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
+                              v.kron_it.data() + ki * kd * i, !tb ? ki : kd, x, kd, T{0},
+                              aux.data() + ki * ncols * block_size * i, ki, Cpu{});
+
+                    // Contract the block part:
+                    // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
+                    checkMKLSparse(mkl_sparse_mm(
+                        SPARSE_OPERATION_NON_TRANSPOSE, T{1}, *A,
+                        (struct matrix_descr){.type = SPARSE_MATRIX_TYPE_GENERAL,
+                                              .mode = SPARSE_FILL_MODE_LOWER /* Not used */,
+                                              .diag = SPARSE_DIAG_NON_UNIT},
+                        SPARSE_LAYOUT_ROW_MAJOR, aux.data(), ki * ncols, ki * ncols, beta, y,
+                        ki * ncols));
+                } else {
+                    if (conjA) throw std::runtime_error("kron BSR: unsupported conjugation");
+
+                    // Contract the Kronecker part: for each direction mu do:
+                    //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+                    vector<T, Cpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
+                                       Cpu{});
+                    zero_n(aux.data(), aux.size(), Cpu{});
+                    const bool tb = !v.blockImFast;
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
+#    endif
+                    for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
+                        unsigned int i = ij % num_nnz_per_row;
+                        unsigned int j = ij / num_nnz_per_row;
+                        xgemm('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
+                              x + j * block_size * block_cols, block_size * block_cols * ncols,
+                              v.kron_it.data() + ki * kd * i, !tb ? ki : kd, T{0},
+                              aux.data() + block_size * block_cols * i +
+                                  block_size * block_cols * num_nnz_per_row * j,
+                              block_size * block_cols * num_nnz_per_row * ncols, Cpu{});
+                    }
+
+                    // Contract the block part:
+                    // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
+                    checkMKLSparse(mkl_sparse_mm(
+                        SPARSE_OPERATION_NON_TRANSPOSE, T{1}, *A,
+                        (struct matrix_descr){.type = SPARSE_MATRIX_TYPE_GENERAL,
+                                              .mode = SPARSE_FILL_MODE_LOWER /* Not used */,
+                                              .diag = SPARSE_DIAG_NON_UNIT},
+                        SPARSE_LAYOUT_COLUMN_MAJOR, aux.data(), ncols * ki,
+                        block_size * block_cols * num_nnz_per_row, beta, y,
+                        block_size * block_rows));
+                }
             }
 
             ~BSR() {}
@@ -180,8 +258,9 @@ namespace superbblas {
             BSRComponent<Nd, Ni, T, Cpu> v; ///< BSR general information
             vector<IndexType, Cpu> ii, jj;  ///< BSR row and column nonzero indices
             static std::string implementation() { return "builtin_cpu"; }
+            unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
 
-            static const SpMMAllowedLayout allowLayout = AnyLayoutForXAndY;
+            SpMMAllowedLayout allowLayout;
             static const MatrixLayout preferredLayout = RowMajor;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
@@ -189,22 +268,26 @@ namespace superbblas {
                 auto bsr = get_bsr_indices(v); // column indices aren't blocked
                 ii = bsr.i;
                 jj = bsr.j;
+                allowLayout = (v.kron_it.size() > 0) ? SameLayoutForXAndY : AnyLayoutForXAndY;
+                num_nnz_per_row = bsr.num_nnz_per_row;
             }
 
             double getCostPerMatvec() const {
                 double bi = (double)volume(v.blocki), bd = (double)volume(v.blockd);
                 double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
-                if (ki > 1 || kd > 1) return (kd * bi * bd + kd * ki * bi) * jj.size();
+                if (v.kron_it.size() > 0) return (kd * bi * bd + kd * ki * bi) * jj.size();
                 return bi * bd * jj.size();
             }
 
             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 if (conjA) throw std::runtime_error("Not implemented");
+                if (v.kron_it.size() > 0 && lx != ly) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
                 IndexType bd = volume(v.blockd);
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
+                IndexType block_cols = volume(v.dimd) / bd / kd;
                 IndexType block_rows = volume(v.dimi) / bi / ki;
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
@@ -245,25 +328,52 @@ namespace superbblas {
                     }
                 } else {
                     // With Kronecker product
+                    if (lx == RowMajor) {
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
-                    {
-                        std::vector<T> aux(kd * ncols * bi);
+                        {
+                            std::vector<T> aux(ki * ncols * bd);
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
+#    endif
+                            for (IndexType i = 0; i < block_rows; ++i) {
+                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
+                                     ++j, ++j0) {
+                                    if (jj[j] == -1) continue;
+                                    // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
+                                    xgemm(!tb ? 'N' : 'T', 'N', ki, ncols * bd, kd, alpha,
+                                          v.kron_it.data() + ki * kd * j0, !tb ? ki : kd,
+                                          x + jj[j] * ncols, kd, T{0}, aux.data(), ki, Cpu{});
+                                    // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                    xgemm('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, T{1},
+                                          aux.data(), ki * ncols, nonzeros + j * bi * bd,
+                                          !tb ? bi : bd, T{1}, y + i * ki * ncols * bi, ki * ncols,
+                                          Cpu{});
+                                }
+                            }
+                        }
+                    } else {
+                        // Contract with the blocking: (bd,rows,n,kd) x (ki,kd)[mu] -> (bd,rows,n,ki,mu) ; note (fast,slow)
+                        vector<T, Cpu> aux(bd * block_cols * ncols * ki * num_nnz_per_row, Cpu{});
+                        zero_n(aux.data(), aux.size(), aux.ctx());
+                        for (unsigned int i = 0; i < num_nnz_per_row; ++i)
+                            xgemm('N', !tb ? 'T' : 'N', bd * block_cols * ncols, ki, kd, alpha, x,
+                                  bd * block_cols * ncols, v.kron_it.data() + ki * kd * i,
+                                  !tb ? ki : kd, T{0},
+                                  aux.data() + bd * block_cols * ncols * ki * i,
+                                  bd * block_cols * ncols, Cpu{});
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
 #    endif
                         for (IndexType i = 0; i < block_rows; ++i) {
                             for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1; ++j, ++j0) {
                                 if (jj[j] == -1) continue;
-                                // Contract with the blocking: (kd,n,bd) x (bi,bd) -> (kd,n,bi) ; note (fast,slow)
-                                xgemm('N', !tb ? 'T' : 'N', kd * ncols, bi, bd, alpha,
-                                      x + jj[j] * ncols, kd * ncols, nonzeros + j * bi * bd,
-                                      tb ? bd : bi, T{0}, aux.data(), kd * ncols, Cpu{});
-                                // Contract with the Kronecker blocking: (ki,kd) x (kd,n,bi) -> (ki,n,bi) ; note (fast,slow)
-                                xgemm(!tb ? 'T' : 'N', 'N', ki, ncols * bi, kd, T{1},
-                                      v.kron_it.data() + ki * kd * j0, tb ? kd : ki, aux.data(), kd,
-                                      T{1}, y + i * ki * ncols * bi, ki, Cpu{});
+                                // Contract with the Kronecker blocking: (bi,bd) x (bd,n,ki) -> (bi,n,ki) ; note (fast,slow)
+                                xgemm(!tb ? 'N' : 'T', 'N', bi, ncols * ki, bd, T{1},
+                                      nonzeros + j * bi * bd, !tb ? bi : bd,
+                                      aux.data() + jj[j] + bd * block_cols * ncols * ki * j0,
+                                      bd * block_cols, T{1}, y + bi * i, bi * block_rows, Cpu{});
                             }
                         }
                     }
@@ -288,6 +398,7 @@ namespace superbblas {
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
 #    endif
+            unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
 
             SpMMAllowedLayout allowLayout;
             static const MatrixLayout preferredLayout = RowMajor;
@@ -301,6 +412,7 @@ namespace superbblas {
                 auto bsr = get_bsr_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
+                num_nnz_per_row = bsr.num_nnz_per_row;
 
 #    ifdef SUPERBBLAS_USE_CUDA
                 IndexType block_size = volume(v.blocki);
@@ -331,6 +443,9 @@ namespace superbblas {
                     static_assert(sizeof(IndexType) == 4);
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
+                    IndexType ki = volume(v.kroni);
+                    IndexType kd = volume(v.krond);
+                    bool is_kron = v.kron_it.size() > 0;
                     descrA_other = std::shared_ptr<cusparseSpMatDescr_t>(
                         new cusparseSpMatDescr_t, [](cusparseSpMatDescr_t *p) {
                             cusparseDestroySpMat(*p);
@@ -340,14 +455,14 @@ namespace superbblas {
                     if (spFormat == FORMAT_CSR) {
                         implementation_ = "cusparse_csr";
                         cusparseCheck(cusparseCreateCsr(
-                            &*descrA_other, num_rows, num_cols, bsr.nnz, ii.data(), jj.data(),
-                            v.it.data(), CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                            CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                            &*descrA_other, num_rows, num_cols * (is_kron ? num_nnz_per_row : 1),
+                            bsr.nnz, ii.data(), jj.data(), v.it.data(), CUSPARSE_INDEX_32I,
+                            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     } else {
                         implementation_ = "cusparse_ell";
                         cusparseCheck(cusparseCreateBlockedEll(
-                            &*descrA_other, num_rows, num_cols, block_size,
-                            block_size * bsr.num_nnz_per_row, jj.data(), v.it.data(),
+                            &*descrA_other, num_rows, num_cols * (is_kron ? num_nnz_per_row : 1),
+                            block_size, block_size * num_nnz_per_row, jj.data(), v.it.data(),
                             CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     }
                 }
@@ -372,7 +487,7 @@ namespace superbblas {
             double getCostPerMatvec() const {
                 double block_size = (double)volume(v.blocki);
                 double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
-                if (ki > 1 || kd > 1)
+                if (v.kron_it.size() > 0)
                     return (kd * block_size * block_size + kd * ki * block_size) * jj.size();
                 return block_size * block_size * jj.size();
             }
@@ -387,9 +502,28 @@ namespace superbblas {
                 IndexType block_size = volume(v.blocki);
                 IndexType num_cols = volume(v.dimd);
                 IndexType num_rows = volume(v.dimi);
-                IndexType block_cols = num_cols / block_size;
-                IndexType block_rows = num_rows / block_size;
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_cols = num_cols / block_size / ki;
+                IndexType block_rows = num_rows / block_size / kd;
                 IndexType num_blocks = jj.size();
+                bool is_kron = v.kron_it.size() > 0;
+                vector<T, Gpu> aux;
+                if (is_kron) {
+                    if (conjA)
+                        throw std::runtime_error("BSR operator(): unsupported conjugate "
+                                                 "multiplication with BSR Kronecker");
+                    aux = vector<T, Gpu>(ki * ncols * block_size * block_cols * num_nnz_per_row,
+                                         v.it.ctx());
+                    zero_n(aux.data(), aux.size(), aux.ctx());
+                    const bool tb = !v.blockImFast;
+                    for (unsigned int i = 0; i < num_nnz_per_row; ++i)
+                        xgemm(!tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
+                              v.kron_it.data() + ki * kd * i, !tb ? ki : kd, x, kd, T{0},
+                              aux.data() + ki * ncols * block_size * i, ki, v.it.ctx());
+                    alpha = T{1};
+                }
+
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (spFormat == FORMAT_BSR) {
                     cusparseCheck(cusparseXbsrmm(
@@ -397,19 +531,23 @@ namespace superbblas {
                         v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                        lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
-                                          : CUSPARSE_OPERATION_TRANSPOSE,
-                        block_rows, ncols, block_cols, num_blocks, alpha, *descrA_bsr, v.it.data(),
-                        ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
+                        (lx == ColumnMajor && !is_kron) ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                                                        : CUSPARSE_OPERATION_TRANSPOSE,
+                        block_rows, ncols * (is_kron ? ki : 1),
+                        block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks, alpha,
+                        *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size,
+                        is_kron ? aux.data() : x, is_kron ? ki * ncols : ldx, beta, y, ldy));
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
                     cusparseCheck(cusparseCreateDnMat(
-                        &matx, !conjA ? num_cols : num_rows, ncols, ldx, (void *)x, cudaType,
-                        lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                        &matx, !conjA ? num_cols : num_rows, ncols * (!is_kron ? 1 : ki),
+                        !is_kron ? ldx : ki * ncols, (void *)(!is_kron ? x : aux.data()), cudaType,
+                        (lx == ColumnMajor && !is_kron) ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     cusparseCheck(cusparseCreateDnMat(
-                        &maty, !conjA ? num_rows : num_cols, ncols, ldy, (void *)y, cudaType,
-                        ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                        &maty, !conjA ? num_rows : num_cols, ncols * (!is_kron ? 1 : ki),
+                        !is_kron ? ldy : ki * ncols, (void *)y, cudaType,
+                        (ly == ColumnMajor && !is_kron) ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     cusparseCheck(cusparseSpMM_bufferSize(
                         ii.ctx().cusparseHandle,
@@ -434,10 +572,12 @@ namespace superbblas {
                     v.blockImFast ? HIPSPARSE_DIRECTION_COLUMN : HIPSPARSE_DIRECTION_ROW,
                     !conjA ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                    lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
-                                      : HIPSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols, num_blocks, alpha, *descrA_bsr, v.it.data(),
-                    ii.data(), jj.data(), block_size, x, ldx, beta, y, ldy));
+                    (lx == ColumnMajor && !is_kron) ? HIPSPARSE_OPERATION_NON_TRANSPOSE
+                                                    : HIPSPARSE_OPERATION_TRANSPOSE,
+                    block_rows, ncols * (is_kron ? ki : 1),
+                    block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks, alpha, *descrA_bsr,
+                    v.it.data(), ii.data(), jj.data(), block_size, is_kron ? aux.data() : x,
+                    is_kron ? ki * n cols : ldx, beta, y, ldy));
 #    endif
             }
 
@@ -686,6 +826,71 @@ namespace superbblas {
             return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1, 0};
         }
 
+        /// Return the indices for a given tensor Kronecker BSR and whether the nonzero
+        /// pattern is compatible with blocked ELL, all rows has the same number
+        /// of nonzeros, and unused nonzeros may be reported with a -1 on the
+        /// first domain coordinate.
+
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
+                  typename std::enable_if<(Nd > 0 && Ni > 0), bool>::type = true>
+        CsrIndices<XPU> get_kron_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
+                                         bool return_jj_blocked = false) {
+            // Check that IndexType is big enough
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
+                throw std::runtime_error("Ups! IndexType isn't big enough");
+
+            Indices<Cpu> ii(v.i.size() + 1, Cpu{}), jj(v.j.size(), Cpu{});
+            Indices<Cpu> vi = makeSure(v.i, Cpu{});
+            vector<Coor<Nd>, Cpu> vj = makeSure(v.j, Cpu{});
+
+            // Check if all rows has the same number of nonzeros
+            bool same_nnz_per_row = true;
+            for (std::size_t i = 1; i < vi.size(); ++i)
+                if (vi[i] != vi[0]) same_nnz_per_row = false;
+            if (!same_nnz_per_row)
+                throw std::runtime_error("get_kron_indices: unsupported having a different number "
+                                         "of nonzeros in each row");
+            int num_nnz_per_row = vi.size() > 0 && same_nnz_per_row ? vi[0] : -1;
+
+            // The Kronecker BSR format is simulated by splitting the operator in several terms,
+            // each of them having the nonzeros for a particular direction. In each term, only
+            // one nonzero is for each row
+            ii[0] = 0;
+            for (std::size_t i = 0; i < vi.size(); ++i) ii[i + 1] = ii[i] + vi[i];
+
+            // Transform the domain coordinates into indices
+            Coor<Nd> strided = get_strides<IndexType>(v.dimd, v.co);
+            IndexType block_nnz = v.j.size();
+            IndexType bd = return_jj_blocked ? volume(v.blockd) * volume(v.krond) : 1;
+            IndexType rows = volume(v.dimd);
+            bool there_are_minus_ones_in_columns = false;
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+            for (IndexType i = 0; i < block_nnz; ++i) {
+                if (vj[i][0] == -1) there_are_minus_ones_in_columns = true;
+                jj[i] = (vj[i][0] == -1 ? -1
+                                        : coor2index(vj[i], v.dimd, strided) / bd +
+                                              rows / bd * (i % num_nnz_per_row));
+            }
+
+            // Unsupported -1 in the domain coordinate
+            if (there_are_minus_ones_in_columns)
+                throw std::runtime_error("get_kron_indices: unsupported nonzero pattern "
+                                         "specification, some domain coordinates have -1");
+
+            return {makeSure(ii, v.i.ctx()), makeSure(jj, v.j.ctx()),
+                    there_are_minus_ones_in_columns, num_nnz_per_row, ii[vi.size()]};
+        }
+
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
+                  typename std::enable_if<(Nd == 0 || Ni == 0), bool>::type = true>
+        std::pair<CsrIndices<XPU>, int> get_kron_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
+                                                         bool return_jj_blocked = false) {
+            (void)return_jj_blocked;
+            return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1, 0};
+        }
+
         /// Return splitting of dimension labels for the RSB operator - tensor multiplication
         /// \param dimi: dimension of the RSB operator image in consecutive ranges
         /// \param dimd: dimension of the RSB operator domain in consecutive ranges
@@ -695,6 +900,7 @@ namespace superbblas {
         /// \param blockd: domain dimensions of the block
         /// \param kroni: image dimensions of the Kronecker block
         /// \param krond: domain dimensions of the Kronecker block
+        /// \param is_kron: whether using the Kronecker BSR format
         /// \param dimx: dimension of the right tensor in consecutive ranges
         /// \param ox: dimension labels for the right operator
         /// \param dimy: dimension of the resulting tensor in consecutive ranges
@@ -729,7 +935,7 @@ namespace superbblas {
         void local_bsr_krylov_check(const Coor<Ni> &dimi, const Coor<Nd> &dimd, const Order<Ni> &oi,
                                     const Order<Nd> &od, const Coor<Ni> &blocki,
                                     const Coor<Nd> &blockd, const Coor<Ni> &kroni,
-                                    const Coor<Nd> &krond, const Coor<Nx> &dimx,
+                                    const Coor<Nd> &krond, bool is_kron, const Coor<Nx> &dimx,
                                     const Order<Nx> &ox, const Coor<Ny> &dimy, const Order<Ny> &oy,
                                     char okr, SpMMAllowedLayout xylayout,
                                     MatrixLayout preferred_layout, CoorOrder co, bool &transSp,
@@ -740,11 +946,11 @@ namespace superbblas {
                 Order<Nx> sug_ox0;
                 Order<Ny> sug_oy0;
                 Order<Ny> sug_oy_trans0;
-                local_bsr_krylov_check(reverse(dimi), reverse(dimd), reverse(oi), reverse(od),
-                                       reverse(blocki), reverse(blockd), reverse(kroni),
-                                       reverse(krond), reverse(dimx), reverse(ox), reverse(dimy),
-                                       reverse(oy), okr, xylayout, preferred_layout, SlowToFast,
-                                       transSp, lx, ly, volC, sug_ox0, sug_oy0, sug_oy_trans0);
+                local_bsr_krylov_check(
+                    reverse(dimi), reverse(dimd), reverse(oi), reverse(od), reverse(blocki),
+                    reverse(blockd), reverse(kroni), reverse(krond), is_kron, reverse(dimx),
+                    reverse(ox), reverse(dimy), reverse(oy), okr, xylayout, preferred_layout,
+                    SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0, sug_oy_trans0);
                 sug_ox = reverse(sug_ox0);
                 sug_oy = reverse(sug_oy0);
                 sug_oy_trans = reverse(sug_oy_trans0);
@@ -957,7 +1163,7 @@ namespace superbblas {
                     "tensors has no common dimension with the sparse tensor");
             if (kindx == kindy) throw std::runtime_error("Invalid contraction");
 
-            if (nkds == 0 && nkis == 0) {
+            if (!is_kron) {
                 // Contraction with the blocking:
                 // Check that ox should one of (okr,C,D,d) or (okr,D,d,C) or (okr,C,I,i) or (okr,I,i,C)
 
@@ -965,17 +1171,18 @@ namespace superbblas {
                     auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
                     auto sDx = std::search(ox.begin(), ox.end(), oDs.begin(), oDs.begin() + nDs);
                     auto sdx = std::search(ox.begin(), ox.end(), ods.begin(), ods.begin() + nds);
+                    lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
+                             ? ColumnMajor
+                             : RowMajor;
                     if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
                         (nDs > 0 && sDx == ox.end()) || (nds > 0 && sdx == ox.end()) ||
                         (nDs > 0 && nds > 0 && sDx > sdx) ||
-                        (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx)) {
+                        (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx) ||
+                        (volC > 1 && lx == RowMajor && xylayout == ColumnMajorForXandY)) {
                         lx = preferred_layout;
                         sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oDs, nDs, ods, nds)
                                                     : concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC));
                     } else {
-                        lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
-                                 ? ColumnMajor
-                                 : RowMajor;
                         sug_ox = ox;
                     }
 
@@ -989,8 +1196,9 @@ namespace superbblas {
                         (nIs > 0 && sIy == oy.end()) || (nis > 0 && siy == oy.end()) ||
                         (nIs > 0 && nis > 0 && sIy > siy) ||
                         (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
-                        (lx != ly && xylayout == SameLayoutForXAndY) ||
-                        (ly == RowMajor && xylayout == ColumnMajorForY)) {
+                        (volC > 1 && lx != ly && xylayout == SameLayoutForXAndY) ||
+                        (volC > 1 && ly == RowMajor && xylayout == ColumnMajorForY) ||
+                        (volC > 1 && lx == RowMajor && xylayout == ColumnMajorForXandY)) {
                         ly = (xylayout == SameLayoutForXAndY
                                   ? lx
                                   : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
@@ -1013,17 +1221,18 @@ namespace superbblas {
                     auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
                     auto sIx = std::search(ox.begin(), ox.end(), oIs.begin(), oIs.begin() + nIs);
                     auto six = std::search(ox.begin(), ox.end(), ois.begin(), ois.begin() + nis);
+                    lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
+                             ? ColumnMajor
+                             : RowMajor;
                     if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
                         (nIs > 0 && sIx == ox.end()) || (nis > 0 && six == ox.end()) ||
                         (nIs > 0 && nis > 0 && sIx > six) ||
-                        (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six)) {
+                        (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six) ||
+                        (volC > 1 && lx == RowMajor && xylayout == ColumnMajorForXandY)) {
                         lx = preferred_layout;
                         sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
                                                     : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
                     } else {
-                        lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
-                                 ? ColumnMajor
-                                 : RowMajor;
                         sug_ox = ox;
                     }
 
@@ -1037,8 +1246,9 @@ namespace superbblas {
                         (nDs > 0 && sDy == oy.end()) || (nds > 0 && sdy == oy.end()) ||
                         (nDs > 0 && nds > 0 && sDy > sdy) ||
                         (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
-                        (lx != ly && xylayout == SameLayoutForXAndY) ||
-                        (ly == RowMajor && xylayout == ColumnMajorForY)) {
+                        (volC > 1 && lx != ly && xylayout == SameLayoutForXAndY) ||
+                        (volC > 1 && ly == RowMajor && xylayout == ColumnMajorForY) ||
+                        (volC > 1 && ly == RowMajor && xylayout == ColumnMajorForXandY)) {
 
                     } else {
                         ly = (xylayout == SameLayoutForXAndY
@@ -1060,21 +1270,27 @@ namespace superbblas {
                 }
             } else {
                 // Contraction with the blocking and the Kronecker blocking
-                // Check that ox should (okr,D,kd,C,d) or (okr,I,ki,C,i)
+                // Check that ox should (okr,D,d,C,kd) or (okr,I,i,C,ki) for row major,
+                // and (okr,kd,C,D,d) or (okr,ki,C,I,i) for column major.
 
+                lx = ly = preferred_layout;
                 if (kindx == ContractWithDomain) {
-                    sug_ox = concat<Nx>(okr, oDs, nDs, okds, nkds, oC, nC, ods, nds);
-                    sug_oy_trans = sug_oy = concat<Ny>(okr, oIs, nIs, okis, nkis, oC, nC, ois, nis);
+                    sug_ox = lx == RowMajor
+                                 ? concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
+                                 : concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
+                    sug_oy_trans = sug_oy =
+                        ly == RowMajor ? concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
+                                       : concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
                     transSp = false;
                 } else {
-                    sug_ox = concat<Nx>(okr, oIs, nIs, okis, nkis, oC, nC, ois, nis);
-                    sug_oy_trans = sug_oy = concat<Ny>(okr, oDs, nDs, okds, nkds, oC, nC, ods, nds);
+                    sug_ox = lx == RowMajor
+                                 ? concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
+                                 : concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
+                    sug_oy_trans = sug_oy =
+                        ly == RowMajor ? concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
+                                       : concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
                     transSp = true;
                 }
-
-                // For now, only row major is supported, but the column dimensions should be sandwiched
-                // between the block and the Kronecker block dimensions
-                lx = ly = RowMajor;
             }
         }
 
@@ -1118,9 +1334,9 @@ namespace superbblas {
             Order<Ny> sug_oy;
             Order<Ny> sug_oy_trans;
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   bsr.v.kroni, bsr.v.krond, dimx, ox, dimy, oy, okr,
-                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
-                                   volC, sug_ox, sug_oy, sug_oy_trans);
+                                   bsr.v.kroni, bsr.v.krond, bsr.v.kron_it.size() > 1, dimx, ox,
+                                   dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout, bsr.v.co,
+                                   transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -1130,9 +1346,15 @@ namespace superbblas {
                                      oy, {{}}, dimy, vy, Mask<XPU>{}, EWOp::Copy{}, bsr.v.co);
 
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
+            IndexType ki = volume(bsr.v.kroni);
+            IndexType kd = volume(bsr.v.krond);
             if (vold == 0 || voli == 0) return;
-            IndexType ldx = lx == ColumnMajor ? (!transSp ? vold : voli) : volC;
-            IndexType ldy = ly == ColumnMajor ? (!transSp ? voli : vold) : volC;
+            // Layout for row major: (kd,n,bd,rows)
+            // Layout for column major: (bd,rows,n,kd)
+            IndexType ldx = lx == ColumnMajor ? (!transSp ? vold / kd : voli / ki)
+                                              : (!transSp ? kd : ki) * volC;
+            IndexType ldy = ly == ColumnMajor ? (!transSp ? voli / ki : vold / kd)
+                                              : (!transSp ? ki : kd) * volC;
 
             // Do the contraction
             _t.cost = bsr.getCostPerMatvec() * volC * multiplication_cost<T>::value;
@@ -1277,17 +1499,19 @@ namespace superbblas {
                 MatrixLayout lx, ly;
                 std::size_t volC;
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
-                                       bsr.kroni, bsr.krond, sizex, ox, sizey, oy, okr,
-                                       bsr.c.first[0].allowLayout, bsr.c.first[0].preferredLayout,
-                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                       bsr.kroni, bsr.krond, bsr.c.first[0].v.kron_it.size() > 0,
+                                       sizex, ox, sizey, oy, okr, bsr.c.first[0].allowLayout,
+                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
             } else if (bsr.c.second.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
                 std::size_t volC;
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
-                                       bsr.kroni, bsr.krond, sizex, ox, sizey, oy, okr,
-                                       bsr.c.second[0].allowLayout, bsr.c.second[0].preferredLayout,
-                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                       bsr.kroni, bsr.krond, bsr.c.second[0].v.kron_it.size() > 0,
+                                       sizex, ox, sizey, oy, okr, bsr.c.second[0].allowLayout,
+                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
             }
             Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
             Coor<Ny> sizey0 = sizey;

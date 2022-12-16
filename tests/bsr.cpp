@@ -49,10 +49,33 @@ unsigned int max_neighbors(const Coor<6> &op_dim) {
     return neighbors;
 }
 
+template <typename T>
+void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int dir,
+                          bool block_imaginary_fast, const Coor<6> &op_dim, T *v) {
+
+    // ci,si,cd,sp,xi,yi,zi,ti,xd,yd,zd,td (fast index -> slow index)
+    Coor<6, std::size_t> op_dim_stride = get_strides<std::size_t>(op_dim, SlowToFast);
+    std::size_t vol_op = volume(op_dim);
+    Coor<4> dim_blk{op_dim[5], op_dim[4], op_dim[5], op_dim[4]};
+    Coor<4, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
+    std::size_t disp_blk = coor2index(row, op_dim, op_dim_stride) * op_dim[4] * op_dim[5] +
+                           coor2index(col, op_dim, op_dim_stride) * vol_op;
+    for (int si = 0; si < op_dim[4]; ++si)
+        for (int sd = 0; sd < op_dim[4]; ++sd)
+            for (int ci = 0; ci < op_dim[5]; ++ci)
+                for (int cd = 0; cd < op_dim[5]; ++cd)
+                    v[coor2index(block_imaginary_fast ? Coor<4>{ci, si, cd, sd}
+                                                      : Coor<4>{cd, sd, ci, si},
+                                 dim_blk, stride_blk)] =
+                        (1 + si + sd * op_dim[4] + dir * op_dim[4] * op_dim[4]) *
+                        (1 + disp_blk + ci + cd * op_dim[5]);
+}
+
 /// Create a 4D lattice with dimensions tzyxsc
 template <typename T, typename XPU>
 std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> &pi, int rank,
                                                        const Coor<6> op_dim, Context ctx, XPU xpu) {
+    bool check_results = getDebugLevel() > 0;
     Coor<6> from = pi[rank][0]; // first nonblock dimensions of the RSB image
     Coor<6> dimi = pi[rank][1]; // nonblock dimensions of the RSB image
     dimi[4] = dimi[5] = 1;
@@ -70,9 +93,7 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     for (auto &i : ii) i = neighbors;
     vector<Coor<6>, Cpu> jj(neighbors * voli, Cpu{});
     Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
-    Coor<6, std::size_t> strided = get_strides<std::size_t>(pd[rank][1], SlowToFast);
     for (std::size_t i = 0, j = 0; i < voli; ++i) {
-        std::size_t j0 = j;
         Coor<6> c = index2coor(i, dimi, stride) + from;
         jj[j++] = c;
         for (int dim = 0; dim < 4; ++dim) {
@@ -84,9 +105,6 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
                 if (op_dim[dim] <= 2) break;
             }
         }
-        std::sort(&jj[j0], &jj[j], [&](const Coor<6> &a, const Coor<6> &b) {
-            return coor2index(a, pd[rank][1], strided) < coor2index(b, pd[rank][1], strided);
-        });
     }
 
     // Number of nonzeros
@@ -95,21 +113,118 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
         std::cout << "Size of the sparse tensor per process: "
                   << vol_data * 1.0 * sizeof(T) / 1024 / 1024 << " MiB" << std::endl;
 
+    const bool nonzero_blocks_imaginary_fast = false;
+    vector<T, XPU> data_xpu;
+    if (check_results) {
+        vector<T, Cpu> data_cpu(vol_data, Cpu{});
+        Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
+        std::size_t vol_blk = op_dim[4] * op_dim[5] * op_dim[4] * op_dim[5];
+        for (std::size_t i = 0, j = 0; i < voli; ++i) {
+            Coor<6> blk_row = normalize_coor(index2coor(i, dimi, stride) + from, op_dim);
+            for (int j0 = 0; j0 < neighbors; ++j, ++j0) {
+                Coor<6> blk_col = normalize_coor(jj[j] + pd[rank][0], op_dim);
+                get_lattice_nonzeros(blk_row, blk_col, j0, nonzero_blocks_imaginary_fast, op_dim,
+                                     data_cpu.data() + j * vol_blk);
+            }
+        }
+        data_xpu = makeSure(data_cpu, xpu);
+    } else {
+        data_xpu = ones<T>(vol_data, xpu);
+    }
+
     Coor<6> block{{1, 1, 1, 1, op_dim[4], op_dim[5]}};
     BSR_handle *bsrh = nullptr;
     vector<int, XPU> ii_xpu = makeSure(ii, xpu);
     vector<Coor<6>, XPU> jj_xpu = makeSure(jj, xpu);
-    vector<T, XPU> data_xpu = ones<T>(vol_data, xpu);
     IndexType *iiptr = ii_xpu.data();
     Coor<6> *jjptr = jj_xpu.data();
     T *dataptr = data_xpu.data();
-    create_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, 1, block, block, false, &iiptr,
-                        &jjptr, (const T **)&dataptr, &ctx,
+    create_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, 1, block, block,
+                        nonzero_blocks_imaginary_fast, &iiptr, &jjptr, (const T **)&dataptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
                         SlowToFast, &bsrh);
     return {bsrh, data_xpu};
+}
+
+template <typename T>
+void get_lattice_constraction_value(const Coor<6> &row, const Coor<6> &col, unsigned int dir,
+                                    const Coor<6> &dim, unsigned int ncols, std::vector<T> &v) {
+
+    // Fill the nonzeros of the sparse matrix
+    std::size_t dim_sc = dim[4] * dim[5];
+    std::vector<T> a(dim_sc * dim_sc);
+    Coor<6, std::size_t> dim_stride = get_strides<std::size_t>(dim, SlowToFast);
+    get_lattice_nonzeros(row, col, dir, true, dim, a.data());
+
+    // Fill the values of the right-hand-size, the order is nxyztsc from slow to fast index
+    std::size_t vol_blk = dim[4] * dim[5] * ncols, vol_dim = volume(dim);
+    std::vector<T> rhs(vol_blk);
+    std::size_t disp_rhs = coor2index(col, dim, dim_stride);
+    for (std::size_t n = 0; n < ncols; ++n)
+        for (std::size_t i = 0; i < dim_sc; ++i)
+            rhs[i + n * dim_sc] = 1 + disp_rhs + i + n * vol_dim;
+
+    // Multiply the matrices `a` and `rhs`
+    for (std::size_t n = 0; n < ncols; ++n)
+        for (std::size_t i = 0; i < dim_sc; ++i)
+            for (std::size_t k = 0; k < dim_sc; ++k)
+                v[i + n * dim_sc] += a[i + k * dim_sc] * rhs[k + n * dim_sc];
+}
+
+/// Create a 4D lattice with dimensions tzyxsc
+template <std::size_t N, typename T, typename XPU>
+void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_, const Coor<N> &dimy,
+                      const vector<T, XPU> &y, const Coor<6> &op_dim, const Context &ctx) {
+
+    if (getDebugLevel() == 0) {
+        vector<T, Cpu> y_cpu = makeSure(y, Cpu{});
+        T right_value = (T)(max_neighbors(op_dim) * op_dim[4] * op_dim[5]);
+        for (std::size_t i = 0; i < y_cpu.size(); ++i)
+            if (std::norm(y_cpu[i] - right_value) > 1e-2) throw std::runtime_error("check error");
+        return;
+    }
+
+    // Reorder y
+    Order<N> oy = toArray<N>(oy_, "");
+    Context cpu_ctx = createCpuContext();
+    Order<7> oy_cpu = toArray<7>("xyztnsc", "");
+    Coor<7> dimy_cpu = reorder_coor(dimy, find_permutation(oy, oy_cpu), 1);
+    vector<T, Cpu> y_cpu(y.size(), Cpu{});
+    local_copy(1.0, oy_, Coor<N>{{}}, pi[rank][1], pi[rank][1], y.data(), nullptr, ctx, "xyztnsc",
+               Coor<7>{{}}, dimy_cpu, y_cpu.data(), nullptr, cpu_ctx, SlowToFast, Copy);
+    unsigned int ncols = dimy_cpu[4];
+
+    // Compute the coordinates for all nonzeros
+    Order<6> op_o = toArray<6>("xyztsc", "");
+    Coor<6> from = reorder_coor(pi[rank][0], find_permutation(oy, op_o), 1);
+    Coor<6> dimi = reorder_coor(pi[rank][1], find_permutation(oy, op_o), 1);
+    dimi[4] = dimi[5] = 1;
+    std::size_t voli = volume(dimi);
+    Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
+    for (std::size_t i = 0; i < voli; ++i) {
+        Coor<6> c = index2coor(i, dimi, stride) + from;
+        std::vector<T> right_values(op_dim[4] * op_dim[5] * ncols);
+        unsigned int dir_right_values = 0;
+        get_lattice_constraction_value(c, c, dir_right_values++, op_dim, ncols, right_values);
+        for (int dim = 0; dim < 4; ++dim) {
+            if (op_dim[dim] == 1) continue;
+            for (int dir = -1; dir < 2; dir += 2) {
+                Coor<6> c0 = c;
+                c0[dim] += dir;
+                c0 = normalize_coor(c0, op_dim);
+                get_lattice_constraction_value(c, c0, dir_right_values++, op_dim, ncols,
+                                               right_values);
+                if (op_dim[dim] <= 2) break;
+            }
+        }
+
+        // Compare the results
+        for (unsigned int k = 0, vol_blk = op_dim[4] * op_dim[5] * ncols; k < vol_blk; ++k)
+            if (std::fabs(y_cpu[i * vol_blk + k] - right_values[k]) > 0.1)
+                throw std::runtime_error("check error");
+    }
 }
 
 /// Create a 4D lattice with dimensions tzyxsc
@@ -289,6 +404,31 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim
     return {bsrh, {data_xpu, kron_xpu}};
 }
 
+/// Create a 7D tensor with dimensions ntzyxsc
+template <typename T, std::size_t N, typename XPU>
+vector<T, XPU> create_tensor_data(const PartitionStored<N> &p, int rank, const char *o_,
+                                  const Coor<6> &op_dim, unsigned int ncols, XPU xpu) {
+
+    std::size_t vol = volume(p[rank][1]);
+    if (getDebugLevel() == 0) return ones<T>(vol, xpu);
+
+    const Order<N> o = toArray<N>(o_, "");
+    const Order<7> filling_order = toArray<7>("nxyztsc", "");
+    vector<T, Cpu> data(vol, Cpu{});
+    Coor<7> perm = find_permutation(o, filling_order);
+    Coor<7> dim_filling{(int)ncols};
+    std::copy_n(op_dim.begin(), 6, dim_filling.begin() + 1);
+    Coor<7, std::size_t> dim_filling_stride = get_strides<std::size_t>(dim_filling, SlowToFast);
+    Coor<N, std::size_t> stride = get_strides<std::size_t>(p[rank][1], SlowToFast);
+    for (std::size_t i = 0; i < vol; ++i)
+        data[i] =
+            1 + coor2index(normalize_coor(
+                               reorder_coor(index2coor(i, p[rank][1], stride) + p[rank][0], perm),
+                               dim_filling),
+                           dim_filling, dim_filling_stride);
+    return makeSure(data, xpu);
+}
+
 template <typename Q, typename XPU>
 void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nrep, Context ctx,
           XPU xpu) {
@@ -307,9 +447,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
                                dim[T], dim[S], dim[C], dim[N]};                       // pxyztscn
     const Coor<Nd + 1> procs0 = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztscn
     PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
-    const Coor<Nd + 1> local_size0 = p0[rank][1];
-    std::size_t vol0 = detail::volume(local_size0);
-    vector<Q, XPU> t0 = ones<Q>(vol0, xpu);
+    vector<Q, XPU> t0 = create_tensor_data<Q>(p0, rank, "pxyztscn", dimo, dim[N], xpu);
 
     // Get preferred layout for the output tensor
     MatrixLayout preferred_layout_for_x, preferred_layout_for_y;
@@ -333,7 +471,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
             : Coor<Nd + 1>{1, 1, procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // pnxyztsc
     PartitionStored<Nd + 1> p1 = basic_partitioning(dim1, procs1);
     std::size_t vol1 = detail::volume(p1[rank][1]);
-    vector<Q, XPU> t1 = ones<Q>(vol1, xpu);
+    vector<Q, XPU> t1 = create_tensor_data<Q>(p1, rank, o1, dimo, dim[N], xpu);
 
     const bool is_cpu = deviceId(xpu) == CPU_DEVICE_ID;
 #ifdef _OPENMP
@@ -366,6 +504,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
+        test_contraction(p1, rank, o1, dim1, t1, dimo, ctx);
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     destroy_bsr(op);
@@ -436,7 +575,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             Q *ptr0 = t0.data(), *ptr1 = t1.data();
             bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-                Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", p0.data(), 1, "pXYZTSnC", {{}}, kdim0,
+                Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", kp0.data(), 1, "pXYZTSnC", {{}}, kdim0,
                 kdim0, (const Q **)&ptr0, Q{0}, kp1.data(), "pxyztsnc", {{}}, kdim1, kdim1, 'p',
                 &ptr1, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
