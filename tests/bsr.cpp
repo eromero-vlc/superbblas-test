@@ -56,6 +56,9 @@ unsigned int max_neighbors(const Coor<6> &op_dim) {
     return neighbors;
 }
 
+template <typename T> struct real_type { using type = T; };
+template <typename T> struct real_type<std::complex<T>> { using type = T; };
+
 template <typename T>
 void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int dir,
                           bool block_imaginary_fast, const Coor<6> &op_dim, T *v) {
@@ -67,6 +70,12 @@ void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int d
     Coor<4, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
     std::size_t disp_blk = coor2index(row, op_dim, op_dim_stride) * op_dim[4] * op_dim[5] +
                            coor2index(col, op_dim, op_dim_stride) * vol_op;
+    std::size_t neighbors = max_neighbors(op_dim);
+    std::size_t max_spin_component = neighbors * op_dim[4] * op_dim[4];
+    using real_T = typename real_type<T>::type;
+    std::size_t max_color_component =
+        std::pow(std::numeric_limits<real_T>::radix, std::numeric_limits<real_T>::digits / 2) / 2 /
+        neighbors / max_spin_component;
     for (int si = 0; si < op_dim[4]; ++si)
         for (int sd = 0; sd < op_dim[4]; ++sd)
             for (int ci = 0; ci < op_dim[5]; ++ci)
@@ -75,7 +84,7 @@ void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int d
                                                       : Coor<4>{cd, sd, ci, si},
                                  dim_blk, stride_blk)] =
                         (1 + si + sd * op_dim[4] + dir * op_dim[4] * op_dim[4]) *
-                        (1 + disp_blk + ci + cd * op_dim[5]);
+                        (1 + (disp_blk + ci + cd * op_dim[5]) % max_color_component);
 }
 
 template <typename T>
@@ -89,10 +98,16 @@ void get_lattice_nonzeros_block(const Coor<6> &row, const Coor<6> &col, bool blo
     Coor<2, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
     std::size_t disp_blk = coor2index(row, op_dim, op_dim_stride) * op_dim[4] * op_dim[5] +
                            coor2index(col, op_dim, op_dim_stride) * vol_op;
+    std::size_t neighbors = max_neighbors(op_dim);
+    std::size_t max_spin_component = neighbors * op_dim[4] * op_dim[4];
+    using real_T = typename real_type<T>::type;
+    std::size_t max_color_component =
+        std::pow(std::numeric_limits<real_T>::radix, std::numeric_limits<real_T>::digits / 2) / 2 /
+        neighbors / max_spin_component;
     for (int ci = 0; ci < op_dim[5]; ++ci)
         for (int cd = 0; cd < op_dim[5]; ++cd)
             v[coor2index(block_imaginary_fast ? Coor<2>{ci, cd} : Coor<2>{cd, ci}, dim_blk,
-                         stride_blk)] = 1 + disp_blk + ci + cd * op_dim[5];
+                         stride_blk)] = 1 + (disp_blk + ci + cd * op_dim[5]) % max_color_component;
 }
 
 template <typename T>
@@ -197,12 +212,15 @@ void get_lattice_constraction_value(const Coor<6> &row, const Coor<6> &col, unsi
     get_lattice_nonzeros(row, col, dir, true, dim, a.data());
 
     // Fill the values of the right-hand-size, the order is nxyztsc from slow to fast index
+    using real_T = typename real_type<T>::type;
+    std::size_t max_rhs_component =
+        std::pow(std::numeric_limits<real_T>::radix, std::numeric_limits<real_T>::digits / 2) / 2;
     std::size_t vol_blk = dim[4] * dim[5] * ncols, vol_dim = volume(dim);
     std::vector<T> rhs(vol_blk);
     std::size_t disp_rhs = coor2index(col, dim, dim_stride);
     for (std::size_t n = 0; n < ncols; ++n)
         for (std::size_t i = 0; i < dim_sc; ++i)
-            rhs[i + n * dim_sc] = 1 + disp_rhs + i + n * vol_dim;
+            rhs[i + n * dim_sc] = 1 + (disp_rhs + i + n * vol_dim) % max_rhs_component;
 
     // Multiply the matrices `a` and `rhs`
     for (std::size_t n = 0; n < ncols; ++n)
@@ -497,6 +515,10 @@ vector<T, XPU> create_tensor_data(const PartitionStored<N> &p, int rank, const c
     std::size_t vol = volume(p[rank][1]);
     if (getDebugLevel() == 0) return ones<T>(vol, xpu);
 
+    using real_T = typename real_type<T>::type;
+    std::size_t max_rhs_component =
+        std::pow(std::numeric_limits<real_T>::radix, std::numeric_limits<real_T>::digits / 2) / 2;
+
     const Order<N> o = toArray<N>(o_, "");
     const Order<7> filling_order = toArray<7>("nxyztsc", "");
     vector<T, Cpu> data(vol, Cpu{});
@@ -507,10 +529,11 @@ vector<T, XPU> create_tensor_data(const PartitionStored<N> &p, int rank, const c
     Coor<N, std::size_t> stride = get_strides<std::size_t>(p[rank][1], SlowToFast);
     for (std::size_t i = 0; i < vol; ++i)
         data[i] =
-            1 + coor2index(normalize_coor(
-                               reorder_coor(index2coor(i, p[rank][1], stride) + p[rank][0], perm),
-                               dim_filling),
-                           dim_filling, dim_filling_stride);
+            1 + (coor2index(normalize_coor(
+                                reorder_coor(index2coor(i, p[rank][1], stride) + p[rank][0], perm),
+                                dim_filling),
+                            dim_filling, dim_filling_stride)) %
+                    max_rhs_component;
     return makeSure(data, xpu);
 }
 
