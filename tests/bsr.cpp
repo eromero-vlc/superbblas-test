@@ -14,6 +14,13 @@ constexpr unsigned int X = 0, Y = 1, Z = 2, T = 3, S = 4, C = 5, N = 6;
 
 template <std::size_t Nd> using PartitionStored = std::vector<PartitionItem<Nd>>;
 
+// Return a vector of all zeros
+template <typename T, typename XPU> vector<T, XPU> zeros(std::size_t size, XPU xpu) {
+    vector<T, XPU> r(size, xpu);
+    zero_n(r.data(), r.size(), xpu);
+    return r;
+}
+
 // Return a vector of all ones
 template <typename T, typename XPU> vector<T, XPU> ones(std::size_t size, XPU xpu) {
     vector<T, Cpu> r(size, Cpu{});
@@ -71,6 +78,37 @@ void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int d
                         (1 + disp_blk + ci + cd * op_dim[5]);
 }
 
+template <typename T>
+void get_lattice_nonzeros_block(const Coor<6> &row, const Coor<6> &col, bool block_imaginary_fast,
+                                const Coor<6> &op_dim, T *v) {
+
+    // ci,si,cd,sp,xi,yi,zi,ti,xd,yd,zd,td (fast index -> slow index)
+    Coor<6, std::size_t> op_dim_stride = get_strides<std::size_t>(op_dim, SlowToFast);
+    std::size_t vol_op = volume(op_dim);
+    Coor<2> dim_blk{op_dim[5], op_dim[5]};
+    Coor<2, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
+    std::size_t disp_blk = coor2index(row, op_dim, op_dim_stride) * op_dim[4] * op_dim[5] +
+                           coor2index(col, op_dim, op_dim_stride) * vol_op;
+    for (int ci = 0; ci < op_dim[5]; ++ci)
+        for (int cd = 0; cd < op_dim[5]; ++cd)
+            v[coor2index(block_imaginary_fast ? Coor<2>{ci, cd} : Coor<2>{cd, ci}, dim_blk,
+                         stride_blk)] = 1 + disp_blk + ci + cd * op_dim[5];
+}
+
+template <typename T>
+void get_lattice_nonzeros_kron(bool block_imaginary_fast, const Coor<6> &op_dim, T *v) {
+
+    int neighbors = max_neighbors(op_dim);
+    Coor<3> dim_blk{op_dim[5], op_dim[5], neighbors};
+    Coor<3, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
+    for (int dir = 0; dir < neighbors; ++dir)
+        for (int si = 0; si < op_dim[4]; ++si)
+            for (int sd = 0; sd < op_dim[4]; ++sd)
+                v[coor2index(block_imaginary_fast ? Coor<3>{si, sd, dir} : Coor<3>{sd, si, dir},
+                             dim_blk, stride_blk)] =
+                    1 + si + sd * op_dim[4] + dir * op_dim[4] * op_dim[4];
+}
+
 /// Create a 4D lattice with dimensions tzyxsc
 template <typename T, typename XPU>
 std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> &pi, int rank,
@@ -95,7 +133,7 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
     for (std::size_t i = 0, j = 0; i < voli; ++i) {
         Coor<6> c = index2coor(i, dimi, stride) + from;
-        jj[j++] = c;
+        jj[j++] = normalize_coor(c - pd[rank][0], op_dim);
         for (int dim = 0; dim < 4; ++dim) {
             if (op_dim[dim] == 1) continue;
             for (int dir = -1; dir < 2; dir += 2) {
@@ -175,14 +213,18 @@ void get_lattice_constraction_value(const Coor<6> &row, const Coor<6> &col, unsi
 
 /// Create a 4D lattice with dimensions tzyxsc
 template <std::size_t N, typename T, typename XPU>
-void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_, const Coor<N> &dimy,
-                      const vector<T, XPU> &y, const Coor<6> &op_dim, const Context &ctx) {
+void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
+                      const vector<T, XPU> &y, const Coor<6> &op_dim, bool do_fast_check,
+                      const Context &ctx) {
 
     if (getDebugLevel() == 0) {
-        vector<T, Cpu> y_cpu = makeSure(y, Cpu{});
-        T right_value = (T)(max_neighbors(op_dim) * op_dim[4] * op_dim[5]);
-        for (std::size_t i = 0; i < y_cpu.size(); ++i)
-            if (std::norm(y_cpu[i] - right_value) > 1e-2) throw std::runtime_error("check error");
+        if (do_fast_check) {
+            vector<T, Cpu> y_cpu = makeSure(y, Cpu{});
+            T right_value = (T)(max_neighbors(op_dim) * op_dim[4] * op_dim[5]);
+            for (std::size_t i = 0; i < y_cpu.size(); ++i)
+                if (std::norm(y_cpu[i] - right_value) > 1e-2)
+                    throw std::runtime_error("check error");
+        }
         return;
     }
 
@@ -190,7 +232,7 @@ void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_, c
     Order<N> oy = toArray<N>(oy_, "");
     Context cpu_ctx = createCpuContext();
     Order<7> oy_cpu = toArray<7>("xyztnsc", "");
-    Coor<7> dimy_cpu = reorder_coor(dimy, find_permutation(oy, oy_cpu), 1);
+    Coor<7> dimy_cpu = reorder_coor(pi[rank][1], find_permutation(oy, oy_cpu), 1);
     vector<T, Cpu> y_cpu(y.size(), Cpu{});
     local_copy(1.0, oy_, Coor<N>{{}}, pi[rank][1], pi[rank][1], y.data(), nullptr, ctx, "xyztnsc",
                Coor<7>{{}}, dimy_cpu, y_cpu.data(), nullptr, cpu_ctx, SlowToFast, Copy);
@@ -232,6 +274,8 @@ template <typename T, typename XPU>
 std::pair<std::vector<BSR_handle *>, std::vector<vector<T, XPU>>>
 create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim, Context ctx,
                      XPU xpu) {
+    bool check_results = getDebugLevel() > 0;
+
     // Compute the domain ranges
     PartitionStored<6> pd = pi;
     for (auto &i : pd) i = extend(i, op_dim);
@@ -266,6 +310,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
     std::vector<vector<T, XPU>> data_s;
     std::size_t total_vol_data = 0;
     int global_neighbors = max_neighbors(op_dim);
+    const bool nonzero_blocks_imaginary_fast = false;
     for (unsigned int p = 0; p < pd_s.size(); ++p) {
         Coor<6> dimi = pi_s[p][rank][1]; // nonblock dimensions of the RSB image
         dimi[4] = dimi[5] = 1;
@@ -277,14 +322,29 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
         Coor<6> fromi = pi_s[p][rank][0]; // first nonblock element of the RSB image
         Coor<6> fromd = pd_s[p][rank][0]; // first element of the domain
         Coor<6, std::size_t> stridei = get_strides<std::size_t>(dimi, SlowToFast);
-        Coor<6, std::size_t> strided = get_strides<std::size_t>(dimd, SlowToFast);
         std::size_t neighbors = 0;
         Coor<6> block{{1, 1, 1, 1, op_dim[4], op_dim[5]}};
+        std::size_t vol_data = 0;
+        vector<T, Cpu> data_cpu;
+        std::size_t vol_blk = op_dim[4] * op_dim[5] * op_dim[4] * op_dim[5];
         for (unsigned int k = 0; k < 2; ++k) {
+            if (k == 1) {
+                // Once we know the maximum number of neighbors...
+                vol_data = voli * neighbors * op_dim[4] * op_dim[5] * op_dim[4] * op_dim[5];
+                total_vol_data += vol_data;
+                if (check_results) data_cpu = zeros<T>(vol_data, Cpu{});
+            }
             for (std::size_t i = 0, j = 0; i < voli; ++i) {
                 std::size_t j0 = j;
-                Coor<6> c = index2coor(i, dimi, stridei) + fromi;
-                jj[j++] = c;
+                unsigned int op_dir = 0;
+                Coor<6> c = normalize_coor(index2coor(i, dimi, stridei) + fromi, op_dim);
+                if (p == pd_s.size() - 1) {
+                    if (k == 1 && check_results)
+                        get_lattice_nonzeros(c, c, op_dir, nonzero_blocks_imaginary_fast, op_dim,
+                                             data_cpu.data() + j * vol_blk);
+                    jj[j++] = normalize_coor(c - fromd, op_dim);
+                }
+                op_dir++;
                 for (int dim = 0; dim < 4; ++dim) {
                     if (op_dim[dim] == 1) continue;
                     for (int dir = -1; dir < 2; dir += 2) {
@@ -293,7 +353,13 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
                         c0 = normalize_coor(c0, op_dim);
                         Coor<6> from0, size0;
                         intersection(c0, block, fromd, dimd, op_dim, from0, size0);
-                        if (volume(size0) > 0) jj[j++] = normalize_coor(c0 - fromd, op_dim);
+                        if (volume(size0) > 0) {
+                            if (k == 1 && check_results)
+                                get_lattice_nonzeros(c, c0, op_dir, nonzero_blocks_imaginary_fast,
+                                                     op_dim, data_cpu.data() + j * vol_blk);
+                            jj[j++] = normalize_coor(c0 - fromd, op_dim);
+                        }
+                        op_dir++;
                         if (op_dim[dim] <= 2) break;
                     }
                 }
@@ -301,9 +367,6 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
                 if (k == 1) {
                     if (j == j0 && neighbors > 0) jj[j++] = Coor<6>{{}};
                     for (std::size_t j1 = j0 + neighbors; j < j1; ++j) jj[j] = jj[j - 1];
-                    std::sort(&jj[j0], &jj[j], [&](const Coor<6> &a, const Coor<6> &b) {
-                        return coor2index(a, dimd, strided) < coor2index(b, dimd, strided);
-                    });
                 }
             }
         }
@@ -313,16 +376,16 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
         vector<IndexType, Cpu> ii(voli, Cpu{});
         for (auto &i : ii) i = neighbors;
 
-        std::size_t vol_data = voli * neighbors * op_dim[4] * op_dim[5] * op_dim[4] * op_dim[5];
         BSR_handle *bsrh = nullptr;
         vector<int, XPU> ii_xpu = makeSure(ii, xpu);
         vector<Coor<6>, XPU> jj_xpu = makeSure(jj, xpu);
-        vector<T, XPU> data_xpu = ones<T>(vol_data, xpu);
+        vector<T, XPU> data_xpu = check_results ? makeSure(data_cpu, xpu) : ones<T>(vol_data, xpu);
         IndexType *iiptr = ii_xpu.data();
         Coor<6> *jjptr = jj_xpu.data();
         T *dataptr = data_xpu.data();
-        create_bsr<6, 6, T>(pi_s[p].data(), op_dim, pd_s[p].data(), op_dim, 1, block, block, false,
-                            &iiptr, &jjptr, (const T **)&dataptr, &ctx,
+        create_bsr<6, 6, T>(pi_s[p].data(), op_dim, pd_s[p].data(), op_dim, 1, block, block,
+                            nonzero_blocks_imaginary_fast, &iiptr, &jjptr, (const T **)&dataptr,
+                            &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
 #endif
@@ -345,6 +408,7 @@ template <typename T, typename XPU>
 std::pair<BSR_handle *, std::array<vector<T, XPU>, 2>>
 create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim, Context ctx,
                     XPU xpu) {
+    bool check_results = getDebugLevel() > 0;
     Coor<6> from = pi[rank][0]; // first nonblock dimensions of the RSB image
     Coor<6> dimi = pi[rank][1]; // nonblock dimensions of the RSB image
     dimi[4] = dimi[5] = 1;
@@ -364,7 +428,7 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim
     Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
     for (std::size_t i = 0, j = 0; i < voli; ++i) {
         Coor<6> c = index2coor(i, dimi, stride) + from;
-        jj[j++] = c;
+        jj[j++] = normalize_coor(c - pd[rank][0], op_dim);
         for (int dim = 0; dim < 4; ++dim) {
             if (op_dim[dim] == 1) continue;
             for (int dir = -1; dir < 2; dir += 2) {
@@ -383,20 +447,41 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim
                   << vol_data * 1.0 * sizeof(T) / 1024 / 1024 << " MiB" << std::endl;
     std::size_t vol_kron = neighbors * op_dim[4] * op_dim[4];
 
+    const bool nonzero_blocks_imaginary_fast = false;
+    vector<T, XPU> data_xpu, kron_xpu;
+    if (check_results) {
+        vector<T, Cpu> data_cpu(vol_data, Cpu{});
+        Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
+        std::size_t vol_blk = op_dim[5] * op_dim[5];
+        for (std::size_t i = 0, j = 0; i < voli; ++i) {
+            Coor<6> blk_row = normalize_coor(index2coor(i, dimi, stride) + from, op_dim);
+            for (int j0 = 0; j0 < neighbors; ++j, ++j0) {
+                Coor<6> blk_col = normalize_coor(jj[j] + pd[rank][0], op_dim);
+                get_lattice_nonzeros_block(blk_row, blk_col, nonzero_blocks_imaginary_fast, op_dim,
+                                           data_cpu.data() + j * vol_blk);
+            }
+        }
+        data_xpu = makeSure(data_cpu, xpu);
+        vector<T, Cpu> kron_cpu(vol_kron, Cpu{});
+        get_lattice_nonzeros_kron(nonzero_blocks_imaginary_fast, op_dim, kron_cpu.data());
+        kron_xpu = makeSure(kron_cpu, xpu);
+    } else {
+        data_xpu = ones<T>(vol_data, xpu);
+        kron_xpu = ones<T>(vol_kron, xpu);
+    }
+
     Coor<6> block{{1, 1, 1, 1, 1, op_dim[5]}};
     Coor<6> kron{{1, 1, 1, 1, op_dim[4], 1}};
     BSR_handle *bsrh = nullptr;
     vector<int, XPU> ii_xpu = makeSure(ii, xpu);
     vector<Coor<6>, XPU> jj_xpu = makeSure(jj, xpu);
-    vector<T, XPU> data_xpu = ones<T>(vol_data, xpu);
-    vector<T, XPU> kron_xpu = ones<T>(vol_kron, xpu);
     IndexType *iiptr = ii_xpu.data();
     Coor<6> *jjptr = jj_xpu.data();
     T *dataptr = data_xpu.data();
     T *kronptr = kron_xpu.data();
     create_kron_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, 1, block, block, kron, kron,
-                             false, &iiptr, &jjptr, (const T **)&dataptr, (const T **)&kronptr,
-                             &ctx,
+                             nonzero_blocks_imaginary_fast, &iiptr, &jjptr, (const T **)&dataptr,
+                             (const T **)&kronptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                              MPI_COMM_WORLD,
 #endif
@@ -430,14 +515,14 @@ vector<T, XPU> create_tensor_data(const PartitionStored<N> &p, int rank, const c
 }
 
 template <typename Q, typename XPU>
-void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nrep, Context ctx,
-          XPU xpu) {
+void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, unsigned int nrep,
+          Context ctx, XPU xpu) {
 
     // Create a lattice operator of Nd-1 dims
     const Coor<Nd - 1> dimo = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[C]}; // xyztsc
     const Coor<Nd - 1> procso = {procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // xyztsc
     PartitionStored<Nd - 1> po =
-        basic_partitioning(dimo, procso, -1, false,
+        basic_partitioning(dimo, procso, nprocs, false,
                            {{max_power - 1, max_power - 1, max_power - 1, max_power - 1, 0, 0}});
     auto op_pair = create_lattice<Q>(po, rank, dimo, ctx, xpu);
     BSR_handle *op = op_pair.first;
@@ -446,7 +531,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
     const Coor<Nd + 1> dim0 = {1,      dim[X], dim[Y], dim[Z],
                                dim[T], dim[S], dim[C], dim[N]};                       // pxyztscn
     const Coor<Nd + 1> procs0 = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztscn
-    PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0);
+    PartitionStored<Nd + 1> p0 = basic_partitioning(dim0, procs0, nprocs);
     vector<Q, XPU> t0 = create_tensor_data<Q>(p0, rank, "pxyztscn", dimo, dim[N], xpu);
 
     // Get preferred layout for the output tensor
@@ -469,7 +554,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         preferred_layout_for_y == RowMajor
             ? Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}  // pxyztscn
             : Coor<Nd + 1>{1, 1, procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // pnxyztsc
-    PartitionStored<Nd + 1> p1 = basic_partitioning(dim1, procs1);
+    PartitionStored<Nd + 1> p1 = basic_partitioning(dim1, procs1, nprocs);
     std::size_t vol1 = detail::volume(p1[rank][1]);
     vector<Q, XPU> t1 = create_tensor_data<Q>(p1, rank, o1, dimo, dim[N], xpu);
 
@@ -504,7 +589,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
-        test_contraction(p1, rank, o1, dim1, t1, dimo, ctx);
+        test_contraction(p1, rank, o1, t1, dimo, true, ctx);
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     destroy_bsr(op);
@@ -549,6 +634,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         t = w_time() - t;
         if (rank == 0)
             std::cout << "Time in mavec per rhs (split): " << t / nrep / dim[N] << std::endl;
+        test_contraction(p1, rank, o1, t1, dimo, false /* Don't do quick check, it isn't correct */,
+                         ctx);
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     for (const auto op : op_pair_s.first) destroy_bsr(op);
@@ -561,12 +648,13 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
 
     const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
                                 dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
-    PartitionStored<Nd + 1> kp0 = basic_partitioning(kdim0, procs0);
+    PartitionStored<Nd + 1> kp0 = basic_partitioning(kdim0, procs0, nprocs);
+    t0 = create_tensor_data<Q>(kp0, rank, "pxyztsnc", dimo, dim[N], xpu);
     Coor<Nd + 1> kdim1 =
         Coor<Nd + 1>{max_power, dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
     const Coor<Nd + 1> kprocs1 =
         Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztscn
-    PartitionStored<Nd + 1> kp1 = basic_partitioning(kdim1, kprocs1);
+    PartitionStored<Nd + 1> kp1 = basic_partitioning(kdim1, kprocs1, nprocs);
 
     // Copy tensor t0 into each of the c components of tensor 1
     resetTimings();
@@ -586,6 +674,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int max_power, unsigned int nr
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
+        test_contraction(kp1, rank, "pxyztsnc", t1, dimo, true, ctx);
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     destroy_bsr(op_kron_s.first);
@@ -687,13 +776,14 @@ int main(int argc, char **argv) {
 
     {
         Context ctx = createCpuContext();
-        test<std::complex<double>, Cpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toCpu(0));
+        test<std::complex<double>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx,
+                                        ctx.toCpu(0));
         clearCaches();
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext(rank % getGpuDevicesCount());
-        test<float, Gpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toGpu(0));
+        test<float, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, ctx.toGpu(0));
         test<std::complex<double>, Gpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toGpu(0));
         clearCaches();
     }
