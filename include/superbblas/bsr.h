@@ -264,11 +264,11 @@ namespace superbblas {
             static const MatrixLayout preferredLayout = RowMajor;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
+                allowLayout = (v.kron_it.size() > 0) ? SameLayoutForXAndY : AnyLayoutForXAndY;
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 auto bsr = get_bsr_indices(v); // column indices aren't blocked
                 ii = bsr.i;
                 jj = bsr.j;
-                allowLayout = (v.kron_it.size() > 0) ? SameLayoutForXAndY : AnyLayoutForXAndY;
                 num_nnz_per_row = bsr.num_nnz_per_row;
             }
 
@@ -663,7 +663,9 @@ namespace superbblas {
                     ;
                 std::size_t nvalues = njj * volume(blockd) * volume(blocki);
                 T *kronvi = kronv ? kronv[i] : (T *)nullptr;
-                std::size_t nkronvalues = (kronv ? volume(krond) * volume(kroni) * (njj / nii) : 0);
+                std::size_t num_neighbors = (nii > 0 ? njj / nii : 0);
+                std::size_t nkronvalues =
+                    (kronv ? volume(krond) * volume(kroni) * num_neighbors : 0);
                 switch (ctx[i].plat) {
 #ifdef SUPERBBLAS_USE_GPU
                 case CPU:
