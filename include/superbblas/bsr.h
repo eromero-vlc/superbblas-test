@@ -357,6 +357,9 @@ namespace superbblas {
                         // Contract with the blocking: (bd,rows,n,kd) x (ki,kd)[mu] -> (bd,rows,n,ki,mu) ; note (fast,slow)
                         vector<T, Cpu> aux(bd * block_cols * ncols * ki * num_nnz_per_row, Cpu{});
                         zero_n(aux.data(), aux.size(), aux.ctx());
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
+#    endif
                         for (unsigned int i = 0; i < num_nnz_per_row; ++i)
                             xgemm('N', !tb ? 'T' : 'N', bd * block_cols * ncols, ki, kd, alpha, x,
                                   bd * block_cols * ncols, v.kron_it.data() + ki * kd * i,
@@ -369,10 +372,11 @@ namespace superbblas {
                         for (IndexType i = 0; i < block_rows; ++i) {
                             for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1; ++j, ++j0) {
                                 if (jj[j] == -1) continue;
-                                // Contract with the Kronecker blocking: (bi,bd) x (bd,n,ki) -> (bi,n,ki) ; note (fast,slow)
+                                // Contract with the Kronecker blocking: (bi,bd) x (bd,n,ki)[rows,mu] -> (bi,n,ki) ; note (fast,slow)
+				// Note that jj is (bd,kd,rows) but aux is (bd,rows,n,ki,mu), so jj/kd is the right shift on aux
                                 xgemm(!tb ? 'N' : 'T', 'N', bi, ncols * ki, bd, T{1},
                                       nonzeros + j * bi * bd, !tb ? bi : bd,
-                                      aux.data() + jj[j] + bd * block_cols * ncols * ki * j0,
+                                      aux.data() + jj[j] / kd + bd * block_cols * ncols * ki * j0,
                                       bd * block_cols, T{1}, y + bi * i, bi * block_rows, Cpu{});
                             }
                         }
