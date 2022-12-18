@@ -114,7 +114,7 @@ template <typename T>
 void get_lattice_nonzeros_kron(bool block_imaginary_fast, const Coor<6> &op_dim, T *v) {
 
     int neighbors = max_neighbors(op_dim);
-    Coor<3> dim_blk{op_dim[5], op_dim[5], neighbors};
+    Coor<3> dim_blk{op_dim[4], op_dim[4], neighbors};
     Coor<3, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
     for (int dir = 0; dir < neighbors; ++dir)
         for (int si = 0; si < op_dim[4]; ++si)
