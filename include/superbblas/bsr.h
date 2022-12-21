@@ -203,7 +203,7 @@ namespace superbblas {
                     for (unsigned int i = 0; i < num_nnz_per_row; ++i)
                         xgemm(!tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
                               v.kron_it.data() + ki * kd * i, !tb ? ki : kd, x, kd, T{0},
-                              aux.data() + ki * ncols * block_size * i, ki, Cpu{});
+                              aux.data() + ki * ncols * block_size * block_cols * i, ki, Cpu{});
 
                     // Contract the block part:
                     // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
@@ -496,7 +496,7 @@ namespace superbblas {
                 return block_size * block_size * jj.size();
             }
 
-            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
                             IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 // Check layout
                 if ((allowLayout == SameLayoutForXAndY && lx != ly) ||
