@@ -807,7 +807,8 @@ int main(int argc, char **argv) {
     {
         Context ctx = createGpuContext(rank % getGpuDevicesCount());
         test<float, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, ctx.toGpu(0));
-        test<std::complex<double>, Gpu>(dim, procs, rank, max_power, nrep, ctx, ctx.toGpu(0));
+        test<std::complex<double>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx,
+                                        ctx.toGpu(0));
         clearCaches();
     }
 #endif
