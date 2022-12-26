@@ -800,6 +800,26 @@ namespace superbblas {
         }
 
         template <typename T>
+        void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, const T *a[],
+                         int lda, const T *b[], int ldb, T beta, T *c[], int ldc, int batch_size,
+                         Cuda cuda) {
+            // Quick exits
+            if (m == 0 || n == 0) return;
+
+            // Replace some invalid arguments when k is zero
+            if (k == 0) {
+                a = b = (const T **)c;
+                lda = ldb = 1;
+            }
+
+            cudaDataType_t cT = toCudaDataType<T>();
+            cublasCheck(cublasGemmBatchedEx(
+                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha,
+                (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c, cT, ldc,
+                batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+        }
+
+        template <typename T>
         void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
                                  T *c, int ldc, int stridec, int batch_size, Cuda cuda) {
@@ -842,6 +862,26 @@ namespace superbblas {
             case 'C': return HIPBLAS_OP_C;
             default: throw std::runtime_error("Not valid value of trans");
             }
+        }
+
+        template <typename T>
+        void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, const T *a[],
+                         int lda, const T *b[], int ldb, T beta, T *c[], int ldc, int batch_size,
+                         Hip hip) {
+            // Quick exits
+            if (m == 0 || n == 0) return;
+
+            // Replace some invalid arguments when k is zero
+            if (k == 0) {
+                a = b = (const T **)c;
+                lda = ldb = 1;
+            }
+
+            hipblasDatatype_t cT = toHipDataType<T>();
+            hipblasCheck(hipblasGemmBatchedEx(
+                hip.hipblasHandle, toHipblasTrans(transa), toHipblasTrans(transb), m, n, k, &alpha,
+                (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c, cT, ldc,
+                batch_size, toHipComputeType<T>(), HIPBLAS_GEMM_DEFAULT));
         }
 
         template <typename T>

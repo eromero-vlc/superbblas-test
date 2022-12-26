@@ -223,9 +223,6 @@ namespace superbblas {
                                        Cpu{});
                     zero_n(aux.data(), aux.size(), Cpu{});
                     const bool tb = !v.blockImFast;
-#    ifdef _OPENMP
-#        pragma omp parallel for schedule(static)
-#    endif
                     for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
                         unsigned int i = ij % num_nnz_per_row;
                         unsigned int j = ij / num_nnz_per_row;
@@ -373,7 +370,7 @@ namespace superbblas {
                             for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1; ++j, ++j0) {
                                 if (jj[j] == -1) continue;
                                 // Contract with the Kronecker blocking: (bi,bd) x (bd,n,ki)[rows,mu] -> (bi,n,ki) ; note (fast,slow)
-				// Note that jj is (bd,kd,rows) but aux is (bd,rows,n,ki,mu), so jj/kd is the right shift on aux
+                                // Note that jj is (bd,kd,rows) but aux is (bd,rows,n,ki,mu), so jj/kd is the right shift on aux
                                 xgemm(!tb ? 'N' : 'T', 'N', bi, ncols * ki, bd, T{1},
                                       nonzeros + j * bi * bd, !tb ? bi : bd,
                                       aux.data() + jj[j] / kd + bd * block_cols * ncols * ki * j0,
@@ -405,15 +402,18 @@ namespace superbblas {
             unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
 
             SpMMAllowedLayout allowLayout;
-            static const MatrixLayout preferredLayout = RowMajor;
+            MatrixLayout preferredLayout;
             std::string implementation_;
             const std::string &implementation() const { return implementation_; }
 
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
+                allowLayout = ColumnMajorForY; // Default setting for empty tensor
+                preferredLayout = ColumnMajor; // Default setting for empty tensor
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 if (volume(v.blocki) != volume(v.blockd))
                     throw std::runtime_error("cuSPARSE does not support non-square blocks");
-                auto bsr = get_bsr_indices(v, true);
+                bool is_kron = v.kron_it.size() > 0;
+                auto bsr = !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true);
                 ii = bsr.i;
                 jj = bsr.j;
                 num_nnz_per_row = bsr.num_nnz_per_row;
@@ -435,6 +435,7 @@ namespace superbblas {
                 if (spFormat == FORMAT_BSR) {
                     implementation_ = "cusparse_bsr";
                     allowLayout = ColumnMajorForY;
+                    preferredLayout = !is_kron ? RowMajor : ColumnMajor;
                     descrA_bsr = std::shared_ptr<cusparseMatDescr_t>(
                         new cusparseMatDescr_t, [](cusparseMatDescr_t *p) {
                             cusparseDestroyMatDescr(*p);
@@ -449,13 +450,13 @@ namespace superbblas {
                     IndexType num_rows = volume(v.dimi);
                     IndexType ki = volume(v.kroni);
                     IndexType kd = volume(v.krond);
-                    bool is_kron = v.kron_it.size() > 0;
                     descrA_other = std::shared_ptr<cusparseSpMatDescr_t>(
                         new cusparseSpMatDescr_t, [](cusparseSpMatDescr_t *p) {
                             cusparseDestroySpMat(*p);
                             delete p;
                         });
                     allowLayout = SameLayoutForXAndY;
+                    preferredLayout = RowMajor;
                     if (spFormat == FORMAT_CSR) {
                         implementation_ = "cusparse_csr";
                         cusparseCheck(cusparseCreateCsr(
@@ -477,6 +478,7 @@ namespace superbblas {
 
                 implementation_ = "hipsparse_bsr";
                 allowLayout = ColumnMajorForY;
+                preferredLayout = !is_kron ? RowMajor : ColumnMajor;
                 descrA_bsr = std::shared_ptr<hipsparseMatDescr_t>(new hipsparseMatDescr_t,
                                                                   [](hipsparseMatDescr_t *p) {
                                                                       hipsparseDestroyMatDescr(*p);
@@ -496,11 +498,14 @@ namespace superbblas {
                 return block_size * block_size * jj.size();
             }
 
-             void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
-                            IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
+        private:
+            void matvec(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+                        IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
                 // Check layout
                 if ((allowLayout == SameLayoutForXAndY && lx != ly) ||
-                    (allowLayout == ColumnMajorForY && ly == RowMajor))
+                    ((allowLayout == ColumnMajorForY || allowLayout == ColumnMajorForXandY) &&
+                     ly == RowMajor) ||
+                    (allowLayout == ColumnMajorForXandY && lx == RowMajor))
                     throw std::runtime_error("BSR operator(): Unexpected layout");
 
                 IndexType block_size = volume(v.blocki);
@@ -512,21 +517,6 @@ namespace superbblas {
                 IndexType block_rows = num_rows / block_size / kd;
                 IndexType num_blocks = jj.size();
                 bool is_kron = v.kron_it.size() > 0;
-                vector<T, Gpu> aux;
-                if (is_kron) {
-                    if (conjA)
-                        throw std::runtime_error("BSR operator(): unsupported conjugate "
-                                                 "multiplication with BSR Kronecker");
-                    aux = vector<T, Gpu>(ki * ncols * block_size * block_cols * num_nnz_per_row,
-                                         v.it.ctx());
-                    zero_n(aux.data(), aux.size(), aux.ctx());
-                    const bool tb = !v.blockImFast;
-                    for (unsigned int i = 0; i < num_nnz_per_row; ++i)
-                        xgemm(!tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
-                              v.kron_it.data() + ki * kd * i, !tb ? ki : kd, x, kd, T{0},
-                              aux.data() + ki * ncols * block_size * i, ki, v.it.ctx());
-                    alpha = T{1};
-                }
 
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (spFormat == FORMAT_BSR) {
@@ -535,23 +525,21 @@ namespace superbblas {
                         v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                        (lx == ColumnMajor && !is_kron) ? CUSPARSE_OPERATION_NON_TRANSPOSE
-                                                        : CUSPARSE_OPERATION_TRANSPOSE,
-                        block_rows, ncols * (is_kron ? ki : 1),
-                        block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks, alpha,
-                        *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size,
-                        is_kron ? aux.data() : x, is_kron ? ki * ncols : ldx, beta, y, ldy));
+                        lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                                          : CUSPARSE_OPERATION_TRANSPOSE,
+                        block_rows, ncols, block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks,
+                        alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size, x, ldx,
+                        beta, y, ldy));
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
                     cusparseCheck(cusparseCreateDnMat(
-                        &matx, !conjA ? num_cols : num_rows, ncols * (!is_kron ? 1 : ki),
-                        !is_kron ? ldx : ki * ncols, (void *)(!is_kron ? x : aux.data()), cudaType,
-                        (lx == ColumnMajor && !is_kron) ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                        &matx, !conjA ? num_cols / ki * (is_kron ? num_nnz_per_row : 1) : num_rows,
+                        ncols * ki, ldx, (void *)x, cudaType,
+                        lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     cusparseCheck(cusparseCreateDnMat(
-                        &maty, !conjA ? num_rows : num_cols, ncols * (!is_kron ? 1 : ki),
-                        !is_kron ? ldy : ki * ncols, (void *)y, cudaType,
-                        (ly == ColumnMajor && !is_kron) ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                        &maty, !conjA ? num_rows / ki : num_cols, ncols * ki, ldy, (void *)y,
+                        cudaType, ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     cusparseCheck(cusparseSpMM_bufferSize(
                         ii.ctx().cusparseHandle,
@@ -576,13 +564,91 @@ namespace superbblas {
                     v.blockImFast ? HIPSPARSE_DIRECTION_COLUMN : HIPSPARSE_DIRECTION_ROW,
                     !conjA ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                    (lx == ColumnMajor && !is_kron) ? HIPSPARSE_OPERATION_NON_TRANSPOSE
-                                                    : HIPSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols * (is_kron ? ki : 1),
-                    block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks, alpha, *descrA_bsr,
-                    v.it.data(), ii.data(), jj.data(), block_size, is_kron ? aux.data() : x,
-                    is_kron ? ki * n cols : ldx, beta, y, ldy));
+                    lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
+                                      : HIPSPARSE_OPERATION_TRANSPOSE,
+                    block_rows, ncols, block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks,
+                    alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size, x, ldx, beta,
+                    y, ldy));
 #    endif
+            }
+
+        public:
+            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
+                            IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
+
+                bool is_kron = v.kron_it.size() > 0;
+
+                IndexType num_cols = volume(v.dimd);
+                IndexType num_rows = volume(v.dimi);
+                xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+                if (num_cols == 0 || num_rows == 0 || ncols == 0) return;
+
+                if (!is_kron) {
+                    matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols,
+                           std::norm(beta) == 0 ? T{0} : T{1});
+                    return;
+                }
+
+                if (conjA)
+                    throw std::runtime_error("BSR operator(): unsupported conjugate "
+                                             "multiplication with BSR Kronecker");
+
+                IndexType block_size = volume(v.blocki);
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_cols = num_cols / block_size / ki;
+                IndexType num_blocks = jj.size();
+
+                if (ly == RowMajor && lx == RowMajor) {
+                    // Contract the Kronecker part: for each direction mu do:
+                    //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
+                    vector<T, Gpu> aux(ki * ncols * block_size * block_cols * num_nnz_per_row,
+                                       v.it.ctx());
+                    zero_n(aux.data(), aux.size(), aux.ctx());
+                    const bool tb = !v.blockImFast;
+                    xgemm_batch_strided(
+                        !tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
+                        v.kron_it.data(), !tb ? ki : kd, ki * kd, x, kd, 0, T{0}, aux.data(), ki,
+                        ki * ncols * block_size * block_cols, num_nnz_per_row, aux.ctx());
+
+                    // Contract the block part:
+                    // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
+                    matvec(1.0, false, aux.data(), ki * ncols, RowMajor, y, ldy, ly, ncols * ki,
+                           std::norm(beta) == 0 ? T{0} : T{1});
+                } else if (ly == ColumnMajor && lx == ColumnMajor) {
+                    // Contract the Kronecker part: for each direction mu do:
+                    //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+                    vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
+                                       v.it.ctx());
+                    zero_n(aux.data(), aux.size(), aux.ctx());
+                    const bool tb = !v.blockImFast;
+                    vector<T *, Cpu> a_cpu(num_nnz_per_row * ncols, Cpu{});
+                    vector<T *, Cpu> b_cpu(num_nnz_per_row * ncols, Cpu{});
+                    vector<T *, Cpu> c_cpu(num_nnz_per_row * ncols, Cpu{});
+                    for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
+                        unsigned int mu = ij % num_nnz_per_row;
+                        unsigned int col = ij / num_nnz_per_row;
+                        a_cpu[ij] = (T *)x + col * block_size * block_cols;
+                        b_cpu[ij] = v.kron_it.data() + ki * kd * mu;
+                        c_cpu[ij] = aux.data() + block_size * block_cols * mu +
+                                    block_size * block_cols * num_nnz_per_row * col;
+                    }
+                    auto a_xpu = makeSure(a_cpu, aux.ctx());
+                    auto b_xpu = makeSure(b_cpu, aux.ctx());
+                    auto c_xpu = makeSure(c_cpu, aux.ctx());
+                    xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
+                                   (const T **)a_xpu.data(), block_size * block_cols * ncols,
+                                   (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),
+                                   block_size * block_cols * num_nnz_per_row * ncols, a_xpu.size(),
+                                   aux.ctx());
+
+                    // Contract the block part:
+                    // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
+                    matvec(1.0, false, aux.data(), block_size * block_cols * num_nnz_per_row,
+                           ColumnMajor, y, ldy, ly, ncols * ki, std::norm(beta) == 0 ? T{0} : T{1});
+                } else
+                    throw std::runtime_error(
+                        "BSR operator(): unsupported input/output tensor layout");
             }
 
             ~BSR() {}
