@@ -1279,16 +1279,6 @@ namespace superbblas {
                     } else {
                         sug_oy = oy;
                     }
-
-                    if (okr != 0 && power > 1) {
-                        sug_oy_trans = sug_oy;
-                        for (unsigned int i = 0; i < Ny; ++i) {
-                            auto s = std::find(oi.begin(), oi.end(), sug_oy_trans[i]);
-                            if (s != oi.end()) sug_oy_trans[i] = od[s - oi.begin()];
-                        }
-                    }
-
-                    transSp = false;
                 } else {
                     auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
                     auto sIx = std::search(ox.begin(), ox.end(), oIs.begin(), oIs.begin() + nIs);
@@ -1329,18 +1319,8 @@ namespace superbblas {
                         sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oDs, nDs, ods, nds)
                                                     : concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC));
                     }
-
-                    if (okr != 0 && power > 1) {
-                        sug_oy_trans = sug_oy;
-                        for (unsigned int i = 0; i < Ny; ++i) {
-                            auto s = std::find(od.begin(), od.end(), sug_oy_trans[i]);
-                            if (s != od.end()) sug_oy_trans[i] = oi[s - od.begin()];
-                        }
-                    }
-
-                    transSp = true;
                 }
-            } else {
+            } else { // !is_kron
                 // Contraction with the blocking and the Kronecker blocking
                 // Check that ox should (okr,D,d,C,kd) or (okr,I,i,C,ki) for row major,
                 // and (okr,kd,C,D,d) or (okr,ki,C,I,i) for column major.
@@ -1350,20 +1330,33 @@ namespace superbblas {
                     sug_ox = lx == RowMajor
                                  ? concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
                                  : concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
-                    sug_oy_trans = sug_oy =
-                        ly == RowMajor ? concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
-                                       : concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
-                    transSp = false;
+                    sug_oy = ly == RowMajor
+                                 ? concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
+                                 : concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
                 } else {
                     sug_ox = lx == RowMajor
                                  ? concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
                                  : concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
-                    sug_oy_trans = sug_oy =
-                        ly == RowMajor ? concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
-                                       : concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
-                    transSp = true;
+                    sug_oy = ly == RowMajor
+                                 ? concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
+                                 : concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
                 }
             }
+
+            if (okr != 0 && power > 1) {
+                sug_oy_trans = sug_oy;
+                for (unsigned int i = 0; i < Ny; ++i) {
+                    if (kindx == ContractWithDomain) {
+                        auto s = std::find(oi.begin(), oi.end(), sug_oy_trans[i]);
+                        if (s != oi.end()) sug_oy_trans[i] = od[s - oi.begin()];
+                    } else {
+                        auto s = std::find(od.begin(), od.end(), sug_oy_trans[i]);
+                        if (s != od.end()) sug_oy_trans[i] = oi[s - od.begin()];
+                    }
+                }
+            }
+
+            transSp = kindx == ContractWithImage;
         }
 
         /// RSB operator - tensor multiplication
@@ -1405,10 +1398,12 @@ namespace superbblas {
             Order<Nx> sug_ox;
             Order<Ny> sug_oy;
             Order<Ny> sug_oy_trans;
+            bool is_kron =
+                (volume(bsr.v.krond) > 0 || volume(bsr.v.kroni) || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   bsr.v.kroni, bsr.v.krond, bsr.v.kron_it.size() > 1, dimx, ox,
-                                   dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout, bsr.v.co,
-                                   transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                   bsr.v.kroni, bsr.v.krond, is_kron, dimx, ox, dimy, oy, okr,
+                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
+                                   volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -1493,6 +1488,10 @@ namespace superbblas {
                     pyr[i][0][power_pos] = 0;
                     pyr[i][1][power_pos] = 1;
                 }
+
+                // Normalize range
+                if (volume(pxr[i][1]) == 0) pxr[i][0] = pxr[i][1] = Coor<Nx>{{}};
+                if (volume(pyr[i][1]) == 0) pyr[i][0] = pyr[i][1] = Coor<Ny>{{}};
             }
             cache.insert(key, {pxr, pyr}, storageSize(pxr) + storageSize(pyr));
 
@@ -1570,20 +1569,24 @@ namespace superbblas {
                 bool transSp;
                 MatrixLayout lx, ly;
                 std::size_t volC;
+                bool is_kron =
+                    (volume(bsr.c.first[0].v.krond) > 0 || volume(bsr.c.first[0].v.kroni) ||
+                     bsr.c.first[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
-                                       bsr.kroni, bsr.krond, bsr.c.first[0].v.kron_it.size() > 0,
-                                       sizex, ox, sizey, oy, okr, bsr.c.first[0].allowLayout,
-                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
-                                       sug_ox, sug_oy, sug_oy_trans);
+                                       bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
+                                       bsr.c.first[0].allowLayout, bsr.c.first[0].preferredLayout,
+                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             } else if (bsr.c.second.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
                 std::size_t volC;
+                bool is_kron =
+                    (volume(bsr.c.second[0].v.krond) > 0 || volume(bsr.c.second[0].v.kroni) ||
+                     bsr.c.second[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
-                                       bsr.kroni, bsr.krond, bsr.c.second[0].v.kron_it.size() > 0,
-                                       sizex, ox, sizey, oy, okr, bsr.c.second[0].allowLayout,
-                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
-                                       sug_ox, sug_oy, sug_oy_trans);
+                                       bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
+                                       bsr.c.second[0].allowLayout, bsr.c.second[0].preferredLayout,
+                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             }
             Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
             Coor<Ny> sizey0 = sizey;

@@ -320,7 +320,7 @@ namespace superbblas {
 
         template <std::size_t N> Order<N> trivial_order() {
             Order<N> r;
-            for (std::size_t i = 0; i < N; i++) r[i] = (char)i;
+            for (std::size_t i = 0; i < N; i++) r[i] = (char)(i + 1);
             return r;
         }
 
@@ -405,6 +405,8 @@ namespace superbblas {
                                                // Output
                                                std::size_t &nblock, std::size_t &blocksize) {
 
+            assert(toSend.size() == comm.nprocs * ncomponents1);
+
             // Quick exit for zero volume
             nblock = 0;
             blocksize = 1;
@@ -466,31 +468,33 @@ namespace superbblas {
         /// Pack a list of subtensors contiguously in memory
         /// \param o0: dimension labels for the origin tensor
         /// \param fs: a From_size iterator
+        /// \param componentId: source component index, used for caching
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
         /// \param o1: dimension labels for the destination tensor
         /// \param v1: data for the destination tensor
-        /// \param ncomponents1: comm.nprocs * ncomponents1 == fs.size()
         /// \param comm: communicator
         /// \param co: coordinate linearization order
 
         template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
                   typename XPU0, typename XPUbuff>
-        void pack_component(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, const Coor<Nd0> &dim0,
-                            vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
-                            typename Indices<Cpu>::iterator disp1, vector<Q, XPUbuff> &v1,
-                            unsigned int ncomponents1, MpiComm comm, CoorOrder co) {
+        void pack_component(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, int componentId,
+                            const Coor<Nd0> &dim0, vector<const T, XPU0> v0, Mask<XPU0> mask0,
+                            const Order<Nd1> &o1, typename Indices<Cpu>::iterator disp1,
+                            vector<Q, XPUbuff> &v1, MpiComm comm, CoorOrder co) {
 
-            assert(fs.size() == comm.nprocs * ncomponents1);
+            assert(fs.size() == comm.nprocs);
 
             // Find indices on cache
-            using Key =
-                std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, int, CoorOrder>;
+            using Key = std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, int, int,
+                                   CoorOrder>;
             using Value =
                 std::tuple<IndicesT<IndexType, XPU0>, IndicesT<IndexType, XPUbuff>, size_t>;
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(v0.ctx());
-            Key key{fs, dim0, get_perms(o0, o1), deviceId(v0.ctx()), deviceId(v1.ctx()), co};
+            Key key{
+                fs, dim0, get_perms(o0, o1), componentId, deviceId(v0.ctx()), deviceId(v1.ctx()),
+                co};
             auto it = mask0.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
@@ -503,13 +507,13 @@ namespace superbblas {
                 // Figure out the common blocksize
                 std::size_t nblock = 0;
                 if (mask0.size() == 0)
-                    get_block_size_for_copy_normalize(o0, fs, dim0, o1, ncomponents1, comm, co,
-                                                      nblock, blocksize);
+                    get_block_size_for_copy_normalize(o0, fs, dim0, o1, 1, comm, co, nblock,
+                                                      blocksize);
 
                 // Get the maximum volume of communicated data without the local part
                 std::size_t vol = 0;
                 for (unsigned int i = 0; i < fs.size(); ++i)
-                    if (i / ncomponents1 != comm.rank)
+                    if (i != comm.rank)
                         for (const auto &it : fs[i]) vol += volume(it[1]) / blocksize;
 
                 Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
@@ -519,7 +523,7 @@ namespace superbblas {
                 std::size_t n = 0;
                 for (std::size_t i = 0; i < fs.size(); ++i) {
                     // Skip the communications of the local rank
-                    if (i / ncomponents1 == comm.rank) continue;
+                    if (i == comm.rank) continue;
 
                     for (const auto &fsi : fs[i]) {
                         // Compute the permutation so that the subtensors are packed on the natural
@@ -549,12 +553,12 @@ namespace superbblas {
                         if (mask0_cpu.size() > 0)
                             indices1i_mask = select(
                                 indices0i.first, mask0_cpu.data() + indices0i_disp, indices1i_mask);
-                        IndexType dispi = disp1[i / ncomponents1] + indices1i_disp;
+                        IndexType dispi = disp1[i] + indices1i_disp;
                         std::transform(indices1i_mask.begin(), indices1i_mask.end(),
                                        indices1_cpu.begin() + n,
                                        [=](IndexType d) { return d + dispi; });
 
-                        disp1[i / ncomponents1] += indices1i_mask.size() * blocksize;
+                        disp1[i] += indices1i_mask.size() * blocksize;
                         n += indices1i_mask.size();
                         assert(n <= vol);
                     }
@@ -594,7 +598,6 @@ namespace superbblas {
         /// \param v: vector containing the values to send
         /// \param o0: dimension labels for the origin tensor
         /// \param o1: dimension labels for the destination tensor
-        /// \param ncomponents1: number of components on the receiving tensor
         /// \param comm: communicator
         /// \param co: coordinate linearization order
 
@@ -602,9 +605,8 @@ namespace superbblas {
                   typename XPU0, typename XPU1, typename XPUbuff>
         PackedValues<Q, XPUbuff> pack(const std::vector<Proc_ranges<Nd0>> &toSend,
                                       const Components_tmpl<Nd0, const T, XPU0, XPU1> &v,
-                                      const Order<Nd0> &o0, const Order<Nd1> &o1,
-                                      unsigned int ncomponents1, MpiComm comm, XPUbuff xpu,
-                                      CoorOrder co) {
+                                      const Order<Nd0> &o0, const Order<Nd1> &o1, MpiComm comm,
+                                      XPUbuff xpu, CoorOrder co) {
 
             tracker<Cpu> _t("prepare and pack", Cpu{});
 
@@ -618,14 +620,14 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first)
                     if (c.componentId == componentId0)
-                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
-                                                  o1, buf_disp.begin(), r.buf, ncomponents1, comm,
-                                                  co);
+                        pack_component<IndexType>(o0, toSend[componentId0], componentId0, c.dim,
+                                                  c.it, c.mask_it, o1, buf_disp.begin(), r.buf,
+                                                  comm, co);
                 for (const Component<Nd0, const T, XPU1> &c : v.second)
                     if (c.componentId == componentId0)
-                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
-                                                  o1, buf_disp.begin(), r.buf, ncomponents1, comm,
-                                                  co);
+                        pack_component<IndexType>(o0, toSend[componentId0], componentId0, c.dim,
+                                                  c.it, c.mask_it, o1, buf_disp.begin(), r.buf,
+                                                  comm, co);
             }
 
             // Update the counts when using mask
@@ -717,26 +719,27 @@ namespace superbblas {
             IndicesT<IndexType, Cpu> indices_groups;
             std::size_t blocksize = 1;
             if (it == cache.end()) {
-                counts = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
-                displ = vector<MpiInt, Cpu>(toReceive.size(), Cpu{});
-                std::vector<std::vector<IndicesT<IndexType, Cpu>>> indices0_groups;
+                std::size_t ncomponents = toReceive.size() / comm.nprocs;
+                assert(toReceive.size() == comm.nprocs * ncomponents);
+                counts = vector<MpiInt, Cpu>(comm.nprocs, Cpu{});
+                displ = vector<MpiInt, Cpu>(comm.nprocs, Cpu{});
                 auto mask_cpu = makeSure(v.mask_it, Cpu{});
 
                 // Figure out the common blocksize
                 std::size_t nblock = 0;
                 Order<Nd> o = trivial_order<Nd>();
-                std::size_t ncomponents = toReceive.size() / comm.nprocs;
                 if (v.mask_it.size() == 0)
                     get_block_size_for_copy_normalize(o, toReceive, v.dim, o, ncomponents, comm, co,
                                                       nblock, blocksize);
 
                 // Compute the destination indices and the total number of elements received from each process
                 std::size_t num_elems = 0;
-                for (std::size_t i = 0; i < toReceive.size(); ++i) counts[i] = 0;
+                for (std::size_t i = 0; i < comm.nprocs; ++i) counts[i] = 0;
+                std::vector<std::size_t> n(comm.nprocs);
+                std::vector<std::vector<IndicesT<IndexType, Cpu>>> indices0_groups(comm.nprocs);
                 for (std::size_t i = 0; i < toReceive.size(); ++i) {
                     if (i / ncomponents == comm.rank) continue;
 
-                    std::size_t n = 0;
                     std::vector<IndicesT<IndexType, Cpu>> indices0;
                     for (const auto &fsi : toReceive[i]) {
                         Coor<Nd> fromi = fsi[0], sizei = fsi[1];
@@ -757,13 +760,15 @@ namespace superbblas {
                                       [=](IndexType &d) { d += disp; });
 
                         // Store the number of permutation and the number of elements
-                        n += indices1.size() * blocksize;
+                        n[i / ncomponents] += indices1.size() * blocksize;
                         num_elems += indices1.size();
-                        indices0.push_back(indices1);
+                        indices0_groups[i / ncomponents].push_back(indices1);
                     }
-                    indices0_groups.push_back(indices0);
-                    counts[i / ncomponents] += (n * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
                 }
+
+                // Compute the counts
+                for (std::size_t i = 0; i < comm.nprocs; ++i)
+                    counts[i] = (n[i] * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
 
                 // Compute the displacements
                 displ[0] = 0;
@@ -874,7 +879,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param toReceive: list of tensor ranges to receive
         /// \param v1: destination data
-        /// \param ncomponents1: number of components on the destination tensor
         /// \param comm: communication
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
@@ -885,9 +889,8 @@ namespace superbblas {
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, XPUbuff0 xpubuff0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
-                             const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
-                             XPUbuff1 xpubuff1, MpiComm comm, EWOP, CoorOrder co,
-                             typename elem<T>::type alpha) {
+                             const Component<Nd1, Q, XPUr> &v1, XPUbuff1 xpubuff1, MpiComm comm,
+                             EWOP, CoorOrder co, typename elem<T>::type alpha) {
 
             tracker<Cpu> _t("packing", Cpu{});
 
@@ -895,7 +898,7 @@ namespace superbblas {
 
             // Pack v0 and prepare for receiving data from other processes
             PackedValues<Q, XPUbuff0> v0ToSend =
-                pack<IndexType, Q>(toSend, v0, o0, o1, ncomponents1, comm, xpubuff0, co);
+                pack<IndexType, Q>(toSend, v0, o0, o1, comm, xpubuff0, co);
             UnpackedValues<IndexType, Q, XPUbuff1, XPUr> v1ToReceive =
                 prepare_unpack<IndexType>(toReceive, v1, xpubuff1, comm, co, EWOP{});
 
@@ -1010,7 +1013,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param toReceive: list of tensor ranges to receive
         /// \param v1: destination data
-        /// \param ncomponents1: number of components on the destination tensor
         /// \param comm: communication
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
@@ -1021,9 +1023,8 @@ namespace superbblas {
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, XPUbuff0 xpubuff0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
-                             const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
-                             XPUbuff1 xpubuff1, SelfComm comm, EWOP, CoorOrder co,
-                             typename elem<T>::type alpha) {
+                             const Component<Nd1, Q, XPUr> &v1, XPUbuff1 xpubuff1, SelfComm comm,
+                             EWOP, CoorOrder co, typename elem<T>::type alpha) {
             (void)o0;
             (void)toSend;
             (void)v0;
@@ -1031,7 +1032,6 @@ namespace superbblas {
             (void)o1;
             (void)toReceive;
             (void)v1;
-            (void)ncomponents1;
             (void)xpubuff1;
             (void)co;
             (void)alpha;
@@ -1075,7 +1075,6 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param toReceive: list of tensor ranges to receive
         /// \param v1: destination data
-        /// \param ncomponents1: number of components on the destination tensor
         /// \param comm: communication
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
@@ -1085,8 +1084,8 @@ namespace superbblas {
         Request send_receive(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
                              const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                              const Order<Nd1> &o1, const Proc_ranges<Nd1> &toReceive,
-                             const Component<Nd1, Q, XPUr> &v1, unsigned int ncomponents1,
-                             Comm comm, EWOp, CoorOrder co, typename elem<T>::type alpha) {
+                             const Component<Nd1, Q, XPUr> &v1, Comm comm, EWOp, CoorOrder co,
+                             typename elem<T>::type alpha) {
 
             bool use_size_t = false;
             for (const auto &r : toSend)
@@ -1102,31 +1101,31 @@ namespace superbblas {
 
             if (!use_mpi_gpu || (v0.first.size() == 0 && v0.second.size() == 0)) {
                 if (!use_size_t) {
-                    return send_receive<IndexType>(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
-                                                   ncomponents1, Cpu{}, comm, EWOp{}, co, alpha);
+                    return send_receive<IndexType>(o0, toSend, v0, Cpu{}, o1, toReceive, v1, Cpu{},
+                                                   comm, EWOp{}, co, alpha);
                 } else {
                     return send_receive<std::size_t>(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
-                                                     ncomponents1, Cpu{}, comm, EWOp{}, co, alpha);
+                                                     Cpu{}, comm, EWOp{}, co, alpha);
                 }
             } else if (v0.second.size() == 0) {
                 if (!use_size_t) {
                     return send_receive<IndexType>(o0, toSend, v0, v0.first.front().it.ctx(), o1,
-                                                   toReceive, v1, ncomponents1, v1.it.ctx(), comm,
-                                                   EWOp{}, co, alpha);
+                                                   toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
+                                                   alpha);
                 } else {
                     return send_receive<std::size_t>(o0, toSend, v0, v0.first.front().it.ctx(), o1,
-                                                     toReceive, v1, ncomponents1, v1.it.ctx(), comm,
-                                                     EWOp{}, co, alpha);
+                                                     toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
+                                                     alpha);
                 }
             } else {
                 if (!use_size_t) {
                     return send_receive<IndexType>(o0, toSend, v0, v0.second.front().it.ctx(), o1,
-                                                   toReceive, v1, ncomponents1, v1.it.ctx(), comm,
-                                                   EWOp{}, co, alpha);
+                                                   toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
+                                                   alpha);
                 } else {
                     return send_receive<std::size_t>(o0, toSend, v0, v0.second.front().it.ctx(), o1,
-                                                     toReceive, v1, ncomponents1, v1.it.ctx(), comm,
-                                                     EWOp{}, co, alpha);
+                                                     toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
+                                                     alpha);
                 }
             }
         }
@@ -1838,7 +1837,7 @@ namespace superbblas {
 
             // Find precomputed pieces on cache
             using Key = std::tuple<From_size<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, From_size<Nd1>,
-                                   Coor<Nd1>, Coor<Nd1>, PairPerms<Nd0, Nd1>, int, int>;
+                                   Coor<Nd1>, Coor<Nd1>, PairPerms<Nd0, Nd1>, int, int, int>;
             struct Value {
                 std::vector<Proc_ranges<Nd0>> toSend;
                 Proc_ranges<Nd1> toReceive;
@@ -1846,11 +1845,17 @@ namespace superbblas {
             };
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(p0.ctx());
-            Key key{p0,           from0,
-                    size0,        dim0,
-                    p1,           from1,
-                    dim1,         get_perms(o0, o1),
-                    ncomponents1, std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
+            Key key{p0,
+                    from0,
+                    size0,
+                    dim0,
+                    p1,
+                    from1,
+                    dim1,
+                    get_perms(o0, o1),
+                    ncomponents1,
+                    v1.componentId,
+                    std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
             auto it = cache.find(key);
 
             // Generate the list of subranges to send from each component from v0 to v1
@@ -1891,52 +1896,38 @@ namespace superbblas {
             // Do the sending and receiving
             Request mpi_req;
             if (need_comms)
-                mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1, ncomponents1,
-                                                 comm, ewop, co, alpha);
+                mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1, comm, ewop, co,
+                                                 alpha);
 
             // Do the local copies
             Request local_req = [=] {
                 unsigned int ncomponents0 = v0.first.size() + v0.second.size();
                 for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
-                    assert(
-                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1].size() ==
-                        toReceive[c0.componentId + comm.rank * ncomponents0].size());
-                    for (unsigned int
-                             i = 0,
-                             i1 = toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1]
-                                      .size();
-                         i < i1; ++i) {
+                    assert(toSend[c0.componentId][comm.rank].size() ==
+                           toReceive[c0.componentId + comm.rank * ncomponents0].size());
+                    for (unsigned int i = 0, i1 = toSend[c0.componentId][comm.rank].size(); i < i1;
+                         ++i) {
                         assert(check_equivalence(
-                            o0,
-                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
-                            o1, toReceive[c0.componentId + comm.rank * ncomponents0][i][1]));
+                            o0, toSend[c0.componentId][comm.rank][i][1], o1,
+                            toReceive[c0.componentId + comm.rank * ncomponents0][i][1]));
                         local_copy<Nd0, Nd1, T, Q>(
-                            alpha, o0,
-                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][0],
-                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
-                            c0.dim, c0.it, c0.mask_it, o1,
+                            alpha, o0, toSend[c0.componentId][comm.rank][i][0],
+                            toSend[c0.componentId][comm.rank][i][1], c0.dim, c0.it, c0.mask_it, o1,
                             toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim,
                             v1.it, v1.mask_it, ewop, co);
                     }
                 }
                 for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
-                    assert(
-                        toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1].size() ==
-                        toReceive[c0.componentId + comm.rank * ncomponents0].size());
-                    for (unsigned int
-                             i = 0,
-                             i1 = toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1]
-                                      .size();
-                         i < i1; ++i) {
+                    assert(toSend[c0.componentId][comm.rank].size() ==
+                           toReceive[c0.componentId + comm.rank * ncomponents0].size());
+                    for (unsigned int i = 0, i1 = toSend[c0.componentId][comm.rank].size(); i < i1;
+                         ++i) {
                         assert(check_equivalence(
-                            o0,
-                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
-                            o1, toReceive[c0.componentId + comm.rank * ncomponents0][i][1]));
+                            o0, toSend[c0.componentId][comm.rank][i][1], o1,
+                            toReceive[c0.componentId + comm.rank * ncomponents0][i][1]));
                         local_copy<Nd0, Nd1, T, Q>(
-                            alpha, o0,
-                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][0],
-                            toSend[c0.componentId][v1.componentId + comm.rank * ncomponents1][i][1],
-                            c0.dim, c0.it, c0.mask_it, o1,
+                            alpha, o0, toSend[c0.componentId][comm.rank][i][0],
+                            toSend[c0.componentId][comm.rank][i][1], c0.dim, c0.it, c0.mask_it, o1,
                             toReceive[c0.componentId + comm.rank * ncomponents0][i][0], v1.dim,
                             v1.it, v1.mask_it, ewop, co);
                     }
@@ -2684,11 +2675,13 @@ namespace superbblas {
     /// \param procs: number of processes in each direction
     /// \param dist_labels: (can be null) order use to assign the processes to each subtensor
     /// \param nprocs: (optional) number of precesses
+    /// \param ncomponents: (optional) number of components
 
     template <std::size_t Nd>
     std::vector<PartitionItem<Nd>> basic_partitioning(const char *order, Coor<Nd> dim,
                                                       Coor<Nd> procs, const char *dist_labels,
-                                                      int nprocs = -1) {
+                                                      int nprocs = -1, int ncomponents = 1) {
+
         // Check other arguments
         int vol_procs = (int)detail::volume<Nd>(procs);
         if (nprocs >= 0 && vol_procs > nprocs)
@@ -2715,25 +2708,42 @@ namespace superbblas {
             for (unsigned int i = 0; i < Nd; ++i) perm[i] = i;
         }
 
-        std::vector<PartitionItem<Nd>> fs(nprocs < 0 ? vol_procs : nprocs);
+        std::vector<PartitionItem<Nd>> fs((nprocs < 0 ? vol_procs : nprocs) * ncomponents);
         Coor<Nd> procs_perm = detail::reorder_coor(procs, perm);
         Coor<Nd> stride_perm = detail::get_strides<IndexType>(procs_perm, SlowToFast);
         for (int rank = 0; rank < vol_procs; ++rank) {
             Coor<Nd> cproc = detail::index2coor(rank, procs_perm, stride_perm);
+            PartitionItem<Nd> fsi;
             for (std::size_t i = 0; i < Nd; ++i) {
                 // Number of elements in process with rank 'cproc[i]' on dimension 'i'
-                fs[rank][1][perm[i]] = dim[perm[i]] / procs_perm[i] +
-                                       (dim[perm[i]] % procs_perm[i] > cproc[i] ? 1 : 0);
+                fsi[1][perm[i]] = dim[perm[i]] / procs_perm[i] +
+                                  (dim[perm[i]] % procs_perm[i] > cproc[i] ? 1 : 0);
 
                 // First coordinate in process with rank 'rank' on dimension 'i'
-                fs[rank][0][perm[i]] = fs[rank][1][perm[i]] == dim[perm[i]]
-                                           ? 0
-                                           : dim[perm[i]] / procs_perm[i] * cproc[i] +
-                                                 std::min(cproc[i], dim[perm[i]] % procs_perm[i]);
+                fsi[0][perm[i]] = fsi[1][perm[i]] == dim[perm[i]]
+                                      ? 0
+                                      : dim[perm[i]] / procs_perm[i] * cproc[i] +
+                                            std::min(cproc[i], dim[perm[i]] % procs_perm[i]);
             }
 
             // Normalize empty ranges
-            if (detail::volume(fs[rank][1]) == 0) fs[rank][0] = fs[rank][1] = Coor<Nd>{{}};
+            if (detail::volume(fsi[1]) == 0) fsi[0] = fsi[1] = Coor<Nd>{{}};
+
+            if (ncomponents == 1) {
+                fs[rank] = fsi;
+            } else {
+                auto fsi_components = basic_partitioning(
+                    order, fsi[1],
+                    partitioning_distributed_procs(order, fsi[1], dist_labels, ncomponents),
+                    dist_labels, ncomponents);
+                for (int c = 0; c < ncomponents; ++c) {
+                    fs[rank * ncomponents + c] = {fsi_components[c][0] + fsi[0],
+                                                  fsi_components[c][1]};
+                    if (detail::volume(fs[rank * ncomponents + c][1]) == 0)
+                        fs[rank * ncomponents + c][0] = fs[rank * ncomponents + c][1] =
+                            Coor<Nd>{{}};
+                }
+            }
         }
 
         return fs;
