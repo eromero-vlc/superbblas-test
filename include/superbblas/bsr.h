@@ -1268,9 +1268,9 @@ namespace superbblas {
                         (nIs > 0 && sIy == oy.end()) || (nis > 0 && siy == oy.end()) ||
                         (nIs > 0 && nis > 0 && sIy > siy) ||
                         (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
-                        (volC > 1 && lx != ly && xylayout == SameLayoutForXAndY) ||
-                        (volC > 1 && ly == RowMajor && xylayout == ColumnMajorForY) ||
-                        (volC > 1 && lx == RowMajor && xylayout == ColumnMajorForXandY)) {
+                        (lx != ly && xylayout == SameLayoutForXAndY) ||
+                        (ly == RowMajor && xylayout == ColumnMajorForY) ||
+                        (lx == RowMajor && xylayout == ColumnMajorForXandY)) {
                         ly = (xylayout == SameLayoutForXAndY
                                   ? lx
                                   : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
@@ -1290,7 +1290,7 @@ namespace superbblas {
                         (nIs > 0 && sIx == ox.end()) || (nis > 0 && six == ox.end()) ||
                         (nIs > 0 && nis > 0 && sIx > six) ||
                         (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six) ||
-                        (volC > 1 && lx == RowMajor && xylayout == ColumnMajorForXandY)) {
+                        (lx == RowMajor && xylayout == ColumnMajorForXandY)) {
                         lx = preferred_layout;
                         sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
                                                     : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
@@ -1308,9 +1308,9 @@ namespace superbblas {
                         (nDs > 0 && sDy == oy.end()) || (nds > 0 && sdy == oy.end()) ||
                         (nDs > 0 && nds > 0 && sDy > sdy) ||
                         (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
-                        (volC > 1 && lx != ly && xylayout == SameLayoutForXAndY) ||
-                        (volC > 1 && ly == RowMajor && xylayout == ColumnMajorForY) ||
-                        (volC > 1 && ly == RowMajor && xylayout == ColumnMajorForXandY)) {
+                        (lx != ly && xylayout == SameLayoutForXAndY) ||
+                        (ly == RowMajor && xylayout == ColumnMajorForY) ||
+                        (ly == RowMajor && xylayout == ColumnMajorForXandY)) {
 
                     } else {
                         ly = (xylayout == SameLayoutForXAndY
@@ -1399,7 +1399,7 @@ namespace superbblas {
             Order<Ny> sug_oy;
             Order<Ny> sug_oy_trans;
             bool is_kron =
-                (volume(bsr.v.krond) > 0 || volume(bsr.v.kroni) || bsr.v.kron_it.size() > 0);
+                (volume(bsr.v.krond) > 1 || volume(bsr.v.kroni) > 1 || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
                                    bsr.v.kroni, bsr.v.krond, is_kron, dimx, ox, dimy, oy, okr,
                                    bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
@@ -1570,7 +1570,7 @@ namespace superbblas {
                 MatrixLayout lx, ly;
                 std::size_t volC;
                 bool is_kron =
-                    (volume(bsr.c.first[0].v.krond) > 0 || volume(bsr.c.first[0].v.kroni) ||
+                    (volume(bsr.c.first[0].v.krond) > 1 || volume(bsr.c.first[0].v.kroni) > 1 ||
                      bsr.c.first[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
                                        bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
@@ -1581,7 +1581,7 @@ namespace superbblas {
                 MatrixLayout lx, ly;
                 std::size_t volC;
                 bool is_kron =
-                    (volume(bsr.c.second[0].v.krond) > 0 || volume(bsr.c.second[0].v.kroni) ||
+                    (volume(bsr.c.second[0].v.krond) > 1 || volume(bsr.c.second[0].v.kroni) > 1 ||
                      bsr.c.second[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
                                        bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
