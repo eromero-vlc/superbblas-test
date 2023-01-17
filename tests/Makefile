@@ -80,7 +80,22 @@ ifeq ($(SUPERBBLAS_WITH_MPI), yes)
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=0 mpirun -np 6 --oversubscribe ./contract_$*  --procs='1 1 2 3' --dim='2 2 4 4 2'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4' --components=2
 endif
+
+test_dist_cpu test_dist_cuda test_dist_hip test_dist_cpu_lib test_dist_cuda_lib test_dist_hip_lib: test_dist_%:
+	for proc_geom in "1 1 1 1 1" "2 1 1 1 1" \
+			 "1 2 1 1 1" "2 2 1 1 1" "4 2 1 1 1" \
+			 "2 2 2 2 2" "3 2 2 2 2" \
+			 "2 8 2 2 2" "16 8 2 2 2" \
+			 "3 16 8 2 2" "16 16 8 2 2" \
+			 "3 8 8 8 8" "16 8 8 8 8"; \
+	do \
+		echo $$proc_geom | while read p geom; do \
+			echo OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np $$p --oversubscribe ./dist_$*  --dim="$$geom 2"; \
+			OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np $$p --oversubscribe ./dist_$*  --dim="$$geom 2"; \
+		done; \
+	done
 
 hist_cpu hist_cuda hist_hip: hist_%:
 	@rm -rf repo
