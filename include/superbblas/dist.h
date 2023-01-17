@@ -468,7 +468,6 @@ namespace superbblas {
         /// Pack a list of subtensors contiguously in memory
         /// \param o0: dimension labels for the origin tensor
         /// \param fs: a From_size iterator
-        /// \param componentId: source component index, used for caching
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
         /// \param o1: dimension labels for the destination tensor
@@ -478,23 +477,28 @@ namespace superbblas {
 
         template <typename IndexType, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
                   typename XPU0, typename XPUbuff>
-        void pack_component(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, int componentId,
-                            const Coor<Nd0> &dim0, vector<const T, XPU0> v0, Mask<XPU0> mask0,
-                            const Order<Nd1> &o1, typename Indices<Cpu>::iterator disp1,
-                            vector<Q, XPUbuff> &v1, MpiComm comm, CoorOrder co) {
+        void pack_component(const Order<Nd0> &o0, const Proc_ranges<Nd0> &fs, const Coor<Nd0> &dim0,
+                            vector<const T, XPU0> v0, Mask<XPU0> mask0, const Order<Nd1> &o1,
+                            Indices<Cpu> &disp1, vector<Q, XPUbuff> &v1, MpiComm comm,
+                            CoorOrder co) {
 
             assert(fs.size() == comm.nprocs);
 
             // Find indices on cache
-            using Key = std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, int, int, int,
-                                   CoorOrder>;
-            using Value =
-                std::tuple<IndicesT<IndexType, XPU0>, IndicesT<IndexType, XPUbuff>, size_t>;
+            using Key = std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, PairPerms<Nd0, Nd1>, Indices<Cpu>,
+                                   int, int, int, CoorOrder>;
+            using Value = std::tuple<IndicesT<IndexType, XPU0>, IndicesT<IndexType, XPUbuff>,
+                                     size_t, Indices<Cpu>>;
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(v0.ctx());
-            Key key{
-                fs, dim0, get_perms(o0, o1), componentId, deviceId(v0.ctx()), deviceId(v1.ctx()),
-                co};
+            Key key{fs,
+                    dim0,
+                    get_perms(o0, o1),
+                    clone(disp1),
+                    comm.rank,
+                    deviceId(v0.ctx()),
+                    deviceId(v1.ctx()),
+                    co};
             auto it = mask0.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
@@ -574,12 +578,14 @@ namespace superbblas {
                     std::size_t size =
                         storageSize(indices0_xpu) +
                         (deviceId(v0.ctx()) == deviceId(v1.ctx()) ? storageSize(indices1) : 0ul);
-                    cache.insert(key, Value{indices0_xpu, indices1, blocksize}, size);
+                    cache.insert(key, Value{indices0_xpu, indices1, blocksize, clone(disp1)}, size);
                 }
             } else {
                 indices0_xpu = std::get<0>(it->second.value);
                 indices1 = std::get<1>(it->second.value);
                 blocksize = std::get<2>(it->second.value);
+                const auto new_disp1 = std::get<3>(it->second.value);
+                std::copy_n(new_disp1.data(), new_disp1.size(), disp1.data());
             }
 
             // Do the copy
@@ -620,14 +626,12 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first)
                     if (c.componentId == componentId0)
-                        pack_component<IndexType>(o0, toSend[componentId0], componentId0, c.dim,
-                                                  c.it, c.mask_it, o1, buf_disp.begin(), r.buf,
-                                                  comm, co);
+                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
+                                                  o1, buf_disp, r.buf, comm, co);
                 for (const Component<Nd0, const T, XPU1> &c : v.second)
                     if (c.componentId == componentId0)
-                        pack_component<IndexType>(o0, toSend[componentId0], componentId0, c.dim,
-                                                  c.it, c.mask_it, o1, buf_disp.begin(), r.buf,
-                                                  comm, co);
+                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
+                                                  o1, buf_disp, r.buf, comm, co);
             }
 
             // Update the counts when using mask
@@ -699,7 +703,7 @@ namespace superbblas {
             tracker<XPU> _t("prepare unpack", v.it.ctx());
 
             // Find indices on cache
-            using Key = std::tuple<Proc_ranges<Nd>, Coor<Nd>, int, int, CoorOrder>;
+            using Key = std::tuple<Proc_ranges<Nd>, Coor<Nd>, int, int, int, int, CoorOrder>;
             using Value = std::tuple<vector<MpiInt, Cpu>,          // counts
                                      vector<MpiInt, Cpu>,          // displ
                                      IndicesT<IndexType, XPUbuff>, // indices for the buffer
@@ -708,7 +712,8 @@ namespace superbblas {
                                      std::size_t>;                 // blocksize
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(v.it.ctx());
-            Key key{toReceive, v.dim, deviceId(xpu), deviceId(v.it.ctx()), co};
+            Key key{toReceive, v.dim, comm.nprocs, comm.rank, deviceId(xpu), deviceId(v.it.ctx()),
+                    co};
             auto it = v.mask_it.size() == 0 ? cache.find(key) : cache.end();
 
             // If they are not, compute the permutation vectors
@@ -1845,17 +1850,9 @@ namespace superbblas {
             };
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(p0.ctx());
-            Key key{p0,
-                    from0,
-                    size0,
-                    dim0,
-                    p1,
-                    from1,
-                    dim1,
-                    get_perms(o0, o1),
-                    ncomponents1,
-                    v1.componentId,
-                    std::is_same<EWOP, EWOp::Add>::value ? 1 : 0};
+            Key key{p0,           from0,          size0,    dim0,
+                    p1,           from1,          dim1,     get_perms(o0, o1),
+                    ncomponents1, v1.componentId, comm.rank};
             auto it = cache.find(key);
 
             // Generate the list of subranges to send from each component from v0 to v1
