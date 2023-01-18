@@ -38,8 +38,8 @@ namespace superbblas {
         /// \param rank: current MPI rank
         /// \param co: coordinate linearization order
 
-        virtual bool check(std::size_t, std::size_t, detail::num_type, const Context *, int,
-                           unsigned int, unsigned int, CoorOrder) {
+        virtual bool check(std::size_t, std::size_t, detail::num_type, const Context *,
+                           unsigned int, unsigned int, unsigned int, CoorOrder) {
             return false;
         }
 
@@ -675,16 +675,30 @@ namespace superbblas {
             CoorOrder co;    ///< Coordinate order of ii and jj
 
             bool check(std::size_t Nd_, std::size_t Ni_, detail::num_type type, const Context *ctx,
-                       int ncomponents, unsigned int nprocs, unsigned int rank,
+                       unsigned int ncomponents, unsigned int nprocs, unsigned int rank,
                        CoorOrder co) override {
                 (void)rank;
                 if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type ||
                     nprocs * ncomponents != pd.size())
                     return false;
-                for (const auto &i : c.first)
-                    if (i.v.componentId >= ncomponents * nprocs || i.v.co != co) return false;
-                /// TODO: check ctx[i].platform matches the components c
-                (void)ctx;
+
+                if (c.first.size() + c.second.size() != ncomponents) return false;
+                for (unsigned int component = 0; component < ncomponents; ++component) {
+                    for (const auto &ci : c.first)
+                        if (ci.v.componentId == component && ci.v.it.size() > 0 &&
+                            deviceId(ci.v.it.ctx()) != ctx[component].device)
+                            return false;
+                    for (const auto &ci : c.second)
+                        if (ci.v.componentId == component && ci.v.it.size() > 0 &&
+                            deviceId(ci.v.it.ctx()) != ctx[component].device)
+                            return false;
+                }
+
+                for (const auto &ci : c.first)
+                    if (ci.v.componentId >= ncomponents || ci.v.co != co) return false;
+                for (const auto &ci : c.second)
+                    if (ci.v.componentId >= ncomponents || ci.v.co != co) return false;
+
                 return true;
             }
         };
