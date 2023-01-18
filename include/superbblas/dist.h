@@ -2734,6 +2734,7 @@ namespace superbblas {
                     partitioning_distributed_procs(order, fsi[1], dist_labels, ncomponents),
                     dist_labels, ncomponents);
                 for (int c = 0; c < ncomponents; ++c) {
+                    using detail::operator+;
                     fs[rank * ncomponents + c] = {fsi_components[c][0] + fsi[0],
                                                   fsi_components[c][1]};
                     if (detail::volume(fs[rank * ncomponents + c][1]) == 0)
