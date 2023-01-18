@@ -689,13 +689,17 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     vectors<Q, XPU> t0 = create_tensor_data<Q>(p0, rank, "pxyztscn", dimo, dim[N], xpu);
 
     // Get preferred layout for the output tensor
-    MatrixLayout preferred_layout_for_x, preferred_layout_for_y;
+    std::vector<MatrixLayout> preferred_layout_for_x_v(ctx.size()),
+        preferred_layout_for_y_v(ctx.size());
     bsr_get_preferred_layout<Nd - 1, Nd - 1, Q>(op, ctx.size(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                                                 MPI_COMM_WORLD,
 #endif
-                                                SlowToFast, &preferred_layout_for_x,
-                                                &preferred_layout_for_y);
+                                                SlowToFast, preferred_layout_for_x_v.data(),
+                                                preferred_layout_for_y_v.data());
+    MatrixLayout preferred_layout_for_x = preferred_layout_for_x_v.front(),
+                 preferred_layout_for_y = preferred_layout_for_y_v.front();
+    (void)preferred_layout_for_x;
 
     // Create tensor t1 of Nd+1 dims: an output lattice color vector
     const char *o1 = preferred_layout_for_y == RowMajor ? "pxyztscn" : "pnxyztsc";
