@@ -27,6 +27,7 @@
 #ifdef SUPERBBLAS_USE_THRUST
 #    ifndef SUPERBBLAS_LIB
 #        include <thrust/complex.h>
+#        include <thrust/copy.h>
 #        include <thrust/device_ptr.h>
 #        include <thrust/device_vector.h>
 #        include <thrust/iterator/permutation_iterator.h>
@@ -149,6 +150,9 @@ namespace superbblas {
                 throw std::runtime_error("Ups! Unaligned pointer");
         }
 
+        /// is_complex<T>::value is true if T is std::complex
+        /// \tparam T: type to inspect
+
         template <typename T> struct is_complex { static const bool value = false; };
         template <typename T> struct is_complex<std::complex<T>> {
             static const bool value = true;
@@ -157,25 +161,94 @@ namespace superbblas {
             static const bool value = is_complex<T>::value;
         };
 
-        inline void sync(Cpu) {}
-        inline void syncLegacyStream(Cpu) {}
+#ifdef SUPERBBLAS_USE_GPU
+        /// Wait until everything finishes in the given context
+        /// \param xpu: context
 
-#ifdef SUPERBBLAS_USE_CUDA
-        inline void sync(Cuda cuda) { cudaCheck(cudaStreamSynchronize(cuda.stream)); }
-
-        inline void syncLegacyStream(Cuda cuda) {
-            setDevice(cuda);
-            cudaCheck(cudaDeviceSynchronize());
+        inline void sync(const Gpu &xpu) {
+#    ifdef SUPERBBLAS_USE_CUDA
+            cudaCheck(cudaStreamSynchronize(xpu.stream));
+#    else
+            hipCheck(hipStreamSynchronize(xpu.stream));
+#    endif
         }
 
-#elif defined(SUPERBBLAS_USE_HIP)
-        inline void sync(Hip hip) { hipCheck(hipStreamSynchronize(hip.stream)); }
+        /// Wait until everything finishes in the device of the given context
+        /// \param xpu: context
 
-        inline void syncLegacyStream(Hip hip) {
-            setDevice(hip);
+        inline void syncLegacyStream(const Gpu &xpu) {
+            setDevice(xpu);
+#    ifdef SUPERBBLAS_USE_CUDA
+            cudaCheck(cudaDeviceSynchronize());
+#    else
             hipCheck(hipDeviceSynchronize());
+#    endif
         }
 #endif
+
+        /// Wait until everything finishes in the given context
+        /// \param ctx: context
+        ///
+        /// NOTE: the Cpu implementation does nothing
+
+        inline void sync(Cpu) {}
+
+        /// Wait until everything finishes in the device of the given context
+        /// \param ctx: context
+        ///
+        /// NOTE: the Cpu implementation does nothing
+
+        inline void syncLegacyStream(Cpu) {}
+
+        /// Force the second stream to wait until everything finishes until now from
+        /// the first stream.
+        /// \param s0: first stream
+        /// \param s1: second stream
+
+        void causalConnectTo(GpuStream s0, GpuStream s1) {
+            // Trivial case: do nothing when both are the same stream
+            if (s0 == s1) return;
+
+                // Otherwise, record an event on s0 and wait on s1
+#ifdef SUPERBBLAS_USE_CUDA
+            cudaEvent_t ev;
+            cudaCheck(cudaEventCreate(&ev));
+            cudaCheck(cudaEventRecord(ev, s0));
+            cudaCheck(cudaStreamWaitEvent(s1, ev));
+            cudaCheck(cudaEventDestroy(ev));
+#elif defined(SUPERBBLAS_USE_HIP)
+            hipEvent_t ev;
+            hipCheck(hipEventCreate(&ev));
+            hipCheck(hipEventRecord(ev, s0));
+            hipCheck(hipStreamWaitEvent(s1, ev));
+            hipCheck(hipEventDestroy(ev));
+#else
+            throw std::runtime_error("superbblas compiled with GPU support!");
+#endif
+        }
+
+        /// Force the second context to wait until everything finishes until now from
+        /// the first context.
+        /// \param xpu0: first context
+        /// \param xpu1: second context
+
+        template <typename XPU1> void causalConnectTo(const Cpu &, const XPU1 &) {
+            // Trivial case: do noting when the first context is on cpu
+        }
+
+        template <typename XPU0,
+                  typename std::enable_if<!std::is_same<XPU0, Cpu>::value, bool>::type = true>
+        void causalConnectTo(const XPU0 &xpu0, const Cpu &) {
+            // Trivial case: sync the first context when the second is on cpu
+            sync(xpu0);
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        void causalConnectTo(const Gpu &xpu0, const Gpu &xpu1) {
+            setDevice(xpu0);
+            causalConnectTo(getStream(xpu0), getStream(xpu1));
+        }
+#endif // SUPERBBLAS_USE_GPU
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
@@ -255,7 +328,7 @@ namespace superbblas {
                 r = (T *)cuda.alloc(sizeof(T) * n, CUDA);
             } else {
 #    if CUDART_VERSION >= 11020
-                cudaCheck(cudaMallocAsync(&r, sizeof(T) * n, cuda.stream));
+                cudaCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(cuda)));
 #    else
                 cudaCheck(cudaMalloc(&r, sizeof(T) * n));
 #    endif
@@ -297,7 +370,8 @@ namespace superbblas {
                 cuda.dealloc((void *)ptr, CUDA);
             } else {
 #    if CUDART_VERSION >= 11020
-                cudaCheck(cudaFreeAsync((void *)ptr, cuda.stream));
+                causalConnectTo(getStream(cuda), getAllocStream(cuda));
+                cudaCheck(cudaFreeAsync((void *)ptr, getAllocStream(cuda)));
 #    else
                 sync(cuda);
                 cudaCheck(cudaFree((void *)ptr));
@@ -324,7 +398,7 @@ namespace superbblas {
                 r = (T *)hip.alloc(sizeof(T) * n, HIP);
             } else {
 #    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                hipCheck(hipMallocAsync(&r, sizeof(T) * n, hip.stream));
+                hipCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(hip)));
 #    else
                 hipCheck(hipMalloc(&r, sizeof(T) * n));
 #    endif
@@ -366,7 +440,8 @@ namespace superbblas {
                 hip.dealloc((void *)ptr, HIP);
             } else {
 #    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                hipCheck(hipFreeAsync((void *)ptr, hip.stream));
+                causalConnectTo(getStream(hip), getAllocStream(hip));
+                hipCheck(hipFreeAsync((void *)ptr, getAllocStream(hip)));
 #    else
                 sync(hip);
                 hipCheck(hipFree((void *)ptr));
@@ -430,35 +505,31 @@ namespace superbblas {
                 throw std::runtime_error("superbblas compiled with GPU support!");
 #endif
 
-            } else if (deviceId(xpu0) == deviceId(xpu1)) {
-                // Both are on the same device
-                setDevice(xpu0);
-#ifdef SUPERBBLAS_USE_CUDA
-                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
-                cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
-                                          getStream(xpu1)));
-#elif defined(SUPERBBLAS_USE_HIP)
-                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
-                hipCheck(
-                    hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice, getStream(xpu1)));
-#else
-                throw std::runtime_error("superbblas compiled with GPU support!");
-#endif
-
             } else {
-                // Each pointer is on a different device
-                setDevice(xpu1);
+                // Both pointers are on device
+                causalConnectTo(xpu0, xpu1);
 #ifdef SUPERBBLAS_USE_CUDA
-                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
-                cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
+                if (deviceId(xpu0) == deviceId(xpu1)) {
+                    setDevice(xpu0);
+                    cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
                                               getStream(xpu1)));
+                } else {
+                    cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
+                                                  sizeof(T) * n, getStream(xpu1)));
+                }
 #elif defined(SUPERBBLAS_USE_HIP)
-                if (getStream(xpu0) != getStream(xpu1)) sync(xpu0);
-                hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
+                if (deviceId(xpu0) == deviceId(xpu1)) {
+                    setDevice(xpu0);
+                    hipCheck(hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice,
                                             getStream(xpu1)));
+                } else {
+                    hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
+                                                getStream(xpu1)));
+                }
 #else
                 throw std::runtime_error("superbblas compiled with GPU support!");
 #endif
+                causalConnectTo(xpu1, xpu0);
             }
         }
 
@@ -570,6 +641,12 @@ namespace superbblas {
                       typename std::enable_if<std::is_same<U, Cpu>::value, bool>::type = true>
             bool operator!=(const vector<T, U> &v) const {
                 return !operator==(v);
+            }
+
+            /// Return an alias of the vector with another context
+            /// \param new_xpu: new context
+            vector withNewContext(const XPU &new_xpu) const {
+                return vector{n, ptr_aligned, ptr, new_xpu};
             }
 
             std::size_t n;                   ///< Number of allocated `T` elements
@@ -1010,6 +1087,57 @@ namespace superbblas {
             return r;
         })
 #endif // SUPERBBLAS_USE_GPU
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Generate a common stream for all given contexts
+        /// \param xpus: list of contexts
+
+        std::vector<Gpu> coflow(const std::vector<Gpu> &xpus) {
+            if (xpus.size() == 0) return {};
+
+            // Create a new stream, connect it causally with all given contexts,
+            // and return the new contexts
+            GpuStream new_stream = createStream();
+            std::vector<Gpu> r;
+            r.reserve(xpus.size());
+            for (const Gpu &xpu : xpus) {
+                causalConnectTo(getStream(xpu), new_stream);
+                r.push_back(xpu.withNewStream(new_stream));
+            }
+            return r;
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+        std::vector<Cpu> coflow(const std::vector<Cpu> &xpus) {
+            // Do nothing when contexts are on cpu
+            return xpus;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Join the contexts returned by `coflow` back
+        /// \param xpus: list of contexts
+
+        void joinback(const std::vector<Gpu> &xpus) {
+            if (xpus.size() == 0) return;
+
+            // Check that all context have the same stream
+            GpuStream new_stream = getStream(xpus.front());
+            for (const Gpu &xpu : xpus)
+                if (getStream(xpu) != new_stream)
+                    throw std::runtime_error(
+                        "joinback: all given context should come from `coflow`");
+
+            // Connect the new stream to the allocation streams
+            for (const Gpu &xpu : xpus) causalConnectTo(new_stream, getAllocStream(xpu));
+
+            // Destroy the new stream
+            destroyStream(new_stream);
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+        void joinback(const std::vector<Cpu> &) {
+            // Do nothing when contexts are on cpu
+        }
     }
 
     /// Allocate memory on a device

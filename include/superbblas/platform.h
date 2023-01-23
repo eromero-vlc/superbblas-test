@@ -94,6 +94,15 @@ namespace superbblas {
 
     namespace detail {
 
+        /// Dataype to represent a stream
+#ifdef SUPERBBLAS_USE_CUDA
+        using GpuStream = cudaStream_t;
+#elif defined(SUPERBBLAS_USE_HIP)
+        using GpuStream = hipStream_t;
+#else
+        using GpuStream = int;
+#endif
+
         struct Cpu {
             /// Cache session
             Session session;
@@ -111,6 +120,12 @@ namespace superbblas {
 
         /// Return a string identifying the platform
         inline std::string platformToStr(Cpu) { return "CPU"; }
+
+        /// Return the associated cuda stream (trivial cpu implementation)
+        inline GpuStream getStream(const Cpu &) { return 0; }
+
+        /// Return the associated cuda stream for allocating (trivial cpu implementation)
+        inline GpuStream getAllocStream(const Cpu &) { return 0; }
 
 #ifdef SUPERBBLAS_USE_CUDA
 
@@ -216,7 +231,8 @@ namespace superbblas {
 
         struct Cuda {
             int device;
-            cudaStream_t stream;
+            GpuStream stream;
+            GpuStream alloc_stream;
             cublasHandle_t cublasHandle;
             cusparseHandle_t cusparseHandle;
             cusolverDnHandle_t cusolverDnHandle;
@@ -229,6 +245,13 @@ namespace superbblas {
 
             /// Return a CPU context with the same session
             Cpu toCpu() const { return Cpu{session}; }
+
+            /// Create a new context but with a different stream
+            Cuda withNewStream(GpuStream new_stream) const {
+                return Cuda{device,       new_stream,     alloc_stream,
+                            cublasHandle, cusparseHandle, cusolverDnHandle,
+                            alloc,        dealloc,        session};
+            }
         };
 
         /// Return a device identification
@@ -242,10 +265,6 @@ namespace superbblas {
             cudaCheck(cudaGetDevice(&currentDevice));
             if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
         }
-
-        /// Return the associated cuda stream
-        inline const cudaStream_t &getStream(const Cuda &cuda) { return cuda.stream; }
-        inline cudaStream_t getStream(const Cpu &) { return 0; }
 
         /// Return a string identifying the platform
         inline std::string platformToStr(Cuda) { return "CUDA"; }
@@ -348,7 +367,7 @@ namespace superbblas {
 
         struct Hip {
             int device;
-            hipStream_t stream;
+            GpuStream stream;
             hipblasHandle_t hipblasHandle;
             hipsparseHandle_t hipsparseHandle;
             hipsolverDnHandle_t hipsolverDnHandle;
@@ -361,6 +380,13 @@ namespace superbblas {
 
             /// Return a CPU context with the same session
             Cpu toCpu() const { return Cpu{session}; }
+
+            /// Create a new context but with a different stream
+            Hip withNewStream(GpuStream new_stream) const {
+                return Hip{device,        new_stream,      alloc_stream,
+                           hipblasHandle, hipsparseHandle, hipsolverDnHandle,
+                           alloc,         dealloc,         session};
+            }
         };
 
         /// Return a device identification
@@ -375,10 +401,6 @@ namespace superbblas {
             if (currentDevice != deviceId(hip)) hipCheck(hipSetDevice(deviceId(hip)));
         }
 
-        /// Return the associated cuda stream
-        inline const hipStream_t &getStream(const Hip &hip) { return hip.stream; }
-        inline hipStream_t getStream(const Cpu &) { return 0; }
-
         /// Return a string identifying the platform
         inline std::string platformToStr(Hip) { return "HIP"; }
 
@@ -388,7 +410,32 @@ namespace superbblas {
         inline int getPtrDevice(const void *) { return CPU_DEVICE_ID; }
 #endif
 
-        // struct Gpuamd {int device; };
+#ifdef SUPERBBLAS_USE_GPU
+        /// Create a new stream
+
+        GpuStream createStream() {
+            GpuStream stream;
+#    ifdef SUPERBBLAS_USE_CUDA
+            detail::cudaCheck(cudaStreamCreate(&stream));
+#    elif defined(SUPERBBLAS_USE_HIP)
+            detail::hipCheck(hipStreamCreate(&stream));
+#    else
+            stream = 0;
+#    endif
+            return stream;
+        }
+
+        /// Destroy stream
+        /// \param stream: stream to destroy
+
+        void destroyStream(GpuStream stream) {
+#    ifdef SUPERBBLAS_USE_CUDA
+            detail::cudaCheck(cudaStreamDestroy(stream));
+#    elif defined(SUPERBBLAS_USE_HIP)
+            detail::hipCheck(hipStreamDestroy(stream));
+#    endif
+        }
+#endif // SUPERBBLAS_USE_GPU
 
         /// Return if `T` is a supported type
         template <typename T> struct supported_type { static constexpr bool value = false; };
@@ -414,6 +461,17 @@ namespace superbblas {
 #else
         using Gpu = void;
 #endif
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return the associated stream
+        /// \param xpu: context
+        inline GpuStream getStream(const Gpu &xpu) { return xpu.stream; }
+
+        /// Return the associated stream for allocating
+        /// \param xpu: context
+
+        inline GpuStream getAllocStream(const Gpu &xpu) { return xpu.alloc_stream; }
+#endif // SUPERBBLAS_USE_GPU
     }
 
     class Context {
@@ -432,12 +490,12 @@ namespace superbblas {
         const Deallocator dealloc;
 
 #ifdef SUPERBBLAS_USE_CUDA
-        std::shared_ptr<cudaStream_t> stream;
+        std::shared_ptr<detail::GpuStream> stream;
         std::shared_ptr<cublasHandle_t> cublasHandle;
         std::shared_ptr<cusparseHandle_t> cusparseHandle;
         std::shared_ptr<cusolverDnHandle_t> cusolverDnHandle;
 #elif defined(SUPERBBLAS_USE_HIP)
-        std::shared_ptr<hipStream_t> stream;
+        std::shared_ptr<detail::GpuStream> stream;
         std::shared_ptr<hipblasHandle_t> hipblasHandle;
         std::shared_ptr<hipsparseHandle_t> hipsparseHandle;
         std::shared_ptr<hipsolverDnHandle_t> hipsolverDnHandle;
@@ -453,8 +511,8 @@ namespace superbblas {
                 int currentDevice = -1;
                 detail::cudaCheck(cudaGetDevice(&currentDevice));
                 if (currentDevice != device) detail::cudaCheck(cudaSetDevice(device));
-                const auto this_stream = stream =
-                    std::shared_ptr<cudaStream_t>(new cudaStream_t, [](cudaStream_t *p) {
+                const auto this_stream = stream = std::shared_ptr<detail::GpuStream>(
+                    new detail::GpuStream, [](detail::GpuStream *p) {
                         detail::cudaCheck(cudaStreamDestroy(*p));
                         delete p;
                     });
@@ -486,8 +544,8 @@ namespace superbblas {
                 int currentDevice = -1;
                 detail::hipCheck(hipGetDevice(&currentDevice));
                 if (currentDevice != device) detail::hipCheck(hipSetDevice(device));
-                const auto this_stream = stream =
-                    std::shared_ptr<hipStream_t>(new hipStream_t, [](hipStream_t *p) {
+                const auto this_stream = stream = std::shared_ptr<detail::GpuStream>(
+                    new detail::GpuStream, [](detail::GpuStream *p) {
                         detail::hipCheck(hipStreamDestroy(*p));
                         delete p;
                     });
@@ -521,17 +579,18 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         detail::Cuda toCuda(Session session) const {
-            return detail::Cuda{device, *stream, *cublasHandle, *cusparseHandle, *cusolverDnHandle,
-                                alloc,  dealloc, session};
+            return detail::Cuda{device,        *stream,         *stream,
+                                *cublasHandle, *cusparseHandle, *cusolverDnHandle,
+                                alloc,         dealloc,         session};
         }
 
         detail::Cuda toGpu(Session session) const { return toCuda(session); }
 
 #elif defined(SUPERBBLAS_USE_HIP)
         detail::Hip toHip(Session session) const {
-            return detail::Hip{
-                device, *stream, *hipblasHandle, *hipsparseHandle, *hipsolverDnHandle,
-                alloc,  dealloc, session};
+            return detail::Hip{device,         *stream,          *stream,
+                               *hipblasHandle, *hipsparseHandle, *hipsolverDnHandle,
+                               alloc,          dealloc,          session};
         }
 
         detail::Hip toGpu(Session session) const { return toHip(session); }

@@ -622,6 +622,24 @@ namespace superbblas {
             return true;
         }
 
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return a copy of the given tensor with an allocation stream suitable to be stored
+        /// in cache
+        /// \param v: vector to store
+        ///
+        /// NOTE: the allocation streams are the ones that live forever, while the regular
+        /// streams can come from coflow and be destroy anytime.
+
+        template <typename T> vector<T, Gpu> archive(const vector<T, Gpu> &v) {
+            if (getStream(v.ctx()) == getAllocStream(v.ctx())) return v;
+            vector<T, Gpu> r(v.size(), v.ctx().withNewStream(getAllocStream(v.ctx())));
+            copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
+            return r;
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+        template <typename T> vector<T, Cpu> archive(const vector<T, Cpu> &v) { return v; }
+
         /// Copy the content of tensor v0 into v1
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
@@ -900,7 +918,7 @@ namespace superbblas {
                 get_permutation<IndexType>(from, size, dim, strides, xpu);
 
             // Store it in cache
-            cache.insert(key, indices, storageSize(indices));
+            cache.insert(key, archive(indices), storageSize(indices));
 
             return indices;
         }
