@@ -11,6 +11,13 @@
 #include <unordered_map>
 #include <vector>
 
+/// If SUPERBBLAS_USE_NVTX macro is defined, then the tracker reports to the NVIDIA profiler
+/// the tracker name and duration
+
+#ifdef SUPERBBLAS_USE_NVTX
+#    include <nvToolsExt.h>
+#endif
+
 namespace superbblas {
 
     namespace detail {
@@ -106,6 +113,10 @@ namespace superbblas {
         template <typename XPU> struct tracker {
             /// Whether the tacker has been stopped
             bool stopped;
+#ifdef SUPERBBLAS_USE_NVTX
+            /// Whether the tracker has reported the end of the task
+            bool reported;
+#endif
             /// Name of the function being tracked
             const std::string funcName;
             /// Memory usage at that point
@@ -122,6 +133,9 @@ namespace superbblas {
             /// Start a tracker
             tracker(std::string funcName, XPU xpu, bool timeAnyway = false)
                 : stopped(!(timeAnyway || getTrackingTime())),
+#ifdef SUPERBBLAS_USE_NVTX
+                  reported(false),
+#endif
                   funcName(!stopped ? funcName : std::string()),
                   mem_cpu(getTrackingMemory() ? getCpuMemUsed(xpu.session) : 0),
                   mem_gpu(getTrackingMemory() ? getGpuMemUsed(xpu.session) : 0),
@@ -131,12 +145,24 @@ namespace superbblas {
                   elapsedTime(0),
                   cost(1) {
                 if (!stopped) pushCall(funcName, xpu.session); // NOTE: well this is timed...
+#ifdef SUPERBBLAS_USE_NVTX
+                // Register this scope of time starting
+                nvtxRangePushA(funcName.c_str());
+#endif
             }
 
             ~tracker() { stop(); }
 
             /// Stop the tracker and store the timing
             void stop() {
+#ifdef SUPERBBLAS_USE_NVTX
+                if (!reported) {
+                    // Register this scope of time finishing
+                    nvtxRangePop();
+                    reported = true;
+                }
+#endif
+
                 if (stopped) return;
                 stopped = true;
 

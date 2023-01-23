@@ -57,7 +57,7 @@ storage_details: storage_details.cpp
 
 $(CUDA_TARGETS): %_cuda: %.cpp
 	${NVCC} ${SB_INCLUDE} ${MPISBFLAG} ${NVCCFLAGS} ${NVCCSTDLANG} -Xcompiler '${CXXFLAGS} ${MPIINCFLAGS}' \
-	        ${NVCCLDFLAGS} ${MPILDFLAGS} ${LDFLAGS} $< -o $@
+	        ${NVCCLDFLAGS} ${MPILDFLAGS} ${LDFLAGS} ${CUDA_EXTRA_FLAGS} $< -o $@
 
 $(CUDA_LIB_TARGETS): %_cuda_lib: %.cpp
 	${CXX} ${SB_INCLUDE} ${CUDAINCLUDE} ${MPISBFLAG} ${CXXFLAGS} $< -o $@ ${SB_LDFLAGS} ${CUDALDFLAGS} ${NVCCLDFLAGS} ${LDFLAGS}
@@ -127,5 +127,10 @@ known_issues:
 	# MPI_Ialltoallv hungs
 	SB_DEBUG=5 mpirun -np 4 ./dist_cpu --dim='2 1 1 2 1' --procs='2 1 1 2'
 	SB_DEBUG=5 mpirun -np 6 ./dist_cpu  --procs='1 1 2 3' --dim='4 4 4 4 64'
+
+bsr_cuda_nsys: export CUDA_EXTRA_FLAGS := -DSUPERBBLAS_USE_NVTX -lnvToolsExt
+bsr_cuda_nsys: bsr_cuda
+	rm -f bsr_cuda_nsys.nsys-rep
+	OPENBLAS_NUM_THREADS=1 SB_TRACK_TIME=0 SB_MPI_GPU=0 nsys profile -t nvtx,cuda -o bsr_cuda_nsys ./bsr_cuda --dim="8 16 16 16 16 12" --rep=2 --components=4 
 
 .PHONY: clean ${CPU_TARGETS} ${CPU_LIB_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS} ${HIP_LIB_TARGETS} storage_details
