@@ -1943,78 +1943,50 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-        /// Return all vectors with a new context allowing running subsequent operations asynchronously
-        /// \param v0: components
-        /// \param c1: a component
+        /// Return the gpu components with a parallel context
+        /// \param v: components
 
-        template <std::size_t Nd0, typename T, std::size_t Nd1, typename Q>
-        std::pair<Components_tmpl<Nd0, T, Gpu, Cpu>, Component<Nd1, Q, Gpu>>
-        coflow(const Components_tmpl<Nd0, T, Gpu, Cpu> &v0, const Component<Nd1, Q, Gpu> &c1) {
-            // Trivial case: do nothing if v0 have zero or one components
-            if (v0.first.size() <= 1) return {v0, c1};
+        template <std::size_t Nd, typename T>
+        Components_tmpl<Nd, T, Gpu, Cpu>
+        anabranch_begin(const Components_tmpl<Nd, T, Gpu, Cpu> &v) {
+            // Trivial case: do nothing if v have zero or one gpu components
+            if (v.first.size() <= 1) return v;
 
-            // Coflow all gpu contexts on v0 together with c1's context
-            std::vector<Gpu> xpus;
-            xpus.reserve(v0.first.size() + 1);
-            for (const auto &c0 : v0.first) xpus.push_back(c0.it.ctx());
-            xpus.push_back(c1.it.ctx());
-            xpus = coflow(xpus);
+            // Recreate v but with new gpu contexts
+            Components_tmpl<Nd, T, Gpu, Cpu> r;
+            for (const auto &c : v.first)
+                r.first.push_back(c.withNewContext(anabranch_begin(c.it.ctx())));
+            r.second = v.second;
 
-            // Recreate v0 but the new contexts
-            Components_tmpl<Nd0, T, Gpu, Cpu> r0;
-            for (unsigned int i = 0; i < v0.first.size(); ++i)
-                r0.first.push_back(v0.first[i].withNewContext(xpus[i]));
-            r0.second = v0.second;
-
-            // Return the new v0 and c1 with the new context
-            return {r0, c1.withNewContext(xpus.back())};
+            // Return the new v
+            return v;
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        template <std::size_t Nd0, typename T, std::size_t Nd1, typename Q, typename XPU1>
-        std::pair<Components_tmpl<Nd0, T, Cpu, Cpu>, Component<Nd1, Q, XPU1>>
-        coflow(const Components_tmpl<Nd0, T, Cpu, Cpu> &v0, const Component<Nd1, Q, XPU1> &c1) {
-            // Trivial case: do nothing if v0 doesn't have gpu contexts
-            return {v0, c1};
-        }
-
-        template <std::size_t Nd0, typename T, typename XPU0, std::size_t Nd1, typename Q,
-                  typename std::enable_if<!std::is_same<XPU0, Cpu>::value, bool>::type = true>
-        std::pair<Components_tmpl<Nd0, T, XPU0, Cpu>, Component<Nd1, Q, Cpu>>
-        coflow(const Components_tmpl<Nd0, T, XPU0, Cpu> &v0, const Component<Nd1, Q, Cpu> &c1) {
-            // Trivial case: do nothing if c1 doesn't have a gpu context
-            return {v0, c1};
+        template <std::size_t Nd, typename T>
+        Components_tmpl<Nd, T, Cpu, Cpu>
+        anabranch_begin(const Components_tmpl<Nd, T, Cpu, Cpu> &v) {
+            // Trivial case: do nothing if v doesn't have gpu contexts
+            return v;
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-        /// Merge back all operations executed asynchronously on the original contexts
-        /// \param v0: components
-        /// \param c1: a component
+        /// Merge back all operations executed asynchronously on the new contexts
+        /// \param v: components
 
-        template <std::size_t Nd0, typename T, std::size_t Nd1, typename Q>
-        void joinback(const Components_tmpl<Nd0, T, Gpu, Cpu> &v0,
-                      const Component<Nd1, Q, Gpu> &c1) {
-            // Trivial case: do nothing if v0 have zero or one components
-            if (v0.first.size() <= 1) return;
+        template <std::size_t Nd, typename T>
+        void anabranch_end(const Components_tmpl<Nd, T, Gpu, Cpu> &v) {
+            // Trivial case: do nothing if v have zero or one components
+            if (v.first.size() <= 1) return;
 
-            // Join back all gpu contexts on v0 together with c1's context
-            std::vector<Gpu> xpus;
-            xpus.reserve(v0.first.size() + 1);
-            for (const auto &c0 : v0.first) xpus.push_back(c0.it.ctx());
-            xpus.push_back(c1.it.ctx());
-            joinback(xpus);
+            // Join back all gpu contexts on v
+            for (const auto &c : v.first) anabranch_end(c.it.ctx());
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        template <std::size_t Nd0, typename T, std::size_t Nd1, typename Q, typename XPU1>
-        void joinback(const Components_tmpl<Nd0, T, Cpu, Cpu> &, const Component<Nd1, Q, XPU1> &) {
-            // Trivial case: do nothing if v0 doesn't have gpu contexts
-        }
-
-        template <std::size_t Nd0, typename T, typename XPU0, std::size_t Nd1, typename Q,
-                  typename std::enable_if<!std::is_same<XPU0, Cpu>::value, bool>::type = true>
-        void joinback(const Components_tmpl<Nd0, T, XPU0, Cpu> &, const Component<Nd1, Q, Cpu> &) {
-            // Trivial case: do nothing if c1 doesn't have a gpu context
+        template <std::size_t Nd, typename T>
+        void anabranch_end(const Components_tmpl<Nd, T, Cpu, Cpu> &) {
+            // Trivial case: do nothing if v have no gpu components
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2064,35 +2036,32 @@ namespace superbblas {
             if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
                 throw std::runtime_error("Invalid copy operation");
 
-            // Split the work for each receiving component
-            std::vector<
-                std::pair<Components_tmpl<Nd0, const T, XPU0, XPU1>, Component<Nd1, Q, XPU0>>>
-                new_v0_v1_xpu0;
-            std::vector<
-                std::pair<Components_tmpl<Nd0, const T, XPU0, XPU1>, Component<Nd1, Q, XPU1>>>
-                new_v0_v1_xpu1;
-            for (const Component<Nd1, Q, XPU0> &c : v1.first)
-                new_v0_v1_xpu0.push_back(coflow(v0, c));
-            for (const Component<Nd1, Q, XPU1> &c : v1.second)
-                new_v0_v1_xpu1.push_back(coflow(v0, c));
+            // Create a parallel context for each gpu component so that the local copy operations
+            // between gpus happen asynchronously
+            auto v0_ = anabranch_begin(v0);
 
             // Split the work for each receiving component
             std::vector<std::array<Request, 2>> reqs;
-            for (const auto &it : new_v0_v1_xpu0)
-                reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
-                    alpha, p0, from0, size0, dim0, o0, it.first, p1, ncomponents1, from1, dim1, o1,
-                    it.second, comm, ewop, co));
-            for (const auto &it : new_v0_v1_xpu1)
-                reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
-                    alpha, p0, from0, size0, dim0, o0, it.first, p1, ncomponents1, from1, dim1, o1,
-                    it.second, comm, ewop, co));
+            for (unsigned int i = 0; i < ncomponents1; ++i) {
+                for (const Component<Nd1, Q, XPU0> &c : v1.first) {
+                    if (c.componentId == i)
+                        reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
+                            alpha, p0, from0, size0, dim0, o0, v0_, p1, ncomponents1, from1, dim1,
+                            o1, c, comm, ewop, co));
+                }
+                for (const Component<Nd1, Q, XPU1> &c : v1.second) {
+                    if (c.componentId == i)
+                        reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
+                            alpha, p0, from0, size0, dim0, o0, v0_, p1, ncomponents1, from1, dim1,
+                            o1, c, comm, ewop, co));
+                }
+            }
 
             // Do the local part
             for (const auto &r : reqs) wait(r[0]);
 
-            // Split the work for each receiving component
-            for (const auto &it : new_v0_v1_xpu0) joinback(it.first, it.second);
-            for (const auto &it : new_v0_v1_xpu1) joinback(it.first, it.second);
+            // Merge back the parallel contexts
+            anabranch_end(v0_);
 
             // Finish the rest later if there's something pending
             bool pending_request = false;

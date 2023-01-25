@@ -212,13 +212,13 @@ namespace superbblas {
                 // Otherwise, record an event on s0 and wait on s1
 #ifdef SUPERBBLAS_USE_CUDA
             cudaEvent_t ev;
-            cudaCheck(cudaEventCreate(&ev));
+            cudaCheck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
             cudaCheck(cudaEventRecord(ev, s0));
             cudaCheck(cudaStreamWaitEvent(s1, ev));
             cudaCheck(cudaEventDestroy(ev));
 #elif defined(SUPERBBLAS_USE_HIP)
             hipEvent_t ev;
-            hipCheck(hipEventCreate(&ev));
+            hipCheck(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
             hipCheck(hipEventRecord(ev, s0));
             hipCheck(hipStreamWaitEvent(s1, ev));
             hipCheck(hipEventDestroy(ev));
@@ -507,29 +507,28 @@ namespace superbblas {
 
             } else {
                 // Both pointers are on device
-                causalConnectTo(xpu0, xpu1);
 #ifdef SUPERBBLAS_USE_CUDA
                 if (deviceId(xpu0) == deviceId(xpu1)) {
                     setDevice(xpu0);
                     cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
-                                              getStream(xpu1)));
+                                              getStream(xpu0)));
                 } else {
                     cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
-                                                  sizeof(T) * n, getStream(xpu1)));
+                                                  sizeof(T) * n, getStream(xpu0)));
                 }
 #elif defined(SUPERBBLAS_USE_HIP)
                 if (deviceId(xpu0) == deviceId(xpu1)) {
                     setDevice(xpu0);
                     hipCheck(hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice,
-                                            getStream(xpu1)));
+                                            getStream(xpu0)));
                 } else {
                     hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
-                                                getStream(xpu1)));
+                                                getStream(xpu0)));
                 }
 #else
                 throw std::runtime_error("superbblas compiled with GPU support!");
 #endif
-                causalConnectTo(xpu1, xpu0);
+                causalConnectTo(xpu0, xpu1);
             }
         }
 
@@ -1089,54 +1088,37 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_GPU
 
 #ifdef SUPERBBLAS_USE_GPU
-        /// Generate a common stream for all given contexts
-        /// \param xpus: list of contexts
+        /// Generate a new stream that branching from the given one that will merge back with `anabranch_end`
+        /// \param xpu: context to branch
 
-        std::vector<Gpu> coflow(const std::vector<Gpu> &xpus) {
-            if (xpus.size() == 0) return {};
-
-            // Create a new stream, connect it causally with all given contexts,
-            // and return the new contexts
+        Gpu anabranch_begin(const Gpu &xpu) {
+            // Create a new stream, connect it causally from the given context
             GpuStream new_stream = createStream();
-            std::vector<Gpu> r;
-            r.reserve(xpus.size());
-            for (const Gpu &xpu : xpus) {
-                causalConnectTo(getStream(xpu), new_stream);
-                r.push_back(xpu.withNewStream(new_stream));
-            }
-            return r;
+            causalConnectTo(getStream(xpu), new_stream);
+            return xpu.withNewStream(new_stream);
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        std::vector<Cpu> coflow(const std::vector<Cpu> &xpus) {
-            // Do nothing when contexts are on cpu
-            return xpus;
+        Cpu anabranch_begin(const Cpu &xpu) {
+            // Do nothing when context is on cpu
+            return xpu;
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-        /// Join the contexts returned by `coflow` back
-        /// \param xpus: list of contexts
+        /// Join the context back the given context in `anabranch_begin`
+        /// \param xpu: context to merge
 
-        void joinback(const std::vector<Gpu> &xpus) {
-            if (xpus.size() == 0) return;
-
-            // Check that all context have the same stream
-            GpuStream new_stream = getStream(xpus.front());
-            for (const Gpu &xpu : xpus)
-                if (getStream(xpu) != new_stream)
-                    throw std::runtime_error(
-                        "joinback: all given context should come from `coflow`");
-
-            // Connect the new stream to the allocation streams
-            for (const Gpu &xpu : xpus) causalConnectTo(new_stream, getAllocStream(xpu));
+        void anabranch_end(const Gpu &xpu) {
+            // Connect the new stream to the original stream
+            causalConnectTo(getStream(xpu), getAllocStream(xpu));
 
             // Destroy the new stream
-            destroyStream(new_stream);
+            destroyStream(getStream(xpu));
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        void joinback(const std::vector<Cpu> &) {
-            // Do nothing when contexts are on cpu
+        void anabranch_end(const Cpu &) {
+            // Do nothing when context is on cpu
         }
     }
 
