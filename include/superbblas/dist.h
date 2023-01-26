@@ -600,9 +600,10 @@ namespace superbblas {
                                     std::string(" to ") + platformToStr(v1.ctx()),
                                 v1.ctx());
             _t.cost = (double)sizeof(Q) * indices0_xpu.size() * blocksize;
-            copy_n_blocking<IndexType, T, Q>(1.0, v0.data(), blocksize, indices0_xpu.begin(),
-                                             v0.ctx(), indices0_xpu.size(), v1.data(),
-                                             indices1.begin(), v1.ctx(), EWOp::Copy{});
+            copy_n_blocking<IndexType, T, Q>(1.0, v0.data(), v0.ctx(), blocksize,
+                                             indices0_xpu.begin(), indices0_xpu.ctx(),
+                                             indices0_xpu.size(), v1.data(), v1.ctx(),
+                                             indices1.begin(), indices1.ctx(), EWOp::Copy{});
         }
 
         /// Pack a list of ranges to be used in a MPI communication
@@ -877,9 +878,10 @@ namespace superbblas {
             // Transfer the buffer to the destination device
             IndexType disp = 0;
             for (unsigned int i = 0, i1 = r.indices_groups.size(); i < i1; ++i) {
-                copy_n_blocking<IndexType, T, T>(
-                    alpha, r.buf.data(), r.blocksize, r.indices_buf.data() + disp, r.buf.ctx(),
-                    r.indices_groups[i], v.it.data(), r.indices.data() + disp, v.it.ctx(), EWOP{});
+                copy_n_blocking<IndexType, T, T>(alpha, r.buf.data(), r.buf.ctx(), r.blocksize,
+                                                 r.indices_buf.data() + disp, r.indices_buf.ctx(),
+                                                 r.indices_groups[i], v.it.data(), v.it.ctx(),
+                                                 r.indices.data() + disp, r.indices.ctx(), EWOP{});
                 disp += r.indices_groups[i];
             }
             _t.cost = (double)sizeof(T) * r.indices.size() * r.blocksize;
@@ -1586,8 +1588,8 @@ namespace superbblas {
                 vector<std::size_t, XPU> r(vol, xpu);
                 vector<std::size_t, Cpu> r_host =
                     get_mock_components(from, size, dim, Cpu{}, co, mf);
-                copy_n<std::size_t>(1, r_host.data(), nullptr, r_host.ctx(), vol, r.data(), nullptr,
-                                    r.ctx(), EWOp::Copy{});
+                copy_n<std::size_t>(1, r_host.data(), r_host.ctx(), vol, r.data(), r.ctx(),
+                                    EWOp::Copy{});
                 return r;
             }
 
@@ -1959,7 +1961,7 @@ namespace superbblas {
             r.second = v.second;
 
             // Return the new v
-            return v;
+            return r;
         }
 #endif // SUPERBBLAS_USE_GPU
 

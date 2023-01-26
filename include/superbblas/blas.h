@@ -30,8 +30,10 @@
 #        include <thrust/copy.h>
 #        include <thrust/device_ptr.h>
 #        include <thrust/device_vector.h>
+#        include <thrust/execution_policy.h>
 #        include <thrust/iterator/permutation_iterator.h>
 #        include <thrust/iterator/transform_iterator.h>
+#        include <thrust/transform.h>
 #    endif
 #endif
 
@@ -159,6 +161,17 @@ namespace superbblas {
         };
         template <typename T> struct is_complex<const T> {
             static const bool value = is_complex<T>::value;
+        };
+
+        /// is_array<T>::value is true if T is std::array
+        /// \tparam T: type to inspect
+
+        template <typename T> struct is_array { static const bool value = false; };
+        template <typename T, std::size_t N> struct is_array<std::array<T, N>> {
+            static const bool value = true;
+        };
+        template <typename T> struct is_array<const T> {
+            static const bool value = is_array<T>::value;
         };
 
 #ifdef SUPERBBLAS_USE_GPU
@@ -507,9 +520,10 @@ namespace superbblas {
 
             } else {
                 // Both pointers are on device
+                causalConnectTo(xpu1, xpu0);
+                setDevice(xpu0);
 #ifdef SUPERBBLAS_USE_CUDA
                 if (deviceId(xpu0) == deviceId(xpu1)) {
-                    setDevice(xpu0);
                     cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
                                               getStream(xpu0)));
                 } else {
@@ -518,7 +532,6 @@ namespace superbblas {
                 }
 #elif defined(SUPERBBLAS_USE_HIP)
                 if (deviceId(xpu0) == deviceId(xpu1)) {
-                    setDevice(xpu0);
                     hipCheck(hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice,
                                             getStream(xpu0)));
                 } else {
@@ -679,14 +692,22 @@ namespace superbblas {
                 reinterpret_cast<typename cuda_complex<T>::type *>(ptr));
         }
 
-#    ifdef SUPERBBLAS_USE_CUDA
-        /// Return the strema encapsulated for thrust
-        /// \param cuda: cuda context
+        /// Return the stream encapsulated for thrust
+        /// \param xpu: context
 
-        inline auto thrust_par_on(Cuda cuda) { return thrust::cuda::par.on(cuda.stream); }
+        inline auto thrust_par_on(const Gpu &xpu) {
+            return thrust::
+#    ifdef SUPERBBLAS_USE_CUDA
+                cuda::
 #    elif defined(SUPERBBLAS_USE_HIP)
-        inline auto thrust_par_on(Hip hip) { return thrust::hip::par.on(hip.stream); }
+                hip::
 #    endif
+#    if THRUST_VERSION >= 101600
+                    par_nosync.on(getStream(xpu));
+#    else
+                    par.on(getStream(xpu));
+#    endif
+        }
 #endif
 
         template <typename T, std::size_t N>
@@ -758,7 +779,7 @@ namespace superbblas {
         /// Return a copy of a vector
 
         template <typename T, typename XPU,
-                  typename std::enable_if<!std::is_same<XPU, Cpu>::value, bool>::type = true>
+                  typename std::enable_if<!is_array<T>::value, bool>::type = true>
         vector<T, XPU> clone(const vector<T, XPU> &v) {
             using T_no_const = typename std::remove_const<T>::type;
             vector<T_no_const, XPU> r(v.size(), v.ctx());
@@ -767,7 +788,8 @@ namespace superbblas {
             return r;
         }
 
-        template <typename T> vector<T, Cpu> clone(const vector<T, Cpu> &v) {
+        template <typename T, typename std::enable_if<is_array<T>::value, bool>::type = true>
+        vector<T, Cpu> clone(const vector<T, Cpu> &v) {
             using T_no_const = typename std::remove_const<T>::type;
             vector<T_no_const, Cpu> r(v.size(), v.ctx());
             std::copy_n(v.data(), v.size(), r.data());
@@ -836,7 +858,7 @@ namespace superbblas {
             if (std::abs(alpha) == 0) {
                 zero_n(x, n, xpu);
             } else {
-                copy_n<int>(1, x, xpu, n, x, xpu, EWOp::Copy{});
+                copy_n<int>(alpha, x, xpu, n, x, xpu, EWOp::Copy{});
             }
         }
 
@@ -1073,6 +1095,7 @@ namespace superbblas {
         DECL_SELECT_T(vector<IndexType, Gpu> select(const vector<IndexType, Gpu> &v, T *m,
                                                     const vector<IndexType, Gpu> &w))
         IMPL({
+            causalConnectTo(w.ctx(), v.ctx());
             setDevice(v.ctx());
             vector<IndexType, Gpu> r{w.size(), v.ctx()};
             auto itv = encapsulate_pointer(v.begin());
@@ -1083,6 +1106,7 @@ namespace superbblas {
             auto itr_end = thrust::copy_if(thrust_par_on(v.ctx()), itw, itw + w.size(), itmv, itr,
                                            not_zero<T>{});
             r.resize(itr_end - itr);
+            causalConnectTo(v.ctx(), w.ctx());
             return r;
         })
 #endif // SUPERBBLAS_USE_GPU
@@ -1093,6 +1117,7 @@ namespace superbblas {
 
         Gpu anabranch_begin(const Gpu &xpu) {
             // Create a new stream, connect it causally from the given context
+            setDevice(xpu);
             GpuStream new_stream = createStream();
             causalConnectTo(getStream(xpu), new_stream);
             return xpu.withNewStream(new_stream);
@@ -1110,6 +1135,7 @@ namespace superbblas {
 
         void anabranch_end(const Gpu &xpu) {
             // Connect the new stream to the original stream
+            setDevice(xpu);
             causalConnectTo(getStream(xpu), getAllocStream(xpu));
 
             // Destroy the new stream

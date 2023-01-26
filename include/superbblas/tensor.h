@@ -25,12 +25,6 @@
 // the definition of functions using `thrust` and use DECL_... macros to generate template
 // instantiations to be included in the library.
 
-#ifdef SUPERBBLAS_USE_THRUST
-#    include <thrust/device_ptr.h>
-#    include <thrust/execution_policy.h>
-#    include <thrust/transform.h>
-#endif
-
 #ifdef SUPERBBLAS_CREATING_LIB
 
 #    define COOR_DIMS                                                                              \
@@ -956,9 +950,9 @@ namespace superbblas {
             if (volume(sizeb) == 1 && mask0.size() == 0) {
                 IndexType extra_disp0 = coor2index(from0, dim0, strides0);
                 IndexType extra_disp1 = coor2index(from1, dim1, strides1);
-                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0 + extra_disp0, nullptr, v0.ctx(),
-                                        volume(size), v1.data() + disp1 + extra_disp1, nullptr,
-                                        v1.ctx(), ewop);
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0 + extra_disp0, v0.ctx(),
+                                        volume(size), v1.data() + disp1 + extra_disp1, v1.ctx(),
+                                        ewop);
                 return;
             }
 
@@ -989,13 +983,14 @@ namespace superbblas {
                     if (indices0.size() != indices1.size())
                         throw std::runtime_error("copy: non-compatible masks");
                 }
-                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
-                                        indices0.size(), v1.data() + disp1, indices1.begin(),
-                                        v1.ctx(), ewop);
+                copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, v0.ctx(), indices0.begin(),
+                                        indices0.ctx(), indices0.size(), v1.data() + disp1,
+                                        v1.ctx(), indices1.begin(), indices1.ctx(), ewop);
             } else {
-                copy_n_blocking<IndexType, T, Q>(
-                    alpha, v0.data() + disp0, blocking, indices0.begin(), v0.ctx(), indices0.size(),
-                    v1.data() + disp1, indices1.begin(), v1.ctx(), ewop);
+                copy_n_blocking<IndexType, T, Q>(alpha, v0.data() + disp0, v0.ctx(), blocking,
+                                                 indices0.begin(), indices0.ctx(), indices0.size(),
+                                                 v1.data() + disp1, v1.ctx(), indices1.begin(),
+                                                 indices1.ctx(), ewop);
             }
         }
 
@@ -1031,8 +1026,8 @@ namespace superbblas {
             if (std::is_same<T, Q>::value && (void *)v0.data() == (void *)v1.data() &&
                 mask0.size() == 0 && o0 == o1 && from0 == Coor<Nd0>{{}} && from1 == Coor<Nd1>{{}} &&
                 size0 == dim0 && dim0 == dim1 && std::is_same<EWOP, detail::EWOp::Copy>::value) {
-                copy_n<IndexType, T, Q>(alpha, v0.data(), nullptr, v0.ctx(), volume(size0),
-                                        v1.data(), nullptr, v1.ctx(), ewop);
+                copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), volume(size0), v1.data(),
+                                        v1.ctx(), ewop);
                 return;
             }
 

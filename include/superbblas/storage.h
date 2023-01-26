@@ -916,8 +916,9 @@ namespace superbblas {
 
             // Write the values of v0 contiguously
             vector<Q, Cpu> v0_host(indices0.size(), cpu);
-            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, indices0.begin(), v0.ctx(),
-                                    indices0.size(), v0_host.data(), nullptr, cpu, EWOp::Copy{});
+            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, v0.ctx(), indices0.begin(),
+                                    indices0.ctx(), indices0.size(), v0_host.data(), cpu, nullptr,
+                                    cpu, EWOp::Copy{});
 
             // Change endianness
             if (do_change_endianness) change_endianness(v0_host.data(), v0_host.size());
@@ -1047,8 +1048,9 @@ namespace superbblas {
             if (do_change_endianness) change_endianness(v0.data(), v0.size());
 
             // Write the values of v0 into v1
-            copy_n<IndexType, T, Q>(alpha, v0.data(), nullptr, v0.ctx(), indices0.size(),
-                                    v1.data() + disp1, indices1.data(), v1.ctx(), EWOP{});
+            copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), nullptr, v0.ctx(), indices0.size(),
+                                    v1.data() + disp1, v1.ctx(), indices1.data(), indices1.ctx(),
+                                    EWOP{});
         }
 
         /// Copy from a storage into the tensor v1
