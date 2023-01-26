@@ -712,8 +712,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
         preferred_layout_for_y == RowMajor
             ? Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}  // pxyztscn
             : Coor<Nd + 1>{1, 1, procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // pnxyztsc
-    PartitionStored<Nd + 1> p1 =
-        basic_partitioning("pxyztscn", dim1, procs1, "xyzt", nprocs, ctx.size());
+    PartitionStored<Nd + 1> p1 = basic_partitioning(o1, dim1, procs1, "xyzt", nprocs, ctx.size());
     vectors<Q, XPU> t1 = create_tensor_data<Q>(p1, rank, o1, dimo, dim[N], xpu);
 
     const bool is_cpu = deviceId(xpu[0]) == CPU_DEVICE_ID;
