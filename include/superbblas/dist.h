@@ -2038,32 +2038,25 @@ namespace superbblas {
             if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
                 throw std::runtime_error("Invalid copy operation");
 
-            // Create a parallel context for each gpu component so that the local copy operations
-            // between gpus happen asynchronously
-            auto v0_ = anabranch_begin(v0);
-
             // Split the work for each receiving component
             std::vector<std::array<Request, 2>> reqs;
             for (unsigned int i = 0; i < ncomponents1; ++i) {
                 for (const Component<Nd1, Q, XPU0> &c : v1.first) {
                     if (c.componentId == i)
                         reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
-                            alpha, p0, from0, size0, dim0, o0, v0_, p1, ncomponents1, from1, dim1,
+                            alpha, p0, from0, size0, dim0, o0, v0, p1, ncomponents1, from1, dim1,
                             o1, c, comm, ewop, co));
                 }
                 for (const Component<Nd1, Q, XPU1> &c : v1.second) {
                     if (c.componentId == i)
                         reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
-                            alpha, p0, from0, size0, dim0, o0, v0_, p1, ncomponents1, from1, dim1,
+                            alpha, p0, from0, size0, dim0, o0, v0, p1, ncomponents1, from1, dim1,
                             o1, c, comm, ewop, co));
                 }
             }
 
             // Do the local part
             for (const auto &r : reqs) wait(r[0]);
-
-            // Merge back the parallel contexts
-            anabranch_end(v0_);
 
             // Finish the rest later if there's something pending
             bool pending_request = false;
