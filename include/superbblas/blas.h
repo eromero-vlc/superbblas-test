@@ -339,12 +339,14 @@ namespace superbblas {
             T *r = nullptr;
             if (cuda.alloc) {
                 r = (T *)cuda.alloc(sizeof(T) * n, CUDA);
-            } else {
+            } else if (deviceId(cuda) >= 0) {
 #    if CUDART_VERSION >= 11020
                 cudaCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(cuda)));
 #    else
                 cudaCheck(cudaMalloc(&r, sizeof(T) * n));
 #    endif
+            } else {
+                cudaCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
             }
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
@@ -353,7 +355,10 @@ namespace superbblas {
                 if (getAllocations(cuda.session).count((void *)r) > 0)
                     throw std::runtime_error("Ups! Allocator returned a pointer already in use");
                 getAllocations(cuda.session)[(void *)r] = sizeof(T) * n;
-                getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
+                if (deviceId(cuda) >= 0)
+                    getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
+                else
+                    getCpuMemUsed(cuda.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>(r);
@@ -373,7 +378,10 @@ namespace superbblas {
             // Remove annotation
             if (getTrackingMemory() && getAllocations(cuda.session).count((void *)ptr) > 0) {
                 const auto &it = getAllocations(cuda.session).find((void *)ptr);
-                getGpuMemUsed(cuda.session) -= double(it->second);
+                if (deviceId(cuda) >= 0)
+                    getGpuMemUsed(cuda.session) -= double(it->second);
+                else
+                    getCpuMemUsed(cuda.session) -= double(it->second);
                 getAllocations(cuda.session).erase(it);
             }
 
@@ -381,7 +389,7 @@ namespace superbblas {
             setDevice(cuda);
             if (cuda.dealloc) {
                 cuda.dealloc((void *)ptr, CUDA);
-            } else {
+            } else if (deviceId(cuda) >= 0) {
 #    if CUDART_VERSION >= 11020
                 causalConnectTo(getStream(cuda), getAllocStream(cuda));
                 cudaCheck(cudaFreeAsync((void *)ptr, getAllocStream(cuda)));
@@ -389,6 +397,9 @@ namespace superbblas {
                 sync(cuda);
                 cudaCheck(cudaFree((void *)ptr));
 #    endif
+            } else {
+                sync(cuda);
+                cudaCheck(cudaFreeHost((void *)ptr));
             }
         }
 
@@ -409,12 +420,14 @@ namespace superbblas {
             T *r = nullptr;
             if (hip.alloc) {
                 r = (T *)hip.alloc(sizeof(T) * n, HIP);
-            } else {
+            } else if (deviceId(hip) >= 0) {
 #    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
                 hipCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(hip)));
 #    else
                 hipCheck(hipMalloc(&r, sizeof(T) * n));
 #    endif
+            } else {
+                hipCheck(hipHostAlloc(&r, sizeof(T) * n, hipHostAllocPortable));
             }
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
@@ -423,7 +436,10 @@ namespace superbblas {
                 if (getAllocations(hip.session).count((void *)r) > 0)
                     throw std::runtime_error("Ups! Allocator returned a pointer already in use");
                 getAllocations(hip.session)[(void *)r] = sizeof(T) * n;
-                getGpuMemUsed(hip.session) += double(sizeof(T) * n);
+                if (deviceId(hip) >= 0)
+                    getGpuMemUsed(hip.session) += double(sizeof(T) * n);
+                else
+                    getCpuMemUsed(hip.session) += double(sizeof(T) * n);
             }
 
             check_ptr_align<T>(r);
@@ -443,7 +459,10 @@ namespace superbblas {
             // Remove annotation
             if (getTrackingMemory() && getAllocations(hip.session).count((void *)ptr) > 0) {
                 const auto &it = getAllocations(hip.session).find((void *)ptr);
-                getGpuMemUsed(hip.session) -= double(it->second);
+                if (deviceId(hip) >= 0)
+                    getGpuMemUsed(hip.session) -= double(it->second);
+                else
+                    getCpuMemUsed(hip.session) -= double(it->second);
                 getAllocations(hip.session).erase(it);
             }
 
@@ -451,7 +470,7 @@ namespace superbblas {
             setDevice(hip);
             if (hip.dealloc) {
                 hip.dealloc((void *)ptr, HIP);
-            } else {
+            } else if (deviceId(hip) >= 0) {
 #    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
                 causalConnectTo(getStream(hip), getAllocStream(hip));
                 hipCheck(hipFreeAsync((void *)ptr, getAllocStream(hip)));
@@ -459,6 +478,9 @@ namespace superbblas {
                 sync(hip);
                 hipCheck(hipFree((void *)ptr));
 #    endif
+            } else {
+                sync(hip);
+                hipCheck(hipFreeHost((void *)ptr));
             }
         }
 #endif
@@ -481,48 +503,66 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_THRUST
 
         /// Copy n values from v to w
+        /// \param v: first element to read
+        /// \param xpu0: context of v
+        /// \param n: number of elements to copy
+        /// \param w: first element to write
+        /// \param xpu1: context of w
 
         template <typename T, typename XPU0, typename XPU1>
         void copy_n(const T *v, XPU0 xpu0, std::size_t n, T *w, XPU1 xpu1) {
             if (n == 0 || v == w) return;
 
-            constexpr bool v_is_on_cpu = std::is_same<XPU0, Cpu>::value;
-            constexpr bool w_is_on_cpu = std::is_same<XPU1, Cpu>::value;
+            const bool v_is_on_cpu = deviceId(xpu0) == CPU_DEVICE_ID;
+            const bool w_is_on_cpu = deviceId(xpu1) == CPU_DEVICE_ID;
 
             if (v_is_on_cpu && w_is_on_cpu) {
                 // Both pointers are on cpu
+
+                // Synchronize the contexts just in case there is disguised cpu context on a gpu context
+                sync(xpu0);
+                sync(xpu1);
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
                 for (std::size_t i = 0; i < n; ++i) w[i] = v[i];
 
-            } else if (v_is_on_cpu != w_is_on_cpu) {
+            }
+#ifdef SUPERBBLAS_USE_GPU
+            else if (v_is_on_cpu != w_is_on_cpu) {
                 // One pointer is on device and the other on host
-                setDevice(xpu0);
-                setDevice(xpu1);
-#ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(
-                    cudaMemcpyAsync(w, v, sizeof(T) * n,
-                                    !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice,
-                                    !v_is_on_cpu ? getStream(xpu0) : getStream(xpu1)));
-                sync(xpu0);
-                sync(xpu1);
-#elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(
-                    hipMemcpyAsync(w, v, sizeof(T) * n,
-                                   !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice,
-                                   !v_is_on_cpu ? getStream(xpu0) : getStream(xpu1)));
-                sync(xpu0);
-                sync(xpu1);
-#else
-                throw std::runtime_error("superbblas compiled with GPU support!");
-#endif
 
+                // Perform the operation on the first context stream if it is a gpu (disguised cpu or not)
+                constexpr bool op_on_first = !std::is_same<XPU0, Cpu>::value;
+                GpuStream stream;
+                if (op_on_first) {
+                    causalConnectTo(xpu1, xpu0);
+                    setDevice(xpu0);
+                    stream = getStream(xpu0);
+                } else {
+                    causalConnectTo(xpu0, xpu1);
+                    setDevice(xpu1);
+                    stream = getStream(xpu1);
+                }
+#    ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(cudaMemcpyAsync(
+                    w, v, sizeof(T) * n,
+                    !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice, stream));
+#    elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(hipMemcpyAsync(
+                    w, v, sizeof(T) * n,
+                    !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice, stream));
+#    endif
+                if (op_on_first) {
+                    causalConnectTo(xpu0, xpu1);
+                } else {
+                    causalConnectTo(xpu1, xpu0);
+                }
             } else {
                 // Both pointers are on device
                 causalConnectTo(xpu1, xpu0);
                 setDevice(xpu0);
-#ifdef SUPERBBLAS_USE_CUDA
+#    ifdef SUPERBBLAS_USE_CUDA
                 if (deviceId(xpu0) == deviceId(xpu1)) {
                     cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
                                               getStream(xpu0)));
@@ -530,7 +570,7 @@ namespace superbblas {
                     cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
                                                   sizeof(T) * n, getStream(xpu0)));
                 }
-#elif defined(SUPERBBLAS_USE_HIP)
+#    elif defined(SUPERBBLAS_USE_HIP)
                 if (deviceId(xpu0) == deviceId(xpu1)) {
                     hipCheck(hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice,
                                             getStream(xpu0)));
@@ -538,11 +578,12 @@ namespace superbblas {
                     hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
                                                 getStream(xpu0)));
                 }
-#else
+#    else
                 throw std::runtime_error("superbblas compiled with GPU support!");
-#endif
+#    endif
                 causalConnectTo(xpu0, xpu1);
             }
+#endif // SUPERBBLAS_USE_GPU
         }
 
         /// Vector type a la python, that is, operator= does a reference not a copy

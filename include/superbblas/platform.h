@@ -109,6 +109,9 @@ namespace superbblas {
 
             /// Return a CPU context with the same session
             Cpu toCpu() const { return *this; }
+
+            /// Create a new context but with a cpu device
+            Cpu toCpuPinned() const { return *this; }
         };
 
         /// Return a device identification
@@ -231,6 +234,7 @@ namespace superbblas {
 
         struct Cuda {
             int device;
+            int backup_device;
             GpuStream stream;
             GpuStream alloc_stream;
             cublasHandle_t cublasHandle;
@@ -248,9 +252,15 @@ namespace superbblas {
 
             /// Create a new context but with a different stream
             Cuda withNewStream(GpuStream new_stream) const {
-                return Cuda{device,       new_stream,     alloc_stream,
-                            cublasHandle, cusparseHandle, cusolverDnHandle,
-                            alloc,        dealloc,        session};
+                return Cuda{device,       device,         new_stream,       alloc_stream,
+                            cublasHandle, cusparseHandle, cusolverDnHandle, alloc,
+                            dealloc,      session};
+            }
+
+            /// Create a new context but with a cpu device
+            Cuda toCpuPinned() const {
+                return Cuda{CPU_DEVICE_ID,  device,           stream, alloc_stream, cublasHandle,
+                            cusparseHandle, cusolverDnHandle, alloc,  dealloc,      session};
             }
         };
 
@@ -263,7 +273,8 @@ namespace superbblas {
         inline void setDevice(Cuda cuda) {
             int currentDevice;
             cudaCheck(cudaGetDevice(&currentDevice));
-            if (currentDevice != deviceId(cuda)) cudaCheck(cudaSetDevice(deviceId(cuda)));
+            int gpu_device = deviceId(cuda) == CPU_DEVICE_ID ? cuda.backup_device : cuda.device;
+            if (currentDevice != gpu_device) cudaCheck(cudaSetDevice(gpu_device));
         }
 
         /// Return a string identifying the platform
@@ -367,6 +378,7 @@ namespace superbblas {
 
         struct Hip {
             int device;
+            int backup_device;
             GpuStream stream;
             hipblasHandle_t hipblasHandle;
             hipsparseHandle_t hipsparseHandle;
@@ -387,6 +399,20 @@ namespace superbblas {
                            hipblasHandle, hipsparseHandle, hipsolverDnHandle,
                            alloc,         dealloc,         session};
             }
+
+            /// Create a new context but with a cpu device
+            Hip toCpuPinned() const {
+                return Hip{CPU_DEVICE_ID,
+                           device,
+                           stream,
+                           alloc_stream,
+                           hipblasHandle,
+                           hipsparseHandle,
+                           hipsolverDnHandle,
+                           alloc,
+                           dealloc,
+                           session};
+            }
         };
 
         /// Return a device identification
@@ -398,7 +424,8 @@ namespace superbblas {
         inline void setDevice(Hip hip) {
             int currentDevice;
             hipCheck(hipGetDevice(&currentDevice));
-            if (currentDevice != deviceId(hip)) hipCheck(hipSetDevice(deviceId(hip)));
+            int gpu_device = deviceId(hip) == CPU_DEVICE_ID ? hip.backup_device : hip.device;
+            if (currentDevice != gpu_device) hipCheck(hipSetDevice(gpu_device));
         }
 
         /// Return a string identifying the platform
@@ -579,18 +606,25 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_CUDA
         detail::Cuda toCuda(Session session) const {
-            return detail::Cuda{device,        *stream,         *stream,
-                                *cublasHandle, *cusparseHandle, *cusolverDnHandle,
-                                alloc,         dealloc,         session};
+            return detail::Cuda{device,        device,          *stream,           *stream,
+                                *cublasHandle, *cusparseHandle, *cusolverDnHandle, alloc,
+                                dealloc,       session};
         }
 
         detail::Cuda toGpu(Session session) const { return toCuda(session); }
 
 #elif defined(SUPERBBLAS_USE_HIP)
         detail::Hip toHip(Session session) const {
-            return detail::Hip{device,         *stream,          *stream,
-                               *hipblasHandle, *hipsparseHandle, *hipsolverDnHandle,
-                               alloc,          dealloc,          session};
+            return detail::Hip{device,
+                               device,
+                               *stream,
+                               *stream,
+                               *hipblasHandle,
+                               *hipsparseHandle,
+                               *hipsolverDnHandle,
+                               alloc,
+                               dealloc,
+                               session};
         }
 
         detail::Hip toGpu(Session session) const { return toHip(session); }

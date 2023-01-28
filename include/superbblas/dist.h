@@ -891,8 +891,10 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param toSend: list of tensor ranges to be sent for each component
         /// \param v0: origin data to send
+        /// \param xpubuff0: context to hold the mpi sender buffer
         /// \param o1: dimension labels for the destination tensor
         /// \param toReceive: list of tensor ranges to receive
+        /// \param xpubuff1: context to hold the mpi receiver buffer
         /// \param v1: destination data
         /// \param comm: communication
         /// \param co: coordinate linearization order
@@ -1025,9 +1027,11 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param toSend: list of tensor ranges to be sent for each component
         /// \param v0: origin data to send
+        /// \param xpubuff0: context to hold the mpi sender buffer
         /// \param o1: dimension labels for the destination tensor
         /// \param toReceive: list of tensor ranges to receive
         /// \param v1: destination data
+        /// \param xpubuff0: context to hold the mpi sender buffer
         /// \param comm: communication
         /// \param co: coordinate linearization order
         /// \param alpha: factor applied to sending tensors
@@ -1087,6 +1091,48 @@ namespace superbblas {
         /// \param o0: dimension labels for the origin tensor
         /// \param toSend: list of tensor ranges to be sent for each component
         /// \param v0: origin data to send
+        /// \param xpubuff0: context to hold the mpi sender buffer
+        /// \param o1: dimension labels for the destination tensor
+        /// \param toReceive: list of tensor ranges to receive
+        /// \param v1: destination data
+        /// \param xpubuff0: context to hold the mpi sender buffer
+        /// \param comm: communication
+        /// \param co: coordinate linearization order
+        /// \param alpha: factor applied to sending tensors
+        ///
+        /// NOTE: choose size_t as the IndexType in case the local volume is too large
+
+        template <std::size_t Nd0, typename XPUbuff0, typename XPUbuff1, std::size_t Nd1,
+                  typename T, typename Q, typename XPU0, typename XPU1, typename XPUr,
+                  typename Comm, typename EWOp>
+        Request
+        send_receive_choose_size(const Order<Nd0> &o0, const std::vector<Proc_ranges<Nd0>> &toSend,
+                                 const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                                 XPUbuff0 xpubuff0, const Order<Nd1> &o1,
+                                 const Proc_ranges<Nd1> &toReceive,
+                                 const Component<Nd1, Q, XPUr> &v1, XPUbuff1 xpubuff1, Comm comm,
+                                 EWOp, CoorOrder co, typename elem<T>::type alpha) {
+
+            bool use_size_t = false;
+            for (const auto &r : toSend)
+                if (maximum_volume(r) >= (std::size_t)std::numeric_limits<IndexType>::max())
+                    use_size_t = true;
+            if (maximum_volume(toReceive) >= (std::size_t)std::numeric_limits<IndexType>::max())
+                use_size_t = true;
+
+            if (!use_size_t) {
+                return send_receive<IndexType>(o0, toSend, v0, xpubuff0, o1, toReceive, v1,
+                                               xpubuff1, comm, EWOp{}, co, alpha);
+            } else {
+                return send_receive<std::size_t>(o0, toSend, v0, xpubuff0, o1, toReceive, v1,
+                                                 xpubuff1, comm, EWOp{}, co, alpha);
+            }
+        }
+
+        /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
+        /// \param o0: dimension labels for the origin tensor
+        /// \param toSend: list of tensor ranges to be sent for each component
+        /// \param v0: origin data to send
         /// \param o1: dimension labels for the destination tensor
         /// \param toReceive: list of tensor ranges to receive
         /// \param v1: destination data
@@ -1102,46 +1148,50 @@ namespace superbblas {
                              const Component<Nd1, Q, XPUr> &v1, Comm comm, EWOp, CoorOrder co,
                              typename elem<T>::type alpha) {
 
-            bool use_size_t = false;
-            for (const auto &r : toSend)
-                if (maximum_volume(r) >= (std::size_t)std::numeric_limits<IndexType>::max())
-                    use_size_t = true;
-            if (maximum_volume(toReceive) >= (std::size_t)std::numeric_limits<IndexType>::max())
-                use_size_t = true;
-
+            // Whether to allow the use of gpu buffers for the sender/receiver buffers
             static const bool use_mpi_gpu = [] {
                 if (getUseMPIGpu() == 0) return test_support_for_mpi_gpu();
                 return getUseMPIGpu() > 0;
             }();
 
-            if (!use_mpi_gpu || (v0.first.size() == 0 && v0.second.size() == 0)) {
-                if (!use_size_t) {
-                    return send_receive<IndexType>(o0, toSend, v0, Cpu{}, o1, toReceive, v1, Cpu{},
-                                                   comm, EWOp{}, co, alpha);
-                } else {
-                    return send_receive<std::size_t>(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
-                                                     Cpu{}, comm, EWOp{}, co, alpha);
+            if (!use_mpi_gpu                                       // not use gpu-aware
+                || (v0.first.size() == 0 && v0.second.size() == 0) // v0 is empty
+                || v0.second.size() > 0                            // v0 has some cpu components
+                || deviceId(v1.it.ctx()) == CPU_DEVICE_ID          // v1 is on cpu
+            ) {
+                // Use mpi send/receive buffers on cpu memory
+#ifdef SUPERBBLAS_USE_GPU
+                // Make the sender/receiver buffers on host pinned memory to improve the transfer rates copying
+                // data from/to the gpus
+                if (v0.first.size() > 0) {
+                    Gpu gpu0 = v0.first.front().it.ctx().toCpuPinned();
+                    if (deviceId(v1.it.ctx()) >= 0) {
+                        return send_receive_choose_size(o0, toSend, v0, gpu0, o1, toReceive, v1,
+                                                        v1.it.ctx().toCpuPinned(), comm, EWOp{}, co,
+                                                        alpha);
+                    } else {
+                        return send_receive_choose_size(o0, toSend, v0, gpu0, o1, toReceive, v1,
+                                                        Cpu{}, comm, EWOp{}, co, alpha);
+                    }
+                } else if (deviceId(v1.it.ctx()) >= 0) {
+                    return send_receive_choose_size(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
+                                                    v1.it.ctx().toCpuPinned(), comm, EWOp{}, co,
+                                                    alpha);
                 }
-            } else if (v0.second.size() == 0) {
-                if (!use_size_t) {
-                    return send_receive<IndexType>(o0, toSend, v0, v0.first.front().it.ctx(), o1,
-                                                   toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
-                                                   alpha);
-                } else {
-                    return send_receive<std::size_t>(o0, toSend, v0, v0.first.front().it.ctx(), o1,
-                                                     toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
-                                                     alpha);
-                }
+#endif // SUPERBBLAS_USE_GPU
+                return send_receive_choose_size(o0, toSend, v0, Cpu{}, o1, toReceive, v1, Cpu{},
+                                                comm, EWOp{}, co, alpha);
+            }
+
+            // Use mpi send/receive buffers on gpu memory
+            if (v0.second.size() == 0) {
+                return send_receive_choose_size(o0, toSend, v0, v0.first.front().it.ctx(), o1,
+                                                toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
+                                                alpha);
             } else {
-                if (!use_size_t) {
-                    return send_receive<IndexType>(o0, toSend, v0, v0.second.front().it.ctx(), o1,
-                                                   toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
-                                                   alpha);
-                } else {
-                    return send_receive<std::size_t>(o0, toSend, v0, v0.second.front().it.ctx(), o1,
-                                                     toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
-                                                     alpha);
-                }
+                return send_receive_choose_size(o0, toSend, v0, v0.second.front().it.ctx(), o1,
+                                                toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
+                                                alpha);
             }
         }
 
