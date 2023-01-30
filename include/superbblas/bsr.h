@@ -448,8 +448,6 @@ namespace superbblas {
                     static_assert(sizeof(IndexType) == 4);
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
-                    IndexType ki = volume(v.kroni);
-                    IndexType kd = volume(v.krond);
                     descrA_other = std::shared_ptr<cusparseSpMatDescr_t>(
                         new cusparseSpMatDescr_t, [](cusparseSpMatDescr_t *p) {
                             cusparseDestroySpMat(*p);
@@ -597,7 +595,6 @@ namespace superbblas {
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
                 IndexType block_cols = num_cols / block_size / ki;
-                IndexType num_blocks = jj.size();
 
                 if (ly == RowMajor && lx == RowMajor) {
                     // Contract the Kronecker part: for each direction mu do:

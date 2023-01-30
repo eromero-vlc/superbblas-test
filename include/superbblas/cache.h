@@ -121,19 +121,24 @@ namespace superbblas {
             void insert(const K &k, const V &v, std::size_t size) {
                 Cache<K, V, H> &cache = get<K, V, H, T>();
 
+                // Remove the entries associated to the key
+                {
+                    auto it = cache.cache.find(k);
+                    if (it != cache.cache.end()) {
+                        Timestamp ts = it->second.ts;
+                        currentSize -= cache.deleteTs(ts);
+                        timestamps.erase(ts);
+                    }
+                }
+
+                // Don't store in cache entries bigger than the maximum cache size
+                if (size > maxCacheSize) return;
+
                 // Remove entries in the cache until the new entry fits in
                 while (size + currentSize > maxCacheSize && !timestamps.empty()) {
                     auto it = timestamps.begin();
                     currentSize -= it->second->deleteTs(it->first);
                     timestamps.erase(it);
-                }
-
-                // Remove the entries associated to the key
-                auto it = cache.cache.find(k);
-                if (it != cache.cache.end()) {
-                    Timestamp ts = it->second.ts;
-                    currentSize -= cache.deleteTs(ts);
-                    timestamps.erase(ts);
                 }
 
                 /// In the extremely unlikely situation that it gets out of timestamp, clean everything and start over

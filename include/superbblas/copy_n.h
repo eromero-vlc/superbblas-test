@@ -298,6 +298,24 @@ namespace superbblas {
         }
 
         template <typename IndexType, typename T, typename Q, typename EWOP>
+        struct copy_n_gen_callback {
+            struct Data {
+                typename elem<T>::type alpha;
+                const T *v;
+                const IndexType *indicesv;
+                IndexType n;
+                Q *w;
+                const IndexType *indicesw;
+            };
+            static void CUDART_CB f(void *data_) {
+                Data *data = (Data *)data_;
+                copy_n_lower<IndexType>(data->alpha, data->v, data->indicesv, Cpu{}, data->n,
+                                        data->w, data->indicesw, Cpu{}, EWOP{});
+                delete data;
+            }
+        };
+
+        template <typename IndexType, typename T, typename Q, typename EWOP>
         void copy_n_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                     const IndexType *indicesv, Gpu xpuv, IndexType n, Q *w,
                                     const IndexType *indicesw, Gpu xpuw, EWOP) {
@@ -310,27 +328,41 @@ namespace superbblas {
 
             causalConnectTo(xpuw, xpuv);
             setDevice(xpuv);
-            if (indicesv == nullptr) {
-                auto itv = encapsulate_pointer(v);
-                if (alpha == typename elem<T>::type{1}) {
-                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{}, xpuv);
-                } else {
-                    copy_n_same_dev_thrust<IndexType, T, Q>(
-                        thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
-                        EWOP{}, xpuv);
-                }
+            if (deviceId(xpuv) == CPU_DEVICE_ID) {
+                auto *data = new typename copy_n_gen_callback<IndexType, T, Q, EWOP>::Data{
+                    alpha, v, indicesv, n, w, indicesw};
+#    ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(cudaLaunchHostFunc(
+                    getStream(xpuv), (cudaHostFn_t)copy_n_gen_callback<IndexType, T, Q, EWOP>::f,
+                    data));
+#    elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(hipLaunchHostFunc(
+                    getStream(xpuv), (hipHostFn_t)copy_n_gen_callback<IndexType, T, Q, EWOP>::f,
+                    data));
+#    endif
             } else {
-                auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
-                                                             encapsulate_pointer(indicesv));
-                if (alpha == typename elem<T>::type{1}) {
-                    copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{}, xpuv);
+                if (indicesv == nullptr) {
+                    auto itv = encapsulate_pointer(v);
+                    if (alpha == typename elem<T>::type{1}) {
+                        copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{}, xpuv);
+                    } else {
+                        copy_n_same_dev_thrust<IndexType, T, Q>(
+                            thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
+                            EWOP{}, xpuv);
+                    }
                 } else {
-                    copy_n_same_dev_thrust<IndexType, T, Q>(
-                        thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
-                        EWOP{}, xpuv);
+                    auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
+                                                                 encapsulate_pointer(indicesv));
+                    if (alpha == typename elem<T>::type{1}) {
+                        copy_n_same_dev_thrust<IndexType, T, Q>(itv, n, w, indicesw, EWOP{}, xpuv);
+                    } else {
+                        copy_n_same_dev_thrust<IndexType, T, Q>(
+                            thrust::make_transform_iterator(itv, scale<T>(alpha)), n, w, indicesw,
+                            EWOP{}, xpuv);
+                    }
                 }
+                causalConnectTo(xpuv, xpuw);
             }
-            causalConnectTo(xpuv, xpuw);
         }
 
         /// Set the first `n` elements to zero
@@ -425,7 +457,7 @@ namespace superbblas {
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
             else if (indicesv != nullptr) {
-                vector<Q, Gpu> v0(n, xpuv);
+                vector<Q, Gpu> v0(n, xpuv, is_buffer{});
                 copy_n_lower<IndexType>(alpha, v, indicesv, xpuv, n, v0.data(), nullptr, xpuv,
                                         EWOp::Copy{});
                 copy_n_lower<IndexType>(Q{1}, v0.data(), nullptr, xpuv, n, w, indicesw, xpuw,
@@ -434,10 +466,10 @@ namespace superbblas {
 
             // Otherwise copy v to xpuw, and then copy it to the w[indices[i]]
             else {
-                vector<T, Gpu> v1(n, xpuw);
-                copy_n_lower<IndexType>(T{1}, v, indicesv, xpuv, n, v1.data(), nullptr, xpuw,
+                vector<T, Gpu> v1(n, xpuw, is_buffer{});
+                copy_n_lower<IndexType>(T{1}, v, nullptr, xpuv, n, v1.data(), nullptr, xpuw,
                                         EWOp::Copy{});
-                copy_n_lower<IndexType>(T{alpha}, v1.data(), nullptr, xpuw, n, w, indicesw, xpuw,
+                copy_n_lower<IndexType>(alpha, v1.data(), nullptr, xpuw, n, w, indicesw, xpuw,
                                         EWOP{});
             }
         })
@@ -475,7 +507,7 @@ namespace superbblas {
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
             else if (indicesv != nullptr) {
-                vector<Q, XPU0> v0(n, xpu0);
+                vector<Q, XPU0> v0(n, xpu0, is_buffer{});
                 copy_n_lower<IndexType>(alpha, v, indicesv, xpu0, n, v0.data(), nullptr, xpu0,
                                         EWOp::Copy{});
                 copy_n_lower<IndexType>(Q{1}, v0.data(), nullptr, xpu0, n, w, indicesw, xpu1,
@@ -484,10 +516,10 @@ namespace superbblas {
 
             // Otherwise copy v to xpu1, and then copy it to the w[indices[i]]
             else {
-                vector<T, XPU1> v1(n, xpu1);
-                copy_n_lower<IndexType>(T{1}, v, indicesv, xpu0, n, v1.data(), nullptr, xpu1,
+                vector<T, XPU1> v1(n, xpu1, is_buffer{});
+                copy_n_lower<IndexType>(T{1}, v, nullptr, xpu0, n, v1.data(), nullptr, xpu1,
                                         EWOp::Copy{});
-                copy_n_lower<IndexType>(T{alpha}, v1.data(), nullptr, xpu1, n, w, indicesw, xpu1,
+                copy_n_lower<IndexType>(alpha, v1.data(), nullptr, xpu1, n, w, indicesw, xpu1,
                                         EWOP{});
             }
         }
@@ -522,6 +554,11 @@ namespace superbblas {
                 (!std::is_same<XPUV, XPUW>::value || getStream(xpuiv) != getStream(xpuiw)))
                 causalConnectTo(xpuiw, xpuv);
             copy_n_lower(alpha, v, indicesv, xpuv, n, w, indicesw, xpuw, EWOP{});
+            if (indicesv != nullptr && getStream(xpuw) != getStream(xpuiv))
+                causalConnectTo(xpuv, xpuiv);
+            if (indicesw != nullptr && getStream(xpuw) != getStream(xpuiw) &&
+                (!std::is_same<XPUV, XPUW>::value || getStream(xpuiv) != getStream(xpuiw)))
+                causalConnectTo(xpuv, xpuiw);
         }
 
         /// Copy n values with displacements if given, w[indicesw[i]] (+)= alpha * v[indicesv[i]]
@@ -858,6 +895,26 @@ namespace superbblas {
         }
 
         template <typename IndexType, typename T, typename Q, typename EWOP>
+        struct copy_n_blocking_callback {
+            struct Data {
+                typename elem<T>::type alpha;
+                const T *v;
+                IndexType blocking;
+                const IndexType *indicesv;
+                IndexType n;
+                Q *w;
+                const IndexType *indicesw;
+            };
+            static void CUDART_CB f(void *data_) {
+                Data *data = (Data *)data_;
+                copy_n_blocking_lower<IndexType>(data->alpha, data->v, data->blocking,
+                                                 data->indicesv, Cpu{}, data->n, data->w,
+                                                 data->indicesw, Cpu{}, EWOP{});
+                delete data;
+            }
+        };
+
+        template <typename IndexType, typename T, typename Q, typename EWOP>
         void copy_n_blocking_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                              IndexType blocking, const IndexType *indicesv,
                                              Gpu xpuv, IndexType n, Q *w, const IndexType *indicesw,
@@ -871,27 +928,44 @@ namespace superbblas {
 
             causalConnectTo(xpuw, xpuv);
             setDevice(xpuv);
-            if (indicesv == nullptr && indicesw != nullptr) {
-                thrust::for_each_n(thrust_par_on(xpuv),
-                                   thrust::make_counting_iterator(IndexType(0)), blocking * n,
-                                   copy_n_blocking_elem_w<IndexType, typename cuda_complex<T>::type,
-                                                          typename cuda_complex<Q>::type, EWOP>(
-                                       alpha, (typename cuda_complex<T>::type *)v, blocking,
-                                       (typename cuda_complex<Q>::type *)w, indicesw));
-            } else if (indicesv != nullptr && indicesw == nullptr) {
-                thrust::for_each_n(thrust_par_on(xpuv),
-                                   thrust::make_counting_iterator(IndexType(0)), blocking * n,
-                                   copy_n_blocking_elem_v<IndexType, typename cuda_complex<T>::type,
-                                                          typename cuda_complex<Q>::type, EWOP>(
-                                       alpha, (typename cuda_complex<T>::type *)v, blocking,
-                                       indicesv, (typename cuda_complex<Q>::type *)w));
+            if (deviceId(xpuv) == CPU_DEVICE_ID) {
+                auto *data = new typename copy_n_blocking_callback<IndexType, T, Q, EWOP>::Data{
+                    alpha, v, blocking, indicesv, n, w, indicesw};
+#    ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(cudaLaunchHostFunc(
+                    getStream(xpuv),
+                    (cudaHostFn_t)copy_n_blocking_callback<IndexType, T, Q, EWOP>::f, data));
+#    elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(hipLaunchHostFunc(
+                    getStream(xpuv),
+                    (hipHostFn_t)copy_n_blocking_callback<IndexType, T, Q, EWOP>::f, data));
+#    endif
             } else {
-                thrust::for_each_n(
-                    thrust_par_on(xpuv), thrust::make_counting_iterator(IndexType(0)), blocking * n,
-                    copy_n_blocking_elem_v_and_w<IndexType, typename cuda_complex<T>::type,
-                                                 typename cuda_complex<Q>::type, EWOP>(
-                        alpha, (typename cuda_complex<T>::type *)v, blocking, indicesv,
-                        (typename cuda_complex<Q>::type *)w, indicesw));
+                if (indicesv == nullptr && indicesw != nullptr) {
+                    thrust::for_each_n(
+                        thrust_par_on(xpuv), thrust::make_counting_iterator(IndexType(0)),
+                        blocking * n,
+                        copy_n_blocking_elem_w<IndexType, typename cuda_complex<T>::type,
+                                               typename cuda_complex<Q>::type, EWOP>(
+                            alpha, (typename cuda_complex<T>::type *)v, blocking,
+                            (typename cuda_complex<Q>::type *)w, indicesw));
+                } else if (indicesv != nullptr && indicesw == nullptr) {
+                    thrust::for_each_n(
+                        thrust_par_on(xpuv), thrust::make_counting_iterator(IndexType(0)),
+                        blocking * n,
+                        copy_n_blocking_elem_v<IndexType, typename cuda_complex<T>::type,
+                                               typename cuda_complex<Q>::type, EWOP>(
+                            alpha, (typename cuda_complex<T>::type *)v, blocking, indicesv,
+                            (typename cuda_complex<Q>::type *)w));
+                } else {
+                    thrust::for_each_n(
+                        thrust_par_on(xpuv), thrust::make_counting_iterator(IndexType(0)),
+                        blocking * n,
+                        copy_n_blocking_elem_v_and_w<IndexType, typename cuda_complex<T>::type,
+                                                     typename cuda_complex<Q>::type, EWOP>(
+                            alpha, (typename cuda_complex<T>::type *)v, blocking, indicesv,
+                            (typename cuda_complex<Q>::type *)w, indicesw));
+                }
             }
             causalConnectTo(xpuv, xpuw);
         }
@@ -919,16 +993,16 @@ namespace superbblas {
                                         EWOP{});
 
             } else if (indicesv != nullptr) {
-                vector<Q, Gpu> v0(n * blocking, xpuv);
+                vector<Q, Gpu> v0(n * blocking, xpuv, is_buffer{});
                 copy_n_blocking_lower<IndexType>(alpha, v, blocking, indicesv, xpuv, n, v0.data(),
                                                  nullptr, xpuv, EWOp::Copy{});
                 copy_n_blocking_lower<IndexType>(Q{1}, v0.data(), blocking, nullptr, xpuv, n, w,
                                                  indicesw, xpuw, EWOP{});
             } else {
-                vector<Q, Gpu> w0(n * blocking, xpuw);
-                copy_n_blocking_lower<IndexType>(alpha, v, blocking, indicesv, xpuv, n, w0.data(),
+                vector<T, Gpu> v0(n * blocking, xpuw, is_buffer{});
+                copy_n_blocking_lower<IndexType>(T{1}, v, blocking, nullptr, xpuv, n, v0.data(),
                                                  nullptr, xpuw, EWOp::Copy{});
-                copy_n_blocking_lower<IndexType>(Q{1}, w0.data(), blocking, nullptr, xpuw, n, w,
+                copy_n_blocking_lower<IndexType>(alpha, v0.data(), blocking, nullptr, xpuw, n, w,
                                                  indicesw, xpuw, EWOP{});
             }
         })
@@ -950,11 +1024,12 @@ namespace superbblas {
                 copy_n_blocking_lower<IndexType>(Q{1}, v0.data(), blocking, nullptr, xpuv, n, w,
                                                  indicesw, xpuw, EWOP{});
             } else if (indicesw) {
-                vector<Q, XPUW> w0(n * blocking, xpuw);
-                copy_n_lower<IndexType>(alpha, v, nullptr, xpuv, blocking * n, w0.data(), nullptr,
+                vector<T, XPUW> v0(n * blocking, xpuw);
+                copy_n_lower<IndexType>(T{1}, v, nullptr, xpuv, blocking * n, v0.data(), nullptr,
                                         xpuw, EWOp::Copy{});
-                copy_n_blocking_lower<IndexType>(Q{1}, w0.data(), blocking, (IndexType *)nullptr,
-                                                 xpuw, n, w, indicesw, xpuw, EWOP{});
+                copy_n_blocking_lower<IndexType>(alpha, v0.data(), blocking,
+                                                 (IndexType *)nullptr, xpuw, n, w, indicesw, xpuw,
+                                                 EWOP{});
             } else {
                 copy_n_lower<IndexType>(alpha, v, nullptr, xpuv, blocking * n, w, nullptr, xpuw,
                                         EWOP{});
@@ -992,6 +1067,11 @@ namespace superbblas {
                 (!std::is_same<XPUV, XPUW>::value || getStream(xpuiv) != getStream(xpuiw)))
                 causalConnectTo(xpuiw, xpuv);
             copy_n_blocking_lower(alpha, v, blocking, indicesv, xpuv, n, w, indicesw, xpuw, EWOP{});
+            if (indicesv != nullptr && getStream(xpuiv) != getStream(xpuw))
+                causalConnectTo(xpuv, xpuiv);
+            if (indicesw != nullptr && getStream(xpuiw) != getStream(xpuw) &&
+                (!std::is_same<XPUV, XPUW>::value || getStream(xpuiv) != getStream(xpuiw)))
+                causalConnectTo(xpuv, xpuiw);
         }
     }
 }

@@ -110,46 +110,6 @@ namespace superbblas {
             MPI_Comm comm;       ///< MPI communicator
         };
 
-        /// Throw exception if MPI reports an error
-        /// \param error: MPI returned error
-
-        inline void MPI_check(int error) {
-            if (error == MPI_SUCCESS) return;
-
-            char s[MPI_MAX_ERROR_STRING];
-            int len;
-            MPI_Error_string(error, s, &len);
-
-#    define CHECK_AND_THROW(ERR)                                                                   \
-        if (error == ERR) {                                                                        \
-            std::stringstream ss;                                                                  \
-            ss << "MPI error: " #ERR ": " << std::string(&s[0], &s[0] + len);                      \
-            throw std::runtime_error(ss.str());                                                    \
-        }
-
-            CHECK_AND_THROW(MPI_ERR_BUFFER);
-            CHECK_AND_THROW(MPI_ERR_COUNT);
-            CHECK_AND_THROW(MPI_ERR_TYPE);
-            CHECK_AND_THROW(MPI_ERR_TAG);
-            CHECK_AND_THROW(MPI_ERR_COMM);
-            CHECK_AND_THROW(MPI_ERR_RANK);
-            CHECK_AND_THROW(MPI_ERR_ROOT);
-            CHECK_AND_THROW(MPI_ERR_GROUP);
-            CHECK_AND_THROW(MPI_ERR_OP);
-            CHECK_AND_THROW(MPI_ERR_TOPOLOGY);
-            CHECK_AND_THROW(MPI_ERR_DIMS);
-            CHECK_AND_THROW(MPI_ERR_ARG);
-            CHECK_AND_THROW(MPI_ERR_UNKNOWN);
-            CHECK_AND_THROW(MPI_ERR_TRUNCATE);
-            CHECK_AND_THROW(MPI_ERR_OTHER);
-            CHECK_AND_THROW(MPI_ERR_INTERN);
-            CHECK_AND_THROW(MPI_ERR_IN_STATUS);
-            CHECK_AND_THROW(MPI_ERR_PENDING);
-            CHECK_AND_THROW(MPI_ERR_REQUEST);
-            CHECK_AND_THROW(MPI_ERR_LASTCODE);
-#    undef CHECK_AND_THROW
-        }
-
         /// Return a communicator for a MPI_Comm
         inline MpiComm get_comm(MPI_Comm comm) {
             int nprocs, rank;
@@ -385,7 +345,7 @@ namespace superbblas {
 
             // NOTE: MPI calls have problems mixing null pointers with GPU pointers
             // if (deviceId(xpu) != CPU_DEVICE_ID && n == 0) n = MpiTypeSize / sizeof(T);
-            vector<T, XPUbuff> buf(n, xpu, MpiTypeSize);
+            vector<T, XPUbuff> buf(n, xpu, is_buffer{}, MpiTypeSize);
 
             return PackedValues<T, XPUbuff>{buf, counts, displ};
         }
@@ -852,7 +812,7 @@ namespace superbblas {
             //if (deviceId(xpu) != CPU_DEVICE_ID && buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
             // Allocate the buffer
-            vector<T, XPUbuff> buf(buf_count, xpu, MpiTypeSize);
+            vector<T, XPUbuff> buf(buf_count, xpu, is_buffer{}, MpiTypeSize);
 
             return UnpackedValues<IndexType, T, XPUbuff, XPU>{
                 buf, counts, displ, indices_buf, indices, indices_groups, blocksize};

@@ -1,6 +1,7 @@
 #ifndef __SUPERBBLAS_BLAS__
 #define __SUPERBBLAS_BLAS__
 
+#include "alloc.h"
 #include "blas_cpu_tmpl.hpp"
 #include "performance.h"
 #include "platform.h"
@@ -108,61 +109,6 @@ namespace superbblas {
 
     namespace detail {
 
-        /// Return a pointer aligned or nullptr if it isn't possible
-        /// \param alignment: desired alignment of the returned pointer
-        /// \param size: desired allocated size
-        /// \param ptr: given pointer to align
-        /// \param space: storage of the given pointer
-
-        template <typename T>
-        T *align(std::size_t alignment, std::size_t size, T *ptr, std::size_t space) {
-            if (alignment == 0) return ptr;
-
-                // std::align isn't is old versions of gcc
-#if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
-            void *ptr0 = (void *)ptr;
-            return (T *)std::align(alignment, size, ptr0, space);
-#else
-            uintptr_t new_ptr = ((uintptr_t(ptr) + (alignment - 1)) & ~(alignment - 1));
-            if (new_ptr + size - uintptr_t(ptr) > space) return nullptr;
-            return (T *)new_ptr;
-#endif
-        }
-
-        /// Set default alignment, which is alignof(T) excepting when supporting GPUs that complex
-        /// types need special alignment
-
-        template <typename T> struct default_alignment {
-            constexpr static std::size_t alignment = 0;
-        };
-
-        /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
-#ifdef SUPERBBLAS_USE_GPU
-        template <typename T> struct default_alignment<std::complex<T>> {
-            constexpr static std::size_t alignment = sizeof(std::complex<T>);
-        };
-#endif
-
-        /// Check the given pointer has proper alignment
-        /// \param v: ptr to check
-
-        template <typename T> void check_ptr_align(const void *ptr) {
-            if (ptr != nullptr &&
-                align(default_alignment<T>::alignment, sizeof(T), ptr, sizeof(T)) == nullptr)
-                throw std::runtime_error("Ups! Unaligned pointer");
-        }
-
-        /// is_complex<T>::value is true if T is std::complex
-        /// \tparam T: type to inspect
-
-        template <typename T> struct is_complex { static const bool value = false; };
-        template <typename T> struct is_complex<std::complex<T>> {
-            static const bool value = true;
-        };
-        template <typename T> struct is_complex<const T> {
-            static const bool value = is_complex<T>::value;
-        };
-
         /// is_array<T>::value is true if T is std::array
         /// \tparam T: type to inspect
 
@@ -173,317 +119,6 @@ namespace superbblas {
         template <typename T> struct is_array<const T> {
             static const bool value = is_array<T>::value;
         };
-
-#ifdef SUPERBBLAS_USE_GPU
-        /// Wait until everything finishes in the given context
-        /// \param xpu: context
-
-        inline void sync(const Gpu &xpu) {
-#    ifdef SUPERBBLAS_USE_CUDA
-            cudaCheck(cudaStreamSynchronize(xpu.stream));
-#    else
-            hipCheck(hipStreamSynchronize(xpu.stream));
-#    endif
-        }
-
-        /// Wait until everything finishes in the device of the given context
-        /// \param xpu: context
-
-        inline void syncLegacyStream(const Gpu &xpu) {
-            setDevice(xpu);
-#    ifdef SUPERBBLAS_USE_CUDA
-            cudaCheck(cudaDeviceSynchronize());
-#    else
-            hipCheck(hipDeviceSynchronize());
-#    endif
-        }
-#endif
-
-        /// Wait until everything finishes in the given context
-        /// \param ctx: context
-        ///
-        /// NOTE: the Cpu implementation does nothing
-
-        inline void sync(Cpu) {}
-
-        /// Wait until everything finishes in the device of the given context
-        /// \param ctx: context
-        ///
-        /// NOTE: the Cpu implementation does nothing
-
-        inline void syncLegacyStream(Cpu) {}
-
-        /// Force the second stream to wait until everything finishes until now from
-        /// the first stream.
-        /// \param s0: first stream
-        /// \param s1: second stream
-
-        void causalConnectTo(GpuStream s0, GpuStream s1) {
-            // Trivial case: do nothing when both are the same stream
-            if (s0 == s1) return;
-
-                // Otherwise, record an event on s0 and wait on s1
-#ifdef SUPERBBLAS_USE_CUDA
-            cudaEvent_t ev;
-            cudaCheck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
-            cudaCheck(cudaEventRecord(ev, s0));
-            cudaCheck(cudaStreamWaitEvent(s1, ev));
-            cudaCheck(cudaEventDestroy(ev));
-#elif defined(SUPERBBLAS_USE_HIP)
-            hipEvent_t ev;
-            hipCheck(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
-            hipCheck(hipEventRecord(ev, s0));
-            hipCheck(hipStreamWaitEvent(s1, ev));
-            hipCheck(hipEventDestroy(ev));
-#else
-            throw std::runtime_error("superbblas compiled with GPU support!");
-#endif
-        }
-
-        /// Force the second context to wait until everything finishes until now from
-        /// the first context.
-        /// \param xpu0: first context
-        /// \param xpu1: second context
-
-        template <typename XPU1> void causalConnectTo(const Cpu &, const XPU1 &) {
-            // Trivial case: do noting when the first context is on cpu
-        }
-
-        template <typename XPU0,
-                  typename std::enable_if<!std::is_same<XPU0, Cpu>::value, bool>::type = true>
-        void causalConnectTo(const XPU0 &xpu0, const Cpu &) {
-            // Trivial case: sync the first context when the second is on cpu
-            sync(xpu0);
-        }
-
-#ifdef SUPERBBLAS_USE_GPU
-        void causalConnectTo(const Gpu &xpu0, const Gpu &xpu1) {
-            setDevice(xpu0);
-            causalConnectTo(getStream(xpu0), getStream(xpu1));
-        }
-#endif // SUPERBBLAS_USE_GPU
-
-        /// Allocate memory on a device
-        /// \param n: number of element of type `T` to allocate
-        /// \param cpu: context
-
-        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
-        T *allocate(std::size_t n, Cpu cpu) {
-            // Shortcut for zero allocations
-            if (n == 0) return nullptr;
-
-            tracker<Cpu> _t("allocating CPU", cpu);
-
-            // Do the allocation
-            T *r = new T[n];
-            if (r == nullptr) std::runtime_error("Memory allocation failed!");
-
-            // Annotate allocation
-            if (getTrackingMemory()) {
-                if (getAllocations(cpu.session).count((void *)r) > 0)
-                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations(cpu.session)[(void *)r] = sizeof(T) * n;
-                getCpuMemUsed(cpu.session) += double(sizeof(T) * n);
-            }
-
-            check_ptr_align<T>(r);
-            return r;
-        }
-
-        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
-        T *allocate(std::size_t n, Cpu cpu) {
-            return (T *)allocate<typename T::value_type>(n * 2, cpu);
-        }
-
-        /// Deallocate memory on a device
-        /// \param ptr: pointer to the memory to deallocate
-        /// \param cpu: context
-
-        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
-        void deallocate(T *ptr, Cpu cpu) {
-            // Shortcut for zero allocations
-            if (!ptr) return;
-
-            tracker<Cpu> _t("deallocating CPU", cpu);
-
-            // Remove annotation
-            if (getTrackingMemory() && getAllocations(cpu.session).count((void *)ptr) > 0) {
-                const auto &it = getAllocations(cpu.session).find((void *)ptr);
-                getCpuMemUsed(cpu.session) -= double(it->second);
-                getAllocations(cpu.session).erase(it);
-            }
-
-            // Deallocate the pointer
-            delete[] ptr;
-        }
-
-        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
-        void deallocate(T *ptr, Cpu cpu) {
-            deallocate<typename T::value_type>((typename T::value_type *)ptr, cpu);
-        }
-
-#ifdef SUPERBBLAS_USE_CUDA
-
-        /// Allocate memory on a device
-        /// \param n: number of element of type `T` to allocate
-        /// \param cuda: context
-
-        template <typename T> T *allocate(std::size_t n, Cuda cuda) {
-            // Shortcut for zero allocations
-            if (n == 0) return nullptr;
-
-            tracker<Cuda> _t("allocating CUDA", cuda);
-
-            // Do the allocation
-            setDevice(cuda);
-            T *r = nullptr;
-            if (cuda.alloc) {
-                r = (T *)cuda.alloc(sizeof(T) * n, CUDA);
-            } else if (deviceId(cuda) >= 0) {
-#    if CUDART_VERSION >= 11020
-                cudaCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(cuda)));
-#    else
-                cudaCheck(cudaMalloc(&r, sizeof(T) * n));
-#    endif
-            } else {
-                cudaCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
-            }
-            if (r == nullptr) std::runtime_error("Memory allocation failed!");
-
-            // Annotate allocation
-            if (getTrackingMemory()) {
-                if (getAllocations(cuda.session).count((void *)r) > 0)
-                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations(cuda.session)[(void *)r] = sizeof(T) * n;
-                if (deviceId(cuda) >= 0)
-                    getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
-                else
-                    getCpuMemUsed(cuda.session) += double(sizeof(T) * n);
-            }
-
-            check_ptr_align<T>(r);
-            return r;
-        }
-
-        /// Deallocate memory on a device
-        /// \param ptr: pointer to the memory to deallocate
-        /// \param cuda: context
-
-        template <typename T> void deallocate(T *ptr, Cuda cuda) {
-            // Shortcut for zero allocations
-            if (!ptr) return;
-
-            tracker<Cuda> _t("deallocating CUDA", cuda);
-
-            // Remove annotation
-            if (getTrackingMemory() && getAllocations(cuda.session).count((void *)ptr) > 0) {
-                const auto &it = getAllocations(cuda.session).find((void *)ptr);
-                if (deviceId(cuda) >= 0)
-                    getGpuMemUsed(cuda.session) -= double(it->second);
-                else
-                    getCpuMemUsed(cuda.session) -= double(it->second);
-                getAllocations(cuda.session).erase(it);
-            }
-
-            // Deallocate the pointer
-            setDevice(cuda);
-            if (cuda.dealloc) {
-                cuda.dealloc((void *)ptr, CUDA);
-            } else if (deviceId(cuda) >= 0) {
-#    if CUDART_VERSION >= 11020
-                causalConnectTo(getStream(cuda), getAllocStream(cuda));
-                cudaCheck(cudaFreeAsync((void *)ptr, getAllocStream(cuda)));
-#    else
-                sync(cuda);
-                cudaCheck(cudaFree((void *)ptr));
-#    endif
-            } else {
-                sync(cuda);
-                cudaCheck(cudaFreeHost((void *)ptr));
-            }
-        }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-
-        /// Allocate memory on a device
-        /// \param n: number of element of type `T` to allocate
-        /// \param hip: context
-
-        template <typename T> T *allocate(std::size_t n, Hip hip) {
-            // Shortcut for zero allocations
-            if (n == 0) return nullptr;
-
-            tracker<Hip> _t("allocating HIP", hip);
-
-            // Do the allocation
-            setDevice(hip);
-            T *r = nullptr;
-            if (hip.alloc) {
-                r = (T *)hip.alloc(sizeof(T) * n, HIP);
-            } else if (deviceId(hip) >= 0) {
-#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                hipCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(hip)));
-#    else
-                hipCheck(hipMalloc(&r, sizeof(T) * n));
-#    endif
-            } else {
-                hipCheck(hipHostAlloc(&r, sizeof(T) * n, hipHostAllocPortable));
-            }
-            if (r == nullptr) std::runtime_error("Memory allocation failed!");
-
-            // Annotate allocation
-            if (getTrackingMemory()) {
-                if (getAllocations(hip.session).count((void *)r) > 0)
-                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations(hip.session)[(void *)r] = sizeof(T) * n;
-                if (deviceId(hip) >= 0)
-                    getGpuMemUsed(hip.session) += double(sizeof(T) * n);
-                else
-                    getCpuMemUsed(hip.session) += double(sizeof(T) * n);
-            }
-
-            check_ptr_align<T>(r);
-            return r;
-        }
-
-        /// Deallocate memory on a device
-        /// \param ptr: pointer to the memory to deallocate
-        /// \param hip: context
-
-        template <typename T> void deallocate(T *ptr, Hip hip) {
-            // Shortcut for zero allocations
-            if (!ptr) return;
-
-            tracker<Hip> _t("deallocating HIP", hip);
-
-            // Remove annotation
-            if (getTrackingMemory() && getAllocations(hip.session).count((void *)ptr) > 0) {
-                const auto &it = getAllocations(hip.session).find((void *)ptr);
-                if (deviceId(hip) >= 0)
-                    getGpuMemUsed(hip.session) -= double(it->second);
-                else
-                    getCpuMemUsed(hip.session) -= double(it->second);
-                getAllocations(hip.session).erase(it);
-            }
-
-            // Deallocate the pointer
-            setDevice(hip);
-            if (hip.dealloc) {
-                hip.dealloc((void *)ptr, HIP);
-            } else if (deviceId(hip) >= 0) {
-#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                causalConnectTo(getStream(hip), getAllocStream(hip));
-                hipCheck(hipFreeAsync((void *)ptr, getAllocStream(hip)));
-#    else
-                sync(hip);
-                hipCheck(hipFree((void *)ptr));
-#    endif
-            } else {
-                sync(hip);
-                hipCheck(hipFreeHost((void *)ptr));
-            }
-        }
-#endif
 
 #ifdef SUPERBBLAS_USE_THRUST
         /// Replace std::complex by thrust complex
@@ -502,6 +137,24 @@ namespace superbblas {
         };
 #endif // SUPERBBLAS_USE_THRUST
 
+        template <typename T, typename XPU0, typename XPU1>
+        void copy_n(const T *SB_RESTRICT v, XPU0 xpu0, std::size_t n, T *SB_RESTRICT w, XPU1 xpu1);
+
+#ifdef SUPERBBLAS_USE_GPU
+        template <typename T> struct copy_n_callback {
+            struct Data {
+                const T *v;
+                T *w;
+                std::size_t n;
+            };
+            static void CUDART_CB f(void *data_) {
+                Data *data = (Data *)data_;
+                copy_n<T>(data->v, Cpu{}, data->n, data->w, Cpu{});
+                delete data;
+            }
+        };
+#endif // SUPERBBLAS_USE_GPU
+
         /// Copy n values from v to w
         /// \param v: first element to read
         /// \param xpu0: context of v
@@ -510,13 +163,14 @@ namespace superbblas {
         /// \param xpu1: context of w
 
         template <typename T, typename XPU0, typename XPU1>
-        void copy_n(const T *v, XPU0 xpu0, std::size_t n, T *w, XPU1 xpu1) {
+        void copy_n(const T *SB_RESTRICT v, XPU0 xpu0, std::size_t n, T *SB_RESTRICT w, XPU1 xpu1) {
             if (n == 0 || v == w) return;
 
             const bool v_is_on_cpu = deviceId(xpu0) == CPU_DEVICE_ID;
             const bool w_is_on_cpu = deviceId(xpu1) == CPU_DEVICE_ID;
 
-            if (v_is_on_cpu && w_is_on_cpu) {
+            if (v_is_on_cpu && w_is_on_cpu &&
+                (std::is_same<XPU0, Cpu>::value || std::is_same<XPU1, Cpu>::value)) {
                 // Both pointers are on cpu
 
                 // Synchronize the contexts just in case there is disguised cpu context on a gpu context
@@ -529,7 +183,20 @@ namespace superbblas {
 
             }
 #ifdef SUPERBBLAS_USE_GPU
-            else if (v_is_on_cpu != w_is_on_cpu) {
+            else if (v_is_on_cpu && w_is_on_cpu) {
+                // Both pointers are on cpu but disguised as gpu contexts
+                causalConnectTo(xpu1, xpu0);
+                setDevice(xpu0);
+                auto *data = new typename copy_n_callback<T>::Data{v, w, n};
+#    ifdef SUPERBBLAS_USE_CUDA
+                cudaCheck(
+                    cudaLaunchHostFunc(getStream(xpu0), (cudaHostFn_t)copy_n_callback<T>::f, data));
+#    elif defined(SUPERBBLAS_USE_HIP)
+                hipCheck(
+                    hipLaunchHostFunc(getStream(xpu0), (hipHostFn_t)copy_n_callback<T>::f, data));
+#    endif
+                causalConnectTo(xpu0, xpu1);
+            } else if (v_is_on_cpu != w_is_on_cpu) {
                 // One pointer is on device and the other on host
 
                 // Perform the operation on the first context stream if it is a gpu (disguised cpu or not)
@@ -586,6 +253,9 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_GPU
         }
 
+        /// Tag class to indicate a buffer allocation
+        struct is_buffer {};
+
         /// Vector type a la python, that is, operator= does a reference not a copy
         /// \param T: type of the vector's elements
         /// \param XPU: device type, one of Cpu, Cuda, Gpuamd
@@ -601,26 +271,29 @@ namespace superbblas {
             vector() : vector(0, XPU{}) {}
 
             /// Construct a vector with `n` elements a with context device `xpu_`
-            vector(std::size_t n, XPU xpu_,
-                   std::size_t alignment = default_alignment<T_no_const>::alignment)
-                : n(n),
-                  ptr(allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu_),
-                      [=](const T_no_const *ptr) { deallocate(ptr, xpu_); }),
-                  xpu(xpu_) {
-                std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
-                ptr_aligned = (T *)align(alignment, sizeof(T) * n, ptr.get(), size);
+            vector(std::size_t n, XPU xpu_, std::size_t alignment = 0) : n(n), xpu(xpu_) {
+                auto alloc = allocateResouce<T_no_const>(
+                    n, xpu, alignment == 0 ? default_alignment<T_no_const>::alignment : alignment);
+                ptr_aligned = alloc.first;
+                ptr = alloc.second;
+            }
+
+            /// Construct a vector with `n` elements a with context device `xpu_`
+            vector(std::size_t n, XPU xpu_, is_buffer, std::size_t alignment = 0)
+                : n(n), xpu(xpu_) {
+                auto alloc = allocateBufferResouce<T_no_const>(
+                    n, xpu, alignment == 0 ? default_alignment<T_no_const>::alignment : alignment);
+                ptr_aligned = alloc.first;
+                ptr = alloc.second;
             }
 
             /// Construct a vector from a given pointer `ptr` with `n` elements and with context
             /// device `xpu`. `ptr` is not deallocated after the destruction of the `vector`.
             vector(std::size_t n, T *ptr, XPU xpu)
-                : n(n),
-                  ptr_aligned(ptr),
-                  ptr((T_no_const *)ptr, [&](const T_no_const *) {}),
-                  xpu(xpu) {}
+                : n(n), ptr_aligned(ptr), ptr((char *)ptr, [&](const char *) {}), xpu(xpu) {}
 
             /// Low-level constructor
-            vector(std::size_t n, T *ptr_aligned, std::shared_ptr<T_no_const> ptr, XPU xpu)
+            vector(std::size_t n, T *ptr_aligned, std::shared_ptr<char> ptr, XPU xpu)
                 : n(n), ptr_aligned(ptr_aligned), ptr(ptr), xpu(xpu) {}
 
             /// Conversion from `vector<T, XPU>` to `vector<const T, XPU>`
@@ -702,10 +375,10 @@ namespace superbblas {
                 return vector{n, ptr_aligned, ptr, new_xpu};
             }
 
-            std::size_t n;                   ///< Number of allocated `T` elements
-            T *ptr_aligned;                  ///< Pointer aligned
-            std::shared_ptr<T_no_const> ptr; ///< Pointer to the allocated memory
-            XPU xpu;                         ///< Context
+            std::size_t n;             ///< Number of allocated `T` elements
+            T *ptr_aligned;            ///< Pointer aligned
+            std::shared_ptr<char> ptr; ///< Pointer to the allocated memory
+            XPU xpu;                   ///< Context
         };
 
         /// Construct a `vector<T, Cpu>` with the given pointer and context
@@ -1156,7 +829,7 @@ namespace superbblas {
         /// Generate a new stream that branching from the given one that will merge back with `anabranch_end`
         /// \param xpu: context to branch
 
-        Gpu anabranch_begin(const Gpu &xpu) {
+        inline Gpu anabranch_begin(const Gpu &xpu) {
             // Create a new stream, connect it causally from the given context
             setDevice(xpu);
             GpuStream new_stream = createStream();
@@ -1165,7 +838,7 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        Cpu anabranch_begin(const Cpu &xpu) {
+        inline Cpu anabranch_begin(const Cpu &xpu) {
             // Do nothing when context is on cpu
             return xpu;
         }
@@ -1174,7 +847,7 @@ namespace superbblas {
         /// Join the context back the given context in `anabranch_begin`
         /// \param xpu: context to merge
 
-        void anabranch_end(const Gpu &xpu) {
+        inline void anabranch_end(const Gpu &xpu) {
             // Connect the new stream to the original stream
             setDevice(xpu);
             causalConnectTo(getStream(xpu), getAllocStream(xpu));
@@ -1184,7 +857,7 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        void anabranch_end(const Cpu &) {
+        inline void anabranch_end(const Cpu &) {
             // Do nothing when context is on cpu
         }
     }

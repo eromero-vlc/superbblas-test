@@ -13,6 +13,10 @@
 #    include <omp.h>
 #endif
 
+#ifdef SUPERBBLAS_USE_MPI
+#    include "mpi.h"
+#endif
+
 #ifdef __CUDACC__
 #    define __HOST__ __host__
 #    define __DEVICE__ __device__
@@ -440,7 +444,7 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_GPU
         /// Create a new stream
 
-        GpuStream createStream() {
+        inline GpuStream createStream() {
             GpuStream stream;
 #    ifdef SUPERBBLAS_USE_CUDA
             detail::cudaCheck(cudaStreamCreate(&stream));
@@ -455,7 +459,7 @@ namespace superbblas {
         /// Destroy stream
         /// \param stream: stream to destroy
 
-        void destroyStream(GpuStream stream) {
+        inline void destroyStream(GpuStream stream) {
 #    ifdef SUPERBBLAS_USE_CUDA
             detail::cudaCheck(cudaStreamDestroy(stream));
 #    elif defined(SUPERBBLAS_USE_HIP)
@@ -498,7 +502,136 @@ namespace superbblas {
         /// \param xpu: context
 
         inline GpuStream getAllocStream(const Gpu &xpu) { return xpu.alloc_stream; }
+
+        /// Wait until everything finishes in the given context
+        /// \param xpu: context
+
+        inline void sync(const Gpu &xpu) {
+#    ifdef SUPERBBLAS_USE_CUDA
+            cudaCheck(cudaStreamSynchronize(xpu.stream));
+#    else
+            hipCheck(hipStreamSynchronize(xpu.stream));
+#    endif
+        }
+
+        /// Wait until everything finishes in the device of the given context
+        /// \param xpu: context
+
+        inline void syncLegacyStream(const Gpu &xpu) {
+            setDevice(xpu);
+#    ifdef SUPERBBLAS_USE_CUDA
+            cudaCheck(cudaDeviceSynchronize());
+#    else
+            hipCheck(hipDeviceSynchronize());
+#    endif
+        }
 #endif // SUPERBBLAS_USE_GPU
+
+        /// Wait until everything finishes in the given context
+        /// \param ctx: context
+        ///
+        /// NOTE: the Cpu implementation does nothing
+
+        inline void sync(Cpu) {}
+
+        /// Wait until everything finishes in the device of the given context
+        /// \param ctx: context
+        ///
+        /// NOTE: the Cpu implementation does nothing
+
+        inline void syncLegacyStream(Cpu) {}
+
+        /// Force the second stream to wait until everything finishes until now from
+        /// the first stream.
+        /// \param s0: first stream
+        /// \param s1: second stream
+
+        inline void causalConnectTo(GpuStream s0, GpuStream s1) {
+            // Trivial case: do nothing when both are the same stream
+            if (s0 == s1) return;
+
+                // Otherwise, record an event on s0 and wait on s1
+#ifdef SUPERBBLAS_USE_CUDA
+            cudaEvent_t ev;
+            cudaCheck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
+            cudaCheck(cudaEventRecord(ev, s0));
+            cudaCheck(cudaStreamWaitEvent(s1, ev));
+            cudaCheck(cudaEventDestroy(ev));
+#elif defined(SUPERBBLAS_USE_HIP)
+            hipEvent_t ev;
+            hipCheck(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
+            hipCheck(hipEventRecord(ev, s0));
+            hipCheck(hipStreamWaitEvent(s1, ev));
+            hipCheck(hipEventDestroy(ev));
+#else
+            throw std::runtime_error("superbblas compiled with GPU support!");
+#endif
+        }
+
+        /// Force the second context to wait until everything finishes until now from
+        /// the first context.
+        /// \param xpu0: first context
+        /// \param xpu1: second context
+
+        template <typename XPU1> void causalConnectTo(const Cpu &, const XPU1 &) {
+            // Trivial case: do noting when the first context is on cpu
+        }
+
+        template <typename XPU0,
+                  typename std::enable_if<!std::is_same<XPU0, Cpu>::value, bool>::type = true>
+        void causalConnectTo(const XPU0 &xpu0, const Cpu &) {
+            // Trivial case: sync the first context when the second is on cpu
+            sync(xpu0);
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        inline void causalConnectTo(const Gpu &xpu0, const Gpu &xpu1) {
+            setDevice(xpu0);
+            causalConnectTo(getStream(xpu0), getStream(xpu1));
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+#ifdef SUPERBBLAS_USE_MPI
+        /// Throw exception if MPI reports an error
+        /// \param error: MPI returned error
+
+        inline void MPI_check(int error) {
+            if (error == MPI_SUCCESS) return;
+
+            char s[MPI_MAX_ERROR_STRING];
+            int len;
+            MPI_Error_string(error, s, &len);
+
+#    define CHECK_AND_THROW(ERR)                                                                   \
+        if (error == ERR) {                                                                        \
+            std::stringstream ss;                                                                  \
+            ss << "MPI error: " #ERR ": " << std::string(&s[0], &s[0] + len);                      \
+            throw std::runtime_error(ss.str());                                                    \
+        }
+
+            CHECK_AND_THROW(MPI_ERR_BUFFER);
+            CHECK_AND_THROW(MPI_ERR_COUNT);
+            CHECK_AND_THROW(MPI_ERR_TYPE);
+            CHECK_AND_THROW(MPI_ERR_TAG);
+            CHECK_AND_THROW(MPI_ERR_COMM);
+            CHECK_AND_THROW(MPI_ERR_RANK);
+            CHECK_AND_THROW(MPI_ERR_ROOT);
+            CHECK_AND_THROW(MPI_ERR_GROUP);
+            CHECK_AND_THROW(MPI_ERR_OP);
+            CHECK_AND_THROW(MPI_ERR_TOPOLOGY);
+            CHECK_AND_THROW(MPI_ERR_DIMS);
+            CHECK_AND_THROW(MPI_ERR_ARG);
+            CHECK_AND_THROW(MPI_ERR_UNKNOWN);
+            CHECK_AND_THROW(MPI_ERR_TRUNCATE);
+            CHECK_AND_THROW(MPI_ERR_OTHER);
+            CHECK_AND_THROW(MPI_ERR_INTERN);
+            CHECK_AND_THROW(MPI_ERR_IN_STATUS);
+            CHECK_AND_THROW(MPI_ERR_PENDING);
+            CHECK_AND_THROW(MPI_ERR_REQUEST);
+            CHECK_AND_THROW(MPI_ERR_LASTCODE);
+#    undef CHECK_AND_THROW
+        }
+#endif // SUPERBBLAS_USE_MPI
     }
 
     class Context {
