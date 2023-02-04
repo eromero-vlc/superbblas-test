@@ -288,10 +288,28 @@ namespace superbblas {
             return r;
         }
 
+        /// Throw an error if not all processes give the same value
+        /// \param t: value to test
+        /// \param comm: communicator
+        ///
+        /// NOTE: the no MPI version does nothing
+
+        template <typename T, typename H = Hash<T>>
+        void check_consistency(const T &, const SelfComm &) {}
+
 #ifdef SUPERBBLAS_USE_MPI
         /// Communication barrier
 
-        inline void barrier(MpiComm comm) { MPI_Barrier(comm.comm); }
+        inline void barrier(MpiComm comm) { MPI_check(MPI_Barrier(comm.comm)); }
+
+        template <typename T, typename H = Hash<T>>
+        void check_consistency(const T &t, const MpiComm &comm) {
+            if (getDebugLevel() == 0 || comm.nprocs == 1) return;
+            const std::size_t h0 = H::hash(t) + (std::size_t)comm.nprocs;
+            std::size_t h = h0;
+            MPI_check(MPI_Bcast(&h, sizeof(h) / sizeof(int), MPI_INT, 0, comm.comm));
+            if (h0 != h) std::runtime_error("check_consistency failed!");
+        }
 
         /// Vectors used in MPI communications
         template <typename T, typename XPUbuff> struct PackedValues {
@@ -343,8 +361,9 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Exceeded the maximum package size: increase `MpiTypeSize`");
 
-            // NOTE: MPI calls have problems mixing null pointers with GPU pointers
-            // if (deviceId(xpu) != CPU_DEVICE_ID && n == 0) n = MpiTypeSize / sizeof(T);
+            // NOTE: MPI calls may have problems passing null pointers as buffers
+            if (n == 0) n = MpiTypeSize / sizeof(T);
+
             vector<T, XPUbuff> buf(n, xpu, is_buffer{}, MpiTypeSize);
 
             return PackedValues<T, XPUbuff>{buf, counts, displ};
@@ -807,9 +826,10 @@ namespace superbblas {
                 blocksize = std::get<5>(it->second.value);
             }
 
-            // NOTE: MPI calls have problems mixing null pointers with GPU pointers
             std::size_t buf_count = (displ.back() + counts.back()) * (MpiTypeSize / sizeof(T));
-            //if (deviceId(xpu) != CPU_DEVICE_ID && buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
+
+            // NOTE: MPI calls may have problems passing null pointers as buffers
+            if (buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
             // Allocate the buffer
             vector<T, XPUbuff> buf(buf_count, xpu, is_buffer{}, MpiTypeSize);
@@ -847,6 +867,13 @@ namespace superbblas {
             _t.cost = (double)sizeof(T) * r.indices.size() * r.blocksize;
         }
 
+        /// Return a counter, used by `send_receive`
+
+        inline std::size_t &getSendReceiveCallNumer() {
+            static std::size_t call_number = 0;
+            return call_number;
+        }
+
         /// Asynchronous sending and receiving
         /// \param o0: dimension labels for the origin tensor
         /// \param toSend: list of tensor ranges to be sent for each component
@@ -869,9 +896,19 @@ namespace superbblas {
                              const Component<Nd1, Q, XPUr> &v1, XPUbuff1 xpubuff1, MpiComm comm,
                              EWOP, CoorOrder co, typename elem<T>::type alpha) {
 
-            tracker<Cpu> _t("packing", Cpu{});
-
             if (comm.nprocs <= 1) return [] {};
+
+            // Annotate the calls so that the returned lambda can be paired with this call
+            std::size_t call_number = ++getSendReceiveCallNumer();
+
+            struct tag_type {}; // For hashing template arguments
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("send_receive"), call_number, o0, o1,
+                                                  co, alpha, typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
+            tracker<Cpu> _t("packing", Cpu{});
 
             // Pack v0 and prepare for receiving data from other processes
             PackedValues<Q, XPUbuff0> v0ToSend =
@@ -879,7 +916,7 @@ namespace superbblas {
             UnpackedValues<IndexType, Q, XPUbuff1, XPUr> v1ToReceive =
                 prepare_unpack<IndexType>(toReceive, v1, xpubuff1, comm, co, EWOP{});
 
-            // Do the MPI communication
+            // Do a ton of checking
             static MPI_Datatype dtype = get_mpi_datatype();
             assert(v0ToSend.counts.size() == comm.nprocs);
             assert(v0ToSend.displ.size() == comm.nprocs);
@@ -895,12 +932,16 @@ namespace superbblas {
                    v1ToReceive.buf.size() * sizeof(Q));
             assert(v0ToSend.counts[comm.rank] == 0);
             assert(v1ToReceive.counts[comm.rank] == 0);
+            assert(align(dtype_size, v0ToSend.buf.size() * sizeof(T), v0ToSend.buf.data(),
+                         v0ToSend.buf.size() * sizeof(T)) == v0ToSend.buf.data());
+            assert(align(dtype_size, v1ToReceive.buf.size() * sizeof(Q), v1ToReceive.buf.data(),
+                         v1ToReceive.buf.size() * sizeof(Q)) == v1ToReceive.buf.data());
             if (getDebugLevel() > 0) {
                 // Check that all processes agree in the amount of data to send/receive
-                std::vector<int> send_counts(comm.nprocs * comm.nprocs);
+                std::vector<int> send_counts(comm.rank == 0 ? comm.nprocs * comm.nprocs : 0);
                 MPI_check(MPI_Gather(v0ToSend.counts.data(), comm.nprocs, MPI_INT,
                                      send_counts.data(), comm.nprocs, MPI_INT, 0, comm.comm));
-                std::vector<int> recv_counts(comm.nprocs * comm.nprocs);
+                std::vector<int> recv_counts(comm.rank == 0 ? comm.nprocs * comm.nprocs : 0);
                 MPI_check(MPI_Gather(v1ToReceive.counts.data(), comm.nprocs, MPI_INT,
                                      recv_counts.data(), comm.nprocs, MPI_INT, 0, comm.comm));
                 if (comm.rank == 0)
@@ -911,6 +952,8 @@ namespace superbblas {
                                 throw std::runtime_error(
                                     "send_receive: inconsistent communication pattern");
             }
+
+            // Do the MPI communication
             std::vector<MPI_Request> r;
             const int tag = 0;
             const unsigned int T_num = dtype_size / sizeof(T);
@@ -963,6 +1006,13 @@ namespace superbblas {
             // Do this later
             // NOTE: keep `v0ToSend` and `v1ToReceive` around until `MPI_Ialltoallv` is finished
             return [=]() mutable {
+                // Make sure that all processes wait for the copy operations in the same order
+                if (getDebugLevel() > 0) {
+                    check_consistency(std::make_tuple(std::string("wait for send_receive"),
+                                                      call_number, typeid(tag_type).hash_code()),
+                                      comm);
+                }
+
                 // Wait for the MPI communication to finish
                 {
                     tracker<Cpu> _t("MPI wait", Cpu{});
@@ -1114,12 +1164,12 @@ namespace superbblas {
                 return getUseMPIGpu() > 0;
             }();
 
+            // Use mpi send/receive buffers on cpu memory
             if (!use_mpi_gpu                                       // not use gpu-aware
                 || (v0.first.size() == 0 && v0.second.size() == 0) // v0 is empty
                 || v0.second.size() > 0                            // v0 has some cpu components
                 || deviceId(v1.it.ctx()) == CPU_DEVICE_ID          // v1 is on cpu
             ) {
-                // Use mpi send/receive buffers on cpu memory
 #ifdef SUPERBBLAS_USE_GPU
                 // Make the sender/receiver buffers on host pinned memory to improve the transfer rates copying
                 // data from/to the gpus
@@ -1899,8 +1949,11 @@ namespace superbblas {
                     from1, dim1);
 
                 // Check whether communications can be avoided
-                need_comms = may_need_communications(p0, from0, size0, dim0, o0, p1, from1, dim1,
-                                                     o1, EWOP{});
+                if (comm.nprocs > 1)
+                    need_comms = may_need_communications(p0, from0, size0, dim0, o0, p1, from1,
+                                                         dim1, o1, EWOP{});
+                else
+                    need_comms = false;
 
                 // Save the results
                 cache.insert(key, {toSend, toReceive, need_comms}, 0);
@@ -2018,18 +2071,27 @@ namespace superbblas {
         /// \param co: coordinate linearization order
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
-                  typename XPU0, typename XPU1, typename EWOp>
+                  typename XPU0, typename XPU1, typename EWOP>
         Request
         copy_request(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
                      const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                      const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
                      const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                     const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop,
+                     const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop,
                      CoorOrder co, bool do_test = true) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("copy_request"), alpha, p0, from0,
+                                                  size0, dim0, o0, p1, from1, dim1, o1, co, do_test,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             if (getDebugLevel() >= 2 && do_test) {
                 ns_copy_test::test_copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
-                                        v1, comm, EWOp{}, co);
+                                        v1, comm, EWOP{}, co);
             }
 
             tracker<Cpu> _t("distributed copy", p0.ctx());
@@ -2512,6 +2574,15 @@ namespace superbblas {
                 for (const auto &i : vr.first) sync(i.it.ctx());
                 for (const auto &i : vr.second) sync(i.it.ctx());
                 barrier(comm);
+            }
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("contraction"), alpha, p0, dim0, o0,
+                                                  conj0, p1, dim1, o1, conj1, beta, dimr, o_r, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
             }
 
             tracker<Cpu> _t("distributed contraction", p0.ctx());
