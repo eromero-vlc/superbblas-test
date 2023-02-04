@@ -1027,9 +1027,8 @@ namespace superbblas {
                 vector<T, XPUW> v0(n * blocking, xpuw);
                 copy_n_lower<IndexType>(T{1}, v, nullptr, xpuv, blocking * n, v0.data(), nullptr,
                                         xpuw, EWOp::Copy{});
-                copy_n_blocking_lower<IndexType>(alpha, v0.data(), blocking,
-                                                 (IndexType *)nullptr, xpuw, n, w, indicesw, xpuw,
-                                                 EWOP{});
+                copy_n_blocking_lower<IndexType>(alpha, v0.data(), blocking, nullptr, xpuw, n, w,
+                                                 indicesw, xpuw, EWOP{});
             } else {
                 copy_n_lower<IndexType>(alpha, v, nullptr, xpuv, blocking * n, w, nullptr, xpuw,
                                         EWOP{});
