@@ -123,10 +123,12 @@ hist_cpu hist_cuda hist_hip: hist_%:
 clean:
 	rm -f ${CPU_TARGETS} ${CPU_LIB_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS} ${HIP_LIB_TARGETS} storage_details
 
-known_issues:
-	# MPI_Ialltoallv hungs
-	SB_DEBUG=5 mpirun -np 4 ./dist_cpu --dim='2 1 1 2 1' --procs='2 1 1 2'
-	SB_DEBUG=5 mpirun -np 6 ./dist_cpu  --procs='1 1 2 3' --dim='4 4 4 4 64'
+known_issues: dist_cpu
+	# Hangs for Open MPI 4.0.3 since commit 3530391ab167425aacee9e42b3abcacd9c85b117 (already fixed)
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 mpirun -np 3 ./dist_cpu  --procs='1 1 1 3' --dim='1 1 1 2 4'
+	# MPI_Ialltoallv hungs (already fixed)
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 ./dist_cpu --procs='2 1 1 2' --dim='2 1 1 2 1'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 ./dist_cpu --procs='1 1 2 3' --dim='4 4 4 4 64'
 
 bsr_cuda_nsys: export CUDA_EXTRA_FLAGS := -DSUPERBBLAS_USE_NVTX -lnvToolsExt
 bsr_cuda_nsys: bsr_cuda

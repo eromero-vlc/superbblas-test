@@ -302,14 +302,14 @@ void test_copy_blocking(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep 
         copy_n_blocking<IndexType>(a, t0_xpu.data(), xpu, blocking, i0_xpu.data(), xpu,
                                    size / blocking, t0_host.data(), t0_host.ctx(), i0_host.data(),
                                    i0_host.ctx(), EWOP{});
-	sync(t0_host.ctx());
+        sync(t0_host.ctx());
         t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             copy_n_blocking<IndexType>(a, t0_xpu.data(), xpu, blocking, i0_xpu.data(), xpu,
                                        size / blocking, t0_host.data(), t0_host.ctx(),
                                        i0_host.data(), i0_host.ctx(), EWOP{});
         }
-	sync(t0_host.ctx());
+        sync(t0_host.ctx());
         double t_xpu_cpup = (w_time() - t) / nrep;
 
         copy_n_blocking<IndexType>(a, t0_xpu.data(), xpu, blocking, i0_xpu.data(), xpu,
@@ -372,7 +372,7 @@ int main(int argc, char **argv) {
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Init(&argc, &argv);
 #endif
- 
+
     // Get options
     for (int i = 1; i < argc; ++i) {
         if (std::strncmp("--size=", argv[i], 7) == 0) {

@@ -120,8 +120,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
     dummyFill(t0);
 
     // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
-    const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]};   // tnsxyzc
-    const Coor<Nd> procs1 = {procs[T], procs[N], 1, procs[X], procs[Y], procs[Z], 1}; // tnsxyzc
+    const Coor<Nd> dim1 = {dim[T], dim[N], dim[S], dim[X], dim[Y], dim[Z], dim[C]}; // tnsxyzc
+    const Coor<Nd> procs1 = {procs[T], 1, 1, procs[X], procs[Y], procs[Z], 1};      // tnsxyzc
     tensor<Nd, Scalar, XPU> t1(dim1, procs1, nprocs, rank, xpu);
 
     const bool is_cpu = deviceId(xpu) == CPU_DEVICE_ID;
@@ -163,7 +163,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 t = w_time();
             }
             for (int n = 0; n < dim[N]; ++n) {
-                const Coor<Nd - 1> from0 = {};
+                const Coor<Nd - 1> from0 = {{}};
                 const Coor<Nd> from1 = {0, n};
                 Scalar *ptr0 = t0.v.data(), *ptr1 = t1.v.data();
                 copy(1.0, t0.p.data(), 1, "xyztsc", from0, dim0, dim0, (const Scalar **)&ptr0,
@@ -190,7 +190,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 t = w_time();
             }
             for (int n = 0; n < dim[N]; ++n) {
-                const Coor<Nd - 1> from0 = {};
+                const Coor<Nd - 1> from0 = {{}};
                 const Coor<Nd> from1 = {0, n};
                 Scalar *ptr0 = t0.v.data();
                 ScalarD *ptr1 = t1.v.data();
@@ -218,8 +218,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 sync(xpu);
                 t = w_time();
             }
-            const Coor<Nd> from0 = {};
-            Coor<Nd> from1 = {};
+            const Coor<Nd> from0 = {{}};
+            Coor<Nd> from1 = {{}};
             from1[4] = 1; // Displace one on the z-direction
             Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data();
             copy(1.0, t1.p.data(), 1, "tnsxyzc", from0, dim1, dim1, (const Scalar **)&ptr0, nullptr,
@@ -267,8 +267,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
             if (rep == 1) t = w_time();
-            const Coor<Nd> from0 = {};
-            Coor<Nd> from1 = {};
+            const Coor<Nd> from0 = {{}};
+            Coor<Nd> from1 = {{}};
             Scalar *ptr1 = t1.v.data(), *ptrh = th.v.data();
             copy(1.0, t1.p.data(), 1, "tnsxyzc", from0, dim1, dim1, (const Scalar **)&ptr1, nullptr,
                  &ctx, th.p.data(), 1, "tnsxyzc", from1, dim1, &ptrh, nullptr, &ctx,
@@ -283,8 +283,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
 
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
             if (rep == 1) t = w_time();
-            const Coor<Nd> from0 = {};
-            Coor<Nd> from1 = {};
+            const Coor<Nd> from0 = {{}};
+            Coor<Nd> from1 = {{}};
             Scalar *ptrh = th.v.data(), *ptr1 = t1.v.data();
             copy(1.0, th.p.data(), 1, "tnsxyzc", from1, dim1, dim1, (const Scalar **)&ptrh, nullptr,
                  &ctx, t1.p.data(), 1, "tnsxyzc", from0, dim1, &ptr1, nullptr, &ctx,
@@ -293,6 +293,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
 #endif
                  SlowToFast, Copy);
         }
+        sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in copying halos out " << t / nrep << std::endl;
     }
@@ -309,8 +310,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 sync(xpu);
                 t = w_time();
             }
-            const Coor<Nd> from0 = {};
-            Coor<Nd> from1 = {};
+            const Coor<Nd> from0 = {{}};
+            Coor<Nd> from1 = {{}};
             int *ptr1 = t1.v.data(), *ptrh = th.v.data();
             copy(1, t1.p.data(), 1, "tnsxyzc", from0, dim1, dim1, (const int **)&ptr1, nullptr,
                  &ctx, th.p.data(), 1, "tnsxyzc", from1, dim1, &ptrh, nullptr, &ctx,
@@ -329,8 +330,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 sync(xpu);
                 t = w_time();
             }
-            const Coor<Nd> from0 = {};
-            Coor<Nd> from1 = {};
+            const Coor<Nd> from0 = {{}};
+            Coor<Nd> from1 = {{}};
             int *ptrh = th.v.data(), *ptr1 = t1.v.data();
             copy(1, th.p.data(), 1, "tnsxyzc", from1, dim1, dim1, (const int **)&ptrh, nullptr,
                  &ctx, t1.p.data(), 1, "tnsxyzc", from0, dim1, &ptr1, nullptr, &ctx,
