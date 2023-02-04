@@ -525,6 +525,13 @@ namespace superbblas {
             }
         };
 
+        /// Extend hash to std::complex
+        template <typename T> struct Hash<std::complex<T>> {
+            static std::size_t hash(std::complex<T> const &t) noexcept {
+                return Hash<std::array<T, 2>>::hash(std::array<T, 2>{std::real(t), std::imag(t)});
+            }
+        };
+
         template <class Tuple> struct TupleHash;
 
         /// Extend Hash for std::tuple
@@ -569,8 +576,6 @@ namespace superbblas {
         };
 
         /// Hash for tuples
-
-        template <class T> struct TupleHash;
 
         template <class... TupleItems> struct TupleHash<typename std::tuple<TupleItems...>> {
             using Tuple = typename std::tuple<TupleItems...>;
