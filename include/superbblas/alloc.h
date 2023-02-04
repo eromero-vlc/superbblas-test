@@ -29,16 +29,23 @@ namespace superbblas {
         template <typename T>
         T *align(std::size_t alignment, std::size_t size, T *ptr, std::size_t space) {
             if (alignment == 0) return ptr;
+            if (ptr == nullptr) return nullptr;
 
-                // std::align isn't is old versions of gcc
+            T *r = nullptr;
+            // std::align isn't in old versions of gcc
 #if !defined(__GNUC__) || __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9)
             void *ptr0 = (void *)ptr;
-            return (T *)std::align(alignment, size, ptr0, space);
+            r = (T *)std::align(alignment, size, ptr0, space);
 #else
             uintptr_t new_ptr = ((uintptr_t(ptr) + (alignment - 1)) & ~(alignment - 1));
-            if (new_ptr + size - uintptr_t(ptr) > space) return nullptr;
-            return (T *)new_ptr;
+            if (new_ptr + size - uintptr_t(ptr) > space)
+                r = nullptr;
+            else
+                r = (T *)new_ptr;
 #endif
+
+            if (r == nullptr) throw std::runtime_error("align: fail to align pointer");
+            return r;
         }
 
         /// Set default alignment, which is alignof(T) excepting when supporting GPUs that complex
@@ -59,9 +66,7 @@ namespace superbblas {
         /// \param v: ptr to check
 
         template <typename T> void check_ptr_align(const void *ptr) {
-            if (ptr != nullptr &&
-                align(default_alignment<T>::alignment, sizeof(T), ptr, sizeof(T)) == nullptr)
-                throw std::runtime_error("Ups! Unaligned pointer");
+            align<T>(default_alignment<T>::alignment, sizeof(T), (T *)ptr, sizeof(T));
         }
 
         /// Allocate memory on a device
@@ -298,11 +303,12 @@ namespace superbblas {
             // Shortcut for zero allocations
             if (n == 0) return {nullptr, std::shared_ptr<char>()};
 
-            T *ptr = allocate<T>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu);
+            using T_no_const = typename std::remove_const<T>::type;
+            T *ptr = allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu);
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
-            T *ptr_aligned = (T *)align(alignment, sizeof(T) * n, ptr, size);
+            T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
             return {ptr_aligned, std::shared_ptr<char>((char *)ptr, [=](char *ptr) {
-                        deallocate<T>((T *)ptr, xpu);
+                        deallocate<T_no_const>((T_no_const *)ptr, xpu);
                     })};
         }
 
@@ -322,7 +328,7 @@ namespace superbblas {
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
             T *ptr = nullptr;
             MPI_check(MPI_Alloc_mem(size, MPI_INFO_NULL, &ptr));
-            T *ptr_aligned = (T *)align(alignment, sizeof(T) * n, ptr, size);
+            T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
             return {ptr_aligned, std::shared_ptr<char>((char *)ptr, [=](char *ptr) {
                         MPI_check(MPI_Free_mem(ptr));
                     })};
@@ -405,7 +411,8 @@ namespace superbblas {
                 return p;
             }
 
-            T *ptr_aligned = (T *)align(alignment, sizeof(T) * n, selected_buffer.get(), size);
+            T *ptr_aligned = align<T>(alignment, sizeof(T) * n, (T *)selected_buffer.get(),
+                                      selected_buffer_size);
             return {ptr_aligned, selected_buffer};
         }
     }
