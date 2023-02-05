@@ -635,9 +635,10 @@ namespace superbblas {
                         c_cpu.data()[ij] = aux.data() + block_size * block_cols * mu +
                                            block_size * block_cols * num_nnz_per_row * col;
                     }
-                    auto a_xpu = makeSure(a_cpu, aux.ctx());
-                    auto b_xpu = makeSure(b_cpu, aux.ctx());
-                    auto c_xpu = makeSure(c_cpu, aux.ctx());
+                    constexpr bool with_buffer = true;
+                    auto a_xpu = makeSure(a_cpu, aux.ctx(), with_buffer);
+                    auto b_xpu = makeSure(b_cpu, aux.ctx(), with_buffer);
+                    auto c_xpu = makeSure(c_cpu, aux.ctx(), with_buffer);
                     xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
                                    (const T **)a_xpu.data(), block_size * block_cols * ncols,
                                    (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),

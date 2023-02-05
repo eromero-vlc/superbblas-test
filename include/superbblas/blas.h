@@ -724,9 +724,10 @@ namespace superbblas {
         /// NOTE: implementation when the vector context and the given context are of the same type
 
         template <typename T, typename XPU>
-        vector<T, XPU> makeSure(const vector<T, XPU> &v, XPU xpu) {
+        vector<T, XPU> makeSure(const vector<T, XPU> &v, XPU xpu, bool with_buffer = false) {
             if (deviceId(v.ctx()) == deviceId(xpu)) return v;
-            vector<T, XPU> r(v.size(), xpu);
+            vector<T, XPU> r = with_buffer ? vector<T, XPU>(v.size(), xpu, is_buffer{})
+                                           : vector<T, XPU>(v.size(), xpu);
             copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
             return r;
         }
@@ -739,8 +740,9 @@ namespace superbblas {
 
         template <typename T, typename XPU1, typename XPU0,
                   typename std::enable_if<!std::is_same<XPU0, XPU1>::value, bool>::type = true>
-        vector<T, XPU1> makeSure(const vector<T, XPU0> &v, XPU1 xpu1) {
-            vector<T, XPU1> r(v.size(), xpu1);
+        vector<T, XPU1> makeSure(const vector<T, XPU0> &v, XPU1 xpu1, bool with_buffer = false) {
+            vector<T, XPU1> r = with_buffer ? vector<T, XPU1>(v.size(), xpu1, is_buffer{})
+                                            : vector<T, XPU1>(v.size(), xpu1);
             copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
             return r;
         }
