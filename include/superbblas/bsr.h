@@ -395,7 +395,6 @@ namespace superbblas {
             std::shared_ptr<cusparseSpMatDescr_t>
                 descrA_other; ///< cuSparse descriptor for CSR and ELL matrices
             enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
-            mutable vector<T, Gpu> buffer; ///< Auxiliary memory used by cusparseSpMM
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
 #    endif
@@ -423,7 +422,9 @@ namespace superbblas {
                 cudaDeviceProp prop;
                 cudaCheck(cudaGetDeviceProperties(&prop, deviceId(v.i.ctx())));
                 /// TODO: ELL format is disable, it isn't correct currently
-                if (false && bsr.num_nnz_per_row >= 0 && !is_complex<T>::value && prop.major >= 8) {
+                if (false && bsr.num_nnz_per_row >= 0 && !is_complex<T>::value &&
+                    ((std::is_same<T, float>::value && prop.major >= 8) ||
+                     (std::is_same<T, double>::value && prop.major >= 8))) {
                     spFormat = FORMAT_ELL;
                 } else if (!bsr.j_has_negative_indices) {
                     spFormat = block_size == 1 ? FORMAT_CSR : FORMAT_BSR;
@@ -448,6 +449,8 @@ namespace superbblas {
                     static_assert(sizeof(IndexType) == 4);
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
+                    IndexType ki = volume(v.kroni);
+                    IndexType kd = volume(v.krond);
                     descrA_other = std::shared_ptr<cusparseSpMatDescr_t>(
                         new cusparseSpMatDescr_t, [](cusparseSpMatDescr_t *p) {
                             cusparseDestroySpMat(*p);
@@ -458,14 +461,16 @@ namespace superbblas {
                     if (spFormat == FORMAT_CSR) {
                         implementation_ = "cusparse_csr";
                         cusparseCheck(cusparseCreateCsr(
-                            &*descrA_other, num_rows, num_cols * (is_kron ? num_nnz_per_row : 1),
-                            bsr.nnz, ii.data(), jj.data(), v.it.data(), CUSPARSE_INDEX_32I,
-                            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                            &*descrA_other, num_rows / ki,
+                            num_cols / kd * (is_kron ? num_nnz_per_row : 1), bsr.nnz, ii.data(),
+                            jj.data(), v.it.data(), CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                            CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     } else {
                         implementation_ = "cusparse_ell";
                         cusparseCheck(cusparseCreateBlockedEll(
-                            &*descrA_other, num_rows, num_cols * (is_kron ? num_nnz_per_row : 1),
-                            block_size, block_size * num_nnz_per_row, jj.data(), v.it.data(),
+                            &*descrA_other, num_rows / ki,
+                            num_cols / kd * (is_kron ? num_nnz_per_row : 1), block_size,
+                            block_size * num_nnz_per_row, jj.data(), v.it.data(),
                             CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     }
                 }
@@ -532,12 +537,12 @@ namespace superbblas {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
                     cusparseCheck(cusparseCreateDnMat(
-                        &matx, !conjA ? num_cols / ki * (is_kron ? num_nnz_per_row : 1) : num_rows,
-                        ncols * ki, ldx, (void *)x, cudaType,
+                        &matx, !conjA ? num_cols / kd * (is_kron ? num_nnz_per_row : 1) : num_rows,
+                        ncols, ldx, (void *)x, cudaType,
                         lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     cusparseCheck(cusparseCreateDnMat(
-                        &maty, !conjA ? num_rows / ki : num_cols, ncols * ki, ldy, (void *)y,
-                        cudaType, ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
+                        &maty, !conjA ? num_rows / ki : num_cols, ncols, ldy, (void *)y, cudaType,
+                        ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     cusparseCheck(cusparseSpMM_bufferSize(
                         ii.ctx().cusparseHandle,
@@ -545,8 +550,8 @@ namespace superbblas {
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrA_other, matx, &beta, maty,
                         cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
-                    if (bufferSize > buffer.size() * sizeof(T))
-                        buffer = vector<T, Gpu>((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx());
+                    vector<T, Gpu> buffer((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx(),
+                                          is_buffer{});
                     cusparseCheck(cusparseSpMM(ii.ctx().cusparseHandle,
                                                !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                                       : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
@@ -600,7 +605,7 @@ namespace superbblas {
                     // Contract the Kronecker part: for each direction mu do:
                     //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
                     vector<T, Gpu> aux(ki * ncols * block_size * block_cols * num_nnz_per_row,
-                                       v.it.ctx());
+                                       v.it.ctx(), is_buffer{});
                     zero_n(aux.data(), aux.size(), aux.ctx());
                     const bool tb = !v.blockImFast;
                     xgemm_batch_strided(
@@ -616,19 +621,19 @@ namespace superbblas {
                     // Contract the Kronecker part: for each direction mu do:
                     //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
                     vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
-                                       v.it.ctx());
+                                       v.it.ctx(), is_buffer{});
                     zero_n(aux.data(), aux.size(), aux.ctx());
                     const bool tb = !v.blockImFast;
-                    vector<T *, Cpu> a_cpu(num_nnz_per_row * ncols, Cpu{});
-                    vector<T *, Cpu> b_cpu(num_nnz_per_row * ncols, Cpu{});
-                    vector<T *, Cpu> c_cpu(num_nnz_per_row * ncols, Cpu{});
+                    vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, v.it.ctx().toCpuPinned());
+                    vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, v.it.ctx().toCpuPinned());
+                    vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, v.it.ctx().toCpuPinned());
                     for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
                         unsigned int mu = ij % num_nnz_per_row;
                         unsigned int col = ij / num_nnz_per_row;
-                        a_cpu[ij] = (T *)x + col * block_size * block_cols;
-                        b_cpu[ij] = v.kron_it.data() + ki * kd * mu;
-                        c_cpu[ij] = aux.data() + block_size * block_cols * mu +
-                                    block_size * block_cols * num_nnz_per_row * col;
+                        a_cpu.data()[ij] = (T *)x + col * block_size * block_cols;
+                        b_cpu.data()[ij] = v.kron_it.data() + ki * kd * mu;
+                        c_cpu.data()[ij] = aux.data() + block_size * block_cols * mu +
+                                           block_size * block_cols * num_nnz_per_row * col;
                     }
                     auto a_xpu = makeSure(a_cpu, aux.ctx());
                     auto b_xpu = makeSure(b_cpu, aux.ctx());
