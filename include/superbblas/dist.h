@@ -1002,7 +1002,7 @@ namespace superbblas {
                             v1ToReceive.counts[p], dtype, p, tag, comm.comm, MPI_STATUS_IGNORE));
                     }
                 }
-                syncLegacyStream(v1ToReceive.buf.ctx());
+                if (deviceId(v1ToReceive.buf.ctx()) >= 0) syncLegacyStream(v1ToReceive.buf.ctx());
                 unpack(v1ToReceive, v1, EWOP{}, Q(alpha));
                 return {};
             }
@@ -1027,7 +1027,7 @@ namespace superbblas {
                 v0ToSend.buf.clear();
 
                 // Copy back to v1
-                syncLegacyStream(v1ToReceive.buf.ctx());
+                if (deviceId(v1ToReceive.buf.ctx()) >= 0) syncLegacyStream(v1ToReceive.buf.ctx());
                 unpack(v1ToReceive, v1, EWOP{}, Q(alpha));
             };
         }

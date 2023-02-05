@@ -1,11 +1,12 @@
 #ifndef __SUPERBBLAS_PERFORMANCE__
 #define __SUPERBBLAS_PERFORMANCE__
 
-#include "platform.h"
 #include "runtime_features.h"
+#include "superbblas_flags.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <complex>
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -19,6 +20,9 @@
 #endif
 
 namespace superbblas {
+
+    /// Cache session
+    using Session = unsigned int;
 
     namespace detail {
         /// Return the relative cost of the multiplication with respect to real floating point

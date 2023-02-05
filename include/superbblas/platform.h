@@ -1,6 +1,7 @@
 #ifndef __SUPERBBLAS_PLATFORM__
 #define __SUPERBBLAS_PLATFORM__
 
+#include "performance.h"
 #include "superbblas_lib.h"
 #include <complex>
 #include <functional>
@@ -90,9 +91,6 @@ namespace superbblas {
 
     /// Function to deallocate memory
     using Deallocator = std::function<void(void *, enum platform)>;
-
-    /// Cache session
-    using Session = unsigned int;
 
     /// Platform and device information of data
 
@@ -507,6 +505,8 @@ namespace superbblas {
         /// \param xpu: context
 
         inline void sync(const Gpu &xpu) {
+            tracker<Cpu> _t("sync", Cpu{});
+            setDevice(xpu);
 #    ifdef SUPERBBLAS_USE_CUDA
             cudaCheck(cudaStreamSynchronize(xpu.stream));
 #    else
@@ -518,6 +518,7 @@ namespace superbblas {
         /// \param xpu: context
 
         inline void syncLegacyStream(const Gpu &xpu) {
+            tracker<Cpu> _t("sync legacy stream", Cpu{});
             setDevice(xpu);
 #    ifdef SUPERBBLAS_USE_CUDA
             cudaCheck(cudaDeviceSynchronize());
