@@ -958,14 +958,17 @@ namespace superbblas {
             const int tag = 0;
             const unsigned int T_num = dtype_size / sizeof(T);
             sync(v0ToSend.buf.ctx());
+            _t.stop();
             if (getUseMPINonBlock()) {
                 if (getUseAlltoall()) {
+                    tracker<Cpu> _t("MPI ialltoall", Cpu{});
                     r.resize(1);
                     MPI_check(MPI_Ialltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
                                              v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
                                              v1ToReceive.counts.data(), v1ToReceive.displ.data(),
                                              dtype, comm.comm, &r.front()));
                 } else {
+                    tracker<Cpu> _t("MPI isend_recv", Cpu{});
                     r.reserve(comm.nprocs * 2);
                     for (unsigned int p = 0; p < comm.nprocs; ++p) {
                         if (v1ToReceive.counts[p] == 0) continue;
@@ -983,13 +986,14 @@ namespace superbblas {
                     }
                 }
             } else {
-                tracker<Cpu> _t("alltoall", Cpu{});
                 if (getUseAlltoall()) {
+                    tracker<Cpu> _t("MPI alltoall", Cpu{});
                     MPI_check(MPI_Alltoallv(v0ToSend.buf.data(), v0ToSend.counts.data(),
                                             v0ToSend.displ.data(), dtype, v1ToReceive.buf.data(),
                                             v1ToReceive.counts.data(), v1ToReceive.displ.data(),
                                             dtype, comm.comm));
                 } else {
+                    tracker<Cpu> _t("MPI send_recv", Cpu{});
                     for (unsigned int p = 0; p < comm.nprocs; ++p) {
                         if (v0ToSend.counts[p] == 0 && v1ToReceive.counts[p] == 0) continue;
                         MPI_check(MPI_Sendrecv(
