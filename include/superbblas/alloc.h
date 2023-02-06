@@ -52,7 +52,7 @@ namespace superbblas {
         /// types need special alignment
 
         template <typename T> struct default_alignment {
-            constexpr static std::size_t alignment = 0;
+            constexpr static std::size_t alignment = alignof(T);
         };
 
         /// NOTE: thrust::complex requires sizeof(complex<T>) alignment
@@ -297,13 +297,13 @@ namespace superbblas {
         /// \param alignment: pointer alignment
 
         template <typename T, typename XPU>
-        std::pair<T *, std::shared_ptr<char>>
-        allocateResouce(std::size_t n, XPU xpu,
-                        std::size_t alignment = default_alignment<T>::alignment) {
+        std::pair<T *, std::shared_ptr<char>> allocateResouce(std::size_t n, XPU xpu,
+                                                              std::size_t alignment = 0) {
             // Shortcut for zero allocations
             if (n == 0) return {nullptr, std::shared_ptr<char>()};
 
             using T_no_const = typename std::remove_const<T>::type;
+            if (alignment == 0) alignment = default_alignment<T_no_const>::alignment;
             T *ptr = allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu);
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
             T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
@@ -319,12 +319,12 @@ namespace superbblas {
         /// \param alignment: pointer alignment
 
         template <typename T>
-        std::pair<T *, std::shared_ptr<char>>
-        allocateResouce_mpi(std::size_t n, Cpu,
-                            std::size_t alignment = default_alignment<T>::alignment) {
+        std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, Cpu,
+                                                                  std::size_t alignment = 0) {
             // Shortcut for zero allocations
             if (n == 0) return {nullptr, std::shared_ptr<char>()};
 
+            if (alignment == 0) alignment = default_alignment<T>::alignment;
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
             T *ptr = nullptr;
             MPI_check(MPI_Alloc_mem(size, MPI_INFO_NULL, &ptr));
@@ -336,17 +336,15 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_GPU
         template <typename T>
-        std::pair<T *, std::shared_ptr<char>>
-        allocateResouce_mpi(std::size_t n, const Gpu &xpu,
-                            std::size_t alignment = default_alignment<T>::alignment) {
+        std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, const Gpu &xpu,
+                                                                  std::size_t alignment = 0) {
             return allocateResouce<T>(n, xpu, alignment);
         }
 #    endif // SUPERBBLAS_USE_GPU
 #else
         template <typename T, typename XPU>
-        std::pair<T *, std::shared_ptr<char>>
-        allocateResouce_mpi(std::size_t n, const XPU &xpu,
-                            std::size_t alignment = default_alignment<T>::alignment) {
+        std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, const XPU &xpu,
+                                                                  std::size_t alignment = 0) {
             return allocateResouce<T>(n, xpu, alignment);
         }
 #endif // SUPERBBLAS_USE_MPI
@@ -375,15 +373,15 @@ namespace superbblas {
         /// \param alignment: pointer alignment
 
         template <typename T, typename XPU>
-        std::pair<T *, std::shared_ptr<char>>
-        allocateBufferResouce(std::size_t n, XPU xpu,
-                              std::size_t alignment = default_alignment<T>::alignment) {
+        std::pair<T *, std::shared_ptr<char>> allocateBufferResouce(std::size_t n, XPU xpu,
+                                                                    std::size_t alignment = 0) {
 
             // Shortcut for zero allocations
             if (n == 0) return {nullptr, std::shared_ptr<char>()};
 
             tracker<Cpu> _t(std::string("allocate buffer ") + platformToStr(xpu), Cpu{});
 
+            if (alignment == 0) alignment = default_alignment<T>::alignment;
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
             auto cache =
                 getCache<char *, AllocationEntry, std::hash<char *>, allocate_buffer_t>(xpu);

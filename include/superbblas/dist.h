@@ -364,7 +364,7 @@ namespace superbblas {
             // NOTE: MPI calls may have problems passing null pointers as buffers
             if (n == 0) n = MpiTypeSize / sizeof(T);
 
-            vector<T, XPUbuff> buf(n, xpu, is_buffer{}, MpiTypeSize);
+            vector<T, XPUbuff> buf(n, xpu, doCacheAlloc, MpiTypeSize);
 
             return PackedValues<T, XPUbuff>{buf, counts, displ};
         }
@@ -832,7 +832,7 @@ namespace superbblas {
             if (buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
             // Allocate the buffer
-            vector<T, XPUbuff> buf(buf_count, xpu, is_buffer{}, MpiTypeSize);
+            vector<T, XPUbuff> buf(buf_count, xpu, doCacheAlloc, MpiTypeSize);
 
             return UnpackedValues<IndexType, T, XPUbuff, XPU>{
                 buf, counts, displ, indices_buf, indices, indices_groups, blocksize};
@@ -2379,7 +2379,7 @@ namespace superbblas {
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
         like_this_components(const From_size<N> &p, const Components_tmpl<N, T, XPU0, XPU1> &v,
-                             Comm comm) {
+                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc) {
 
             // Allocate the tensor
             unsigned int ncomponents = v.first.size() + v.second.size();
@@ -2388,14 +2388,14 @@ namespace superbblas {
                 const unsigned int componentId = v.first[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p[pi][1];
-                vector<T, XPU0> v1i(volume(dimi), v.first[i].it.ctx());
+                vector<T, XPU0> v1i(volume(dimi), v.first[i].it.ctx(), cacheAlloc);
                 v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, componentId, Mask<XPU0>{}});
             }
             for (unsigned int i = 0; i < v.second.size(); ++i) {
                 const unsigned int componentId = v.second[i].componentId;
                 const unsigned int pi = comm.rank * ncomponents + componentId;
                 const Coor<N> &dimi = p[pi][1];
-                vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx());
+                vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
                 v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, componentId, Mask<XPU1>{}});
             }
 
@@ -2447,13 +2447,13 @@ namespace superbblas {
                                const Coor<N> &size0, const Coor<N> &dim0,
                                const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
                                const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
-                               bool force_copy = false) {
+                               CacheAlloc cacheAlloc = dontCacheAlloc, bool force_copy = false) {
 
             // If the two orderings and partitions are equal, return the tensor
             if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request()};
 
             // Allocate the tensor
-            auto v1 = like_this_components(p1, v0, comm);
+            auto v1 = like_this_components(p1, v0, comm, cacheAlloc);
 
             // Copy the content of v0 into v1
             return {v1, copy_request<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1,

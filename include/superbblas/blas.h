@@ -253,8 +253,8 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_GPU
         }
 
-        /// Tag class to indicate a buffer allocation
-        struct is_buffer {};
+        /// Whether to cache allocation
+        enum CacheAlloc { dontCacheAlloc, doCacheAlloc };
 
         /// Vector type a la python, that is, operator= does a reference not a copy
         /// \param T: type of the vector's elements
@@ -271,21 +271,19 @@ namespace superbblas {
             vector() : vector(0, XPU{}) {}
 
             /// Construct a vector with `n` elements a with context device `xpu_`
-            vector(std::size_t n, XPU xpu_, std::size_t alignment = 0) : n(n), xpu(xpu_) {
-                auto alloc = allocateResouce<T_no_const>(
-                    n, xpu, alignment == 0 ? default_alignment<T_no_const>::alignment : alignment);
+            vector(std::size_t n, XPU xpu_, CacheAlloc cacheAlloc = dontCacheAlloc,
+                   std::size_t alignment = 0)
+                : n(n), xpu(xpu_) {
+                auto alloc = cacheAlloc == doCacheAlloc
+                                 ? allocateBufferResouce<T_no_const>(n, xpu, alignment)
+                                 : allocateResouce<T_no_const>(n, xpu, alignment);
                 ptr_aligned = alloc.first;
                 ptr = alloc.second;
             }
 
             /// Construct a vector with `n` elements a with context device `xpu_`
-            vector(std::size_t n, XPU xpu_, is_buffer, std::size_t alignment = 0)
-                : n(n), xpu(xpu_) {
-                auto alloc = allocateBufferResouce<T_no_const>(
-                    n, xpu, alignment == 0 ? default_alignment<T_no_const>::alignment : alignment);
-                ptr_aligned = alloc.first;
-                ptr = alloc.second;
-            }
+            vector(std::size_t n, XPU xpu_, std::size_t alignment)
+                : vector(n, xpu_, dontCacheAlloc, alignment) {}
 
             /// Construct a vector from a given pointer `ptr` with `n` elements and with context
             /// device `xpu`. `ptr` is not deallocated after the destruction of the `vector`.
@@ -724,10 +722,10 @@ namespace superbblas {
         /// NOTE: implementation when the vector context and the given context are of the same type
 
         template <typename T, typename XPU>
-        vector<T, XPU> makeSure(const vector<T, XPU> &v, XPU xpu, bool with_buffer = false) {
+        vector<T, XPU> makeSure(const vector<T, XPU> &v, XPU xpu,
+                                CacheAlloc cacheAlloc = dontCacheAlloc) {
             if (deviceId(v.ctx()) == deviceId(xpu)) return v;
-            vector<T, XPU> r = with_buffer ? vector<T, XPU>(v.size(), xpu, is_buffer{})
-                                           : vector<T, XPU>(v.size(), xpu);
+            vector<T, XPU> r(v.size(), xpu, cacheAlloc);
             copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
             return r;
         }
@@ -740,9 +738,9 @@ namespace superbblas {
 
         template <typename T, typename XPU1, typename XPU0,
                   typename std::enable_if<!std::is_same<XPU0, XPU1>::value, bool>::type = true>
-        vector<T, XPU1> makeSure(const vector<T, XPU0> &v, XPU1 xpu1, bool with_buffer = false) {
-            vector<T, XPU1> r = with_buffer ? vector<T, XPU1>(v.size(), xpu1, is_buffer{})
-                                            : vector<T, XPU1>(v.size(), xpu1);
+        vector<T, XPU1> makeSure(const vector<T, XPU0> &v, XPU1 xpu1,
+                                 CacheAlloc cacheAlloc = dontCacheAlloc) {
+            vector<T, XPU1> r(v.size(), xpu1, cacheAlloc);
             copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
             return r;
         }

@@ -457,7 +457,7 @@ namespace superbblas {
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
             else if (indicesv != nullptr) {
-                vector<Q, Gpu> v0(n, xpuv, is_buffer{});
+                vector<Q, Gpu> v0(n, xpuv, doCacheAlloc);
                 copy_n_lower<IndexType>(alpha, v, indicesv, xpuv, n, v0.data(), nullptr, xpuv,
                                         EWOp::Copy{});
                 copy_n_lower<IndexType>(Q{1}, v0.data(), nullptr, xpuv, n, w, indicesw, xpuw,
@@ -466,7 +466,7 @@ namespace superbblas {
 
             // Otherwise copy v to xpuw, and then copy it to the w[indices[i]]
             else {
-                vector<T, Gpu> v1(n, xpuw, is_buffer{});
+                vector<T, Gpu> v1(n, xpuw, doCacheAlloc);
                 copy_n_lower<IndexType>(T{1}, v, nullptr, xpuv, n, v1.data(), nullptr, xpuw,
                                         EWOp::Copy{});
                 copy_n_lower<IndexType>(alpha, v1.data(), nullptr, xpuw, n, w, indicesw, xpuw,
@@ -507,7 +507,7 @@ namespace superbblas {
 
             // If v is permuted, copy v[indices[i]] in a contiguous chunk, and then copy
             else if (indicesv != nullptr) {
-                vector<Q, XPU0> v0(n, xpu0, is_buffer{});
+                vector<Q, XPU0> v0(n, xpu0, doCacheAlloc);
                 copy_n_lower<IndexType>(alpha, v, indicesv, xpu0, n, v0.data(), nullptr, xpu0,
                                         EWOp::Copy{});
                 copy_n_lower<IndexType>(Q{1}, v0.data(), nullptr, xpu0, n, w, indicesw, xpu1,
@@ -516,7 +516,7 @@ namespace superbblas {
 
             // Otherwise copy v to xpu1, and then copy it to the w[indices[i]]
             else {
-                vector<T, XPU1> v1(n, xpu1, is_buffer{});
+                vector<T, XPU1> v1(n, xpu1, doCacheAlloc);
                 copy_n_lower<IndexType>(T{1}, v, nullptr, xpu0, n, v1.data(), nullptr, xpu1,
                                         EWOp::Copy{});
                 copy_n_lower<IndexType>(alpha, v1.data(), nullptr, xpu1, n, w, indicesw, xpu1,
@@ -993,13 +993,13 @@ namespace superbblas {
                                         EWOP{});
 
             } else if (indicesv != nullptr) {
-                vector<Q, Gpu> v0(n * blocking, xpuv, is_buffer{});
+                vector<Q, Gpu> v0(n * blocking, xpuv, doCacheAlloc);
                 copy_n_blocking_lower<IndexType>(alpha, v, blocking, indicesv, xpuv, n, v0.data(),
                                                  nullptr, xpuv, EWOp::Copy{});
                 copy_n_blocking_lower<IndexType>(Q{1}, v0.data(), blocking, nullptr, xpuv, n, w,
                                                  indicesw, xpuw, EWOP{});
             } else {
-                vector<T, Gpu> v0(n * blocking, xpuw, is_buffer{});
+                vector<T, Gpu> v0(n * blocking, xpuw, doCacheAlloc);
                 copy_n_blocking_lower<IndexType>(T{1}, v, blocking, nullptr, xpuv, n, v0.data(),
                                                  nullptr, xpuw, EWOp::Copy{});
                 copy_n_blocking_lower<IndexType>(alpha, v0.data(), blocking, nullptr, xpuw, n, w,

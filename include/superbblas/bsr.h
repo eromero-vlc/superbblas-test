@@ -551,7 +551,7 @@ namespace superbblas {
                         CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrA_other, matx, &beta, maty,
                         cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
                     vector<T, Gpu> buffer((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx(),
-                                          is_buffer{});
+                                          doCacheAlloc);
                     cusparseCheck(cusparseSpMM(ii.ctx().cusparseHandle,
                                                !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                                       : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
@@ -605,7 +605,7 @@ namespace superbblas {
                     // Contract the Kronecker part: for each direction mu do:
                     //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
                     vector<T, Gpu> aux(ki * ncols * block_size * block_cols * num_nnz_per_row,
-                                       v.it.ctx(), is_buffer{});
+                                       v.it.ctx(), doCacheAlloc);
                     zero_n(aux.data(), aux.size(), aux.ctx());
                     const bool tb = !v.blockImFast;
                     xgemm_batch_strided(
@@ -621,12 +621,13 @@ namespace superbblas {
                     // Contract the Kronecker part: for each direction mu do:
                     //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
                     vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
-                                       v.it.ctx(), is_buffer{});
+                                       v.it.ctx(), doCacheAlloc);
                     zero_n(aux.data(), aux.size(), aux.ctx());
                     const bool tb = !v.blockImFast;
-                    vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, v.it.ctx().toCpuPinned());
-                    vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, v.it.ctx().toCpuPinned());
-                    vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, v.it.ctx().toCpuPinned());
+                    Gpu xpu_host = v.it.ctx().toCpuPinned();
+                    vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
+                    vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
+                    vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
                         unsigned int mu = ij % num_nnz_per_row;
                         unsigned int col = ij / num_nnz_per_row;
@@ -635,10 +636,9 @@ namespace superbblas {
                         c_cpu.data()[ij] = aux.data() + block_size * block_cols * mu +
                                            block_size * block_cols * num_nnz_per_row * col;
                     }
-                    constexpr bool with_buffer = true;
-                    auto a_xpu = makeSure(a_cpu, aux.ctx(), with_buffer);
-                    auto b_xpu = makeSure(b_cpu, aux.ctx(), with_buffer);
-                    auto c_xpu = makeSure(c_cpu, aux.ctx(), with_buffer);
+                    auto a_xpu = makeSure(a_cpu, aux.ctx(), doCacheAlloc);
+                    auto b_xpu = makeSure(b_cpu, aux.ctx(), doCacheAlloc);
+                    auto c_xpu = makeSure(c_cpu, aux.ctx(), doCacheAlloc);
                     xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
                                    (const T **)a_xpu.data(), block_size * block_cols * ncols,
                                    (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),
@@ -1618,7 +1618,7 @@ namespace superbblas {
             From_size<Nx> px_ = pxy_.first;
             auto vx_and_req =
                 reorder_tensor_request(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm,
-                                       co, power > 1 /* force copy when power > 1 */);
+                                       co, doCacheAlloc, power > 1 /* force copy when power > 1 */);
             Components_tmpl<Nx, T, XPU0, XPU1> vx_ = vx_and_req.first;
 
             // Scale the output vector if beta isn't 0 or 1
@@ -1634,7 +1634,8 @@ namespace superbblas {
 
                 // Allocate the output tensor
                 From_size<Ny> py_ = pxy_.second;
-                Components_tmpl<Ny, T, XPU0, XPU1> vy_ = like_this_components(py_, vx_, comm);
+                Components_tmpl<Ny, T, XPU0, XPU1> vy_ =
+                    like_this_components(py_, vx_, comm, doCacheAlloc);
 
                 // Do contraction
                 for (unsigned int p = 0; p < power; ++p) {
