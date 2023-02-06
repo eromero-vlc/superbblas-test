@@ -724,7 +724,10 @@ namespace superbblas {
         template <typename T, typename XPU>
         vector<T, XPU> makeSure(const vector<T, XPU> &v, XPU xpu,
                                 CacheAlloc cacheAlloc = dontCacheAlloc) {
-            if (deviceId(v.ctx()) == deviceId(xpu)) return v;
+            if (deviceId(v.ctx()) == deviceId(xpu)) {
+                causalConnectTo(v.ctx(), xpu);
+                return v;
+            }
             vector<T, XPU> r(v.size(), xpu, cacheAlloc);
             copy_n(v.data(), v.ctx(), v.size(), r.data(), r.ctx());
             return r;

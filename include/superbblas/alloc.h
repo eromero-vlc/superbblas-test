@@ -381,8 +381,12 @@ namespace superbblas {
 
             tracker<Cpu> _t(std::string("allocate buffer ") + platformToStr(xpu), Cpu{});
 
+            // Get alignment and the worst case size to adjust for alignment
             if (alignment == 0) alignment = default_alignment<T>::alignment;
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
+
+            // Look for the smallest free allocation that can hold the requested size.
+            // Also, update `getAllocatedBuffers` by removing the buffers not longer in cache
             auto cache =
                 getCache<char *, AllocationEntry, std::hash<char *>, allocate_buffer_t>(xpu);
             auto &all_buffers = getAllocatedBuffers(xpu);
@@ -402,16 +406,27 @@ namespace superbblas {
             }
             for (char *buffer_ptr : buffers_to_remove) all_buffers.erase(buffer_ptr);
 
+            // If no suitable buffer was found, create a new one and cache it
             if (!selected_buffer) {
-                auto p = allocateResouce_mpi<T>(n, xpu, alignment);
-                all_buffers.insert(p.second.get());
-                cache.insert(p.second.get(), AllocationEntry{size, p.second}, size);
-                return p;
+                selected_buffer = allocateResouce_mpi<T>(n, xpu, alignment).second;
+                selected_buffer_size = size;
+                all_buffers.insert(selected_buffer.get());
+                cache.insert(selected_buffer.get(), AllocationEntry{size, selected_buffer}, size);
             }
 
+            // Connect the allocation stream with the current stream and make sure to connect back as soon as
+            // the caller finishes using the buffer
+            GpuStream stream = getStream(xpu), allocStream = getAllocStream(xpu);
+            causalConnectTo(allocStream, stream);
+            auto return_buffer = std::shared_ptr<char>(
+                selected_buffer.get(), [stream, allocStream, selected_buffer](char *) {
+                    causalConnectTo(stream, allocStream);
+                });
+
+            // Align and return the buffer
             T *ptr_aligned = align<T>(alignment, sizeof(T) * n, (T *)selected_buffer.get(),
                                       selected_buffer_size);
-            return {ptr_aligned, selected_buffer};
+            return {ptr_aligned, return_buffer};
         }
     }
 }
