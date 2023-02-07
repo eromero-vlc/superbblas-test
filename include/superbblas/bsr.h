@@ -171,14 +171,17 @@ namespace superbblas {
                 return block_size * block_size * jj.size();
             }
 
-            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
-                            IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
+            void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
+                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+                            IndexType ncols, T beta = T{0}) const {
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
                 IndexType block_size = volume(v.blocki);
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
                 IndexType block_cols = volume(v.dimd) / block_size / kd;
                 IndexType block_rows = volume(v.dimi) / block_size / ki;
+                const T *x = vx.data();
+                T *y = vy.data();
                 bool is_kron = v.kron_it.size() > 0;
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 if (!is_kron) {
@@ -276,8 +279,9 @@ namespace superbblas {
                 return bi * bd * jj.size();
             }
 
-            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
-                            IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
+            void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
+                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+                            IndexType ncols, T beta = T{0}) const {
                 if (conjA) throw std::runtime_error("Not implemented");
                 if (v.kron_it.size() > 0 && lx != ly) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
@@ -286,6 +290,8 @@ namespace superbblas {
                 IndexType kd = volume(v.krond);
                 IndexType block_cols = volume(v.dimd) / bd / kd;
                 IndexType block_rows = volume(v.dimi) / bi / ki;
+                const T *x = vx.data();
+                T *y = vy.data();
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
                 const bool tx = lx == RowMajor;
@@ -406,6 +412,8 @@ namespace superbblas {
             const std::string &implementation() const { return implementation_; }
 
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
+                if (deviceId(v.it.ctx()) == CPU_DEVICE_ID)
+                    throw std::runtime_error("BSR: unsupported a cpu device");
                 allowLayout = ColumnMajorForY; // Default setting for empty tensor
                 preferredLayout = ColumnMajor; // Default setting for empty tensor
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -420,7 +428,7 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
                 IndexType block_size = volume(v.blocki);
                 cudaDeviceProp prop;
-                cudaCheck(cudaGetDeviceProperties(&prop, deviceId(v.i.ctx())));
+                gpuCheck(cudaGetDeviceProperties(&prop, deviceId(v.i.ctx())));
                 /// TODO: ELL format is disable, it isn't correct currently
                 if (false && bsr.num_nnz_per_row >= 0 && !is_complex<T>::value &&
                     ((std::is_same<T, float>::value && prop.major >= 8) ||
@@ -442,9 +450,9 @@ namespace superbblas {
                             cusparseDestroyMatDescr(*p);
                             delete p;
                         });
-                    cusparseCheck(cusparseCreateMatDescr(&*descrA_bsr));
-                    cusparseCheck(cusparseSetMatIndexBase(*descrA_bsr, CUSPARSE_INDEX_BASE_ZERO));
-                    cusparseCheck(cusparseSetMatType(*descrA_bsr, CUSPARSE_MATRIX_TYPE_GENERAL));
+                    gpuSparseCheck(cusparseCreateMatDescr(&*descrA_bsr));
+                    gpuSparseCheck(cusparseSetMatIndexBase(*descrA_bsr, CUSPARSE_INDEX_BASE_ZERO));
+                    gpuSparseCheck(cusparseSetMatType(*descrA_bsr, CUSPARSE_MATRIX_TYPE_GENERAL));
                 } else {
                     static_assert(sizeof(IndexType) == 4);
                     IndexType num_cols = volume(v.dimd);
@@ -460,14 +468,14 @@ namespace superbblas {
                     preferredLayout = RowMajor;
                     if (spFormat == FORMAT_CSR) {
                         implementation_ = "cusparse_csr";
-                        cusparseCheck(cusparseCreateCsr(
+                        gpuSparseCheck(cusparseCreateCsr(
                             &*descrA_other, num_rows / ki,
                             num_cols / kd * (is_kron ? num_nnz_per_row : 1), bsr.nnz, ii.data(),
                             jj.data(), v.it.data(), CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                             CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     } else {
                         implementation_ = "cusparse_ell";
-                        cusparseCheck(cusparseCreateBlockedEll(
+                        gpuSparseCheck(cusparseCreateBlockedEll(
                             &*descrA_other, num_rows / ki,
                             num_cols / kd * (is_kron ? num_nnz_per_row : 1), block_size,
                             block_size * num_nnz_per_row, jj.data(), v.it.data(),
@@ -523,8 +531,8 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (spFormat == FORMAT_BSR) {
-                    cusparseCheck(cusparseXbsrmm(
-                        ii.ctx().cusparseHandle,
+                    gpuSparseCheck(cusparseXbsrmm(
+                        getGpuSparseHandle(ii.ctx()),
                         v.blockImFast ? CUSPARSE_DIRECTION_COLUMN : CUSPARSE_DIRECTION_ROW,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
@@ -536,30 +544,31 @@ namespace superbblas {
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
-                    cusparseCheck(cusparseCreateDnMat(
+                    auto cusparseHandle = getGpuSparseHandle(ii.ctx());
+                    gpuSparseCheck(cusparseCreateDnMat(
                         &matx, !conjA ? num_cols / kd * (is_kron ? num_nnz_per_row : 1) : num_rows,
                         ncols, ldx, (void *)x, cudaType,
                         lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
-                    cusparseCheck(cusparseCreateDnMat(
+                    gpuSparseCheck(cusparseCreateDnMat(
                         &maty, !conjA ? num_rows / ki : num_cols, ncols, ldy, (void *)y, cudaType,
                         ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
-                    cusparseCheck(cusparseSpMM_bufferSize(
-                        ii.ctx().cusparseHandle,
+                    gpuSparseCheck(cusparseSpMM_bufferSize(
+                        cusparseHandle,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrA_other, matx, &beta, maty,
                         cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
                     vector<T, Gpu> buffer((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx(),
                                           doCacheAlloc);
-                    cusparseCheck(cusparseSpMM(ii.ctx().cusparseHandle,
-                                               !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
-                                                      : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
-                                               CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
-                                               *descrA_other, matx, &beta, maty, cudaType,
-                                               CUSPARSE_SPMM_ALG_DEFAULT, buffer.data()));
-                    cusparseDestroyDnMat(matx);
-                    cusparseDestroyDnMat(maty);
+                    gpuSparseCheck(cusparseSpMM(cusparseHandle,
+                                                !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
+                                                       : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
+                                                CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+                                                *descrA_other, matx, &beta, maty, cudaType,
+                                                CUSPARSE_SPMM_ALG_DEFAULT, buffer.data()));
+                    gpuSparseCheck(cusparseDestroyDnMat(matx));
+                    gpuSparseCheck(cusparseDestroyDnMat(maty));
                 }
 #    else
                 hipsparseCheck(hipsparseXbsrmm(
@@ -576,15 +585,25 @@ namespace superbblas {
             }
 
         public:
-            void operator()(T alpha, bool conjA, const T *x, IndexType ldx, MatrixLayout lx, T *y,
-                            IndexType ldy, MatrixLayout ly, IndexType ncols, T beta = T{0}) const {
+            void operator()(T alpha, bool conjA, const vector<T, Gpu> &vx, IndexType ldx,
+                            MatrixLayout lx, vector<T, Gpu> &vy, IndexType ldy, MatrixLayout ly,
+                            IndexType ncols, T beta = T{0}) const {
 
                 bool is_kron = v.kron_it.size() > 0;
+
+                causalConnectTo(vy.ctx(), vx.ctx());
+                causalConnectTo(vx.ctx(), ii.ctx());
+                const T *x = vx.data();
+                T *y = vy.data();
 
                 IndexType num_cols = volume(v.dimd);
                 IndexType num_rows = volume(v.dimi);
                 xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
                 if (num_cols == 0 || num_rows == 0 || ncols == 0) return;
+
+                if (deviceId(vx.ctx()) == CPU_DEVICE_ID || deviceId(vy.ctx()) == CPU_DEVICE_ID)
+                    throw std::runtime_error("BSR::operator: gpu implementation does not support "
+                                             "cpu input/output tensors");
 
                 if (!is_kron) {
                     matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols,
@@ -1442,7 +1461,7 @@ namespace superbblas {
 
             // Do the contraction
             _t.cost = bsr.getCostPerMatvec() * volC * multiplication_cost<T>::value;
-            bsr(alpha, transSp, vx.data(), ldx, lx, vy.data(), ldy, ly, volC);
+            bsr(alpha, transSp, vx, ldx, lx, vy, ldy, ly, volC);
         }
 
         /// Get the partitions for the dense input and output tensors

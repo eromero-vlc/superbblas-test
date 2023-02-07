@@ -71,103 +71,58 @@ namespace superbblas {
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
-        /// \param cpu: context
-
-        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
-        T *allocate(std::size_t n, Cpu cpu) {
-            // Shortcut for zero allocations
-            if (n == 0) return nullptr;
-
-            tracker<Cpu> _t("allocating CPU", cpu);
-
-            // Do the allocation
-            T *r = new T[n];
-            if (r == nullptr) std::runtime_error("Memory allocation failed!");
-
-            // Annotate allocation
-            if (getTrackingMemory()) {
-                if (getAllocations(cpu.session).count((void *)r) > 0)
-                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations(cpu.session)[(void *)r] = sizeof(T) * n;
-                getCpuMemUsed(cpu.session) += double(sizeof(T) * n);
-            }
-
-            check_ptr_align<T>(r);
-            return r;
-        }
-
-        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
-        T *allocate(std::size_t n, Cpu cpu) {
-            return (T *)allocate<typename T::value_type>(n * 2, cpu);
-        }
-
-        /// Deallocate memory on a device
-        /// \param ptr: pointer to the memory to deallocate
-        /// \param cpu: context
-
-        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
-        void deallocate(T *ptr, Cpu cpu) {
-            // Shortcut for zero allocations
-            if (!ptr) return;
-
-            tracker<Cpu> _t("deallocating CPU", cpu);
-
-            // Remove annotation
-            if (getTrackingMemory() && getAllocations(cpu.session).count((void *)ptr) > 0) {
-                const auto &it = getAllocations(cpu.session).find((void *)ptr);
-                getCpuMemUsed(cpu.session) -= double(it->second);
-                getAllocations(cpu.session).erase(it);
-            }
-
-            // Deallocate the pointer
-            delete[] ptr;
-        }
-
-        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
-        void deallocate(T *ptr, Cpu cpu) {
-            deallocate<typename T::value_type>((typename T::value_type *)ptr, cpu);
-        }
-
-#ifdef SUPERBBLAS_USE_CUDA
-
-        /// Allocate memory on a device
-        /// \param n: number of element of type `T` to allocate
         /// \param cuda: context
 
-        template <typename T> T *allocate(std::size_t n, Cuda cuda) {
+        template <typename T, typename XPU> T *allocate(std::size_t n, const XPU &xpu) {
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
-            tracker<Cuda> _t("allocating CUDA", cuda);
+            tracker<XPU> _t(std::string("allocating ") + platformToStr(xpu), xpu);
 
             // Do the allocation
-            setDevice(cuda);
+            setDevice(xpu);
             T *r = nullptr;
-            if (cuda.alloc) {
-                r = (T *)cuda.alloc(sizeof(T) * n, CUDA);
-            } else if (deviceId(cuda) >= 0) {
-#    if CUDART_VERSION >= 11020
-                cudaCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(cuda)));
-#    else
-                cudaCheck(cudaMalloc(&r, sizeof(T) * n));
-#    endif
-            } else {
-                cudaCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
+            if (getCustomAllocator()) {
+                r = (T *)getCustomAllocator()(sizeof(T) * n,
+                                              deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
+            } else if (std::is_same<Cpu, XPU>::value) {
+                // Allocate the array without calling constructors, specially useful for std::complex
+                r = (T *)::operator new(sizeof(T) * n);
             }
+#ifdef SUPERBBLAS_USE_GPU
+            else if (deviceId(xpu) == CPU_DEVICE_ID) {
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(HostAlloc)(
+                    &r, sizeof(T) * n, SUPERBBLAS_GPU_SYMBOL(HostAllocPortable)));
+            } else {
+#    ifdef SUPERBBLAS_USE_CUDA
+#        if CUDART_VERSION >= 11020
+                gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+#        else
+                gpuCheck(cudaMalloc(&r, sizeof(T) * n));
+#        endif
+#    elif defined(SUPERBBLAS_USE_HIP)
+#        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+                gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+#        else
+                gpuCheck(hipMalloc(&r, sizeof(T) * n));
+#        endif
+#    endif
+            }
+#endif // SUPERBBLAS_USE_GPU
+
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
             // Annotate allocation
             if (getTrackingMemory()) {
-                if (getAllocations(cuda.session).count((void *)r) > 0)
+                if (getAllocations(xpu.session).count((void *)r) > 0)
                     throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations(cuda.session)[(void *)r] = sizeof(T) * n;
-                if (deviceId(cuda) >= 0)
-                    getGpuMemUsed(cuda.session) += double(sizeof(T) * n);
+                getAllocations(xpu.session)[(void *)r] = sizeof(T) * n;
+                if (deviceId(xpu) >= 0)
+                    getGpuMemUsed(xpu.session) += double(sizeof(T) * n);
                 else
-                    getCpuMemUsed(cuda.session) += double(sizeof(T) * n);
+                    getCpuMemUsed(xpu.session) += double(sizeof(T) * n);
             }
 
-            check_ptr_align<T>(r);
             return r;
         }
 
@@ -175,121 +130,53 @@ namespace superbblas {
         /// \param ptr: pointer to the memory to deallocate
         /// \param cuda: context
 
-        template <typename T> void deallocate(T *ptr, Cuda cuda) {
+        template <typename T, typename XPU> void deallocate(T *ptr, XPU xpu) {
             // Shortcut for zero allocations
             if (!ptr) return;
 
-            tracker<Cuda> _t("deallocating CUDA", cuda);
+            tracker<XPU> _t(std::string("deallocating ") + platformToStr(xpu), xpu);
 
             // Remove annotation
-            if (getTrackingMemory() && getAllocations(cuda.session).count((void *)ptr) > 0) {
-                const auto &it = getAllocations(cuda.session).find((void *)ptr);
-                if (deviceId(cuda) >= 0)
-                    getGpuMemUsed(cuda.session) -= double(it->second);
+            if (getTrackingMemory() && getAllocations(xpu.session).count((void *)ptr) > 0) {
+                const auto &it = getAllocations(xpu.session).find((void *)ptr);
+                if (deviceId(xpu) >= 0)
+                    getGpuMemUsed(xpu.session) -= double(it->second);
                 else
-                    getCpuMemUsed(cuda.session) -= double(it->second);
-                getAllocations(cuda.session).erase(it);
+                    getCpuMemUsed(xpu.session) -= double(it->second);
+                getAllocations(xpu.session).erase(it);
             }
 
             // Deallocate the pointer
-            setDevice(cuda);
-            if (cuda.dealloc) {
-                cuda.dealloc((void *)ptr, CUDA);
-            } else if (deviceId(cuda) >= 0) {
-#    if CUDART_VERSION >= 11020
-                causalConnectTo(getStream(cuda), getAllocStream(cuda));
-                cudaCheck(cudaFreeAsync((void *)ptr, getAllocStream(cuda)));
-#    else
-                sync(cuda);
-                cudaCheck(cudaFree((void *)ptr));
-#    endif
+            setDevice(xpu);
+            if (getCustomDeallocator()) {
+                getCustomDeallocator()((void *)ptr, deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
+            } else if (std::is_same<Cpu, XPU>::value) {
+                ::operator delete(ptr);
+#ifdef SUPERBBLAS_USE_GPU
+            } else if (deviceId(xpu) == CPU_DEVICE_ID) {
+                sync(xpu);
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(FreeHost)((void *)ptr));
             } else {
-                sync(cuda);
-                cudaCheck(cudaFreeHost((void *)ptr));
+#    ifdef SUPERBBLAS_USE_CUDA
+#        if CUDART_VERSION >= 11020
+                causalConnectTo(getStream(xpu), getAllocStream(xpu));
+                gpuCheck(cudaFreeAsync((void *)ptr, getAllocStream(xpu)));
+#        else
+                sync(xpu);
+                gpuCheck(cudaFree((void *)ptr));
+#        endif
+#    elif defined(SUPERBBLAS_USE_HIP)
+#        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+                causalConnectTo(getStream(xpu), getAllocStream(xpu));
+                gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
+#        else
+                sync(xpu);
+                gpuCheck(hipFree((void *)ptr));
+#        endif
+#    endif
+#endif // SUPERBBLAS_USE_GPU
             }
         }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-
-        /// Allocate memory on a device
-        /// \param n: number of element of type `T` to allocate
-        /// \param hip: context
-
-        template <typename T> T *allocate(std::size_t n, Hip hip) {
-            // Shortcut for zero allocations
-            if (n == 0) return nullptr;
-
-            tracker<Hip> _t("allocating HIP", hip);
-
-            // Do the allocation
-            setDevice(hip);
-            T *r = nullptr;
-            if (hip.alloc) {
-                r = (T *)hip.alloc(sizeof(T) * n, HIP);
-            } else if (deviceId(hip) >= 0) {
-#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                hipCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(hip)));
-#    else
-                hipCheck(hipMalloc(&r, sizeof(T) * n));
-#    endif
-            } else {
-                hipCheck(hipHostAlloc(&r, sizeof(T) * n, hipHostAllocPortable));
-            }
-            if (r == nullptr) std::runtime_error("Memory allocation failed!");
-
-            // Annotate allocation
-            if (getTrackingMemory()) {
-                if (getAllocations(hip.session).count((void *)r) > 0)
-                    throw std::runtime_error("Ups! Allocator returned a pointer already in use");
-                getAllocations(hip.session)[(void *)r] = sizeof(T) * n;
-                if (deviceId(hip) >= 0)
-                    getGpuMemUsed(hip.session) += double(sizeof(T) * n);
-                else
-                    getCpuMemUsed(hip.session) += double(sizeof(T) * n);
-            }
-
-            check_ptr_align<T>(r);
-            return r;
-        }
-
-        /// Deallocate memory on a device
-        /// \param ptr: pointer to the memory to deallocate
-        /// \param hip: context
-
-        template <typename T> void deallocate(T *ptr, Hip hip) {
-            // Shortcut for zero allocations
-            if (!ptr) return;
-
-            tracker<Hip> _t("deallocating HIP", hip);
-
-            // Remove annotation
-            if (getTrackingMemory() && getAllocations(hip.session).count((void *)ptr) > 0) {
-                const auto &it = getAllocations(hip.session).find((void *)ptr);
-                if (deviceId(hip) >= 0)
-                    getGpuMemUsed(hip.session) -= double(it->second);
-                else
-                    getCpuMemUsed(hip.session) -= double(it->second);
-                getAllocations(hip.session).erase(it);
-            }
-
-            // Deallocate the pointer
-            setDevice(hip);
-            if (hip.dealloc) {
-                hip.dealloc((void *)ptr, HIP);
-            } else if (deviceId(hip) >= 0) {
-#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                causalConnectTo(getStream(hip), getAllocStream(hip));
-                hipCheck(hipFreeAsync((void *)ptr, getAllocStream(hip)));
-#    else
-                sync(hip);
-                hipCheck(hipFree((void *)ptr));
-#    endif
-            } else {
-                sync(hip);
-                hipCheck(hipFreeHost((void *)ptr));
-            }
-        }
-#endif
 
         /// Return a memory allocation with at least n elements of type T
         /// \param n: number of elements of the allocation

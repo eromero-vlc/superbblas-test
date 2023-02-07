@@ -331,15 +331,10 @@ namespace superbblas {
             if (deviceId(xpuv) == CPU_DEVICE_ID) {
                 auto *data = new typename copy_n_gen_callback<IndexType, T, Q, EWOP>::Data{
                     alpha, v, indicesv, n, w, indicesw};
-#    ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaLaunchHostFunc(
-                    getStream(xpuv), (cudaHostFn_t)copy_n_gen_callback<IndexType, T, Q, EWOP>::f,
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
+                    getStream(xpuv),
+                    (SUPERBBLAS_GPU_SYMBOL(HostFn_t))copy_n_gen_callback<IndexType, T, Q, EWOP>::f,
                     data));
-#    elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipLaunchHostFunc(
-                    getStream(xpuv), (hipHostFn_t)copy_n_gen_callback<IndexType, T, Q, EWOP>::f,
-                    data));
-#    endif
             } else {
                 if (indicesv == nullptr) {
                     auto itv = encapsulate_pointer(v);
@@ -931,15 +926,11 @@ namespace superbblas {
             if (deviceId(xpuv) == CPU_DEVICE_ID) {
                 auto *data = new typename copy_n_blocking_callback<IndexType, T, Q, EWOP>::Data{
                     alpha, v, blocking, indicesv, n, w, indicesw};
-#    ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaLaunchHostFunc(
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
                     getStream(xpuv),
-                    (cudaHostFn_t)copy_n_blocking_callback<IndexType, T, Q, EWOP>::f, data));
-#    elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipLaunchHostFunc(
-                    getStream(xpuv),
-                    (hipHostFn_t)copy_n_blocking_callback<IndexType, T, Q, EWOP>::f, data));
-#    endif
+                    (SUPERBBLAS_GPU_SYMBOL(
+                        HostFn_t))copy_n_blocking_callback<IndexType, T, Q, EWOP>::f,
+                    data));
             } else {
                 if (indicesv == nullptr && indicesw != nullptr) {
                     thrust::for_each_n(

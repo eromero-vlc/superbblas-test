@@ -189,7 +189,7 @@ namespace superbblas {
                 setDevice(xpu0);
                 auto *data = new typename copy_n_callback<T>::Data{v, w, n};
 #    ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(
+                gpuCheck(
                     cudaLaunchHostFunc(getStream(xpu0), (cudaHostFn_t)copy_n_callback<T>::f, data));
 #    elif defined(SUPERBBLAS_USE_HIP)
                 hipCheck(
@@ -212,7 +212,7 @@ namespace superbblas {
                     stream = getStream(xpu1);
                 }
 #    ifdef SUPERBBLAS_USE_CUDA
-                cudaCheck(cudaMemcpyAsync(
+                gpuCheck(cudaMemcpyAsync(
                     w, v, sizeof(T) * n,
                     !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice, stream));
 #    elif defined(SUPERBBLAS_USE_HIP)
@@ -231,11 +231,11 @@ namespace superbblas {
                 setDevice(xpu0);
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (deviceId(xpu0) == deviceId(xpu1)) {
-                    cudaCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
-                                              getStream(xpu0)));
+                    gpuCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
+                                             getStream(xpu0)));
                 } else {
-                    cudaCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
-                                                  sizeof(T) * n, getStream(xpu0)));
+                    gpuCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
+                                                 sizeof(T) * n, getStream(xpu0)));
                 }
 #    elif defined(SUPERBBLAS_USE_HIP)
                 if (deviceId(xpu0) == deviceId(xpu1)) {
@@ -462,31 +462,23 @@ namespace superbblas {
             for (std::size_t i = 0; i < n; ++i) v[i] = T{0};
         }
 
-#ifdef SUPERBBLAS_USE_CUDA
+#ifdef SUPERBBLAS_USE_GPU
         /// Set the first `n` elements to zero
         /// \param v: first element to set
         /// \param n: number of elements to set
-        /// \param cuda: device context
+        /// \param xpu: device context
 
-        template <typename T> void zero_n(T *v, std::size_t n, Cuda cuda) {
+        template <typename T> void zero_n(T *v, std::size_t n, Gpu xpu) {
             if (n == 0) return;
-            setDevice(cuda);
-            cudaCheck(cudaMemsetAsync(v, 0, sizeof(T) * n, cuda.stream));
+            if (deviceId(xpu) == CPU_DEVICE_ID) {
+                sync(xpu);
+                zero_n<T>(v, n, Cpu{});
+            } else {
+                setDevice(xpu);
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemsetAsync)(v, 0, sizeof(T) * n, getStream(xpu)));
+            }
         }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-        /// Set the first `n` elements with a zero value
-        /// \param v: first element to set
-        /// \param n: number of elements to set
-        /// \param hip: device context
-
-        template <typename T> void zero_n(T *v, std::size_t n, Hip hip) {
-            if (n == 0) return;
-            setDevice(hip);
-            hipCheck(hipMemsetAsync(v, 0, sizeof(T) * n, hip.stream));
-        }
-
-#endif // SUPERBBLAS_USE_CUDA
+#endif // SUPERBBLAS_USE_GPU
 
         /// Return a copy of a vector
 
@@ -508,60 +500,38 @@ namespace superbblas {
             return r;
         }
 
-#ifdef SUPERBBLAS_USE_CUDA
-        template <typename T> inline cudaDataType_t toCudaDataType(void);
-
-        template <> inline cudaDataType_t toCudaDataType<float>(void) { return CUDA_R_32F; }
-        template <> inline cudaDataType_t toCudaDataType<std::complex<float>>(void) {
-            return CUDA_C_32F;
-        }
-        template <> inline cudaDataType_t toCudaDataType<double>(void) { return CUDA_R_64F; }
-        template <> inline cudaDataType_t toCudaDataType<std::complex<double>>(void) {
-            return CUDA_C_64F;
-        }
-
-        /// Template scal for GPUs
-
-        template <typename T,
-                  typename std::enable_if<!std::is_same<int, T>::value, bool>::type = true>
-        inline void xscal(int n, T alpha, T *x, int incx, Cuda cuda) {
-            if (std::fabs(alpha) == 0.0) {
-                setDevice(cuda);
-                cudaMemset2DAsync(x, sizeof(T) * incx, 0, sizeof(T), n, cuda.stream);
-                return;
-            }
-            if (alpha == typename elem<T>::type{1}) return;
-            cudaDataType_t cT = toCudaDataType<T>();
-            cublasCheck(cublasScalEx(cuda.cublasHandle, n, &alpha, cT, x, cT, incx, cT));
-        }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-        template <typename T> inline hipblasDatatype_t toHipDataType(void);
-
-        template <> inline hipblasDatatype_t toHipDataType<float>(void) { return HIPBLAS_R_32F; }
-        template <> inline hipblasDatatype_t toHipDataType<std::complex<float>>(void) {
-            return HIPBLAS_C_32F;
-        }
-        template <> inline hipblasDatatype_t toHipDataType<double>(void) { return HIPBLAS_R_64F; }
-        template <> inline hipblasDatatype_t toHipDataType<std::complex<double>>(void) {
-            return HIPBLAS_C_64F;
+#ifdef SUPERBBLAS_USE_GPU
+        template <typename T>
+        SUPERBBLAS_GPU_SELECT(xxx, cudaDataType_t, hipblasDatatype_t)
+        toCudaDataType(void) {
+            if (std::is_same<T, float>::value)
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_R_32F, HIPBLAS_R_32F);
+            if (std::is_same<T, double>::value)
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_R_64F, HIPBLAS_R_64F);
+            if (std::is_same<T, std::complex<float>>::value)
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_C_32F, HIPBLAS_C_32F);
+            if (std::is_same<T, std::complex<double>>::value)
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_C_64F, HIPBLAS_C_64F);
+            throw std::runtime_error("toCudaDataType: unsupported type");
         }
 
         /// Template scal for GPUs
 
         template <typename T,
                   typename std::enable_if<!std::is_same<int, T>::value, bool>::type = true>
-        inline void xscal(int n, T alpha, T *x, int incx, Hip hip) {
-            if (std::fabs(alpha) == 0.0) {
-                setDevice(hip);
-                hipMemset2DAsync(x, sizeof(T) * incx, 0, sizeof(T), n, hip.stream);
+        void xscal(int n, T alpha, T *x, int incx, Gpu xpu) {
+            if (std::norm(alpha) == 0.0) {
+                setDevice(xpu);
+                SUPERBBLAS_GPU_SYMBOL(Memset2DAsync)
+                (x, sizeof(T) * incx, 0, sizeof(T), n, getStream(xpu));
                 return;
             }
             if (alpha == typename elem<T>::type{1}) return;
-            hipblasDatatype_t cT = toHipDataType<T>();
-            hipCheck(hipblasScalEx(hip.hipblasHandle, n, &alpha, cT, x, cT, incx, cT));
+            auto cT = toCudaDataType<T>();
+            gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(ScalEx)(getGpuBlasHandle(xpu), n, &alpha, cT, x,
+                                                           cT, incx, cT));
         }
-#endif
+#endif // SUPERBBLAS_USE_GPU
 
         /// Template scal for integers
         template <typename XPU> inline void xscal(int n, int alpha, int *x, int incx, XPU xpu) {
@@ -574,37 +544,31 @@ namespace superbblas {
             }
         }
 
-#ifdef SUPERBBLAS_USE_CUDA
-
-#    if CUDART_VERSION >= 11000
-        template <typename T> inline cublasComputeType_t toCudaComputeType(void);
-
-        template <> inline cublasComputeType_t toCudaComputeType<float>(void) {
-            return CUBLAS_COMPUTE_32F;
+#ifdef SUPERBBLAS_USE_GPU
+#    ifdef SUPERBBLAS_USE_CUDA
+#        if CUDART_VERSION >= 11000
+        template <typename T> cublasComputeType_t toCudaComputeType() {
+            if (std::is_same<T, float>::value) return CUBLAS_COMPUTE_32F;
+            if (std::is_same<T, double>::value) return CUBLAS_COMPUTE_64F;
+            if (std::is_same<T, std::complex<float>>::value) return CUBLAS_COMPUTE_32F;
+            if (std::is_same<T, std::complex<double>>::value) return CUBLAS_COMPUTE_64F;
+            throw std::runtime_error("toCudaDataType: unsupported type");
         }
-        template <> inline cublasComputeType_t toCudaComputeType<std::complex<float>>(void) {
-            return CUBLAS_COMPUTE_32F;
-        }
-        template <> inline cublasComputeType_t toCudaComputeType<double>(void) {
-            return CUBLAS_COMPUTE_64F;
-        }
-        template <> inline cublasComputeType_t toCudaComputeType<std::complex<double>>(void) {
-            return CUBLAS_COMPUTE_64F;
-        }
-#    else
-        template <typename T> inline cudaDataType_t toCudaComputeType(void) {
-            return toCudaDataType<T>();
-        }
+#        else
+        template <typename T> cudaDataType_t toCudaComputeType() { return toCudaDataType<T>(); }
+#        endif
+#    elif defined(SUPERBBLAS_USE_HIP)
+        template <typename T> hipblasDatatype_t toCudaComputeType() { return toCudaDataType<T>(); }
 #    endif
 
-        inline cublasOperation_t toCublasTrans(char trans) {
+        inline SUPERBBLAS_GPUBLAS_SYMBOL(Operation_t) toCublasTrans(char trans) {
             switch (trans) {
             case 'n':
-            case 'N': return CUBLAS_OP_N;
+            case 'N': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_N, HIPBLAS_OP_N);
             case 't':
-            case 'T': return CUBLAS_OP_T;
+            case 'T': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_T, HIPBLAS_OP_T);
             case 'c':
-            case 'C': return CUBLAS_OP_C;
+            case 'C': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_C, HIPBLAS_OP_C);
             default: throw std::runtime_error("Not valid value of trans");
             }
         }
@@ -612,7 +576,7 @@ namespace superbblas {
         template <typename T>
         void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, const T *a[],
                          int lda, const T *b[], int ldb, T beta, T *c[], int ldc, int batch_size,
-                         Cuda cuda) {
+                         Gpu xpu) {
             // Quick exits
             if (m == 0 || n == 0) return;
 
@@ -622,17 +586,18 @@ namespace superbblas {
                 lda = ldb = 1;
             }
 
-            cudaDataType_t cT = toCudaDataType<T>();
-            cublasCheck(cublasGemmBatchedEx(
-                cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k, &alpha,
-                (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c, cT, ldc,
-                batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+            auto cT = toCudaDataType<T>();
+            gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmBatchedEx)(
+                getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                &alpha, (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c, cT,
+                ldc, batch_size, toCudaComputeType<T>(),
+                SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
         }
 
         template <typename T>
         void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
-                                 T *c, int ldc, int stridec, int batch_size, Cuda cuda) {
+                                 T *c, int ldc, int stridec, int batch_size, Gpu xpu) {
             // Quick exits
             if (m == 0 || n == 0 || batch_size == 0) return;
 
@@ -642,78 +607,21 @@ namespace superbblas {
                 lda = ldb = 1;
             }
 
-            cudaDataType_t cT = toCudaDataType<T>();
+            auto cT = toCudaDataType<T>();
             if (batch_size == 1) {
-                cublasCheck(cublasGemmEx(cuda.cublasHandle, toCublasTrans(transa),
-                                         toCublasTrans(transb), m, n, k, &alpha, a, cT, lda, b, cT,
-                                         ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
-                                         CUBLAS_GEMM_DEFAULT));
+                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
+                    getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                    &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
+                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
             } else {
-
-                cublasCheck(cublasGemmStridedBatchedEx(
-                    cuda.cublasHandle, toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmStridedBatchedEx)(
+                    getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
                     &alpha, a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec,
-                    batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+                    batch_size, toCudaComputeType<T>(),
+                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
             }
         }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-        template <typename T> inline hipblasDatatype_t toHipComputeType(void) {
-            return toHipDataType<T>();
-        }
-
-        inline hipblasOperation_t toHipblasTrans(char trans) {
-            switch (trans) {
-            case 'n':
-            case 'N': return HIPBLAS_OP_N;
-            case 't':
-            case 'T': return HIPBLAS_OP_T;
-            case 'c':
-            case 'C': return HIPBLAS_OP_C;
-            default: throw std::runtime_error("Not valid value of trans");
-            }
-        }
-
-        template <typename T>
-        void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, const T *a[],
-                         int lda, const T *b[], int ldb, T beta, T *c[], int ldc, int batch_size,
-                         Hip hip) {
-            // Quick exits
-            if (m == 0 || n == 0) return;
-
-            // Replace some invalid arguments when k is zero
-            if (k == 0) {
-                a = b = (const T **)c;
-                lda = ldb = 1;
-            }
-
-            hipblasDatatype_t cT = toHipDataType<T>();
-            hipblasCheck(hipblasGemmBatchedEx(
-                hip.hipblasHandle, toHipblasTrans(transa), toHipblasTrans(transb), m, n, k, &alpha,
-                (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c, cT, ldc,
-                batch_size, toHipComputeType<T>(), HIPBLAS_GEMM_DEFAULT));
-        }
-
-        template <typename T>
-        void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
-                                 int lda, int stridea, const T *b, int ldb, int strideb, T beta,
-                                 T *c, int ldc, int stridec, int batch_size, Hip hip) {
-            // Quick exits
-            if (m == 0 || n == 0) return;
-
-            // Replace some invalid arguments when k is zero
-            if (k == 0) {
-                a = b = c;
-                lda = ldb = 1;
-            }
-
-            hipblasDatatype_t cT = toHipDataType<T>();
-            hipblasCheck(hipblasGemmStridedBatchedEx(
-                hip.hipblasHandle, toHipblasTrans(transa), toHipblasTrans(transb), m, n, k, &alpha,
-                a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec, batch_size,
-                toHipComputeType<T>(), HIPBLAS_GEMM_DEFAULT));
-        }
-#endif // SUPERBBLAS_USE_CUDA
+#endif // SUPERBBLAS_USE_GPU
 
         /// Return a copy of the vector in the given context, or the same vector if its context coincides
         /// \param v: vector to return or to clone with xpu context
@@ -834,8 +742,7 @@ namespace superbblas {
 
         inline Gpu anabranch_begin(const Gpu &xpu) {
             // Create a new stream, connect it causally from the given context
-            setDevice(xpu);
-            GpuStream new_stream = createStream();
+            GpuStream new_stream = createStream(xpu);
             causalConnectTo(getStream(xpu), new_stream);
             return xpu.withNewStream(new_stream);
         }
@@ -856,7 +763,7 @@ namespace superbblas {
             causalConnectTo(getStream(xpu), getAllocStream(xpu));
 
             // Destroy the new stream
-            destroyStream(getStream(xpu));
+            destroyStream(xpu, getStream(xpu));
         }
 #endif // SUPERBBLAS_USE_GPU
 

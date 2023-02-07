@@ -65,6 +65,25 @@ EMIT_define(SUPERBBLAS_USE_MKL)
 #    define SUPERBBLAS_USE_GPU
 #endif
 
+#define SUPERBBLAS_CONCATX(a, b) a##b
+#define SUPERBBLAS_CONCAT(a, b) SUPERBBLAS_CONCATX(a, b)
+
+#ifdef SUPERBBLAS_USE_CUDA
+#    define SUPERBBLAS_GPU_SELECT(X, Y, Z) Y
+#elif defined(SUPERBBLAS_USE_HIP)
+#    define SUPERBBLAS_GPU_SELECT(X, Y, Z) Z
+#else
+#    define SUPERBBLAS_GPU_SELECT(X, Y, Z) X
+#endif
+
+#define SUPERBBLAS_GPU_SYMBOL(X) SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cuda, hip), X)
+#define SUPERBBLAS_GPUBLAS_SYMBOL(X)                                                               \
+    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cublas, hipblas), X)
+#define SUPERBBLAS_GPUSPARSE_SYMBOL(X)                                                             \
+    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusparse, hipsparse), X)
+#define SUPERBBLAS_GPUSOLVER_SYMBOL(X)                                                             \
+    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusolverDn, hipsolverDn), X)
+
 namespace superbblas {
 
     /// Where the data is
@@ -80,11 +99,7 @@ namespace superbblas {
     constexpr int CPU_DEVICE_ID = -1;
 
     /// Default GPU platform
-#ifdef SUPERBBLAS_USE_CUDA
-    const platform GPU = platform::CUDA;
-#elif defined(SUPERBBLAS_USE_HIP)
-    const platform GPU = platform::HIP;
-#endif
+    const platform GPU = SUPERBBLAS_GPU_SELECT(platform::CPU, platform::CUDA, platform::HIP);
 
     /// Function to allocate memory
     using Allocator = std::function<void *(std::size_t, enum platform)>;
@@ -92,18 +107,51 @@ namespace superbblas {
     /// Function to deallocate memory
     using Deallocator = std::function<void(void *, enum platform)>;
 
+    /// Return the custom allocator
+
+    inline Allocator &getCustomAllocator() {
+        static Allocator alloc{};
+        return alloc;
+    }
+
+    /// Return the custom deallocator
+
+    inline Deallocator &getCustomDeallocator() {
+        static Deallocator dealloc{};
+        return dealloc;
+    }
+
+    inline unsigned int getGpuDevicesCount();
+
     /// Platform and device information of data
 
     namespace detail {
 
-        /// Dataype to represent a stream
-#ifdef SUPERBBLAS_USE_CUDA
-        using GpuStream = cudaStream_t;
-#elif defined(SUPERBBLAS_USE_HIP)
-        using GpuStream = hipStream_t;
-#else
-        using GpuStream = int;
-#endif
+        /// Datatype to represent a stream
+        using GpuStream = SUPERBBLAS_GPU_SELECT(int, cudaStream_t, hipStream_t);
+
+        /// Datatype to represent a cuda/hip runtime error
+        using GpuError = SUPERBBLAS_GPU_SELECT(int, cudaError_t, hipError_t);
+
+        /// Datatype to represent a cublas/hipblas error
+        using GpuBlasError = SUPERBBLAS_GPU_SELECT(int, cublasStatus_t, hipblasStatus_t);
+
+        /// Datatype to represent a cusparse/hipsparse error
+        using GpuSparseError = SUPERBBLAS_GPU_SELECT(int, cusparseStatus_t, hipsparseStatus_t);
+
+        /// Datatype to represent a cusolver/hipsolver error
+        using GpuSolverError = SUPERBBLAS_GPU_SELECT(int, cusolverStatus_t, hipsolverStatus_t);
+
+        /// Datatype to represent the cublas/hipblas handle
+        using GpuBlasHandle = SUPERBBLAS_GPU_SELECT(int, cublasHandle_t, hipblasHandle_t);
+
+        /// Datatype to represent the cusparse/hipsparse handle
+        using GpuSparseHandle = SUPERBBLAS_GPU_SELECT(int, cusparseHandle_t, hipsparseHandle_t);
+
+        /// Datatype to represent the cusolver/hipsolver handle
+        using GpuSolverHandle = SUPERBBLAS_GPU_SELECT(int, cusolverDnHandle_t, hipsolverDnHandle_t);
+
+        /// Low-level Cpu context
 
         struct Cpu {
             /// Cache session
@@ -116,382 +164,152 @@ namespace superbblas {
             Cpu toCpuPinned() const { return *this; }
         };
 
-        /// Return a device identification
-        inline int deviceId(Cpu) { return CPU_DEVICE_ID; }
+#ifdef SUPERBBLAS_USE_GPU
+        /// Low-level Gpu context
 
-        /// Set the current device as the one passed
-        /// \param cuda: context
-        inline void setDevice(Cpu) {}
+        struct SUPERBBLAS_GPU_SELECT(void, Cuda, Hip) {
+            // Gpu device index, it may be CPU_DEVICE_ID
+            int device;
 
-        /// Return a string identifying the platform
-        inline std::string platformToStr(Cpu) { return "CPU"; }
+            // Associated gpu device index if `device` is CPU_DEVICE_ID
+            int backup_device;
 
-        /// Return the associated cuda stream (trivial cpu implementation)
-        inline GpuStream getStream(const Cpu &) { return 0; }
+            // Operation's stream
+            GpuStream stream;
 
-        /// Return the associated cuda stream for allocating (trivial cpu implementation)
-        inline GpuStream getAllocStream(const Cpu &) { return 0; }
+            // Allocation stream
+            GpuStream alloc_stream;
 
+            /// Cache session
+            Session session;
+
+            /// Return a CPU context with the same session
+            Cpu toCpu() const { return Cpu{session}; }
+
+            /// Create a new context but with a different stream
+            SUPERBBLAS_GPU_SELECT(void, Cuda, Hip) withNewStream(GpuStream new_stream) const {
+                return {device, backup_device, new_stream, alloc_stream, session};
+            }
+
+            /// Create a new context but with a cpu device
+            SUPERBBLAS_GPU_SELECT(void, Cuda, Hip) toCpuPinned() const {
+                return {CPU_DEVICE_ID, backup_device, stream, alloc_stream, session};
+            }
+        };
+#endif // SUPERBBLAS_USE_GPU
+
+        /// Type for a gpu context
+        using Gpu = SUPERBBLAS_GPU_SELECT(void, Cuda, Hip);
+
+        /// Throw exception if the given gpu runtime error isn't success
+        /// \param err: gpu error
+
+        inline void gpuCheck(GpuError err) {
 #ifdef SUPERBBLAS_USE_CUDA
-
-        /// Throw exception if the given error isn't success
-        /// \param err: cuda error code
-
-        inline void cudaCheck(cudaError_t err) {
             if (err != cudaSuccess) {
                 std::stringstream s;
                 s << "CUDA error: " << cudaGetErrorName(err) << ": " << cudaGetErrorString(err);
                 throw std::runtime_error(s.str());
             }
-        }
-
-        /// Return the device in which the pointer was allocated
-
-        inline int getPtrDevice(const void *x) {
-            struct cudaPointerAttributes ptr_attr;
-            if (cudaPointerGetAttributes(&ptr_attr, x) != cudaSuccess) return CPU_DEVICE_ID;
-
-#    if CUDART_VERSION >= 10000
-            if (ptr_attr.type == cudaMemoryTypeUnregistered || ptr_attr.type == cudaMemoryTypeHost)
-                return CPU_DEVICE_ID;
-#    else
-            if (!ptr_attr.isManaged && ptr_attr.memoryType == cudaMemoryTypeHost)
-                return CPU_DEVICE_ID;
-#    endif
-            return ptr_attr.device;
-        }
-
-        inline const char *cublasStatusToStr(cublasStatus_t status) {
-#    if CUDART_VERSION >= 11400
-            return cublasGetStatusName(status);
-#    else
-            // clang-format off
-            if (status == CUBLAS_STATUS_SUCCESS         ) return "CUBLAS_STATUS_SUCCESS";
-            if (status == CUBLAS_STATUS_NOT_INITIALIZED ) return "CUBLAS_STATUS_NOT_INITIALIZED";
-            if (status == CUBLAS_STATUS_ALLOC_FAILED    ) return "CUBLAS_STATUS_ALLOC_FAILED";
-            if (status == CUBLAS_STATUS_INVALID_VALUE   ) return "CUBLAS_STATUS_INVALID_VALUE";
-            if (status == CUBLAS_STATUS_ARCH_MISMATCH   ) return "CUBLAS_STATUS_ARCH_MISMATCH";
-            if (status == CUBLAS_STATUS_MAPPING_ERROR   ) return "CUBLAS_STATUS_MAPPING_ERROR";
-            if (status == CUBLAS_STATUS_EXECUTION_FAILED) return "CUBLAS_STATUS_EXECUTION_FAILED";
-            if (status == CUBLAS_STATUS_INTERNAL_ERROR  ) return "CUBLAS_STATUS_INTERNAL_ERROR";
-            if (status == CUBLAS_STATUS_NOT_SUPPORTED   ) return "CUBLAS_STATUS_NOT_SUPPORTED";
-            if (status == CUBLAS_STATUS_LICENSE_ERROR   ) return "CUBLAS_STATUS_LICENSE_ERROR";
-            // clang-format on
-            return "(unknown error code)";
-#    endif
-        }
-
-        inline void cublasCheck(cublasStatus_t status) {
-            if (status != CUBLAS_STATUS_SUCCESS) {
-                std::stringstream s;
-                s << "CUBLAS error: " << cublasStatusToStr(status);
-                throw std::runtime_error(s.str());
-            }
-        }
-
-        inline void cusparseCheck(cusparseStatus_t status) {
-            if (status != CUSPARSE_STATUS_SUCCESS) {
-                std::string str = "(unknown)";
-                if (status == CUSPARSE_STATUS_NOT_INITIALIZED)
-                    str = "CUSPARSE_STATUS_NOT_INITIALIZED";
-                if (status == CUSPARSE_STATUS_ALLOC_FAILED) str = "CUSPARSE_STATUS_ALLOC_FAILED";
-                if (status == CUSPARSE_STATUS_INVALID_VALUE) str = "CUSPARSE_STATUS_INVALID_VALUE";
-                if (status == CUSPARSE_STATUS_ARCH_MISMATCH) str = "CUSPARSE_STATUS_ARCH_MISMATCH";
-                if (status == CUSPARSE_STATUS_EXECUTION_FAILED)
-                    str = "CUSPARSE_STATUS_EXECUTION_FAILED";
-                if (status == CUSPARSE_STATUS_INTERNAL_ERROR)
-                    str = "CUSPARSE_STATUS_INTERNAL_ERROR";
-                if (status == CUSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
-                    str = "CUSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
-                if (status == CUSPARSE_STATUS_NOT_SUPPORTED) str = "CUSPARSE_STATUS_NOT_SUPPORTED";
-                if (status == CUSPARSE_STATUS_INSUFFICIENT_RESOURCES)
-                    str = "CUSPARSE_STATUS_INSUFFICIENT_RESOURCES";
-
-                std::stringstream ss;
-                ss << "cuSparse function returned error " << str;
-                throw std::runtime_error(ss.str());
-            }
-        }
-
-        inline void cusolverCheck(cusolverStatus_t status) {
-            if (status != CUSOLVER_STATUS_SUCCESS) {
-                std::string str = "(unknown)";
-
-                if (status == CUSOLVER_STATUS_NOT_INITIALIZED)
-                    str = "CUSOLVER_STATUS_NOT_INITIALIZED";
-                if (status == CUSOLVER_STATUS_ALLOC_FAILED) str = "CUSOLVER_STATUS_ALLOC_FAILED";
-                if (status == CUSOLVER_STATUS_INVALID_VALUE) str = "CUSOLVER_STATUS_INVALID_VALUE";
-                if (status == CUSOLVER_STATUS_ARCH_MISMATCH) str = "CUSOLVER_STATUS_ARCH_MISMATCH";
-                if (status == CUSOLVER_STATUS_EXECUTION_FAILED)
-                    str = "CUSOLVER_STATUS_EXECUTION_FAILED";
-                if (status == CUSOLVER_STATUS_INTERNAL_ERROR)
-                    str = "CUSOLVER_STATUS_INTERNAL_ERROR";
-                if (status == CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
-                    str = "CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
-                std::stringstream ss;
-                ss << "cuSolver function returned error " << str;
-                throw std::runtime_error(ss.str());
-            }
-        }
-
-        struct Cuda {
-            int device;
-            int backup_device;
-            GpuStream stream;
-            GpuStream alloc_stream;
-            cublasHandle_t cublasHandle;
-            cusparseHandle_t cusparseHandle;
-            cusolverDnHandle_t cusolverDnHandle;
-            /// Optional function for allocating memory on devices
-            Allocator alloc;
-            /// Optional function for deallocating memory on devices
-            Deallocator dealloc;
-            /// Cache session
-            Session session;
-
-            /// Return a CPU context with the same session
-            Cpu toCpu() const { return Cpu{session}; }
-
-            /// Create a new context but with a different stream
-            Cuda withNewStream(GpuStream new_stream) const {
-                return Cuda{device,       device,         new_stream,       alloc_stream,
-                            cublasHandle, cusparseHandle, cusolverDnHandle, alloc,
-                            dealloc,      session};
-            }
-
-            /// Create a new context but with a cpu device
-            Cuda toCpuPinned() const {
-                return Cuda{CPU_DEVICE_ID,  device,           stream, alloc_stream, cublasHandle,
-                            cusparseHandle, cusolverDnHandle, alloc,  dealloc,      session};
-            }
-        };
-
-        /// Return a device identification
-        inline int deviceId(Cuda cuda) { return cuda.device; }
-
-        /// Set the current device as the one passed
-        /// \param cuda: context
-
-        inline void setDevice(Cuda cuda) {
-            int currentDevice;
-            cudaCheck(cudaGetDevice(&currentDevice));
-            int gpu_device = deviceId(cuda) == CPU_DEVICE_ID ? cuda.backup_device : cuda.device;
-            if (currentDevice != gpu_device) cudaCheck(cudaSetDevice(gpu_device));
-        }
-
-        /// Return a string identifying the platform
-        inline std::string platformToStr(Cuda) { return "CUDA"; }
-
 #elif defined(SUPERBBLAS_USE_HIP)
-        inline void hipCheck(hipError_t err) {
             if (err != hipSuccess) {
                 std::stringstream s;
                 s << "HIP error: " << hipGetErrorName(err) << ": " << hipGetErrorString(err);
                 throw std::runtime_error(s.str());
             }
+#else
+            // Do nothing
+            (void)err;
+#endif
         }
 
-        inline void hipsparseCheck(hipsparseStatus_t status) {
-            std::string str = "(unknown)";
-            if (status == HIPSPARSE_STATUS_NOT_INITIALIZED)
-                str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
-            if (status == HIPSPARSE_STATUS_ALLOC_FAILED) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
-            if (status == HIPSPARSE_STATUS_INVALID_VALUE) str = "HIPSPARSE_STATUS_INVALID_VALUE";
-            if (status == HIPSPARSE_STATUS_ARCH_MISMATCH) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
-            if (status == HIPSPARSE_STATUS_MAPPING_ERROR) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
-            if (status == HIPSPARSE_STATUS_EXECUTION_FAILED)
-                str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
-            if (status == HIPSPARSE_STATUS_INTERNAL_ERROR) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
-            if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED)
-                str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
-            if (status == HIPSPARSE_STATUS_ZERO_PIVOT) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
-            if (status == HIPSPARSE_STATUS_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
-            if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES)
-                str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return a device identification associated to the contex
+        /// \param xpu: context
 
-            if (status != HIPSPARSE_STATUS_SUCCESS) {
-                std::stringstream ss;
-                ss << "hipSPARSE function returned error " << str;
-                throw std::runtime_error(ss.str());
-            }
+        inline int deviceId(Gpu xpu) { return xpu.device; }
+
+        /// Return `deviceId` if the device index is gpu, otherwise return backup_device
+        /// \param xpu: context
+
+        inline int backupDeviceId(const Gpu &xpu) {
+            return deviceId(xpu) == CPU_DEVICE_ID ? xpu.backup_device : deviceId(xpu);
         }
+#endif
 
-        /// Return the device in which the pointer was allocated
+        inline int deviceId(const Cpu &) { return CPU_DEVICE_ID; }
+        inline int backupDeviceId(const Cpu &) { return CPU_DEVICE_ID; }
 
-        inline int getPtrDevice(const void *x) {
-            struct hipPointerAttribute_t ptr_attr;
-            if (hipPointerGetAttributes(&ptr_attr, x) != hipSuccess) return CPU_DEVICE_ID;
+        /// Set the current runtime device as the given one
+        /// \param device: gpu device index to set as current
+        ///
+        /// NOTE: it does nothing on a cpu compilation
 
-            if (ptr_attr.memoryType != hipMemoryTypeDevice) return CPU_DEVICE_ID;
-            return ptr_attr.device;
-        }
-
-        inline const char *hipblasStatusToStr(hipblasStatus_t status) {
-            // clang-format off
-            if (status == HIPBLAS_STATUS_SUCCESS         ) return "HIPBLAS_STATUS_SUCCESS";
-            if (status == HIPBLAS_STATUS_NOT_INITIALIZED ) return "HIPBLAS_STATUS_NOT_INITIALIZED";
-            if (status == HIPBLAS_STATUS_ALLOC_FAILED    ) return "HIPBLAS_STATUS_ALLOC_FAILED";
-            if (status == HIPBLAS_STATUS_INVALID_VALUE   ) return "HIPBLAS_STATUS_INVALID_VALUE";
-            if (status == HIPBLAS_STATUS_ARCH_MISMATCH   ) return "HIPBLAS_STATUS_ARCH_MISMATCH";
-            if (status == HIPBLAS_STATUS_MAPPING_ERROR   ) return "HIPBLAS_STATUS_MAPPING_ERROR";
-            if (status == HIPBLAS_STATUS_EXECUTION_FAILED) return "HIPBLAS_STATUS_EXECUTION_FAILED";
-            if (status == HIPBLAS_STATUS_INTERNAL_ERROR  ) return "HIPBLAS_STATUS_INTERNAL_ERROR";
-            if (status == HIPBLAS_STATUS_NOT_SUPPORTED   ) return "HIPBLAS_STATUS_NOT_SUPPORTED";
-            // clang-format on
-            return "(unknown error code)";
-        }
-
-        inline void hipblasCheck(hipblasStatus_t status) {
-            if (status != HIPBLAS_STATUS_SUCCESS) {
-                std::stringstream s;
-                s << "HIPBLAS error: " << hipblasStatusToStr(status);
-                throw std::runtime_error(s.str());
-            }
-        }
-
-        inline void hipsolverCheck(hipsolverStatus_t status) {
-            if (status != HIPSOLVER_STATUS_SUCCESS) {
-                std::string str = "(unknown)";
-                if (status == HIPSOLVER_STATUS_NOT_INITIALIZED)
-                    str = "HIPSOLVER_STATUS_NOT_INITIALIZED";
-                if (status == HIPSOLVER_STATUS_ALLOC_FAILED) str = "HIPSOLVER_STATUS_ALLOC_FAILED";
-                if (status == HIPSOLVER_STATUS_INVALID_VALUE)
-                    str = "HIPSOLVER_STATUS_INVALID_VALUE";
-                if (status == HIPSOLVER_STATUS_MAPPING_ERROR)
-                    str = "HIPSOLVER_STATUS_MAPPING_ERROR";
-                if (status == HIPSOLVER_STATUS_EXECUTION_FAILED)
-                    str = "HIPSOLVER_STATUS_EXECUTION_FAILED";
-                if (status == HIPSOLVER_STATUS_INTERNAL_ERROR)
-                    str = "HIPSOLVER_STATUS_INTERNAL_ERROR";
-                if (status == HIPSOLVER_STATUS_NOT_SUPPORTED)
-                    str = "HIPSOLVER_STATUS_NOT_SUPPORTED";
-                if (status == HIPSOLVER_STATUS_ARCH_MISMATCH)
-                    str = "HIPSOLVER_STATUS_ARCH_MISMATCH";
-                if (status == HIPSOLVER_STATUS_HANDLE_IS_NULLPTR)
-                    str = "HIPSOLVER_STATUS_HANDLE_IS_NULLPTR";
-                if (status == HIPSOLVER_STATUS_INVALID_ENUM) str = "HIPSOLVER_STATUS_INVALID_ENUM";
-                if (status == HIPSOLVER_STATUS_UNKNOWN) str = "HIPSOLVER_STATUS_UNKNOWN";
-
-                std::stringstream ss;
-                ss << "hipSolver function returned error " << str;
-                throw std::runtime_error(ss.str());
-            }
-        }
-
-        struct Hip {
-            int device;
-            int backup_device;
-            GpuStream stream;
-            hipblasHandle_t hipblasHandle;
-            hipsparseHandle_t hipsparseHandle;
-            hipsolverDnHandle_t hipsolverDnHandle;
-            /// Optional function for allocating memory on devices
-            Allocator alloc;
-            /// Optional function for deallocating memory on devices
-            Deallocator dealloc;
-            /// Cache session
-            Session session;
-
-            /// Return a CPU context with the same session
-            Cpu toCpu() const { return Cpu{session}; }
-
-            /// Create a new context but with a different stream
-            Hip withNewStream(GpuStream new_stream) const {
-                return Hip{device,        new_stream,      alloc_stream,
-                           hipblasHandle, hipsparseHandle, hipsolverDnHandle,
-                           alloc,         dealloc,         session};
-            }
-
-            /// Create a new context but with a cpu device
-            Hip toCpuPinned() const {
-                return Hip{CPU_DEVICE_ID,
-                           device,
-                           stream,
-                           alloc_stream,
-                           hipblasHandle,
-                           hipsparseHandle,
-                           hipsolverDnHandle,
-                           alloc,
-                           dealloc,
-                           session};
-            }
-        };
-
-        /// Return a device identification
-        inline int deviceId(Hip hip) { return hip.device; }
-
-        /// Set the current device as the one passed
-        /// \param hip: context
-
-        inline void setDevice(Hip hip) {
+        inline void setDevice(int device) {
+#ifdef SUPERBBLAS_USE_GPU
+            if (device < 0) throw std::runtime_error("setDevice: invalid device index");
             int currentDevice;
-            hipCheck(hipGetDevice(&currentDevice));
-            int gpu_device = deviceId(hip) == CPU_DEVICE_ID ? hip.backup_device : hip.device;
-            if (currentDevice != gpu_device) hipCheck(hipSetDevice(gpu_device));
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(GetDevice)(&currentDevice));
+            if (currentDevice != device) gpuCheck(SUPERBBLAS_GPU_SYMBOL(SetDevice)(device));
+#else
+            // Do nothing
+            (void)device;
+#endif
         }
+
+        /// Set the current runtime device as the given one
+        /// \param ctx: context
+
+#ifdef SUPERBBLAS_USE_GPU
+        inline void setDevice(const Gpu &xpu) { setDevice(backupDeviceId(xpu)); }
+#endif
+
+        inline void setDevice(const Cpu &) {}
 
         /// Return a string identifying the platform
-        inline std::string platformToStr(Hip) { return "HIP"; }
+        /// \param xpu: context
 
-#else
-        /// Return the device in which the pointer was allocated
+        inline std::string platformToStr(const Cpu &) { return "CPU"; }
 
-        inline int getPtrDevice(const void *) { return CPU_DEVICE_ID; }
+#ifdef SUPERBBLAS_USE_GPU
+        inline std::string platformToStr(const Gpu &) {
+            return SUPERBBLAS_GPU_SELECT("", "CUDA", "HIP");
+        }
 #endif
 
 #ifdef SUPERBBLAS_USE_GPU
         /// Create a new stream
+        /// \param device: device on which to stream will live
 
-        inline GpuStream createStream() {
+        inline GpuStream createStream(int device) {
+            setDevice(device);
             GpuStream stream;
-#    ifdef SUPERBBLAS_USE_CUDA
-            detail::cudaCheck(cudaStreamCreate(&stream));
-#    elif defined(SUPERBBLAS_USE_HIP)
-            detail::hipCheck(hipStreamCreate(&stream));
-#    else
-            stream = 0;
-#    endif
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamCreate)(&stream));
             return stream;
         }
 
+        /// Create a new stream
+        /// \param xpu: device on which to stream will live
+
+        inline GpuStream createStream(const Gpu &xpu) { return createStream(backupDeviceId(xpu)); }
+
         /// Destroy stream
+        /// \param device: device on which to stream lives
         /// \param stream: stream to destroy
 
-        inline void destroyStream(GpuStream stream) {
-#    ifdef SUPERBBLAS_USE_CUDA
-            detail::cudaCheck(cudaStreamDestroy(stream));
-#    elif defined(SUPERBBLAS_USE_HIP)
-            detail::hipCheck(hipStreamDestroy(stream));
-#    endif
+        inline void destroyStream(int device, GpuStream stream) {
+            setDevice(device);
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamDestroy)(stream));
         }
-#endif // SUPERBBLAS_USE_GPU
 
-        /// Return if `T` is a supported type
-        template <typename T> struct supported_type { static constexpr bool value = false; };
-        template <> struct supported_type<int> { static constexpr bool value = true; };
-        template <> struct supported_type<float> { static constexpr bool value = true; };
-        template <> struct supported_type<double> { static constexpr bool value = true; };
-        template <> struct supported_type<std::complex<float>> {
-            static constexpr bool value = true;
-        };
-        template <> struct supported_type<std::complex<double>> {
-            static constexpr bool value = true;
-        };
-        template <> struct supported_type<_Complex float> { static constexpr bool value = true; };
-        template <> struct supported_type<_Complex double> { static constexpr bool value = true; };
-        template <typename T> struct supported_type<const T> {
-            static constexpr bool value = supported_type<T>::value;
-        };
+        /// Destroy stream
+        /// \param xpu: device on which to stream lives
+        /// \param stream: stream to destroy
 
-#ifdef SUPERBBLAS_USE_CUDA
-        using Gpu = Cuda;
-#elif defined(SUPERBBLAS_USE_HIP)
-        using Gpu = Hip;
-#else
-        using Gpu = void;
-#endif
+        inline void destroyStream(const Gpu &xpu, GpuStream stream) {
+            destroyStream(backupDeviceId(xpu), stream);
+        }
 
-#ifdef SUPERBBLAS_USE_GPU
         /// Return the associated stream
         /// \param xpu: context
         inline GpuStream getStream(const Gpu &xpu) { return xpu.stream; }
@@ -507,11 +325,7 @@ namespace superbblas {
         inline void sync(const Gpu &xpu) {
             tracker<Cpu> _t("sync", Cpu{});
             setDevice(xpu);
-#    ifdef SUPERBBLAS_USE_CUDA
-            cudaCheck(cudaStreamSynchronize(xpu.stream));
-#    else
-            hipCheck(hipStreamSynchronize(xpu.stream));
-#    endif
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(getStream(xpu)));
         }
 
         /// Wait until everything finishes in the device of the given context
@@ -520,27 +334,16 @@ namespace superbblas {
         inline void syncLegacyStream(const Gpu &xpu) {
             tracker<Cpu> _t("sync legacy stream", Cpu{});
             setDevice(xpu);
-#    ifdef SUPERBBLAS_USE_CUDA
-            cudaCheck(cudaDeviceSynchronize());
-#    else
-            hipCheck(hipDeviceSynchronize());
-#    endif
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(DeviceSynchronize)());
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        /// Wait until everything finishes in the given context
-        /// \param ctx: context
-        ///
-        /// NOTE: the Cpu implementation does nothing
-
-        inline void sync(Cpu) {}
-
-        /// Wait until everything finishes in the device of the given context
-        /// \param ctx: context
-        ///
-        /// NOTE: the Cpu implementation does nothing
-
-        inline void syncLegacyStream(Cpu) {}
+        inline GpuStream createStream(const Cpu &) { return 0; }
+        inline void destroyStream(const Cpu &, GpuStream) {}
+        inline GpuStream getStream(const Cpu &) { return 0; }
+        inline GpuStream getAllocStream(const Cpu &) { return 0; }
+        inline void sync(const Cpu &) {}
+        inline void syncLegacyStream(const Cpu &) {}
 
         /// Force the second stream to wait until everything finishes until now from
         /// the first stream.
@@ -552,20 +355,15 @@ namespace superbblas {
             if (s0 == s1) return;
 
                 // Otherwise, record an event on s0 and wait on s1
-#ifdef SUPERBBLAS_USE_CUDA
-            cudaEvent_t ev;
-            cudaCheck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
-            cudaCheck(cudaEventRecord(ev, s0));
-            cudaCheck(cudaStreamWaitEvent(s1, ev));
-            cudaCheck(cudaEventDestroy(ev));
-#elif defined(SUPERBBLAS_USE_HIP)
-            hipEvent_t ev;
-            hipCheck(hipEventCreateWithFlags(&ev, hipEventDisableTiming));
-            hipCheck(hipEventRecord(ev, s0));
-            hipCheck(hipStreamWaitEvent(s1, ev));
-            hipCheck(hipEventDestroy(ev));
+#ifdef SUPERBBLAS_USE_GPU
+            SUPERBBLAS_GPU_SYMBOL(Event_t) ev;
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventCreateWithFlags)(
+                &ev, SUPERBBLAS_GPU_SYMBOL(EventDisableTiming)));
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventRecord)(ev, s0));
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamWaitEvent)(s1, ev));
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventDestroy)(ev));
 #else
-            throw std::runtime_error("superbblas compiled with GPU support!");
+            throw std::runtime_error("causalConnectTo: invalid operation!");
 #endif
         }
 
@@ -591,6 +389,313 @@ namespace superbblas {
             causalConnectTo(getStream(xpu0), getStream(xpu1));
         }
 #endif // SUPERBBLAS_USE_GPU
+
+        /// Return the device in which the pointer was allocated
+        /// \param x: pointer to inspect
+
+        inline int getPtrDevice(const void *x) {
+#ifdef SUPERBBLAS_USE_CUDA
+            struct cudaPointerAttributes ptr_attr;
+            if (cudaPointerGetAttributes(&ptr_attr, x) != cudaSuccess) return CPU_DEVICE_ID;
+
+#    if CUDART_VERSION >= 10000
+            if (ptr_attr.type == cudaMemoryTypeUnregistered || ptr_attr.type == cudaMemoryTypeHost)
+                return CPU_DEVICE_ID;
+#    else
+            if (!ptr_attr.isManaged && ptr_attr.memoryType == cudaMemoryTypeHost)
+                return CPU_DEVICE_ID;
+#    endif
+            return ptr_attr.device;
+
+#elif defined(SUPERBBLAS_USE_HIP)
+            struct hipPointerAttribute_t ptr_attr;
+            if (hipPointerGetAttributes(&ptr_attr, x) != hipSuccess) return CPU_DEVICE_ID;
+
+            if (ptr_attr.memoryType != hipMemoryTypeDevice) return CPU_DEVICE_ID;
+            return ptr_attr.device;
+
+#else
+            (void)x;
+            return CPU_DEVICE_ID;
+#endif
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return all the streams allowed to use as input/output data in superbblas calls
+
+        inline std::vector<std::shared_ptr<GpuStream>> &getGpuAllocStreams() {
+            static std::vector<std::shared_ptr<GpuStream>> h(getGpuDevicesCount());
+            return h;
+        }
+
+        /// Return the gpu stream for a given device
+        /// \param device: device index
+
+        inline GpuStream getGpuAllocStream(int device) {
+            auto h = getGpuAllocStreams().at(device);
+            if (!h) {
+                getGpuAllocStreams()[device] = h =
+                    std::shared_ptr<GpuStream>(new GpuStream, [=](GpuStream *p) {
+                        destroyStream(device, *p);
+                        delete p;
+                    });
+                *h = createStream(device);
+            }
+            return *h;
+        }
+#endif
+
+        /// Throw an error if the gpu blas status isn't success
+        /// \param status: gpu blas error
+
+        inline void gpuBlasCheck(GpuBlasError status) {
+#ifdef SUPERBBLAS_USE_CUDA
+            if (status != CUBLAS_STATUS_SUCCESS) {
+                const char *err = "(unknown error code)";
+#    if CUDART_VERSION >= 11400
+                err = cublasGetStatusName(status);
+#    else
+                // clang-format off
+                if (status == CUBLAS_STATUS_SUCCESS         ) err = "CUBLAS_STATUS_SUCCESS";
+                if (status == CUBLAS_STATUS_NOT_INITIALIZED ) err = "CUBLAS_STATUS_NOT_INITIALIZED";
+                if (status == CUBLAS_STATUS_ALLOC_FAILED    ) err = "CUBLAS_STATUS_ALLOC_FAILED";
+                if (status == CUBLAS_STATUS_INVALID_VALUE   ) err = "CUBLAS_STATUS_INVALID_VALUE";
+                if (status == CUBLAS_STATUS_ARCH_MISMATCH   ) err = "CUBLAS_STATUS_ARCH_MISMATCH";
+                if (status == CUBLAS_STATUS_MAPPING_ERROR   ) err = "CUBLAS_STATUS_MAPPING_ERROR";
+                if (status == CUBLAS_STATUS_EXECUTION_FAILED) err = "CUBLAS_STATUS_EXECUTION_FAILED";
+                if (status == CUBLAS_STATUS_INTERNAL_ERROR  ) err = "CUBLAS_STATUS_INTERNAL_ERROR";
+                if (status == CUBLAS_STATUS_NOT_SUPPORTED   ) err = "CUBLAS_STATUS_NOT_SUPPORTED";
+                if (status == CUBLAS_STATUS_LICENSE_ERROR   ) err = "CUBLAS_STATUS_LICENSE_ERROR";
+                    // clang-format on
+#    endif
+                std::stringstream s;
+                s << "CUBLAS error: " << err;
+                throw std::runtime_error(s.str());
+            }
+
+#elif defined(SUPERBBLAS_USE_HIP)
+            if (status != HIPBLAS_STATUS_SUCCESS) {
+                std::stream err = "(unknown error code)";
+                // clang-format off
+                if (status == HIPBLAS_STATUS_SUCCESS         ) err = "HIPBLAS_STATUS_SUCCESS";
+                if (status == HIPBLAS_STATUS_NOT_INITIALIZED ) err = "HIPBLAS_STATUS_NOT_INITIALIZED";
+                if (status == HIPBLAS_STATUS_ALLOC_FAILED    ) err = "HIPBLAS_STATUS_ALLOC_FAILED";
+                if (status == HIPBLAS_STATUS_INVALID_VALUE   ) err = "HIPBLAS_STATUS_INVALID_VALUE";
+                if (status == HIPBLAS_STATUS_ARCH_MISMATCH   ) err = "HIPBLAS_STATUS_ARCH_MISMATCH";
+                if (status == HIPBLAS_STATUS_MAPPING_ERROR   ) err = "HIPBLAS_STATUS_MAPPING_ERROR";
+                if (status == HIPBLAS_STATUS_EXECUTION_FAILED) err = "HIPBLAS_STATUS_EXECUTION_FAILED";
+                if (status == HIPBLAS_STATUS_INTERNAL_ERROR  ) err = "HIPBLAS_STATUS_INTERNAL_ERROR";
+                if (status == HIPBLAS_STATUS_NOT_SUPPORTED   ) err = "HIPBLAS_STATUS_NOT_SUPPORTED";
+                // clang-format on
+                std::stringstream s;
+                s << "HIPBLAS error: " << err;
+                throw std::runtime_error(s.str());
+            }
+
+#else
+            // Do nothing
+            (void)status;
+#endif
+        }
+
+        /// Throw an error if the gpu sparse status isn't success
+        /// \param status: gpu sparse error
+
+        inline void gpuSparseCheck(GpuSparseError status) {
+#ifdef SUPERBBLAS_USE_CUDA
+            if (status != CUSPARSE_STATUS_SUCCESS) {
+                std::string str = "(unknown error code)";
+                // clang-format off
+                if (status == CUSPARSE_STATUS_NOT_INITIALIZED          ) str = "CUSPARSE_STATUS_NOT_INITIALIZED";
+                if (status == CUSPARSE_STATUS_ALLOC_FAILED             ) str = "CUSPARSE_STATUS_ALLOC_FAILED";
+                if (status == CUSPARSE_STATUS_INVALID_VALUE            ) str = "CUSPARSE_STATUS_INVALID_VALUE";
+                if (status == CUSPARSE_STATUS_ARCH_MISMATCH            ) str = "CUSPARSE_STATUS_ARCH_MISMATCH";
+                if (status == CUSPARSE_STATUS_EXECUTION_FAILED         ) str = "CUSPARSE_STATUS_EXECUTION_FAILED";
+                if (status == CUSPARSE_STATUS_INTERNAL_ERROR           ) str = "CUSPARSE_STATUS_INTERNAL_ERROR";
+                if (status == CUSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED) str = "CUSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+                if (status == CUSPARSE_STATUS_NOT_SUPPORTED            ) str = "CUSPARSE_STATUS_NOT_SUPPORTED";
+                if (status == CUSPARSE_STATUS_INSUFFICIENT_RESOURCES   ) str = "CUSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+                // clang-format on
+
+                std::stringstream ss;
+                ss << "cuSparse function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+
+#elif defined(SUPERBBLAS_USE_HIP)
+            if (status != HIPSPARSE_STATUS_SUCCESS) {
+                std::string str = "(unknown error code)";
+                // clang-format off
+                if (status == HIPSPARSE_STATUS_NOT_INITIALIZED          ) str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
+                if (status == HIPSPARSE_STATUS_ALLOC_FAILED             ) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
+                if (status == HIPSPARSE_STATUS_INVALID_VALUE            ) str = "HIPSPARSE_STATUS_INVALID_VALUE";
+                if (status == HIPSPARSE_STATUS_ARCH_MISMATCH            ) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
+                if (status == HIPSPARSE_STATUS_MAPPING_ERROR            ) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
+                if (status == HIPSPARSE_STATUS_EXECUTION_FAILED         ) str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
+                if (status == HIPSPARSE_STATUS_INTERNAL_ERROR           ) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
+                if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+                if (status == HIPSPARSE_STATUS_ZERO_PIVOT               ) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
+                if (status == HIPSPARSE_STATUS_NOT_SUPPORTED            ) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
+                if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES   ) str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+                // clang-format on
+
+                std::stringstream ss;
+                ss << "hipSPARSE function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+#else
+            // Do nothing
+            (void)status;
+#endif
+        }
+
+        /// Throw an error if the gpu solver status isn't success
+        /// \param status: gpu solver error
+
+        inline void gpuSolverCheck(GpuSolverError status) {
+#ifdef SUPERBBLAS_USE_CUDA
+            if (status != CUSOLVER_STATUS_SUCCESS) {
+                std::string str = "(unknown error code)";
+                // clang-format off
+                if (status == CUSOLVER_STATUS_NOT_INITIALIZED          ) str = "CUSOLVER_STATUS_NOT_INITIALIZED";
+                if (status == CUSOLVER_STATUS_ALLOC_FAILED             ) str = "CUSOLVER_STATUS_ALLOC_FAILED";
+                if (status == CUSOLVER_STATUS_INVALID_VALUE            ) str = "CUSOLVER_STATUS_INVALID_VALUE";
+                if (status == CUSOLVER_STATUS_ARCH_MISMATCH            ) str = "CUSOLVER_STATUS_ARCH_MISMATCH";
+                if (status == CUSOLVER_STATUS_EXECUTION_FAILED         ) str = "CUSOLVER_STATUS_EXECUTION_FAILED";
+                if (status == CUSOLVER_STATUS_INTERNAL_ERROR           ) str = "CUSOLVER_STATUS_INTERNAL_ERROR";
+                if (status == CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED) str = "CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+                // clang-format on
+                std::stringstream ss;
+                ss << "cuSolver function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+
+#elif defined(SUPERBBLAS_USE_HIP)
+            if (status != HIPSPARSE_STATUS_SUCCESS) {
+                std::string str = "(unknown error code)";
+                // clang-format off
+                if (status == HIPSPARSE_STATUS_NOT_INITIALIZED          ) str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
+                if (status == HIPSPARSE_STATUS_ALLOC_FAILED             ) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
+                if (status == HIPSPARSE_STATUS_INVALID_VALUE            ) str = "HIPSPARSE_STATUS_INVALID_VALUE";
+                if (status == HIPSPARSE_STATUS_ARCH_MISMATCH            ) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
+                if (status == HIPSPARSE_STATUS_MAPPING_ERROR            ) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
+                if (status == HIPSPARSE_STATUS_EXECUTION_FAILED         ) str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
+                if (status == HIPSPARSE_STATUS_INTERNAL_ERROR           ) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
+                if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+                if (status == HIPSPARSE_STATUS_ZERO_PIVOT               ) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
+                if (status == HIPSPARSE_STATUS_NOT_SUPPORTED            ) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
+                if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES   ) str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+                // clang-format on
+
+                std::stringstream ss;
+                ss << "hipSPARSE function returned error " << str;
+                throw std::runtime_error(ss.str());
+            }
+#else
+            // Do nothing
+            (void)status;
+#endif
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Return all gpu blas handles for all devices
+
+        inline std::vector<std::shared_ptr<GpuBlasHandle>> &getGpuBlasHandles() {
+            static std::vector<std::shared_ptr<GpuBlasHandle>> h(getGpuDevicesCount());
+            return h;
+        }
+
+        /// Return the gpu blas handle for the given context
+        /// \param xpu: context
+
+        inline GpuBlasHandle getGpuBlasHandle(const Gpu &xpu) {
+            auto h = getGpuBlasHandles().at(deviceId(xpu));
+            if (!h) {
+                getGpuBlasHandles()[deviceId(xpu)] = h =
+                    std::shared_ptr<GpuBlasHandle>(new GpuBlasHandle, [=](GpuBlasHandle *p) {
+                        setDevice(xpu);
+                        gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(Destroy)(*p));
+                        delete p;
+                    });
+                setDevice(xpu);
+                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(Create)(&*h));
+            }
+            setDevice(xpu);
+            gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(SetStream)(*h, getStream(xpu)));
+            return *h;
+        }
+
+        /// Return all gpu sparse handles for all devices
+
+        inline std::vector<std::shared_ptr<GpuSparseHandle>> &getGpuSparseHandles() {
+            static std::vector<std::shared_ptr<GpuSparseHandle>> h(getGpuDevicesCount());
+            return h;
+        }
+
+        /// Return the gpu sparse handle for the given context
+        /// \param xpu: context
+
+        inline GpuSparseHandle getGpuSparseHandle(const Gpu &xpu) {
+            auto h = getGpuSparseHandles().at(deviceId(xpu));
+            if (!h) {
+                getGpuSparseHandles()[deviceId(xpu)] = h =
+                    std::shared_ptr<GpuSparseHandle>(new GpuSparseHandle, [=](GpuSparseHandle *p) {
+                        setDevice(xpu);
+                        gpuSparseCheck(SUPERBBLAS_GPUSPARSE_SYMBOL(Destroy)(*p));
+                        delete p;
+                    });
+                setDevice(xpu);
+                gpuSparseCheck(SUPERBBLAS_GPUSPARSE_SYMBOL(Create)(&*h));
+            }
+            setDevice(xpu);
+            gpuSparseCheck(SUPERBBLAS_GPUSPARSE_SYMBOL(SetStream)(*h, getStream(xpu)));
+            return *h;
+        }
+
+        /// Return all gpu solver handles for all devices
+
+        inline std::vector<std::shared_ptr<GpuSolverHandle>> &getGpuSolverHandles() {
+            static std::vector<std::shared_ptr<GpuSolverHandle>> h(getGpuDevicesCount());
+            return h;
+        }
+
+        /// Return the gpu solver handle for the given context
+        /// \param xpu: context
+
+        inline GpuSolverHandle getGpuSolverHandle(const Gpu &xpu) {
+            auto h = getGpuSolverHandles().at(deviceId(xpu));
+            if (!h) {
+                getGpuSolverHandles()[deviceId(xpu)] = h =
+                    std::shared_ptr<GpuSolverHandle>(new GpuSolverHandle, [=](GpuSolverHandle *p) {
+                        setDevice(xpu);
+                        gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(Destroy)(*p));
+                        delete p;
+                    });
+                setDevice(xpu);
+                gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(Create)(&*h));
+            }
+            setDevice(xpu);
+            gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(SetStream)(*h, getStream(xpu)));
+            return *h;
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+        /// Return if `T` is a supported type
+        template <typename T> struct supported_type { static constexpr bool value = false; };
+        template <> struct supported_type<int> { static constexpr bool value = true; };
+        template <> struct supported_type<float> { static constexpr bool value = true; };
+        template <> struct supported_type<double> { static constexpr bool value = true; };
+        template <> struct supported_type<std::complex<float>> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<std::complex<double>> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<_Complex float> { static constexpr bool value = true; };
+        template <> struct supported_type<_Complex double> { static constexpr bool value = true; };
+        template <typename T> struct supported_type<const T> {
+            static constexpr bool value = supported_type<T>::value;
+        };
 
 #ifdef SUPERBBLAS_USE_MPI
         /// Throw exception if MPI reports an error
@@ -643,125 +748,16 @@ namespace superbblas {
         /// fashion. If `plat` is `CUDA` and `HIP`, the value is the device identification.
         int device;
 
-    private:
-        /// Optional function for allocating memory on devices
-        const Allocator alloc;
-
-        /// Optional function for deallocating memory on devices
-        const Deallocator dealloc;
-
-#ifdef SUPERBBLAS_USE_CUDA
-        std::shared_ptr<detail::GpuStream> stream;
-        std::shared_ptr<cublasHandle_t> cublasHandle;
-        std::shared_ptr<cusparseHandle_t> cusparseHandle;
-        std::shared_ptr<cusolverDnHandle_t> cusolverDnHandle;
-#elif defined(SUPERBBLAS_USE_HIP)
-        std::shared_ptr<detail::GpuStream> stream;
-        std::shared_ptr<hipblasHandle_t> hipblasHandle;
-        std::shared_ptr<hipsparseHandle_t> hipsparseHandle;
-        std::shared_ptr<hipsolverDnHandle_t> hipsolverDnHandle;
-#endif
-
-    public:
-        Context(enum platform plat, int device, Allocator alloc = Allocator(),
-                Deallocator dealloc = Deallocator())
-            : plat(plat), device(device), alloc(alloc), dealloc(dealloc) {
-
-#ifdef SUPERBBLAS_USE_CUDA
-            if (plat == CUDA) {
-                int currentDevice = -1;
-                detail::cudaCheck(cudaGetDevice(&currentDevice));
-                if (currentDevice != device) detail::cudaCheck(cudaSetDevice(device));
-                const auto this_stream = stream = std::shared_ptr<detail::GpuStream>(
-                    new detail::GpuStream, [](detail::GpuStream *p) {
-                        detail::cudaCheck(cudaStreamDestroy(*p));
-                        delete p;
-                    });
-                detail::cudaCheck(cudaStreamCreate(stream.get()));
-                cublasHandle = std::shared_ptr<cublasHandle_t>(
-                    new cublasHandle_t, [this_stream](cublasHandle_t *p) {
-                        detail::cublasCheck(cublasDestroy(*p));
-                        delete p;
-                    });
-                detail::cublasCheck(cublasCreate(cublasHandle.get()));
-                detail::cublasCheck(cublasSetStream(*cublasHandle, *stream));
-                cusparseHandle = std::shared_ptr<cusparseHandle_t>(
-                    new cusparseHandle_t, [this_stream](cusparseHandle_t *p) {
-                        detail::cusparseCheck(cusparseDestroy(*p));
-                        delete p;
-                    });
-                detail::cusparseCheck(cusparseCreate(cusparseHandle.get()));
-                detail::cusparseCheck(cusparseSetStream(*cusparseHandle, *stream));
-                cusolverDnHandle = std::shared_ptr<cusolverDnHandle_t>(
-                    new cusolverDnHandle_t, [this_stream](cusolverDnHandle_t *p) {
-                        detail::cusolverCheck(cusolverDnDestroy(*p));
-                        delete p;
-                    });
-                detail::cusolverCheck(cusolverDnCreate(cusolverDnHandle.get()));
-                detail::cusolverCheck(cusolverDnSetStream(*cusolverDnHandle, *stream));
-            }
-#elif defined(SUPERBBLAS_USE_HIP)
-            if (plat == HIP) {
-                int currentDevice = -1;
-                detail::hipCheck(hipGetDevice(&currentDevice));
-                if (currentDevice != device) detail::hipCheck(hipSetDevice(device));
-                const auto this_stream = stream = std::shared_ptr<detail::GpuStream>(
-                    new detail::GpuStream, [](detail::GpuStream *p) {
-                        detail::hipCheck(hipStreamDestroy(*p));
-                        delete p;
-                    });
-                detail::hipCheck(hipStreamCreate(stream.get()));
-                hipblasHandle = std::shared_ptr<hipblasHandle_t>(
-                    new hipblasHandle_t, [this_stream](hipblasHandle_t *p) {
-                        detail::hipblasCheck(hipblasDestroy(*p));
-                        delete p;
-                    });
-                detail::hipblasCheck(hipblasCreate(hipblasHandle.get()));
-                detail::hipblasCheck(hipblasSetStream(*hipblasHandle, *stream));
-                hipsparseHandle = std::shared_ptr<hipsparseHandle_t>(
-                    new hipsparseHandle_t, [this_stream](hipsparseHandle_t *p) {
-                        detail::hipsparseCheck(hipsparseDestroy(*p));
-                        delete p;
-                    });
-                detail::hipsparseCheck(hipsparseCreate(hipsparseHandle.get()));
-                detail::hipsparseCheck(hipsparseSetStream(*hipsparseHandle, *stream));
-                hipsolverDnHandle = std::shared_ptr<hipsolverDnHandle_t>(
-                    new hipsolverDnHandle_t, [this_stream](hipsolverDnHandle_t *p) {
-                        detail::hipsolverCheck(hipsolverDnDestroy(*p));
-                        delete p;
-                    });
-                detail::hipsolverCheck(hipsolverDnCreate(hipsolverDnHandle.get()));
-                detail::hipsolverCheck(hipsolverDnSetStream(*hipsolverDnHandle, *stream));
-            }
-#endif
-        }
+        Context(enum platform plat, int device) : plat(plat), device(device) {}
 
         detail::Cpu toCpu(Session session) const { return detail::Cpu{session}; }
 
-#ifdef SUPERBBLAS_USE_CUDA
-        detail::Cuda toCuda(Session session) const {
-            return detail::Cuda{device,        device,          *stream,           *stream,
-                                *cublasHandle, *cusparseHandle, *cusolverDnHandle, alloc,
-                                dealloc,       session};
+#ifdef SUPERBBLAS_USE_GPU
+        detail::Gpu toGpu(Session session) const {
+            return detail::Gpu{device, device, detail::getGpuAllocStream(device),
+                               detail::getGpuAllocStream(device), session};
         }
 
-        detail::Cuda toGpu(Session session) const { return toCuda(session); }
-
-#elif defined(SUPERBBLAS_USE_HIP)
-        detail::Hip toHip(Session session) const {
-            return detail::Hip{device,
-                               device,
-                               *stream,
-                               *stream,
-                               *hipblasHandle,
-                               *hipsparseHandle,
-                               *hipsolverDnHandle,
-                               alloc,
-                               dealloc,
-                               session};
-        }
-
-        detail::Hip toGpu(Session session) const { return toHip(session); }
 #else
         void toGpu(Session) const {
             throw std::runtime_error("Compiled without support for Cuda or HIP");
@@ -774,31 +770,34 @@ namespace superbblas {
 
     /// Return a CUDA context
     /// \param device: device ID
-    inline Context createCudaContext(int device = 0, Allocator alloc = Allocator(),
-                                     Deallocator dealloc = Deallocator()) {
-        return Context{CUDA, device, alloc, dealloc};
+    inline Context createCudaContext(int device = 0) {
+#ifdef SUPERBBLAS_USE_CUDA
+        return Context{CUDA, device};
+#else
+        (void)device;
+        throw std::runtime_error("createGpuContext: superbblas compiled without cuda support");
+#endif
     }
 
     /// Return a HIP context
     /// \param device: device ID
-    inline Context createHipContext(int device = 0, Allocator alloc = Allocator(),
-                                    Deallocator dealloc = Deallocator()) {
-        return Context{HIP, device, alloc, dealloc};
+    inline Context createHipContext(int device = 0) {
+#ifdef SUPERBBLAS_USE_CUDA
+        return Context{HIP, device};
+#else
+        (void)device;
+        throw std::runtime_error("createGpuContext: superbblas compiled without hip support");
+#endif
     }
 
     /// Return a CUDA or HIP context
     /// \param device: device ID
-    inline Context createGpuContext(int device = 0, Allocator alloc = Allocator(),
-                                    Deallocator dealloc = Deallocator()) {
-#ifdef SUPERBBLAS_USE_CUDA
-        return createCudaContext(device, alloc, dealloc);
-#elif defined(SUPERBBLAS_USE_HIP)
-        return createHipContext(device, alloc, dealloc);
+    inline Context createGpuContext(int device = 0) {
+#ifdef SUPERBBLAS_USE_GPU
+        return Context{GPU, device};
 #else
         (void)device;
-        (void)alloc;
-        (void)dealloc;
-        throw std::runtime_error("Compiled without support for Cuda or HIP");
+        throw std::runtime_error("createGpuContext: superbblas compiled without gpu support");
 #endif
     }
 
@@ -810,12 +809,21 @@ namespace superbblas {
     // Return the number of GPU devices available
     inline unsigned int getGpuDevicesCount() {
         int numDevices = 0;
-#ifdef SUPERBBLAS_USE_CUDA
-        detail::cudaCheck(cudaGetDeviceCount(&numDevices));
-#elif defined(SUPERBBLAS_USE_HIP)
-        detail::hipCheck(hipGetDeviceCount(&numDevices));
+#ifdef SUPERBBLAS_USE_GPU
+        detail::gpuCheck(SUPERBBLAS_GPU_SYMBOL(GetDeviceCount)(&numDevices));
 #endif
         return (unsigned int)numDevices;
+    }
+
+    /// Clear all internal handles to streams, cublas/hipblas, cusparse/hipsparse, and cusolver/hipsolver
+    inline void clearHandles() {
+#ifdef SUPERBBLAS_USE_GPU
+        // Remove handles and streams
+        for (auto &it : detail::getGpuBlasHandles()) it.reset();
+        for (auto &it : detail::getGpuSparseHandles()) it.reset();
+        for (auto &it : detail::getGpuSolverHandles()) it.reset();
+        for (auto &it : detail::getGpuAllocStreams()) it.reset();
+#endif
     }
 }
 

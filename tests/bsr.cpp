@@ -966,6 +966,7 @@ int main(int argc, char **argv) {
         test<float, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         test<std::complex<double>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         clearCaches();
+        clearHandles();
     }
 #endif
 

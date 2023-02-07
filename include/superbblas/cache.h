@@ -1,7 +1,7 @@
 #ifndef __SUPERBBLAS_CACHE__
 #define __SUPERBBLAS_CACHE__
 
-#include "performance.h"
+#include "platform.h"
 #include <limits>
 #include <map>
 #include <mutex>
@@ -260,11 +260,7 @@ namespace superbblas {
                             cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu() * 1024 * 1024 * 1024);
                         } else {
                             std::size_t free = 0, total = 0;
-#    ifdef SUPERBBLAS_USE_CUDA
-                            cudaCheck(cudaMemGetInfo(&free, &total));
-#    else
-                            hipCheck(hipMemGetInfo(&free, &total));
-#    endif
+                            gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemGetInfo)(&free, &total));
                             cacheMaxSizeGpu = total / 10;
                         }
 
