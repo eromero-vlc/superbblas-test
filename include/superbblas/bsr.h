@@ -649,16 +649,20 @@ namespace superbblas {
                     vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    auto kron_it = v.kron_it;
+                    auto kron_it_ptr = v.kron_it.data();
+                    auto aux_ptr = aux.data();
+                    auto a_cpu_ptr = a_cpu.data();
+                    auto b_cpu_ptr = b_cpu.data();
+                    auto c_cpu_ptr = c_cpu.data();
                     launchHostKernel(
                         [=] {
                             for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
                                 unsigned int mu = ij % num_nnz_per_row;
                                 unsigned int col = ij / num_nnz_per_row;
-                                a_cpu.data()[ij] = (T *)x + col * block_size * block_cols;
-                                b_cpu.data()[ij] = kron_it.data() + ki * kd * mu;
-                                c_cpu.data()[ij] = aux.data() + block_size * block_cols * mu +
-                                                   block_size * block_cols * num_nnz_per_row * col;
+                                a_cpu_ptr[ij] = (T *)x + col * block_size * block_cols;
+                                b_cpu_ptr[ij] = kron_it_ptr + ki * kd * mu;
+                                c_cpu_ptr[ij] = aux_ptr + block_size * block_cols * mu +
+                                                block_size * block_cols * num_nnz_per_row * col;
                             }
                         },
                         xpu_host);

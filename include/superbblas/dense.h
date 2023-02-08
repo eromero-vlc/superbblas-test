@@ -144,10 +144,14 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
             auto xpu_host = a.ctx().toCpuPinned();
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
+            auto a_ps_ptr = a_px.data();
+            auto x_ps_ptr = x_px.data();
+            auto a_ptr = a.data();
+            auto x_ptr = x.data();
             launchHostKernel(
                 [=] {
-                    for (std::size_t i = 0; i < k; ++i) a_ps.data()[i] = a.data() + n * n * i;
-                    for (std::size_t i = 0; i < k; ++i) x_ps.data()[i] = x.data() + n * m * i;
+                    for (std::size_t i = 0; i < k; ++i) a_ps_ptr[i] = a_ptr + n * n * i;
+                    for (std::size_t i = 0; i < k; ++i) x_ps_ptr[i] = x_ptr + n * m * i;
                 },
                 xpu_host);
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
@@ -234,10 +238,14 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
             auto xpu_host = a.ctx().toCpuPinned();
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
+            auto a_ps_ptr = a_px.data();
+            auto x_ps_ptr = x_px.data();
+            auto a_ptr = a.data();
+            auto x_ptr = x.data();
             launchHostKernel(
                 [=] {
-                    for (std::size_t i = 0; i < k; ++i) a_ps.data()[i] = a.data() + n * n * i;
-                    for (std::size_t i = 0; i < k; ++i) x_ps.data()[i] = x.data() + n * m * i;
+                    for (std::size_t i = 0; i < k; ++i) a_ps_ptr[i] = a_ptr + n * n * i;
+                    for (std::size_t i = 0; i < k; ++i) x_ps_ptr[i] = x_ptr + n * m * i;
                 },
                 xpu_host);
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
@@ -249,10 +257,11 @@ namespace superbblas {
                                                      n * n, ipivs.data(), n, info.data(), k));
 #    endif
             vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+            auto info_cpu_ptr = info_cpu.data();
             launchHostKernel(
                 [=] {
                     for (std::size_t i = 0; i < k; ++i)
-                        checkLapack(info_cpu.data()[i], true /* terminate */);
+                        checkLapack(info_cpu_ptr[i], true /* terminate */);
                 },
                 xpu_host);
             int info_getrs;

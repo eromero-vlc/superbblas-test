@@ -137,24 +137,6 @@ namespace superbblas {
         };
 #endif // SUPERBBLAS_USE_THRUST
 
-        template <typename T, typename XPU0, typename XPU1>
-        void copy_n(const T *SB_RESTRICT v, XPU0 xpu0, std::size_t n, T *SB_RESTRICT w, XPU1 xpu1);
-
-#ifdef SUPERBBLAS_USE_GPU
-        template <typename T> struct copy_n_callback {
-            struct Data {
-                const T *v;
-                T *w;
-                std::size_t n;
-            };
-            static void CUDART_CB f(void *data_) {
-                Data *data = (Data *)data_;
-                copy_n<T>(data->v, Cpu{}, data->n, data->w, Cpu{});
-                delete data;
-            }
-        };
-#endif // SUPERBBLAS_USE_GPU
-
         /// Copy n values from v to w
         /// \param v: first element to read
         /// \param xpu0: context of v
@@ -186,15 +168,7 @@ namespace superbblas {
             else if (v_is_on_cpu && w_is_on_cpu) {
                 // Both pointers are on cpu but disguised as gpu contexts
                 causalConnectTo(xpu1, xpu0);
-                setDevice(xpu0);
-                auto *data = new typename copy_n_callback<T>::Data{v, w, n};
-#    ifdef SUPERBBLAS_USE_CUDA
-                gpuCheck(
-                    cudaLaunchHostFunc(getStream(xpu0), (cudaHostFn_t)copy_n_callback<T>::f, data));
-#    elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(
-                    hipLaunchHostFunc(getStream(xpu0), (hipHostFn_t)copy_n_callback<T>::f, data));
-#    endif
+                launchHostKernel([=] { std::memcpy((void *)w, (void *)v, sizeof(T) * n); }, xpu0);
                 causalConnectTo(xpu0, xpu1);
             } else if (v_is_on_cpu != w_is_on_cpu) {
                 // One pointer is on device and the other on host
