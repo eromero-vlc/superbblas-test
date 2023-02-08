@@ -26,15 +26,25 @@ namespace superbblas {
             }
         }
 
-        inline void checkLapack(int info) {
+        inline void throw_or_exit(const std::string &err_msg, bool terminate = false) {
+            if (terminate) {
+                std::cerr << err_msg << std::endl;
+                std::exit(-1);
+            } else {
+                throw std::runtime_error(err_msg);
+            }
+        }
+
+        inline void checkLapack(int info, bool terminate = false) {
             if (info == 0) return;
             if (info < 0)
-                throw std::runtime_error(
+                throw_or_exit(
                     std::string("Error in a lapack routine: wrong argument at position ") +
-                    std::to_string(-info));
+                        std::to_string(-info),
+                    terminate);
             if (info > 0)
-                throw std::runtime_error(std::string("Error in lapack routine: ") +
-                                         std::to_string(info));
+                throw_or_exit(std::string("Error in lapack routine: ") + std::to_string(info),
+                              terminate);
         }
 
         template <typename T> void local_cholesky(std::size_t n, std::size_t k, vector<T, Cpu> v) {
@@ -83,14 +93,10 @@ namespace superbblas {
             for (std::size_t i = 0; i < k; ++i) v_ps[i] = v.data() + n * n * i;
             vector<T *, Gpu> v_ps_gpu = makeSure(v_ps, v.ctx());
             vector<int, Gpu> info(k, v.ctx());
-#    ifdef SUPERBBLAS_USE_CUDA
-            cusolverCheck(cusolverDnXpotrfBatched(v.ctx().cusolverDnHandle, CUBLAS_FILL_MODE_UPPER,
-                                                  n, v_ps_gpu.data(), n, info.data(), k));
-#    else
-            hipsolverCheck(hipsolverDnXpotrfBatched(v.ctx().hipsolverDnHandle,
-                                                    HIPSOLVER_FILL_MODE_UPPER, n, v_ps_gpu.data(),
-                                                    n, info.data(), k));
-#    endif
+            gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(XpotrfBatched)(
+                getGpuSolverHandle(v.ctx()),
+                SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_FILL_MODE_UPPER, HIPSOLVER_FILL_MODE_UPPER), n,
+                v_ps_gpu.data(), n, info.data(), k));
             vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
             for (std::size_t i = 0; i < k; ++i)
                 if (info_cpu[i] > 0)
@@ -136,18 +142,24 @@ namespace superbblas {
             _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
 
 #    ifdef SUPERBBLAS_USE_CUDA
-            vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
-            for (std::size_t i = 0; i < k; ++i) a_ps[i] = a.data() + n * n * i;
-            for (std::size_t i = 0; i < k; ++i) x_ps[i] = x.data() + n * m * i;
-            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx()), x_ps_gpu = makeSure(x_ps, x.ctx());
-            cublasCheck(cublasXtrsmBatched(
-                a.ctx().cublasHandle, left_side ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT,
+            auto xpu_host = a.ctx().toCpuPinned();
+            vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i) a_ps.data()[i] = a.data() + n * n * i;
+                    for (std::size_t i = 0; i < k; ++i) x_ps.data()[i] = x.data() + n * m * i;
+                },
+                xpu_host);
+            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
+                             x_ps_gpu = makeSure(x_ps, x.ctx(), doCacheAlloc);
+            gpuBlasCheck(cublasXtrsmBatched(
+                getGpuBlasHandle(a.ctx()), left_side ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT,
                 CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, left_side ? n : m,
                 left_side ? m : n, alpha, a_ps_gpu.data(), n, x_ps_gpu.data(), left_side ? n : m,
                 k));
 #    else
-            hipblasCheck(hipblasXtrsmStridedBatched(
-                a.ctx().hipblasHandle, left_side ? HIPBLAS_SIDE_LEFT : HIPBLAS_SIDE_RIGHT,
+            gpuBlasCheck(hipblasXtrsmStridedBatched(
+                getGpuBlasHandle(a.ctx()), left_side ? HIPBLAS_SIDE_LEFT : HIPBLAS_SIDE_RIGHT,
                 HIPBLAS_FILL_MODE_UPPER, HIPBLAS_OP_N, HIPBLAS_DIAG_NON_UNIT, left_side ? n : m,
                 left_side ? m : n, alpha, a.data(), n, n * n, x.data(), left_side ? n : m, n * m,
                 k));
@@ -218,29 +230,40 @@ namespace superbblas {
             _t.cost = (double)n * n * n * 2 / 3 * k +
                       (double)n * n * m * k * multiplication_cost<T>::value;
 
-            vector<int, Gpu> ipivs(k * n, a.ctx()), info(k, a.ctx());
+            vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
 #    ifdef SUPERBBLAS_USE_CUDA
-            vector<T *, Cpu> a_ps(k, Cpu{}), x_ps(k, Cpu{});
-            for (std::size_t i = 0; i < k; ++i) a_ps[i] = a.data() + n * n * i;
-            for (std::size_t i = 0; i < k; ++i) x_ps[i] = x.data() + n * m * i;
-            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx()), x_ps_gpu = makeSure(x_ps, x.ctx());
-            cublasCheck(cublasXgetrfBatched(a.ctx().cublasHandle, n, a_ps_gpu.data(), n,
-                                            ipivs.data(), info.data(), k));
+            auto xpu_host = a.ctx().toCpuPinned();
+            vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i) a_ps.data()[i] = a.data() + n * n * i;
+                    for (std::size_t i = 0; i < k; ++i) x_ps.data()[i] = x.data() + n * m * i;
+                },
+                xpu_host);
+            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
+                             x_ps_gpu = makeSure(x_ps, x.ctx(), doCacheAlloc);
+            gpuBlasCheck(cublasXgetrfBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
+                                             ipivs.data(), info.data(), k));
 #    else
-            hipblasCheck(hipblasXgetrfStridedBatched(a.ctx().hipblasHandle, n, a.data(), n, n * n,
-                                                     ipivs.data(), n, info.data(), k));
+            gpuBlasCheck(hipblasXgetrfStridedBatched(getGpuBlasHandle(a.ctx()), n, a.data(), n,
+                                                     n * n, ipivs.data(), n, info.data(), k));
 #    endif
-            vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
-            for (std::size_t i = 0; i < k; ++i) checkLapack(info_cpu[i]);
+            vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i)
+                        checkLapack(info_cpu.data()[i], true /* terminate */);
+                },
+                xpu_host);
             int info_getrs;
 #    ifdef SUPERBBLAS_USE_CUDA
-            cublasCheck(cublasXgetrsBatched(a.ctx().cublasHandle, toCublasTrans(trans), n, m,
-                                            a_ps_gpu.data(), n, ipivs.data(), x_ps_gpu.data(), n,
-                                            &info_getrs, k));
+            gpuBlasCheck(cublasXgetrsBatched(getGpuBlasHandle(a.ctx()), toCublasTrans(trans), n, m,
+                                             a_ps_gpu.data(), n, ipivs.data(), x_ps_gpu.data(), n,
+                                             &info_getrs, k));
 #    else
-            hipblasCheck(hipblasXgetrsStridedBatched(a.ctx().hipblasHandle, toHipblasTrans(trans),
-                                                     n, m, a.data(), n, n * n, ipivs.data(), n,
-                                                     x.data(), n, n * m, &info_getrs, k));
+            gpuBlasCheck(hipblasXgetrsStridedBatched(
+                getGpuBlasHandle(a.ctx()), toHipblasTrans(trans), n, m, a.data(), n, n * n,
+                ipivs.data(), n, x.data(), n, n * m, &info_getrs, k));
 #    endif
             checkLapack(info_getrs);
         }

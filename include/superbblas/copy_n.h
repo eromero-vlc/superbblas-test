@@ -298,24 +298,6 @@ namespace superbblas {
         }
 
         template <typename IndexType, typename T, typename Q, typename EWOP>
-        struct copy_n_gen_callback {
-            struct Data {
-                typename elem<T>::type alpha;
-                const T *v;
-                const IndexType *indicesv;
-                IndexType n;
-                Q *w;
-                const IndexType *indicesw;
-            };
-            static void CUDART_CB f(void *data_) {
-                Data *data = (Data *)data_;
-                copy_n_lower<IndexType>(data->alpha, data->v, data->indicesv, Cpu{}, data->n,
-                                        data->w, data->indicesw, Cpu{}, EWOP{});
-                delete data;
-            }
-        };
-
-        template <typename IndexType, typename T, typename Q, typename EWOP>
         void copy_n_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                     const IndexType *indicesv, Gpu xpuv, IndexType n, Q *w,
                                     const IndexType *indicesw, Gpu xpuw, EWOP) {
@@ -329,12 +311,16 @@ namespace superbblas {
             causalConnectTo(xpuw, xpuv);
             setDevice(xpuv);
             if (deviceId(xpuv) == CPU_DEVICE_ID) {
-                auto *data = new typename copy_n_gen_callback<IndexType, T, Q, EWOP>::Data{
-                    alpha, v, indicesv, n, w, indicesw};
-                gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
-                    getStream(xpuv),
-                    (SUPERBBLAS_GPU_SYMBOL(HostFn_t))copy_n_gen_callback<IndexType, T, Q, EWOP>::f,
-                    data));
+                launchHostKernel(
+                    [=] {
+                        // We call `copy_n_cpu` instead of `copy_n` with cpu contexts to avoid
+                        // spawning threads inside a host kernel, they may not run on multiple cores
+                        using Tc = typename ccomplex<T>::type;
+                        using Qc = typename ccomplex<Q>::type;
+                        copy_n_cpu(*(Tc *)&alpha, (Tc *)v, indicesv, Cpu{}, n, (Qc *)w, indicesw,
+                                   Cpu{}, EWOP{});
+                    },
+                    xpuv);
             } else {
                 if (indicesv == nullptr) {
                     auto itv = encapsulate_pointer(v);
@@ -370,6 +356,13 @@ namespace superbblas {
         void zero_n_thrust(T *v, const IndexType *indices, IndexType n, Gpu xpu) {
             if (indices == nullptr) {
                 zero_n(v, n, xpu);
+            } else if (deviceId(xpu) == CPU_DEVICE_ID) {
+                launchHostKernel(
+                    [=] {
+                        // No openmp: we avoid spawning threads inside a host kernel, they may not run on multiple cores
+                        for (IndexType i = 0; i < n; ++i) v[indices[i]] = T{0};
+                    },
+                    xpu);
             } else {
                 setDevice(xpu);
                 auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
@@ -890,26 +883,6 @@ namespace superbblas {
         }
 
         template <typename IndexType, typename T, typename Q, typename EWOP>
-        struct copy_n_blocking_callback {
-            struct Data {
-                typename elem<T>::type alpha;
-                const T *v;
-                IndexType blocking;
-                const IndexType *indicesv;
-                IndexType n;
-                Q *w;
-                const IndexType *indicesw;
-            };
-            static void CUDART_CB f(void *data_) {
-                Data *data = (Data *)data_;
-                copy_n_blocking_lower<IndexType>(data->alpha, data->v, data->blocking,
-                                                 data->indicesv, Cpu{}, data->n, data->w,
-                                                 data->indicesw, Cpu{}, EWOP{});
-                delete data;
-            }
-        };
-
-        template <typename IndexType, typename T, typename Q, typename EWOP>
         void copy_n_blocking_same_dev_thrust(typename elem<T>::type alpha, const T *v,
                                              IndexType blocking, const IndexType *indicesv,
                                              Gpu xpuv, IndexType n, Q *w, const IndexType *indicesw,
@@ -924,13 +897,16 @@ namespace superbblas {
             causalConnectTo(xpuw, xpuv);
             setDevice(xpuv);
             if (deviceId(xpuv) == CPU_DEVICE_ID) {
-                auto *data = new typename copy_n_blocking_callback<IndexType, T, Q, EWOP>::Data{
-                    alpha, v, blocking, indicesv, n, w, indicesw};
-                gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
-                    getStream(xpuv),
-                    (SUPERBBLAS_GPU_SYMBOL(
-                        HostFn_t))copy_n_blocking_callback<IndexType, T, Q, EWOP>::f,
-                    data));
+                launchHostKernel(
+                    [=] {
+                        // We call `copy_n_blocking_cpu` instead of `copy_n_blocking` with cpu contexts to avoid
+                        // spawning threads inside a host kernel, they may not run on multiple cores
+                        using Tc = typename ccomplex<T>::type;
+                        using Qc = typename ccomplex<Q>::type;
+                        copy_n_blocking_cpu(*(Tc *)&alpha, (Tc *)v, blocking, indicesv, Cpu{}, n,
+                                            (Qc *)w, indicesw, Cpu{}, EWOP{});
+                    },
+                    xpuv);
             } else {
                 if (indicesv == nullptr && indicesw != nullptr) {
                     thrust::for_each_n(

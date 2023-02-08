@@ -463,16 +463,37 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_GPU
+
+        /// Launch a host kernel on the given stream
+        /// \param f: function to queue
+        /// \param xpu: context where the get the stream
+
+        inline void launchHostKernel(const std::function<void()> &f, const Gpu &xpu) {
+            if (deviceId(xpu) != CPU_DEVICE_ID)
+                throw std::runtime_error("launchHostKernel: the context should be on cpu");
+
+            struct F {
+                static void CUDART_CB callback(void *data) {
+                    auto f = (std::function<void()> *)data;
+                    (*f)();
+                    delete f;
+                }
+            };
+            auto fp = new std::function<void()>(f);
+            setDevice(xpu);
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
+                getStream(xpu), (SUPERBBLAS_GPU_SYMBOL(HostFn_t))F::callback, (void *)fp));
+        }
+
         /// Set the first `n` elements to zero
         /// \param v: first element to set
         /// \param n: number of elements to set
         /// \param xpu: device context
 
-        template <typename T> void zero_n(T *v, std::size_t n, Gpu xpu) {
+        template <typename T> void zero_n(T *v, std::size_t n, const Gpu &xpu) {
             if (n == 0) return;
             if (deviceId(xpu) == CPU_DEVICE_ID) {
-                sync(xpu);
-                zero_n<T>(v, n, Cpu{});
+                launchHostKernel([=] { std::memset((void *)v, 0, sizeof(T) * n); }, xpu);
             } else {
                 setDevice(xpu);
                 gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemsetAsync)(v, 0, sizeof(T) * n, getStream(xpu)));

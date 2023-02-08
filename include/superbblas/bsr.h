@@ -639,22 +639,29 @@ namespace superbblas {
                 } else if (ly == ColumnMajor && lx == ColumnMajor) {
                     // Contract the Kronecker part: for each direction mu do:
                     //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+                    assert(vx.size() == block_size * block_cols * ncols * kd);
+                    assert(v.kron_it.size() == kd * ki * num_nnz_per_row);
                     vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
                                        v.it.ctx(), doCacheAlloc);
                     zero_n(aux.data(), aux.size(), aux.ctx());
                     const bool tb = !v.blockImFast;
-                    Gpu xpu_host = v.it.ctx().toCpuPinned();
+                    auto xpu_host = v.it.ctx().toCpuPinned();
                     vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
-                        unsigned int mu = ij % num_nnz_per_row;
-                        unsigned int col = ij / num_nnz_per_row;
-                        a_cpu.data()[ij] = (T *)x + col * block_size * block_cols;
-                        b_cpu.data()[ij] = v.kron_it.data() + ki * kd * mu;
-                        c_cpu.data()[ij] = aux.data() + block_size * block_cols * mu +
-                                           block_size * block_cols * num_nnz_per_row * col;
-                    }
+                    auto kron_it = v.kron_it;
+                    launchHostKernel(
+                        [=] {
+                            for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
+                                unsigned int mu = ij % num_nnz_per_row;
+                                unsigned int col = ij / num_nnz_per_row;
+                                a_cpu.data()[ij] = (T *)x + col * block_size * block_cols;
+                                b_cpu.data()[ij] = kron_it.data() + ki * kd * mu;
+                                c_cpu.data()[ij] = aux.data() + block_size * block_cols * mu +
+                                                   block_size * block_cols * num_nnz_per_row * col;
+                            }
+                        },
+                        xpu_host);
                     auto a_xpu = makeSure(a_cpu, aux.ctx(), doCacheAlloc);
                     auto b_xpu = makeSure(b_cpu, aux.ctx(), doCacheAlloc);
                     auto c_xpu = makeSure(c_cpu, aux.ctx(), doCacheAlloc);
