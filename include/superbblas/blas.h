@@ -437,7 +437,6 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-
         /// Launch a host kernel on the given stream
         /// \param f: function to queue
         /// \param xpu: context where the get the stream
@@ -458,7 +457,11 @@ namespace superbblas {
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
                 getStream(xpu), (SUPERBBLAS_GPU_SYMBOL(HostFn_t))F::callback, (void *)fp));
         }
+#endif // SUPERBBLAS_USE_GPU
 
+        inline void launchHostKernel(const std::function<void()> &f, const Cpu &) { f(); }
+
+#ifdef SUPERBBLAS_USE_GPU
         /// Set the first `n` elements to zero
         /// \param v: first element to set
         /// \param n: number of elements to set

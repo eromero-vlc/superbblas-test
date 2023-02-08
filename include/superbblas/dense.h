@@ -144,8 +144,8 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
             auto xpu_host = a.ctx().toCpuPinned();
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
-            auto a_ps_ptr = a_px.data();
-            auto x_ps_ptr = x_px.data();
+            auto a_ps_ptr = a_ps.data();
+            auto x_ps_ptr = x_ps.data();
             auto a_ptr = a.data();
             auto x_ptr = x.data();
             launchHostKernel(
@@ -238,8 +238,8 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
             auto xpu_host = a.ctx().toCpuPinned();
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
-            auto a_ps_ptr = a_px.data();
-            auto x_ps_ptr = x_px.data();
+            auto a_ps_ptr = a_ps.data();
+            auto x_ps_ptr = x_ps.data();
             auto a_ptr = a.data();
             auto x_ptr = x.data();
             launchHostKernel(
