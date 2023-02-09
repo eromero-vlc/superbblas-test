@@ -590,7 +590,8 @@ namespace superbblas {
                             IndexType ncols, T beta = T{0}) const {
 
                 bool is_kron = v.kron_it.size() > 0;
-
+                check_same_device(vx.ctx(), vy.ctx());
+                check_same_device(vx.ctx(), ii.ctx());
                 causalConnectTo(vy.ctx(), vx.ctx());
                 causalConnectTo(vx.ctx(), ii.ctx());
                 const T *x = vx.data();
@@ -608,6 +609,7 @@ namespace superbblas {
                 if (!is_kron) {
                     matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols,
                            std::norm(beta) == 0 ? T{0} : T{1});
+                    causalConnectTo(ii.ctx(), vy.ctx());
                     return;
                 }
 
@@ -642,10 +644,10 @@ namespace superbblas {
                     assert(vx.size() == block_size * block_cols * ncols * kd);
                     assert(v.kron_it.size() == kd * ki * num_nnz_per_row);
                     vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
-                                       v.it.ctx(), doCacheAlloc);
+                                       ii.ctx(), doCacheAlloc);
                     zero_n(aux.data(), aux.size(), aux.ctx());
                     const bool tb = !v.blockImFast;
-                    auto xpu_host = v.it.ctx().toCpuPinned();
+                    auto xpu_host = ii.ctx().toCpuPinned();
                     vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
                     vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
@@ -654,15 +656,18 @@ namespace superbblas {
                     auto a_cpu_ptr = a_cpu.data();
                     auto b_cpu_ptr = b_cpu.data();
                     auto c_cpu_ptr = c_cpu.data();
+                    unsigned int this_num_nnz_per_row = num_nnz_per_row;
                     launchHostKernel(
                         [=] {
-                            for (unsigned int ij = 0; ij < num_nnz_per_row * ncols; ++ij) {
-                                unsigned int mu = ij % num_nnz_per_row;
-                                unsigned int col = ij / num_nnz_per_row;
+                            for (unsigned int ij = 0;
+                                 ij < this_num_nnz_per_row * (unsigned int)ncols; ++ij) {
+                                unsigned int mu = ij % this_num_nnz_per_row;
+                                unsigned int col = ij / this_num_nnz_per_row;
                                 a_cpu_ptr[ij] = (T *)x + col * block_size * block_cols;
                                 b_cpu_ptr[ij] = kron_it_ptr + ki * kd * mu;
-                                c_cpu_ptr[ij] = aux_ptr + block_size * block_cols * mu +
-                                                block_size * block_cols * num_nnz_per_row * col;
+                                c_cpu_ptr[ij] =
+                                    aux_ptr + block_size * block_cols * mu +
+                                    block_size * block_cols * this_num_nnz_per_row * col;
                             }
                         },
                         xpu_host);
@@ -682,6 +687,7 @@ namespace superbblas {
                 } else
                     throw std::runtime_error(
                         "BSR operator(): unsupported input/output tensor layout");
+                causalConnectTo(ii.ctx(), vy.ctx());
             }
 
             ~BSR() {}

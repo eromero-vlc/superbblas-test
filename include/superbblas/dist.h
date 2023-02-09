@@ -957,6 +957,7 @@ namespace superbblas {
             std::vector<MPI_Request> r;
             const int tag = 0;
             const unsigned int T_num = dtype_size / sizeof(T);
+            causalConnectTo(v1ToReceive.buf.ctx(), v0ToSend.buf.ctx());
             sync(v0ToSend.buf.ctx());
             _t.stop();
             if (getUseMPINonBlock()) {

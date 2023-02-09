@@ -109,6 +109,7 @@ namespace superbblas {
 #    endif
             }
 #endif // SUPERBBLAS_USE_GPU
+            causalConnectTo(getAllocStream(xpu), getStream(xpu));
 
             if (r == nullptr) std::runtime_error("Memory allocation failed!");
 
@@ -148,29 +149,28 @@ namespace superbblas {
 
             // Deallocate the pointer
             setDevice(xpu);
+            causalConnectTo(getStream(xpu), getAllocStream(xpu));
             if (getCustomDeallocator()) {
                 getCustomDeallocator()((void *)ptr, deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
             } else if (std::is_same<Cpu, XPU>::value) {
                 ::operator delete(ptr);
 #ifdef SUPERBBLAS_USE_GPU
             } else if (deviceId(xpu) == CPU_DEVICE_ID) {
-                sync(xpu);
+                sync(getAllocStream(xpu));
                 gpuCheck(SUPERBBLAS_GPU_SYMBOL(FreeHost)((void *)ptr));
             } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020
-                causalConnectTo(getStream(xpu), getAllocStream(xpu));
                 gpuCheck(cudaFreeAsync((void *)ptr, getAllocStream(xpu)));
 #        else
-                sync(xpu);
+                sync(getAllocStream(xpu));
                 gpuCheck(cudaFree((void *)ptr));
 #        endif
 #    elif defined(SUPERBBLAS_USE_HIP)
 #        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                causalConnectTo(getStream(xpu), getAllocStream(xpu));
                 gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
 #        else
-                sync(xpu);
+                sync(getAllocStream(xpu));
                 gpuCheck(hipFree((void *)ptr));
 #        endif
 #    endif
@@ -245,11 +245,9 @@ namespace superbblas {
         inline std::unordered_set<char *> &getAllocatedBuffers(const Gpu &xpu) {
             static std::vector<std::unordered_set<char *>> allocs(getGpuDevicesCount() + 1,
                                                                   std::unordered_set<char *>(16));
-            return allocs[deviceId(xpu) + 1];
+            return allocs.at(deviceId(xpu) + 1);
         }
 #endif
-
-        using AllocationEntry = std::pair<std::size_t, std::shared_ptr<char>>;
 
         /// Tag class for all `allocateBufferResouce`
         struct allocate_buffer_t {};
@@ -273,7 +271,15 @@ namespace superbblas {
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
 
             // Look for the smallest free allocation that can hold the requested size.
-            // Also, update `getAllocatedBuffers` by removing the buffers not longer in cache
+            // Also, update `getAllocatedBuffers` by removing the buffers not longer in cache.
+            // We take extra care for the fake gpu allocations (the ones with device == CPU_DEVICE_ID):
+            // we avoid sharing allocations for different backup devices. It should work without this hack,
+            // but it avoids correlation between different devices.
+            struct AllocationEntry {
+                std::size_t size;          // allocation size
+                std::shared_ptr<char> res; // allocation resource
+                int device;                // allocStream device
+            };
             auto cache =
                 getCache<char *, AllocationEntry, std::hash<char *>, allocate_buffer_t>(xpu);
             auto &all_buffers = getAllocatedBuffers(xpu);
@@ -284,11 +290,11 @@ namespace superbblas {
                 auto it = cache.find(buffer_ptr);
                 if (it == cache.end()) {
                     buffers_to_remove.push_back(buffer_ptr);
-                } else if (it->second.value.second.use_count() == 1 &&
-                           it->second.value.first >= size &&
-                           it->second.value.first < selected_buffer_size) {
-                    selected_buffer_size = it->second.value.first;
-                    selected_buffer = it->second.value.second;
+                } else if (it->second.value.device == backupDeviceId(xpu) &&
+                           it->second.value.res.use_count() == 1 && it->second.value.size >= size &&
+                           it->second.value.size < selected_buffer_size) {
+                    selected_buffer_size = it->second.value.size;
+                    selected_buffer = it->second.value.res;
                 }
             }
             for (char *buffer_ptr : buffers_to_remove) all_buffers.erase(buffer_ptr);
@@ -298,16 +304,22 @@ namespace superbblas {
                 selected_buffer = allocateResouce_mpi<T>(n, xpu, alignment).second;
                 selected_buffer_size = size;
                 all_buffers.insert(selected_buffer.get());
-                cache.insert(selected_buffer.get(), AllocationEntry{size, selected_buffer}, size);
+                cache.insert(selected_buffer.get(),
+                             AllocationEntry{size, selected_buffer, backupDeviceId(xpu)}, size);
             }
 
             // Connect the allocation stream with the current stream and make sure to connect back as soon as
             // the caller finishes using the buffer
             GpuStream stream = getStream(xpu), allocStream = getAllocStream(xpu);
+            int device = backupDeviceId(xpu);
+            setDevice(xpu);
             causalConnectTo(allocStream, stream);
             auto return_buffer = std::shared_ptr<char>(
-                selected_buffer.get(), [stream, allocStream, selected_buffer](char *) {
-                    causalConnectTo(stream, allocStream);
+                selected_buffer.get(), [stream, allocStream, selected_buffer, device](char *) {
+                    if (stream != allocStream) {
+                        setDevice(device);
+                        causalConnectTo(stream, allocStream);
+                    }
                 });
 
             // Align and return the buffer

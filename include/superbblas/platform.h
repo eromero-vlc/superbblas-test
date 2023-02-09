@@ -319,13 +319,20 @@ namespace superbblas {
 
         inline GpuStream getAllocStream(const Gpu &xpu) { return xpu.alloc_stream; }
 
+        /// Wait until everything finishes in the given stream
+        /// \param xpu: context
+
+        inline void sync(GpuStream stream) {
+            tracker<Cpu> _t("sync", Cpu{});
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(stream));
+        }
+
         /// Wait until everything finishes in the given context
         /// \param xpu: context
 
         inline void sync(const Gpu &xpu) {
-            tracker<Cpu> _t("sync", Cpu{});
             setDevice(xpu);
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(getStream(xpu)));
+            sync(getStream(xpu));
         }
 
         /// Wait until everything finishes in the device of the given context
