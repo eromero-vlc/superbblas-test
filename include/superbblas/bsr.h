@@ -641,8 +641,8 @@ namespace superbblas {
                 } else if (ly == ColumnMajor && lx == ColumnMajor) {
                     // Contract the Kronecker part: for each direction mu do:
                     //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
-                    assert(vx.size() == block_size * block_cols * ncols * kd);
-                    assert(v.kron_it.size() == kd * ki * num_nnz_per_row);
+                    assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
+                    assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
                     vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
                                        ii.ctx(), doCacheAlloc);
                     zero_n(aux.data(), aux.size(), aux.ctx());
