@@ -1199,14 +1199,14 @@ namespace superbblas {
             }
 
             // Use mpi send/receive buffers on gpu memory
+            // NOTE: both buffers should be on the same device
             if (v0.second.size() == 0) {
                 return send_receive_choose_size(o0, toSend, v0, v0.first.front().it.ctx(), o1,
-                                                toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
-                                                alpha);
+                                                toReceive, v1, v0.first.front().it.ctx(), comm,
+                                                EWOp{}, co, alpha);
             } else {
-                return send_receive_choose_size(o0, toSend, v0, v0.second.front().it.ctx(), o1,
-                                                toReceive, v1, v1.it.ctx(), comm, EWOp{}, co,
-                                                alpha);
+                return send_receive_choose_size(o0, toSend, v0, v1.it.ctx(), o1, toReceive, v1,
+                                                v1.it.ctx(), comm, EWOp{}, co, alpha);
             }
         }
 
