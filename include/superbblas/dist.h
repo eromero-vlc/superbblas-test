@@ -31,6 +31,31 @@
 #    endif
 #endif // SUPERBBLAS_USE_MPI
 
+#ifdef SUPERBBLAS_CREATING_LIB
+#    ifdef SUPERBBLAS_USE_MPI
+#        define COMMS detail::SelfComm, detail::MpiComm
+#    else
+#        define COMMS detail::SelfComm
+#    endif
+
+#    ifdef SUPERBBLAS_USE_GPU
+#        define XPUS_COMP detail::Gpu detail::Cpu
+#    else
+#        define XPUS_COMP detail::Cpu detail::Cpu
+#    endif
+
+/// Generate template instantiations for copy_request functions with template parameters T and Q
+
+#    define DECL_COPY_REQUEST_T_Q(...)                                                             \
+        EMIT REPLACE1(copy_request,                                                                \
+                      superbblas::detail::copy_request<Nd0, Nd1, T, Q, Comm, XPU0, XPU1, EWOP>)    \
+            REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS) REPLACE_T_Q REPLACE(Comm, COMMS)       \
+                REPLACE(XPU0 XPU1, XPUS_COMP) REPLACE_EWOP template __VA_ARGS__;
+
+#else
+#    define DECL_COPY_REQUEST_T_Q(...) __VA_ARGS__
+#endif
+
 namespace superbblas {
 
     /// First coordinate and size of a range of coordinates supported on a process/component.
@@ -2077,14 +2102,14 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOP>
-        Request
-        copy_request(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                     const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                     const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop,
-                     CoorOrder co, bool do_test = true) {
-
+        DECL_COPY_REQUEST_T_Q(Request copy_request(
+            typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
+            const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+            const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
+            bool do_test = true))
+        IMPL({
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
                 struct tag_type {}; // For hashing template arguments
@@ -2144,7 +2169,7 @@ namespace superbblas {
                     for (const auto &r : reqs) wait(r[1]);
                 };
             return Request();
-        }
+        })
 
         /// Copy the content of plural tensor v0 into v1
         /// \param alpha: factor applied to the input tensors

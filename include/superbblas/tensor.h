@@ -31,14 +31,29 @@
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, \
             26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36
 
+#    ifdef SUPERBBLAS_USE_GPU
+#        define XPUS detail::Cpu, detail::Gpu
+#    else
+#        define XPUS detail::Cpu
+#    endif
+
 /// Generate template instantiations for get_permutation function with template parameters IndexType and Nd
 
 #    define DECL_PERM(...)                                                                         \
         EMIT REPLACE1(get_permutation, superbblas::detail::get_permutation<IndexType, Nd>)         \
             REPLACE_IndexType REPLACE(Nd, COOR_DIMS) template __VA_ARGS__;
 
+/// Generate template instantiations for local_copy_normalize functions with template parameters T and Q
+
+#    define DECL_LOCAL_COPY_NORMALIZE_T_Q(...)                                                     \
+        EMIT REPLACE1(                                                                             \
+            local_copy_normalize,                                                                  \
+            superbblas::detail::local_copy_normalize<IndexType, Nd, T, Q, XPU0, XPU1, EWOP>)       \
+            REPLACE_IndexType REPLACE(Nd, COOR_DIMS) REPLACE_T_Q REPLACE(XPU0, XPUS)               \
+                REPLACE(XPU1, XPUS) REPLACE_EWOP template __VA_ARGS__;
 #else
 #    define DECL_PERM(...) __VA_ARGS__
+#    define DECL_LOCAL_COPY_NORMALIZE_T_Q(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -939,13 +954,13 @@ namespace superbblas {
 
         template <typename IndexType, std::size_t Nd, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOP>
-        void local_copy_normalize(typename elem<T>::type alpha, IndexType disp0,
+        DECL_LOCAL_COPY_NORMALIZE_T_Q(void local_copy_normalize(typename elem<T>::type alpha, IndexType disp0,
                                   const Coor<Nd> &from0, const Coor<Nd> &size, const Coor<Nd> &dim0,
                                   const Coor<Nd, IndexType> &strides0, vector<const T, XPU0> v0,
                                   Mask<XPU0> mask0, IndexType disp1, const Coor<Nd> &from1,
                                   const Coor<Nd> &dim1, const Coor<Nd, IndexType> &strides1,
                                   vector<Q, XPU1> v1, Mask<XPU1> mask1, std::size_t nblock,
-                                  EWOP ewop) {
+                                  EWOP ewop)) IMPL( {
 
             // Get the permutation vectors
             Coor<Nd> sizeb = size;
@@ -997,7 +1012,7 @@ namespace superbblas {
                                                  v1.data() + disp1, v1.ctx(), indices1.begin(),
                                                  indices1.ctx(), ewop);
             }
-        }
+        })
 
         /// Copy the content of tensor v0 into v1
         /// \param alpha: factor on the copy
