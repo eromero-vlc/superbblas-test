@@ -959,6 +959,9 @@ namespace superbblas {
             const unsigned int T_num = dtype_size / sizeof(T);
             causalConnectTo(v1ToReceive.buf.ctx(), v0ToSend.buf.ctx());
             sync(v0ToSend.buf.ctx());
+            if (deviceId(v0ToSend.buf.ctx()) != deviceId(v1ToReceive.buf.ctx()) ||
+                getStream(v0ToSend.buf.ctx()) != getStream(v1ToReceive.buf.ctx()))
+                sync(v1ToReceive.buf.ctx());
             _t.stop();
             if (getUseMPINonBlock()) {
                 if (getUseAlltoall()) {
