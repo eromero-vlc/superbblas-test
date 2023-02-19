@@ -12,6 +12,12 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef SUPERBBLAS_CREATING_FLAGS
+#    ifdef SUPERBBLAS_USE_MPI
+EMIT_define(SUPERBBLAS_USE_MPI)
+#    endif
+#endif
+
 #ifdef SUPERBBLAS_USE_MPI
 #    include "mpi.h"
 
@@ -48,9 +54,9 @@
 
 #    define DECL_COPY_REQUEST_T_Q(...)                                                             \
         EMIT REPLACE1(copy_request,                                                                \
-                      superbblas::detail::copy_request<Nd0, Nd1, T, Q, Comm, XPU0, XPU1, EWOP>)    \
-            REPLACE(Nd0, COOR_DIMS) REPLACE(Nd1, COOR_DIMS) REPLACE_T_Q REPLACE(Comm, COMMS)       \
-                REPLACE(XPU0 XPU1, XPUS_COMP) REPLACE_EWOP template __VA_ARGS__;
+                      superbblas::detail::copy_request<Nd, T, Q, Comm, XPU0, XPU1, EWOP>)          \
+            REPLACE(Nd, COOR_DIMS) REPLACE_T_Q REPLACE(Comm, COMMS) REPLACE(XPU0 XPU1, XPUS_COMP)  \
+                REPLACE_EWOP template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_REQUEST_T_Q(...) __VA_ARGS__
@@ -2103,15 +2109,15 @@ namespace superbblas {
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
 
-        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
-                  typename XPU0, typename XPU1, typename EWOP>
+        template <std::size_t Nd, typename T, typename Q, typename Comm, typename XPU0,
+                  typename XPU1, typename EWOP>
         DECL_COPY_REQUEST_T_Q(Request copy_request(
-            typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
-            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const From_size<Nd1> &p1,
-            const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-            const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
-            bool do_test = true))
+            typename elem<T>::type alpha, const From_size<Nd> &p0, const Coor<Nd> &from0,
+            const Coor<Nd> &size0, const Coor<Nd> &dim0, const Order<Nd> &o0,
+            const Components_tmpl<Nd, const T, XPU0, XPU1> &v0, const From_size<Nd> &p1,
+            const Coor<Nd> &from1, const Coor<Nd> &dim1, const Order<Nd> &o1,
+            const Components_tmpl<Nd, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
+            bool do_test))
         IMPL({
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
@@ -2140,21 +2146,21 @@ namespace superbblas {
                 throw std::runtime_error("Invalid number of elements in the tensor distribution");
 
             // Check the compatibility of the tensors
-            if (!check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1))
+            if (!check_isomorphic<Nd, Nd>(o0, size0, dim0, o1, dim1))
                 throw std::runtime_error("Invalid copy operation");
 
             // Split the work for each receiving component
             std::vector<std::array<Request, 2>> reqs;
             for (unsigned int i = 0; i < ncomponents1; ++i) {
-                for (const Component<Nd1, Q, XPU0> &c : v1.first) {
+                for (const Component<Nd, Q, XPU0> &c : v1.first) {
                     if (c.componentId == i)
-                        reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
+                        reqs.push_back(copy_request_dest_component<Nd, Nd, T, Q>(
                             alpha, p0, from0, size0, dim0, o0, v0, p1, ncomponents1, from1, dim1,
                             o1, c, comm, ewop, co));
                 }
-                for (const Component<Nd1, Q, XPU1> &c : v1.second) {
+                for (const Component<Nd, Q, XPU1> &c : v1.second) {
                     if (c.componentId == i)
-                        reqs.push_back(copy_request_dest_component<Nd0, Nd1, T, Q>(
+                        reqs.push_back(copy_request_dest_component<Nd, Nd, T, Q>(
                             alpha, p0, from0, size0, dim0, o0, v0, p1, ncomponents1, from1, dim1,
                             o1, c, comm, ewop, co));
                 }
@@ -2173,6 +2179,135 @@ namespace superbblas {
                 };
             return Request();
         })
+
+        /// Return an empty mask, all levels are free to be used
+
+        inline std::vector<bool> get_labels_mask() {
+            return std::vector<bool>((int)std::numeric_limits<char>::max() -
+                                     (int)std::numeric_limits<char>::min());
+        }
+
+        /// Mark the given labels as used
+        /// \param o: labels
+        /// \param m: mask
+
+        template <std::size_t Nd> void update_label_mask(const Order<Nd> &o, std::vector<bool> &m) {
+            for (char c : o) m[(int)c - (int)std::numeric_limits<char>::min()] = true;
+        }
+
+        /// Auxiliary struct used by `dummy_normalize_copy`
+
+        template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
+        struct tensor_description {
+            From_size<Nd> p;
+            Coor<Nd> from, size, dim;
+            Order<Nd> o;
+            Components_tmpl<Nd, T, XPU0, XPU1> v;
+        };
+
+        /// Return an equivalent tensor but the given `Nd` dimensions
+        /// \param p0: partitioning of the tensor in consecutive ranges
+        /// \param o0: dimension labels for the tensor
+        /// \param from0: first coordinate to copy from the tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param v0: data for the tensor
+
+        template <std::size_t Nd, std::size_t Nd0, typename T, typename XPU0, typename XPU1,
+                  typename std::enable_if<(Nd0 < Nd), bool>::type = true>
+        tensor_description<Nd, T, XPU0, XPU1>
+        dummy_normalize_copy(const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                             const Components_tmpl<Nd0, T, XPU0, XPU1> &v0, std::vector<bool> &m) {
+            From_size_out<Nd> new_p(p0.size(), Cpu{});
+            for (std::size_t i = 0; i < p0.size(); ++i) {
+                std::copy_n(p0[i][0].begin(), Nd0, new_p[i][0].begin());
+                std::copy_n(p0[i][1].begin(), Nd0, new_p[i][1].begin());
+                for (std::size_t j = Nd0; j < Nd; ++j) new_p[i][0][j] = 0;
+                for (std::size_t j = Nd0; j < Nd; ++j) new_p[i][1][j] = 1;
+            }
+            Coor<Nd> new_from, new_size, new_dim;
+            std::copy_n(from0.begin(), Nd0, new_from.begin());
+            std::copy_n(size0.begin(), Nd0, new_size.begin());
+            std::copy_n(dim0.begin(), Nd0, new_dim.begin());
+            for (std::size_t j = Nd0; j < Nd; ++j) new_from[j] = 0;
+            for (std::size_t j = Nd0; j < Nd; ++j) new_size[j] = new_dim[j] = 1;
+            Order<Nd> new_o;
+            std::copy_n(o0.begin(), Nd0, new_o.begin());
+            std::size_t j = Nd0;
+            for (unsigned int c = (unsigned int)(-std::numeric_limits<char>::min()) + 1u;
+                 c < m.size() && j < Nd; ++c) {
+                if (!m[c]) {
+                    new_o[j++] = (char)((int)c + (int)std::numeric_limits<char>::min());
+                    m[c] = true;
+                }
+            }
+            if (j != Nd) throw std::runtime_error("dummy_normalize_copy: run out of labels");
+
+            Components_tmpl<Nd, T, XPU0, XPU1> new_v;
+            for (const auto &c0 : v0.first) {
+                Coor<Nd> new_dim;
+                std::copy_n(c0.dim.begin(), Nd0, new_dim.begin());
+                for (std::size_t j = Nd0; j < Nd; ++j) new_dim[j] = 1;
+                new_v.first.push_back(
+                    Component<Nd, T, XPU0>{c0.it, new_dim, c0.componentId, c0.mask_it});
+            }
+            for (const auto &c0 : v0.second) {
+                Coor<Nd> new_dim;
+                std::copy_n(c0.dim.begin(), Nd0, new_dim.begin());
+                for (std::size_t j = Nd0; j < Nd; ++j) new_dim[j] = 1;
+                new_v.second.push_back(
+                    Component<Nd, T, XPU1>{c0.it, new_dim, c0.componentId, c0.mask_it});
+            }
+
+            return {new_p, new_from, new_size, new_dim, new_o, new_v};
+        }
+
+        template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
+        tensor_description<Nd, T, XPU0, XPU1>
+        dummy_normalize_copy(const From_size<Nd> &p0, const Coor<Nd> &from0, const Coor<Nd> &size0,
+                             const Coor<Nd> &dim0, const Order<Nd> &o0,
+                             const Components_tmpl<Nd, T, XPU0, XPU1> &v0, std::vector<bool> &) {
+            return {p0, from0, size0, dim0, o0, v0};
+        };
+
+        /// Copy the content of plural tensor v0 into v1
+        /// \param alpha: factor applied to the input tensors
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the origin tensor
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param v0: data for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param v1: data for the destination tensor
+        /// \param comm: communicator context
+        /// \param ewop: either to copy or to add the origin values into the destination values
+        /// \param co: coordinate linearization order
+        ///
+        /// NOTE: this function makes the origin and the destination tensor of the same number of dimensions
+        /// to reduce the compilation times
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
+                  typename XPU0, typename XPU1, typename EWOP>
+        Request copy_request_normalized(typename elem<T>::type alpha, const From_size<Nd0> &p0,
+                                        const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                                        const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                                        const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                                        const From_size<Nd1> &p1, const Coor<Nd1> &from1,
+                                        const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                                        const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
+                                        EWOP ewop, CoorOrder co, bool do_test = true) {
+            auto m = get_labels_mask();
+            update_label_mask(o0, m);
+            update_label_mask(o1, m);
+            constexpr std::size_t Nd = std::max(Nd0, Nd1);
+            auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
+            auto t1 = dummy_normalize_copy<Nd>(p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
+            return copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p, t1.from,
+                                t1.dim, t1.o, t1.v, comm, ewop, co, do_test);
+        }
 
         /// Copy the content of plural tensor v0 into v1
         /// \param alpha: factor applied to the input tensors
@@ -2199,8 +2334,8 @@ namespace superbblas {
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
                   bool do_test = true) {
 
-            wait(copy_request(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1, comm,
-                              ewop, co, do_test));
+            wait(copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
+                                         v1, comm, ewop, co, do_test));
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2237,12 +2372,12 @@ namespace superbblas {
             Request r;
             switch (copyadd) {
             case Copy:
-                r = copy_request(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
-                                 comm, EWOp::Copy{}, co);
+                r = copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1,
+                                            o1, v1, comm, EWOp::Copy{}, co);
                 break;
             case Add:
-                r = copy_request(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
-                                 comm, EWOp::Add{}, co);
+                r = copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1,
+                                            o1, v1, comm, EWOp::Add{}, co);
                 break;
             }
 
@@ -2485,8 +2620,9 @@ namespace superbblas {
             auto v1 = like_this_components(p1, v0, comm, cacheAlloc);
 
             // Copy the content of v0 into v1
-            return {v1, copy_request<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1,
-                                              {{}}, dim1, o1, v1, comm, EWOp::Copy{}, co)};
+            return {v1, copy_request_normalized<N, N, T>(T{1}, p0, from0, size0, dim0, o0,
+                                                         toConst(v0), p1, {{}}, dim1, o1, v1, comm,
+                                                         EWOp::Copy{}, co, true /* do test */)};
         }
 
         /// Check that the given components are compatible
