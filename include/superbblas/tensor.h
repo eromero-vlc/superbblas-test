@@ -954,14 +954,13 @@ namespace superbblas {
 
         template <typename IndexType, std::size_t Nd, typename T, typename Q, typename XPU0,
                   typename XPU1, typename EWOP>
-        DECL_LOCAL_COPY_NORMALIZE_T_Q(void local_copy_normalize(typename elem<T>::type alpha, IndexType disp0,
-                                  const Coor<Nd> &from0, const Coor<Nd> &size, const Coor<Nd> &dim0,
-                                  const Coor<Nd, IndexType> &strides0, vector<const T, XPU0> v0,
-                                  Mask<XPU0> mask0, IndexType disp1, const Coor<Nd> &from1,
-                                  const Coor<Nd> &dim1, const Coor<Nd, IndexType> &strides1,
-                                  vector<Q, XPU1> v1, Mask<XPU1> mask1, std::size_t nblock,
-                                  EWOP ewop)) IMPL( {
-
+        DECL_LOCAL_COPY_NORMALIZE_T_Q(void local_copy_normalize(
+            typename elem<T>::type alpha, IndexType disp0, const Coor<Nd> &from0,
+            const Coor<Nd> &size, const Coor<Nd> &dim0, const Coor<Nd, IndexType> &strides0,
+            vector<const T, XPU0> v0, Mask<XPU0> mask0, IndexType disp1, const Coor<Nd> &from1,
+            const Coor<Nd> &dim1, const Coor<Nd, IndexType> &strides1, vector<Q, XPU1> v1,
+            Mask<XPU1> mask1, std::size_t nblock, EWOP ewop))
+        IMPL({
             // Get the permutation vectors
             Coor<Nd> sizeb = size;
             for (std::size_t i = 0; i < nblock; ++i) sizeb[i] = 1;
