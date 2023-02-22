@@ -880,6 +880,11 @@ namespace superbblas {
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(dim))
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
+            // Check if the context is a disguised cpu
+            if (deviceId(gpu) == CPU_DEVICE_ID) {
+                return makeSure(get_permutation(from, size, dim, strides, Cpu{}), gpu);
+            }
+
             // Compute the permutation
             return get_permutation_thrust<IndexType, Nd>(from, size, dim, strides, gpu);
         })

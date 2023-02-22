@@ -82,36 +82,49 @@ namespace superbblas {
             // Do the allocation
             setDevice(xpu);
             T *r = nullptr;
-            if (getCustomAllocator()) {
-                r = (T *)getCustomAllocator()(sizeof(T) * n,
-                                              deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
-            } else if (std::is_same<Cpu, XPU>::value) {
-                // Allocate the array without calling constructors, specially useful for std::complex
-                r = (T *)::operator new(sizeof(T) * n);
-            }
+            try {
+                if (getCustomAllocator()) {
+                    r = (T *)getCustomAllocator()(sizeof(T) * n,
+                                                  deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
+                } else if (std::is_same<Cpu, XPU>::value) {
+                    // Allocate the array without calling constructors, specially useful for std::complex
+                    r = (T *)::operator new(sizeof(T) * n);
+                }
 #ifdef SUPERBBLAS_USE_GPU
-            else if (deviceId(xpu) == CPU_DEVICE_ID) {
-                gpuCheck(SUPERBBLAS_GPU_SYMBOL(HostAlloc)(
-                    &r, sizeof(T) * n, SUPERBBLAS_GPU_SYMBOL(HostAllocPortable)));
-            } else {
+                else if (deviceId(xpu) == CPU_DEVICE_ID) {
+                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(HostAlloc)(
+                        &r, sizeof(T) * n, SUPERBBLAS_GPU_SYMBOL(HostAllocPortable)));
+                } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020
-                gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+                    gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
 #        else
-                gpuCheck(cudaMalloc(&r, sizeof(T) * n));
+                    gpuCheck(cudaMalloc(&r, sizeof(T) * n));
 #        endif
 #    elif defined(SUPERBBLAS_USE_HIP)
 #        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+                    gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
 #        else
-                gpuCheck(hipMalloc(&r, sizeof(T) * n));
+                    gpuCheck(hipMalloc(&r, sizeof(T) * n));
 #        endif
 #    endif
-            }
+                }
 #endif // SUPERBBLAS_USE_GPU
-            causalConnectTo(getAllocStream(xpu), getStream(xpu));
-
-            if (r == nullptr) std::runtime_error("Memory allocation failed!");
+                causalConnectTo(getAllocStream(xpu), getStream(xpu));
+                if (r == nullptr) std::runtime_error("Memory allocation failed!");
+            } catch (...) {
+                if (getLogLevel() > 0) {
+                    std::cerr << "superbblas::detail::allocate: error allocating " << sizeof(T) * n
+                              << " bytes";
+                    if (getTrackingMemory()) {
+                        std::cerr << "; superbblas mem usage: cpu "
+                                  << getCpuMemUsed(0) / 1024 / 1024 << " MiB  gpu "
+                                  << getGpuMemUsed(0) / 1024 / 1024 << " MiB";
+                    }
+                    std::cerr << std::endl;
+                }
+                throw;
+            }
 
             // Annotate allocation
             if (getTrackingMemory()) {
