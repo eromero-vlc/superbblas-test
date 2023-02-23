@@ -60,7 +60,8 @@ endif
 #
 
 LIB_SOURCE_STEM := $(BUILDDIR)/superbblas_lib
-LIB_SOURCE_NUMS := $(shell seq -w 0 99 )
+MAX_FRAGMENT := 50
+LIB_SOURCE_NUMS := $(shell seq 0 $(MAX_FRAGMENT) )
 SOURCE_LIB := $(patsubst %,$(LIB_SOURCE_STEM)_%.cpp,$(LIB_SOURCE_NUMS))
 OBJECT_LIB := $(patsubst %.cpp,%.o,$(SOURCE_LIB))
 
@@ -78,18 +79,23 @@ endif
 $(SOURCE_LIB): $(LIB_SOURCE_STEM).split
 
 $(LIB_SOURCE_STEM).split: $(LIB_SOURCE_STEM)
-	split -d -n l/100 -a 2 $< $(LIB_SOURCE_STEM)_
-	for i in $(LIB_SOURCE_STEM)_?? ; do \
-		( \
-			echo "// This file is generated automatically. Please, do not modify"; \
-			echo "#include \"superbblas.h\""; \
-			echo "using namespace superbblas; using namespace detail;";  \
-			for j in $(LIB_SOURCE_STEM)_?? ; do \
-				[ $$j != $$i ] && cat $$j | awk '{print "extern", $$0}'; \
-			done; \
-			cat $$i \
-		) > $${i}.cpp; \
-	done
+	lines_frag="$$(( ($$( wc -l < $(LIB_SOURCE_STEM)) + $(MAX_FRAGMENT)) / ($(MAX_FRAGMENT)+1) ))"; \
+	for i in $(LIB_SOURCE_NUMS) ; do \
+		f="$(LIB_SOURCE_STEM)_$${i}.cpp"; \
+		echo "// This file is generated automatically. Please, do not modify" > $$f; \
+		echo "#include \"superbblas.h\"" >> $$f; \
+		echo "using namespace superbblas; using namespace detail;" >> $$f;  \
+		l=0; \
+		cat $(LIB_SOURCE_STEM) | while read line; do \
+			[ $$(( l/lines_frag )) -ne $$i ] && echo extern $$line; \
+			l="$$(( l+1 ))"; \
+		done >> $$f; \
+		l=0; \
+		cat $(LIB_SOURCE_STEM) | while read line; do \
+			[ $$(( l/lines_frag )) -eq $$i ] && echo $$line; \
+			l="$$(( l+1 ))"; \
+		done >> $$f; \
+	done; \
 	touch $(LIB_SOURCE_STEM).split
 
 %.o: %.cpp

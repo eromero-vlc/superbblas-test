@@ -8,13 +8,13 @@ install_cpu:
 
 install_cuda:
 	@mkdir -p $(BUILDDIR)
-	@$(MAKE) -C src clean TARGET=cuda CXX=
-	@$(MAKE) -C src install TARGET=cuda CXX=
+	@$(MAKE) -C src clean TARGET=cuda
+	@$(MAKE) -C src install TARGET=cuda
 
 install_hip:
 	@mkdir -p $(BUILDDIR)
-	@$(MAKE) -C src clean TARGET=hip CXX=
-	@$(MAKE) -C src install TARGET=hip CXX=
+	@$(MAKE) -C src clean TARGET=hip
+	@$(MAKE) -C src install TARGET=hip
 
 test_cpu: install_cpu
 	@$(MAKE) -C tests clean

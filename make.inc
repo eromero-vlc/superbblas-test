@@ -6,6 +6,11 @@ SUPERBBLAS_WITH_MPI ?= $(if $(findstring mpi,${CXX}),yes,no)
 ifeq ($(SUPERBBLAS_WITH_MPI), yes)
     MPISBFLAG ?= -DSUPERBBLAS_USE_MPI -DSUPERBBLAS_USE_MPIIO
 endif
+comma := ,
+MPIINCFLAGS ?= $(if $(findstring yes,$(SUPERBBLAS_WITH_MPI)),$(patsubst -Wl$(comma)%,,$(shell ${CXX} -showme:compile 2>/dev/null || ${CXX} -show -CC=)),)
+MPILDFLAGS ?= $(if $(findstring yes,$(SUPERBBLAS_WITH_MPI)),\
+        $(filter-out -pthread -fexceptions, \
+            $(subst -Wl$(comma),-Xlinker ,$(shell ${CXX} -showme:link 2>/dev/null || ${CXX} -show -CC=))),)
 
 #
 # Compiler for cpu target, CXX, compiler flags when compiling for cpu target and for NVCC -Xcompiler
