@@ -599,7 +599,6 @@ namespace superbblas {
 
                 IndexType num_cols = volume(v.dimd);
                 IndexType num_rows = volume(v.dimi);
-                xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
                 if (num_cols == 0 || num_rows == 0 || ncols == 0) return;
 
                 if (deviceId(vx.ctx()) == CPU_DEVICE_ID || deviceId(vy.ctx()) == CPU_DEVICE_ID)
@@ -607,8 +606,7 @@ namespace superbblas {
                                              "cpu input/output tensors");
 
                 if (!is_kron) {
-                    matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols,
-                           std::norm(beta) == 0 ? T{0} : T{1});
+                    matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols, beta);
                     causalConnectTo(ii.ctx(), vy.ctx());
                     return;
                 }
@@ -621,69 +619,178 @@ namespace superbblas {
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
                 IndexType block_cols = num_cols / block_size / ki;
+                IndexType block_rows = num_rows / block_size / ki;
 
+                assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
+                assert(vy.size() == (std::size_t)(block_size * block_rows * ncols * ki));
+                assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
                 if (ly == RowMajor && lx == RowMajor) {
-                    // Contract the Kronecker part: for each direction mu do:
-                    //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
-                    vector<T, Gpu> aux(ki * ncols * block_size * block_cols * num_nnz_per_row,
-                                       v.it.ctx(), doCacheAlloc);
-                    zero_n(aux.data(), aux.size(), aux.ctx());
-                    const bool tb = !v.blockImFast;
-                    xgemm_batch_strided(
-                        !tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
-                        v.kron_it.data(), !tb ? ki : kd, ki * kd, x, kd, 0, T{0}, aux.data(), ki,
-                        ki * ncols * block_size * block_cols, num_nnz_per_row, aux.ctx());
+                    assert(ldy == ki * ncols);
 
-                    // Contract the block part:
-                    // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
-                    matvec(1.0, false, aux.data(), ki * ncols, RowMajor, y, ldy, ly, ncols * ki,
-                           std::norm(beta) == 0 ? T{0} : T{1});
-                } else if (ly == ColumnMajor && lx == ColumnMajor) {
-                    // Contract the Kronecker part: for each direction mu do:
-                    //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
-                    assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
-                    assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
-                    vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
-                                       ii.ctx(), doCacheAlloc);
-                    zero_n(aux.data(), aux.size(), aux.ctx());
-                    const bool tb = !v.blockImFast;
-                    auto xpu_host = ii.ctx().toCpuPinned();
-                    vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    auto kron_it_ptr = v.kron_it.data();
-                    auto aux_ptr = aux.data();
-                    auto a_cpu_ptr = a_cpu.data();
-                    auto b_cpu_ptr = b_cpu.data();
-                    auto c_cpu_ptr = c_cpu.data();
-                    unsigned int this_num_nnz_per_row = num_nnz_per_row;
-                    launchHostKernel(
-                        [=] {
-                            for (unsigned int ij = 0;
-                                 ij < this_num_nnz_per_row * (unsigned int)ncols; ++ij) {
-                                unsigned int mu = ij % this_num_nnz_per_row;
-                                unsigned int col = ij / this_num_nnz_per_row;
-                                a_cpu_ptr[ij] = (T *)x + col * block_size * block_cols;
-                                b_cpu_ptr[ij] = kron_it_ptr + ki * kd * mu;
-                                c_cpu_ptr[ij] =
-                                    aux_ptr + block_size * block_cols * mu +
-                                    block_size * block_cols * this_num_nnz_per_row * col;
+                    // Limit the amount of auxiliary memory used to 50% maximum cache size
+                    IndexType max_ncols = (int)std::min(
+                        std::max((size_t)getMaxCacheGiBCpu() * 1024u * 1024u * 1024u / 2 /
+                                     ((sizeof(T) + sizeof(IndexType)) * ki * block_size *
+                                      block_cols * (num_nnz_per_row + 1)),
+                                 (std::size_t)1),
+                        (std::size_t)ncols);
+
+                    // Pre-apply the beta if the computation is going to break in chunks
+                    if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
+                        xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+
+                    // Process up to `max_ncols` at a time
+                    for (IndexType i0 = 0, ncols0 = std::min(ncols, max_ncols); i0 < ncols;
+                         i0 += ncols0, ncols0 = std::min(ncols - i0, max_ncols)) {
+                        // Copy the columns [i0,i0+ncols0-1] columns of x into a continuous allocation
+                        const T *x0 = x;
+                        vector<T, Gpu> auxx;
+                        if (ncols0 != ncols) {
+                            auxx = vector<T, Gpu>(kd * ncols0 * block_size * block_cols, v.it.ctx(),
+                                                  doCacheAlloc);
+                            x0 = auxx.data();
+                            Coor<3> dimx{kd, ncols, block_size * block_cols};
+                            Coor<3> dimx0{kd, ncols0, block_size * block_cols};
+                            local_copy<IndexType>(
+                                T{1}, trivial_order<3>(), Coor<3>{0, i0, 0}, dimx0, dimx,
+                                (vector<const T, Gpu>)vx, Mask<Gpu>{}, trivial_order<3>(),
+                                Coor<3>{{}}, dimx0, auxx, Mask<Gpu>{}, EWOp::Copy{}, FastToSlow);
+                        }
+
+                        // Contract the Kronecker part: for each direction mu do:
+                        //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
+                        vector<T, Gpu> aux(ki * ncols0 * block_size * block_cols * num_nnz_per_row,
+                                           v.it.ctx(), doCacheAlloc);
+                        zero_n(aux.data(), aux.size(), aux.ctx());
+                        const bool tb = !v.blockImFast;
+                        xgemm_batch_strided(
+                            !tb ? 'N' : 'T', 'N', ki, ncols0 * block_size * block_cols, kd, alpha,
+                            v.kron_it.data(), !tb ? ki : kd, ki * kd, x0, kd, 0, T{0}, aux.data(),
+                            ki, ki * ncols0 * block_size * block_cols, num_nnz_per_row, aux.ctx());
+
+                        // Contract the block part:
+                        // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
+                        T *y0 = y;
+                        IndexType ldy0 = ldy;
+                        vector<T, Gpu> auxy;
+                        if (ncols0 != ncols) {
+                            auxy = vector<T, Gpu>(ki * ncols0 * block_size * block_rows, aux.ctx(),
+                                                  doCacheAlloc);
+                            zero_n(auxy.data(), auxy.size(), auxy.ctx());
+                            y0 = auxy.data();
+                            ldy0 = ki * ncols0;
+                        }
+                        matvec(1.0, false, aux.data(), ki * ncols0, RowMajor, y0, ldy0, ly,
+                               ncols0 * ki,
+                               (std::norm(beta) == 0 || ncols0 != ncols) ? T{0} : T{1});
+                        if (ncols0 != ncols) {
+                            Coor<3> dimy0{ki, ncols0, block_size * block_rows};
+                            Coor<3> dimy{ki, ncols, block_size * block_rows};
+                            if (std::norm(beta) == 0) {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Copy{}, FastToSlow);
+                            } else {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Add{}, FastToSlow);
                             }
-                        },
-                        xpu_host);
-                    auto a_xpu = makeSure(a_cpu, aux.ctx(), doCacheAlloc);
-                    auto b_xpu = makeSure(b_cpu, aux.ctx(), doCacheAlloc);
-                    auto c_xpu = makeSure(c_cpu, aux.ctx(), doCacheAlloc);
-                    xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
-                                   (const T **)a_xpu.data(), block_size * block_cols * ncols,
-                                   (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),
-                                   block_size * block_cols * num_nnz_per_row * ncols, a_xpu.size(),
-                                   aux.ctx());
+                        }
+                    }
+                } else if (ly == ColumnMajor && lx == ColumnMajor) {
+                    assert(ldy == block_size * block_rows);
 
-                    // Contract the block part:
-                    // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
-                    matvec(1.0, false, aux.data(), block_size * block_cols * num_nnz_per_row,
-                           ColumnMajor, y, ldy, ly, ncols * ki, std::norm(beta) == 0 ? T{0} : T{1});
+                    // Limit the amount of auxiliary memory used to 50% maximum cache size
+                    IndexType max_ncols =
+                        std::min(std::max((size_t)getMaxCacheGiBCpu() * 1024u * 1024u * 1024u / 2 /
+                                              ((sizeof(T) + sizeof(IndexType)) * block_size *
+                                               block_cols * num_nnz_per_row * ki),
+                                          (std::size_t)1),
+                                 (std::size_t)ncols);
+
+                    // Pre-apply the beta if the computation is going to break in chunks
+                    if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
+                        xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+
+                    // Process up to `max_ncols` at a time
+                    for (IndexType i0 = 0, ncols0 = std::min(ncols, max_ncols); i0 < ncols;
+                         i0 += ncols0, ncols0 = std::min(ncols - i0, max_ncols)) {
+                        // Contract the Kronecker part: for each direction mu do:
+                        //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+                        vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols0 * ki,
+                                           ii.ctx(), doCacheAlloc);
+                        zero_n(aux.data(), aux.size(), aux.ctx());
+                        const bool tb = !v.blockImFast;
+                        auto xpu_host = ii.ctx().toCpuPinned();
+                        vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols0, xpu_host, doCacheAlloc);
+                        vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols0, xpu_host, doCacheAlloc);
+                        vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols0, xpu_host, doCacheAlloc);
+                        auto kron_it_ptr = v.kron_it.data();
+                        auto aux_ptr = aux.data();
+                        auto a_cpu_ptr = a_cpu.data();
+                        auto b_cpu_ptr = b_cpu.data();
+                        auto c_cpu_ptr = c_cpu.data();
+                        unsigned int this_num_nnz_per_row = num_nnz_per_row;
+                        launchHostKernel(
+                            [=] {
+                                for (unsigned int ij = 0;
+                                     ij < this_num_nnz_per_row * (unsigned int)ncols0; ++ij) {
+                                    unsigned int mu = ij % this_num_nnz_per_row;
+                                    unsigned int col = ij / this_num_nnz_per_row;
+                                    a_cpu_ptr[ij] = (T *)x + (col + i0) * block_size * block_cols;
+                                    b_cpu_ptr[ij] = kron_it_ptr + ki * kd * mu;
+                                    c_cpu_ptr[ij] =
+                                        aux_ptr + block_size * block_cols * mu +
+                                        block_size * block_cols * this_num_nnz_per_row * col;
+                                }
+                            },
+                            xpu_host);
+                        auto a_xpu = makeSure(a_cpu, aux.ctx(), doCacheAlloc);
+                        auto b_xpu = makeSure(b_cpu, aux.ctx(), doCacheAlloc);
+                        auto c_xpu = makeSure(c_cpu, aux.ctx(), doCacheAlloc);
+                        xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
+                                       (const T **)a_xpu.data(), block_size * block_cols * ncols,
+                                       (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),
+                                       block_size * block_cols * num_nnz_per_row * ncols0,
+                                       a_xpu.size(), aux.ctx());
+
+                        // Contract the block part:
+                        // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
+                        T *y0 = y;
+                        IndexType ldy0 = ldy;
+                        vector<T, Gpu> auxy;
+                        if (ncols0 != ncols) {
+                            auxy = vector<T, Gpu>(block_size * block_rows * ncols0 * ki, aux.ctx(),
+                                                  doCacheAlloc);
+                            y0 = auxy.data();
+                            zero_n(auxy.data(), auxy.size(), auxy.ctx());
+                            ldy0 = block_size * block_rows;
+                        }
+                        matvec(1.0, false, aux.data(), block_size * block_cols * num_nnz_per_row,
+                               ColumnMajor, y0, ldy0, ly, ncols0 * ki,
+                               (std::norm(beta) == 0 || ncols0 != ncols) ? T{0} : beta);
+                        if (ncols0 != ncols) {
+                            Coor<3> dimy0{block_size * block_rows, ncols0, ki};
+                            Coor<3> dimy{block_size * block_rows, ncols, ki};
+                            if (std::norm(beta) == 0) {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Copy{}, FastToSlow);
+                            } else {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Add{}, FastToSlow);
+                            }
+                        }
+                    }
                 } else
                     throw std::runtime_error(
                         "BSR operator(): unsupported input/output tensor layout");
