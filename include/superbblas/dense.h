@@ -82,9 +82,13 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-        template <typename T> void local_cholesky(std::size_t n, std::size_t k, vector<T, Gpu> v) {
+        template <typename T>
+        void local_cholesky(std::size_t n, std::size_t k, const vector<T, Gpu> &v) {
 
             if (n == 0 || k == 0) return;
+            if (deviceId(v.ctx()) == CPU_DEVICE_ID)
+                throw std::runtime_error(
+                    "superbblas::detail::local_cholesky: unsupported allocation device");
 
             tracker<Gpu> _t("local cholesky (GPU)", v.ctx());
             _t.cost = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
@@ -134,9 +138,14 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_GPU
         template <typename T>
         void local_trsm(bool left_side, std::size_t n, std::size_t k, std::size_t m, T alpha,
-                        vector<T, Gpu> a, vector<T, Gpu> x) {
+                        const vector<T, Gpu> &a, const vector<T, Gpu> &x) {
 
             if (n == 0 || k == 0 || m == 0) return;
+            if (deviceId(a.ctx()) == CPU_DEVICE_ID)
+                throw std::runtime_error(
+                    "superbblas::detail::local_trsm: unsupported allocation device");
+            check_same_device(a.ctx(), x.ctx());
+            causalConnectTo(x.ctx(), a.ctx());
 
             tracker<Gpu> _t("local trsm (GPU)", a.ctx());
             _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
@@ -155,7 +164,7 @@ namespace superbblas {
                 },
                 xpu_host);
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
-                             x_ps_gpu = makeSure(x_ps, x.ctx(), doCacheAlloc);
+                             x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
             gpuBlasCheck(cublasXtrsmBatched(
                 getGpuBlasHandle(a.ctx()), left_side ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT,
                 CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, left_side ? n : m,
@@ -168,6 +177,7 @@ namespace superbblas {
                 left_side ? m : n, alpha, a.data(), n, n * n, x.data(), left_side ? n : m, n * m,
                 k));
 #    endif
+            causalConnectTo(a.ctx(), x.ctx());
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -224,10 +234,15 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_GPU
         template <typename T>
-        void local_gesm(char trans, std::size_t n, std::size_t k, std::size_t m, vector<T, Gpu> a,
-                        vector<T, Gpu> x) {
+        void local_gesm(char trans, std::size_t n, std::size_t k, std::size_t m,
+                        const vector<T, Gpu> &a, const vector<T, Gpu> &x) {
 
             if (n == 0 || k == 0 || m == 0) return;
+            if (deviceId(a.ctx()) == CPU_DEVICE_ID)
+                throw std::runtime_error(
+                    "superbblas::detail::local_trsm: unsupported allocation device");
+            check_same_device(a.ctx(), x.ctx());
+            causalConnectTo(x.ctx(), a.ctx());
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
@@ -249,7 +264,7 @@ namespace superbblas {
                 },
                 xpu_host);
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
-                             x_ps_gpu = makeSure(x_ps, x.ctx(), doCacheAlloc);
+                             x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
             gpuBlasCheck(cublasXgetrfBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
                                              ipivs.data(), info.data(), k));
 #    else
@@ -275,6 +290,7 @@ namespace superbblas {
                 ipivs.data(), n, x.data(), n, n * m, &info_getrs, k));
 #    endif
             checkLapack(info_getrs);
+            causalConnectTo(a.ctx(), x.ctx());
         }
 #endif // SUPERBBLAS_USE_GPU
 
