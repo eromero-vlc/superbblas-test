@@ -495,9 +495,9 @@ namespace superbblas {
                                                                       hipsparseDestroyMatDescr(*p);
                                                                       delete p;
                                                                   });
-                hipsparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
-                hipsparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
-                hipsparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                gpuSparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
+                gpuSparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
+                gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
 #    endif
             }
 
@@ -529,6 +529,7 @@ namespace superbblas {
                 IndexType num_blocks = jj.size();
                 bool is_kron = v.kron_it.size() > 0;
 
+                auto gpuSparseHandle = getGpuSparseHandle(ii.ctx());
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (spFormat == FORMAT_BSR) {
                     gpuSparseCheck(cusparseXbsrmm(
@@ -544,7 +545,6 @@ namespace superbblas {
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
-                    auto cusparseHandle = getGpuSparseHandle(ii.ctx());
                     gpuSparseCheck(cusparseCreateDnMat(
                         &matx, !conjA ? num_cols / kd * (is_kron ? num_nnz_per_row : 1) : num_rows,
                         ncols, ldx, (void *)x, cudaType,
@@ -554,14 +554,14 @@ namespace superbblas {
                         ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     gpuSparseCheck(cusparseSpMM_bufferSize(
-                        cusparseHandle,
+                        gpuSparseHandle,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrA_other, matx, &beta, maty,
                         cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
                     vector<T, Gpu> buffer((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx(),
                                           doCacheAlloc);
-                    gpuSparseCheck(cusparseSpMM(cusparseHandle,
+                    gpuSparseCheck(cusparseSpMM(gpuSparseHandle,
                                                 !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                                        : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                                                 CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
@@ -571,8 +571,8 @@ namespace superbblas {
                     gpuSparseCheck(cusparseDestroyDnMat(maty));
                 }
 #    else
-                hipsparseCheck(hipsparseXbsrmm(
-                    ii.ctx().hipsparseHandle,
+                gpuSparseCheck(hipsparseXbsrmm(
+                    gpuSparseHandle,
                     v.blockImFast ? HIPSPARSE_DIRECTION_COLUMN : HIPSPARSE_DIRECTION_ROW,
                     !conjA ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,

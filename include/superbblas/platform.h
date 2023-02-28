@@ -367,7 +367,7 @@ namespace superbblas {
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventCreateWithFlags)(
                 &ev, SUPERBBLAS_GPU_SYMBOL(EventDisableTiming)));
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventRecord)(ev, s0));
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamWaitEvent)(s1, ev));
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamWaitEvent)(s1, ev, 0));
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventDestroy)(ev));
 #else
             throw std::runtime_error("causalConnectTo: invalid operation!");
@@ -482,7 +482,7 @@ namespace superbblas {
 
 #elif defined(SUPERBBLAS_USE_HIP)
             if (status != HIPBLAS_STATUS_SUCCESS) {
-                std::stream err = "(unknown error code)";
+                const char *err = "(unknown error code)";
                 // clang-format off
                 if (status == HIPBLAS_STATUS_SUCCESS         ) err = "HIPBLAS_STATUS_SUCCESS";
                 if (status == HIPBLAS_STATUS_NOT_INITIALIZED ) err = "HIPBLAS_STATUS_NOT_INITIALIZED";
@@ -578,20 +578,20 @@ namespace superbblas {
             }
 
 #elif defined(SUPERBBLAS_USE_HIP)
-            if (status != HIPSPARSE_STATUS_SUCCESS) {
+            if (status != HIPSOLVER_STATUS_SUCCESS) {
                 std::string str = "(unknown error code)";
                 // clang-format off
-                if (status == HIPSPARSE_STATUS_NOT_INITIALIZED          ) str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
-                if (status == HIPSPARSE_STATUS_ALLOC_FAILED             ) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
-                if (status == HIPSPARSE_STATUS_INVALID_VALUE            ) str = "HIPSPARSE_STATUS_INVALID_VALUE";
-                if (status == HIPSPARSE_STATUS_ARCH_MISMATCH            ) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
-                if (status == HIPSPARSE_STATUS_MAPPING_ERROR            ) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
-                if (status == HIPSPARSE_STATUS_EXECUTION_FAILED         ) str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
-                if (status == HIPSPARSE_STATUS_INTERNAL_ERROR           ) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
-                if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
-                if (status == HIPSPARSE_STATUS_ZERO_PIVOT               ) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
-                if (status == HIPSPARSE_STATUS_NOT_SUPPORTED            ) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
-                if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES   ) str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+                if (status == HIPSOLVER_STATUS_NOT_INITIALIZED  ) str = "HIPSOLVER_STATUS_NOT_INITIALIZED";
+                if (status == HIPSOLVER_STATUS_ALLOC_FAILED     ) str = "HIPSOLVER_STATUS_ALLOC_FAILED";
+                if (status == HIPSOLVER_STATUS_INVALID_VALUE    ) str = "HIPSOLVER_STATUS_INVALID_VALUE";
+                if (status == HIPSOLVER_STATUS_MAPPING_ERROR    ) str = "HIPSOLVER_STATUS_MAPPING_ERROR";
+                if (status == HIPSOLVER_STATUS_EXECUTION_FAILED ) str = "HIPSOLVER_STATUS_EXECUTION_FAILED";
+                if (status == HIPSOLVER_STATUS_INTERNAL_ERROR   ) str = "HIPSOLVER_STATUS_INTERNAL_ERROR";
+                if (status == HIPSOLVER_STATUS_NOT_SUPPORTED    ) str = "HIPSOLVER_STATUS_NOT_SUPPORTED";
+                if (status == HIPSOLVER_STATUS_ARCH_MISMATCH    ) str = "HIPSOLVER_STATUS_ARCH_MISMATCH";
+                if (status == HIPSOLVER_STATUS_HANDLE_IS_NULLPTR) str = "HIPSOLVER_STATUS_HANDLE_IS_NULLPTR";
+                if (status == HIPSOLVER_STATUS_INVALID_ENUM     ) str = "HIPSOLVER_STATUS_INVALID_ENUM";
+                if (status == HIPSOLVER_STATUS_UNKNOWN          ) str = "HIPSOLVER_STATUS_UNKNOWN";
                 // clang-format on
 
                 std::stringstream ss;

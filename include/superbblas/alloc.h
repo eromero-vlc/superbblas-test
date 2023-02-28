@@ -92,8 +92,11 @@ namespace superbblas {
                 }
 #ifdef SUPERBBLAS_USE_GPU
                 else if (deviceId(xpu) == CPU_DEVICE_ID) {
-                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(HostAlloc)(
-                        &r, sizeof(T) * n, SUPERBBLAS_GPU_SYMBOL(HostAllocPortable)));
+#    ifdef SUPERBBLAS_USE_CUDA
+                    gpuCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
+#    elif defined(SUPERBBLAS_USE_HIP)
+                    gpuCheck(hipHostMalloc(&r, sizeof(T) * n, 0));
+#    endif
                 } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020
@@ -170,7 +173,7 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_GPU
             } else if (deviceId(xpu) == CPU_DEVICE_ID) {
                 sync(getAllocStream(xpu));
-                gpuCheck(SUPERBBLAS_GPU_SYMBOL(FreeHost)((void *)ptr));
+                gpuCheck(SUPERBBLAS_GPU_SELECT(xxx, cudaFreeHost, hipHostFree)((void *)ptr));
             } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020

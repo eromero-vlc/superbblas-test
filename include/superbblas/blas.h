@@ -185,15 +185,11 @@ namespace superbblas {
                     setDevice(xpu1);
                     stream = getStream(xpu1);
                 }
-#    ifdef SUPERBBLAS_USE_CUDA
-                gpuCheck(cudaMemcpyAsync(
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyAsync)(
                     w, v, sizeof(T) * n,
-                    !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice, stream));
-#    elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipMemcpyAsync(
-                    w, v, sizeof(T) * n,
-                    !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice, stream));
-#    endif
+                    !v_is_on_cpu ? SUPERBBLAS_GPU_SYMBOL(MemcpyDeviceToHost)
+                                 : SUPERBBLAS_GPU_SYMBOL(MemcpyHostToDevice),
+                    stream));
                 if (op_on_first) {
                     causalConnectTo(xpu0, xpu1);
                 } else {
@@ -203,25 +199,14 @@ namespace superbblas {
                 // Both pointers are on device
                 causalConnectTo(xpu1, xpu0);
                 setDevice(xpu0);
-#    ifdef SUPERBBLAS_USE_CUDA
                 if (deviceId(xpu0) == deviceId(xpu1)) {
-                    gpuCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
-                                             getStream(xpu0)));
+                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyAsync)(
+                        w, v, sizeof(T) * n, SUPERBBLAS_GPU_SYMBOL(MemcpyDeviceToDevice),
+                        getStream(xpu0)));
                 } else {
-                    gpuCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
-                                                 sizeof(T) * n, getStream(xpu0)));
+                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyPeerAsync)(
+                        w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n, getStream(xpu0)));
                 }
-#    elif defined(SUPERBBLAS_USE_HIP)
-                if (deviceId(xpu0) == deviceId(xpu1)) {
-                    hipCheck(hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice,
-                                            getStream(xpu0)));
-                } else {
-                    hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
-                                                getStream(xpu0)));
-                }
-#    else
-                throw std::runtime_error("superbblas compiled with GPU support!");
-#    endif
                 causalConnectTo(xpu0, xpu1);
             }
 #endif // SUPERBBLAS_USE_GPU
@@ -445,8 +430,11 @@ namespace superbblas {
             if (deviceId(xpu) != CPU_DEVICE_ID)
                 throw std::runtime_error("launchHostKernel: the context should be on cpu");
 
+#    if defined(SUPERBBLAS_USE_CUDA) ||                                                            \
+        (defined(SUPERBBLAS_USE_HIP) &&                                                            \
+         ((HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 4)))
             struct F {
-                static void CUDART_CB callback(void *data) {
+                static void SUPERBBLAS_GPU_SELECT(, CUDART_CB, ) callback(void *data) {
                     auto f = (std::function<void()> *)data;
                     (*f)();
                     delete f;
@@ -456,6 +444,10 @@ namespace superbblas {
             setDevice(xpu);
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
                 getStream(xpu), (SUPERBBLAS_GPU_SYMBOL(HostFn_t))F::callback, (void *)fp));
+#    else
+            sync(xpu);
+            f();
+#    endif
         }
 #endif // SUPERBBLAS_USE_GPU
 

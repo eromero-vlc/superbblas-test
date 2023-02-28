@@ -250,8 +250,8 @@ namespace superbblas {
                       (double)n * n * m * k * multiplication_cost<T>::value;
 
             vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
-#    ifdef SUPERBBLAS_USE_CUDA
             auto xpu_host = a.ctx().toCpuPinned();
+#    ifdef SUPERBBLAS_USE_CUDA
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
             auto a_ps_ptr = a_ps.data();
             auto x_ps_ptr = x_ps.data();
@@ -286,7 +286,7 @@ namespace superbblas {
                                              &info_getrs, k));
 #    else
             gpuBlasCheck(hipblasXgetrsStridedBatched(
-                getGpuBlasHandle(a.ctx()), toHipblasTrans(trans), n, m, a.data(), n, n * n,
+                getGpuBlasHandle(a.ctx()), toCublasTrans(trans), n, m, a.data(), n, n * n,
                 ipivs.data(), n, x.data(), n, n * m, &info_getrs, k));
 #    endif
             checkLapack(info_getrs);
