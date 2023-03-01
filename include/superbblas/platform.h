@@ -44,9 +44,9 @@
 
 #ifdef SUPERBBLAS_USE_HIP
 #    include <hip/hip_runtime_api.h>
-#    include <hipblas.h>
-#    include <hipsolver.h>
-#    include <hipsparse.h>
+#    include <hipblas/hipblas.h>
+#    include <hipsolver/hipsolver.h>
+#    include <hipsparse/hipsparse.h>
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
