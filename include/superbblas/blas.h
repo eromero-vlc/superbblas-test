@@ -512,8 +512,8 @@ namespace superbblas {
         void xscal(int n, T alpha, T *x, int incx, Gpu xpu) {
             if (std::norm(alpha) == 0.0) {
                 setDevice(xpu);
-                SUPERBBLAS_GPU_SYMBOL(Memset2DAsync)
-                (x, sizeof(T) * incx, 0, sizeof(T), n, getStream(xpu));
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(Memset2DAsync)(x, sizeof(T) * incx, 0, sizeof(T), n,
+                                                              getStream(xpu)));
                 return;
             }
             if (alpha == typename elem<T>::type{1}) return;
