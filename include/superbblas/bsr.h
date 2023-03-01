@@ -618,7 +618,7 @@ namespace superbblas {
                 IndexType block_size = volume(v.blocki);
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
-                IndexType block_cols = num_cols / block_size / ki;
+                IndexType block_cols = num_cols / block_size / kd;
                 IndexType block_rows = num_rows / block_size / ki;
 
                 assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
@@ -628,12 +628,15 @@ namespace superbblas {
                     assert(ldy == ki * ncols);
 
                     // Limit the amount of auxiliary memory used to 50% maximum cache size
-                    IndexType max_ncols = (int)std::min(
-                        std::max((size_t)getMaxCacheGiBCpu() * 1024u * 1024u * 1024u / 2 /
-                                     ((sizeof(T) + sizeof(IndexType)) * ki * block_size *
-                                      block_cols * (num_nnz_per_row + 1)),
-                                 (std::size_t)1),
-                        (std::size_t)ncols);
+                    std::size_t vector_size =
+                        sizeof(T) * ki * block_size * block_cols * num_nnz_per_row +
+                        (sizeof(T) + sizeof(IndexType)) * kd * block_size * block_cols +
+                        (sizeof(T) + sizeof(IndexType)) * ki * block_size * block_rows;
+                    IndexType max_ncols =
+                        (int)std::min(std::max((size_t)getMaxCacheGiBGpu() * 1024u * 1024u * 1024u /
+                                                   2u / vector_size,
+                                               (std::size_t)1),
+                                      (std::size_t)ncols);
 
                     // Pre-apply the beta if the computation is going to break in chunks
                     if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
@@ -646,8 +649,9 @@ namespace superbblas {
                         const T *x0 = x;
                         vector<T, Gpu> auxx;
                         if (ncols0 != ncols) {
-                            auxx = vector<T, Gpu>(kd * ncols0 * block_size * block_cols, v.it.ctx(),
-                                                  doCacheAlloc);
+                            auxx =
+                                vector<T, Gpu>((std::size_t)kd * ncols0 * block_size * block_cols,
+                                               v.it.ctx(), doCacheAlloc);
                             x0 = auxx.data();
                             Coor<3> dimx{kd, ncols, block_size * block_cols};
                             Coor<3> dimx0{kd, ncols0, block_size * block_cols};
@@ -705,12 +709,13 @@ namespace superbblas {
                     assert(ldy == block_size * block_rows);
 
                     // Limit the amount of auxiliary memory used to 50% maximum cache size
-                    IndexType max_ncols =
-                        std::min(std::max((size_t)getMaxCacheGiBCpu() * 1024u * 1024u * 1024u / 2 /
-                                              ((sizeof(T) + sizeof(IndexType)) * block_size *
-                                               block_cols * num_nnz_per_row * ki),
-                                          (std::size_t)1),
-                                 (std::size_t)ncols);
+                    std::size_t vector_size =
+                        sizeof(T) * block_size * block_cols * num_nnz_per_row * ki +
+                        (sizeof(T) + sizeof(IndexType)) * block_size * block_rows * ki;
+                    IndexType max_ncols = std::min(std::max((size_t)getMaxCacheGiBGpu() * 1024u *
+                                                                1024u * 1024u / 2u / vector_size,
+                                                            (std::size_t)1),
+                                                   (std::size_t)ncols);
 
                     // Pre-apply the beta if the computation is going to break in chunks
                     if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
