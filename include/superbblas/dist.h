@@ -16,7 +16,7 @@
 #    include "mpi.h"
 
 // If using Open-MPI check if supporting GPU aware API
-#    if OMPI_MAJOR_VERSION >= 4 || MPICH_NUMVERSION >= 30201000
+#    if OMPI_MAJOR_VERSION >= 4 || MPICH_NUMVERSION >= 40000000
 #        include "mpi-ext.h"
 #    endif // OMPI_MAJOR_VERSION >= 4
 #    if defined(SUPERBBLAS_USE_CUDA) &&                                                            \
