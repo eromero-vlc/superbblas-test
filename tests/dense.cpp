@@ -127,8 +127,57 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
     if (rank == 0) reportCacheUsage(std::cout);
 
     // Reset the A and x
+    int k = 8;
+    Coor<5> dim0k = {k, dim[S], dim[C], dim[S], dim[C]};
+    t0 = laplacian<Q>(dim[S] * dim[C], volume(dim0k), xpu);
+    PartitionStored<5> p0k = PartitionStored<5>(volume(procs), {Coor<5>{{}}, dim0k});
+    const Coor<Nd + 1> dimxk = {k,      dim[X], dim[Y], dim[Z],
+                                dim[T], dim[S], dim[C], dim[N]};                       // kxyztscn
+    const Coor<Nd + 1> procsxk = {1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // kxyztscn
+    PartitionStored<Nd + 1> pxk = basic_partitioning(dimxk, procsxk);
+    tx = ones<Q>(volx * k, xpu);
+    ty = vector<Q, XPU>(tx.size(), xpu);
+
+    // Create a bunch of Cholesky factors
+    {
+        Q *ptr0 = t0.data();
+        cholesky<5, Q>(p0k.data(), dim0k, 1, "kscSC", (Q **)&ptr0, "sc", "SC", &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                       MPI_COMM_WORLD,
+#endif
+                       SlowToFast);
+    }
+
+    resetTimings();
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            for (int n = 0; n < dim[N]; ++n) {
+                Q *ptr0 = t0.data();
+                Q *ptrx = tx.data();
+                Q *ptry = ty.data();
+                trsm<5, Nd + 1, Nd + 1, Q>(Q{1}, p0k.data(), dim0k, 1, "kscSC", (const Q **)&ptr0,
+                                           "sc", "SC", &ctx, pxk.data(), dimxk, 1, "kxyztscn",
+                                           (const Q **)&ptrx, &ctx, pxk.data(), dimxk, 1,
+                                           "kxyztSCn", (Q **)&ptry, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                           MPI_COMM_WORLD,
+#endif
+                                           SlowToFast);
+            }
+        }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in trsm " << t / nrep << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
+
+    // Reset the A and x
     t0 = laplacian<Q>(dim[S] * dim[C], vol0, xpu);
     tx = ones<Q>(volx, xpu);
+    ty = vector<Q, XPU>(tx.size(), xpu);
 
     try {
         double t = w_time();

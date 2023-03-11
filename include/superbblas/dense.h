@@ -151,25 +151,47 @@ namespace superbblas {
             _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
 
 #    ifdef SUPERBBLAS_USE_CUDA
+            // NOTE: cublasXtrsmBatched presents an undocumented limitation: it fails when
+            // one of the dimensions of the input matrices is too large
             auto xpu_host = a.ctx().toCpuPinned();
-            vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
-            auto a_ps_ptr = a_ps.data();
-            auto x_ps_ptr = x_ps.data();
-            auto a_ptr = a.data();
-            auto x_ptr = x.data();
-            launchHostKernel(
-                [=] {
-                    for (std::size_t i = 0; i < k; ++i) a_ps_ptr[i] = a_ptr + n * n * i;
-                    for (std::size_t i = 0; i < k; ++i) x_ps_ptr[i] = x_ptr + n * m * i;
-                },
-                xpu_host);
-            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
-                             x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
-            gpuBlasCheck(cublasXtrsmBatched(
-                getGpuBlasHandle(a.ctx()), left_side ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT,
-                CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, left_side ? n : m,
-                left_side ? m : n, alpha, a_ps_gpu.data(), n, x_ps_gpu.data(), left_side ? n : m,
-                k));
+            const std::size_t max_m = 1u << 18; // = 2^18
+            for (int step = 0; step < 2; ++step) {
+                std::size_t k0, m0, nk;
+                if (step == 0) {
+                    k0 = 0;
+                    nk = m / max_m;
+                    m0 = max_m;
+                } else {
+                    k0 = m / max_m;
+                    m0 = m % max_m;
+                    nk = (m0 > 0u ? 1 : 0);
+                }
+                if (nk == 0) continue;
+                vector<T *, Gpu> a_ps(k * nk, xpu_host, doCacheAlloc);
+                vector<T *, Gpu> x_ps(k * nk, xpu_host, doCacheAlloc);
+                auto a_ps_ptr = a_ps.data();
+                auto x_ps_ptr = x_ps.data();
+                auto a_ptr = a.data();
+                auto x_ptr = x.data();
+                launchHostKernel(
+                    [=] {
+                        for (std::size_t i = 0; i < k; ++i) {
+                            for (std::size_t ki = k0, kii = 0; kii < nk; ++ki, ++kii) {
+                                a_ps_ptr[i * nk + kii] = a_ptr + n * n * i;
+                                x_ps_ptr[i * nk + kii] =
+                                    x_ptr + n * m * i + (left_side ? n : 1u) * max_m * ki;
+                            }
+                        }
+                    },
+                    xpu_host);
+                vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
+                                 x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
+                gpuBlasCheck(cublasXtrsmBatched(
+                    getGpuBlasHandle(a.ctx()), left_side ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT,
+                    CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, left_side ? n : m0,
+                    left_side ? m0 : n, alpha, a_ps_gpu.data(), n, x_ps_gpu.data(),
+                    left_side ? n : m, k * nk));
+            }
 #    else
             gpuBlasCheck(hipblasXtrsmStridedBatched(
                 getGpuBlasHandle(a.ctx()), left_side ? HIPBLAS_SIDE_LEFT : HIPBLAS_SIDE_RIGHT,
@@ -240,7 +262,7 @@ namespace superbblas {
             if (n == 0 || k == 0 || m == 0) return;
             if (deviceId(a.ctx()) == CPU_DEVICE_ID)
                 throw std::runtime_error(
-                    "superbblas::detail::local_trsm: unsupported allocation device");
+                    "superbblas::detail::local_gesm: unsupported allocation device");
             check_same_device(a.ctx(), x.ctx());
             causalConnectTo(x.ctx(), a.ctx());
 
