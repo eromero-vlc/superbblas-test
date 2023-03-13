@@ -71,9 +71,15 @@ namespace superbblas {
 
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
-        /// \param cuda: context
+        /// \param xpu: context
+        /// \param external_use: whether the allocation will be used by other libraries such as MPI
+        ///
+        /// NOTE: MPI calls may fail when buffers were allocated with `cudaMallocAsync`
 
-        template <typename T, typename XPU> T *allocate(std::size_t n, const XPU &xpu) {
+        template <typename T, typename XPU>
+        T *allocate(std::size_t n, const XPU &xpu, bool external_use = false) {
+            (void)external_use;
+
             // Shortcut for zero allocations
             if (n == 0) return nullptr;
 
@@ -100,16 +106,23 @@ namespace superbblas {
                 } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020
-                    gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
-#        else
-                    gpuCheck(cudaMalloc(&r, sizeof(T) * n));
+                    if (!external_use) {
+                        gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+                    } else
 #        endif
+                    {
+                        gpuCheck(cudaMalloc(&r, sizeof(T) * n));
+                    }
 #    elif defined(SUPERBBLAS_USE_HIP)
 #        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                    gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
-#        else
-                    gpuCheck(hipMalloc(&r, sizeof(T) * n));
+                    if (!external_use) {
+
+                        gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+                    } else
 #        endif
+                    {
+                        gpuCheck(hipMalloc(&r, sizeof(T) * n));
+                    }
 #    endif
                 }
 #endif // SUPERBBLAS_USE_GPU
@@ -145,9 +158,13 @@ namespace superbblas {
 
         /// Deallocate memory on a device
         /// \param ptr: pointer to the memory to deallocate
-        /// \param cuda: context
+        /// \param xpu: context
+        /// \param external_use: whether the allocation will be used by other libraries such as MPI
 
-        template <typename T, typename XPU> void deallocate(T *ptr, XPU xpu) {
+        template <typename T, typename XPU>
+        void deallocate(T *ptr, XPU xpu, bool external_use = false) {
+            (void)external_use;
+
             // Shortcut for zero allocations
             if (!ptr) return;
 
@@ -177,17 +194,24 @@ namespace superbblas {
             } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020
-                gpuCheck(cudaFreeAsync((void *)ptr, getAllocStream(xpu)));
-#        else
-                sync(getAllocStream(xpu));
-                gpuCheck(cudaFree((void *)ptr));
+                if (!external_use) {
+                    gpuCheck(cudaFreeAsync((void *)ptr, getAllocStream(xpu)));
+                } else
 #        endif
+                {
+                    sync(getAllocStream(xpu));
+                    gpuCheck(cudaFree((void *)ptr));
+                }
 #    elif defined(SUPERBBLAS_USE_HIP)
 #        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
+                if (!external_use) {
+                    gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
+                } else
 #        else
-                sync(getAllocStream(xpu));
-                gpuCheck(hipFree((void *)ptr));
+                {
+                    sync(getAllocStream(xpu));
+                    gpuCheck(hipFree((void *)ptr));
+                }
 #        endif
 #    endif
 #endif // SUPERBBLAS_USE_GPU
@@ -241,7 +265,16 @@ namespace superbblas {
         template <typename T>
         std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, const Gpu &xpu,
                                                                   std::size_t alignment = 0) {
-            return allocateResouce<T>(n, xpu, alignment);
+            // Shortcut for zero allocations
+            if (n == 0) return {nullptr, std::shared_ptr<char>()};
+
+            if (alignment == 0) alignment = default_alignment<T>::alignment;
+            std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
+            T *ptr = allocate<T>(n, xpu, true /* external use */);
+            T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
+            return {ptr_aligned, std::shared_ptr<char>((char *)ptr, [=](char *ptr) {
+                        deallocate<T>((T *)ptr, xpu, true /* external use */);
+                    })};
         }
 #    endif // SUPERBBLAS_USE_GPU
 #else
