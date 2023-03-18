@@ -585,6 +585,50 @@ namespace superbblas {
         }
 
         template <typename T>
+        void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, int lda, int ldb,
+                         T beta, int ldc, int batch_size, Gpu xpu,
+                         const std::function<void(int, T **, T **, T **)> abc) {
+            // Quick exits
+            if (m == 0 || n == 0) return;
+
+            // Replace some invalid arguments when k is zero
+            if (k == 0) { lda = ldb = 1; }
+
+            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
+                auto cT = toCudaDataType<T>();
+                for (int i = 0; i < batch_size; ++i) {
+                    T *a = nullptr, *b = nullptr, *c = nullptr;
+                    abc(i, &a, &b, &c);
+                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc,
+                        toCudaComputeType<T>(),
+                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                }
+            } else {
+                auto xpu_host = xpu.toCpuPinned();
+                vector<T *, Gpu> a_cpu(batch_size, xpu_host, doCacheAlloc);
+                vector<T *, Gpu> b_cpu(batch_size, xpu_host, doCacheAlloc);
+                vector<T *, Gpu> c_cpu(batch_size, xpu_host, doCacheAlloc);
+                auto a_cpu_ptr = a_cpu.data();
+                auto b_cpu_ptr = b_cpu.data();
+                auto c_cpu_ptr = c_cpu.data();
+                launchHostKernel(
+                    [=] {
+                        for (int i = 0; i < batch_size; ++i)
+                            abc(i, &a_cpu_ptr[i], &b_cpu_ptr[i], &c_cpu_ptr[i]);
+                    },
+                    xpu_host);
+                auto a_xpu = makeSure(a_cpu, xpu, doCacheAlloc);
+                auto b_xpu = makeSure(b_cpu, xpu, doCacheAlloc);
+                auto c_xpu = makeSure(c_cpu, xpu, doCacheAlloc);
+                xgemm_batch<T>(transa, transb, m, n, k, alpha, (const T **)a_xpu.data(), lda,
+                               (const T **)b_xpu.data(), ldb, beta, c_xpu.data(), ldc, batch_size,
+                               xpu);
+            }
+        }
+
+        template <typename T>
         void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
                                  T *c, int ldc, int stridec, int batch_size, Gpu xpu) {
@@ -598,11 +642,14 @@ namespace superbblas {
             }
 
             auto cT = toCudaDataType<T>();
-            if (batch_size == 1) {
-                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
-                    getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
-                    &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
-                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
+                for (int i = 0; i < batch_size; ++i) {
+                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a + i * stridea, cT, lda, b + i * strideb, cT, ldb, &beta,
+                        c + i * stridec, cT, ldc, toCudaComputeType<T>(),
+                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                }
             } else {
                 gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmStridedBatchedEx)(
                     getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
