@@ -405,6 +405,8 @@ namespace superbblas {
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
 #    endif
             unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
+            vector<T, Cpu> kron_cpu;      ///< Host version of v.kron
+            double kron_nnz_density;      ///< kron_cpu nonzero density
 
             SpMMAllowedLayout allowLayout;
             MatrixLayout preferredLayout;
@@ -499,6 +501,19 @@ namespace superbblas {
                 gpuSparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
                 gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
 #    endif
+
+                // Analyze the density of kron
+                kron_cpu = makeSure(v.kron_it, Cpu{});
+                if (kron_cpu.size() > 0) {
+                    std::size_t ki = volume(v.kroni);
+                    std::size_t kd = volume(v.krond);
+                    std::size_t nnz = 0, n = ki * kd * num_nnz_per_row;
+                    for (std::size_t i = 0; i < n; ++i)
+                        if (std::norm(kron_cpu[i]) > 0) nnz++;
+                    kron_nnz_density = (double)nnz / n;
+                } else {
+                    kron_nnz_density = 0;
+                }
             }
 
             double getCostPerMatvec() const {
@@ -584,6 +599,75 @@ namespace superbblas {
 #    endif
             }
 
+            // Contract the Kronecker part: for each direction mu do:
+            //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+
+            void contract_kron_cols(T alpha, const vector<const T, Gpu> &x, int col0, int dcols,
+                                    int ncols, vector<T, Gpu> &y) const {
+                IndexType num_cols = volume(v.dimd);
+                IndexType block_size = volume(v.blocki);
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_cols = num_cols / block_size / kd;
+                const bool tb = !v.blockImFast;
+
+                zero_n(y.data(), y.size(), y.ctx());
+                // If the density of the Kronecker factors is low, treat them as sparse;
+                // otherwise, perform the contraction with batched gemm
+                if (kron_nnz_density < .3) {
+                    for (int mu = 0; mu < (int)num_nnz_per_row; ++mu) {
+                        for (int i = 0; i < ki; ++i) {
+                            bool column_i_is_zero = true;
+                            for (int j = 0; j < kd; ++j) {
+                                T alpha_kron_ijmu =
+                                    kron_cpu[(!tb ? i + j * ki : j + i * kd) + mu * ki * kd] *
+                                    alpha;
+                                if (std::norm(alpha_kron_ijmu) == 0) continue;
+                                if (column_i_is_zero) {
+                                    local_copy<IndexType>(
+                                        alpha_kron_ijmu, Order<3>{'r', 'c', 'd'},
+                                        Coor<3>{0, col0, j},
+                                        Coor<3>{block_size * block_cols, dcols, 1},
+                                        Coor<3>{block_size * block_cols, ncols, kd}, x, Mask<Gpu>{},
+                                        Order<4>{'r', 'm', 'c', 'i'}, Coor<4>{0, mu, 0, i},
+                                        Coor<4>{block_size * block_cols, (int)num_nnz_per_row,
+                                                dcols, ki},
+                                        y, Mask<Gpu>{}, EWOp::Copy{}, FastToSlow);
+                                } else {
+                                    local_copy<IndexType>(
+                                        alpha_kron_ijmu, Order<3>{'r', 'c', 'd'},
+                                        Coor<3>{0, col0, j},
+                                        Coor<3>{block_size * block_cols, dcols, 1},
+                                        Coor<3>{block_size * block_cols, ncols, kd}, x, Mask<Gpu>{},
+                                        Order<4>{'r', 'm', 'c', 'i'}, Coor<4>{0, mu, 0, i},
+                                        Coor<4>{block_size * block_cols, (int)num_nnz_per_row,
+                                                dcols, ki},
+                                        y, Mask<Gpu>{}, EWOp::Add{}, FastToSlow);
+                                }
+                                column_i_is_zero = false;
+                            }
+                        }
+                    }
+                } else {
+                    auto kron_it_ptr = v.kron_it.data();
+                    auto x_ptr = x.data();
+                    auto y_ptr = y.data();
+                    unsigned int this_num_nnz_per_row = num_nnz_per_row;
+                    xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
+                                   block_size * block_cols * ncols, !tb ? ki : kd, T{0},
+                                   block_size * block_cols * num_nnz_per_row * dcols,
+                                   num_nnz_per_row * dcols, x.ctx(),
+                                   [=](int i, T **ai, T **bi, T **ci) {
+                                       unsigned int mu = i % this_num_nnz_per_row;
+                                       unsigned int col = i / this_num_nnz_per_row;
+                                       *ai = (T *)x_ptr + (col + col0) * block_size * block_cols;
+                                       *bi = kron_it_ptr + ki * kd * mu;
+                                       *ci = y_ptr + block_size * block_cols * mu +
+                                             block_size * block_cols * this_num_nnz_per_row * col;
+                                   });
+                }
+            }
+
         public:
             void operator()(T alpha, bool conjA, const vector<T, Gpu> &vx, IndexType ldx,
                             MatrixLayout lx, vector<T, Gpu> &vy, IndexType ldy, MatrixLayout ly,
@@ -632,11 +716,9 @@ namespace superbblas {
                         sizeof(T) * ki * block_size * block_cols * num_nnz_per_row +
                         (sizeof(T) + sizeof(IndexType)) * kd * block_size * block_cols +
                         (sizeof(T) + sizeof(IndexType)) * ki * block_size * block_rows;
-                    IndexType max_ncols =
-                        (int)std::min(std::max((size_t)getMaxCacheGiBGpu() * 1024u * 1024u * 1024u /
-                                                   2u / vector_size,
-                                               (std::size_t)1),
-                                      (std::size_t)ncols);
+                    IndexType max_ncols = (int)std::min(
+                        std::max((size_t)getMaxGpuCacheSize() / 2u / vector_size, (std::size_t)1),
+                        (std::size_t)ncols);
 
                     // Pre-apply the beta if the computation is going to break in chunks
                     if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
@@ -712,10 +794,9 @@ namespace superbblas {
                     std::size_t vector_size =
                         sizeof(T) * block_size * block_cols * num_nnz_per_row * ki +
                         (sizeof(T) + sizeof(IndexType)) * block_size * block_rows * ki;
-                    IndexType max_ncols = std::min(std::max((size_t)getMaxCacheGiBGpu() * 1024u *
-                                                                1024u * 1024u / 2u / vector_size,
-                                                            (std::size_t)1),
-                                                   (std::size_t)ncols);
+                    IndexType max_ncols =
+                        std::min(std::max(getMaxGpuCacheSize() / 2u / vector_size, (std::size_t)1),
+                                 (std::size_t)ncols);
 
                     // Pre-apply the beta if the computation is going to break in chunks
                     if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
@@ -728,40 +809,7 @@ namespace superbblas {
                         //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
                         vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols0 * ki,
                                            ii.ctx(), doCacheAlloc);
-                        zero_n(aux.data(), aux.size(), aux.ctx());
-                        const bool tb = !v.blockImFast;
-                        auto xpu_host = ii.ctx().toCpuPinned();
-                        vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols0, xpu_host, doCacheAlloc);
-                        vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols0, xpu_host, doCacheAlloc);
-                        vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols0, xpu_host, doCacheAlloc);
-                        auto kron_it_ptr = v.kron_it.data();
-                        auto aux_ptr = aux.data();
-                        auto a_cpu_ptr = a_cpu.data();
-                        auto b_cpu_ptr = b_cpu.data();
-                        auto c_cpu_ptr = c_cpu.data();
-                        unsigned int this_num_nnz_per_row = num_nnz_per_row;
-                        launchHostKernel(
-                            [=] {
-                                for (unsigned int ij = 0;
-                                     ij < this_num_nnz_per_row * (unsigned int)ncols0; ++ij) {
-                                    unsigned int mu = ij % this_num_nnz_per_row;
-                                    unsigned int col = ij / this_num_nnz_per_row;
-                                    a_cpu_ptr[ij] = (T *)x + (col + i0) * block_size * block_cols;
-                                    b_cpu_ptr[ij] = kron_it_ptr + ki * kd * mu;
-                                    c_cpu_ptr[ij] =
-                                        aux_ptr + block_size * block_cols * mu +
-                                        block_size * block_cols * this_num_nnz_per_row * col;
-                                }
-                            },
-                            xpu_host);
-                        auto a_xpu = makeSure(a_cpu, aux.ctx(), doCacheAlloc);
-                        auto b_xpu = makeSure(b_cpu, aux.ctx(), doCacheAlloc);
-                        auto c_xpu = makeSure(c_cpu, aux.ctx(), doCacheAlloc);
-                        xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
-                                       (const T **)a_xpu.data(), block_size * block_cols * ncols,
-                                       (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),
-                                       block_size * block_cols * num_nnz_per_row * ncols0,
-                                       a_xpu.size(), aux.ctx());
+                        contract_kron_cols(alpha, vx, i0, ncols0, ncols, aux);
 
                         // Contract the block part:
                         // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
