@@ -269,11 +269,12 @@ namespace superbblas {
         /// Return a string identifying the platform
         /// \param xpu: context
 
-        inline std::string platformToStr(const Cpu &) { return "CPU"; }
+        inline std::string platformToStr(const Cpu &) { return "cpu"; }
 
 #ifdef SUPERBBLAS_USE_GPU
-        inline std::string platformToStr(const Gpu &) {
-            return SUPERBBLAS_GPU_SELECT("", "CUDA", "HIP");
+        inline std::string platformToStr(const Gpu &gpu) {
+            return deviceId(gpu) == CPU_DEVICE_ID ? "host"
+                                                  : SUPERBBLAS_GPU_SELECT("", "cuda", "hip");
         }
 #endif
 
