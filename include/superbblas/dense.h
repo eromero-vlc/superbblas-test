@@ -93,19 +93,29 @@ namespace superbblas {
             tracker<Gpu> _t("local cholesky (GPU)", v.ctx());
             _t.cost = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
 
-            vector<T *, Cpu> v_ps(k, Cpu{});
-            for (std::size_t i = 0; i < k; ++i) v_ps[i] = v.data() + n * n * i;
-            vector<T *, Gpu> v_ps_gpu = makeSure(v_ps, v.ctx());
+            auto xpu_host = v.ctx().toCpuPinned();
+            vector<T *, Gpu> v_ps_cpu(k, xpu_host, doCacheAlloc);
+            auto v_ps_cpu_ptr = v_ps_cpu.data();
+            auto v_ptr = v.data();
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i) v_ps_cpu_ptr[i] = v_ptr + n * n * i;
+                },
+                xpu_host);
+            vector<T *, Gpu> v_ps_gpu = makeSure(v_ps_cpu, v.ctx(), doCacheAlloc);
             vector<int, Gpu> info(k, v.ctx());
             gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(XpotrfBatched)(
                 getGpuSolverHandle(v.ctx()),
                 SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_FILL_MODE_UPPER, HIPSOLVER_FILL_MODE_UPPER), n,
                 v_ps_gpu.data(), n, info.data(), k));
-            vector<int, Cpu> info_cpu = makeSure(info, Cpu{});
-            for (std::size_t i = 0; i < k; ++i)
-                if (info_cpu[i] > 0)
-                    throw std::runtime_error(std::string("Error cholesky: ") +
-                                             std::to_string(info_cpu[i]));
+            vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+            auto info_cpu_ptr = info_cpu.data();
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i)
+                        checkLapack(info_cpu_ptr[i], true /* terminate */);
+                },
+                xpu_host);
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -421,8 +431,8 @@ namespace superbblas {
 
             // Generate the working partition
             From_size<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);
-            Components_tmpl<N, T, XPU0, XPU1> vw =
-                reorder_tensor(p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co, force_copy);
+            Components_tmpl<N, T, XPU0, XPU1> vw = reorder_tensor(
+                p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co, force_copy, doCacheAlloc);
 
             return {pw, dimw, ow, vw, n};
         }
@@ -588,7 +598,7 @@ namespace superbblas {
             const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw =
                 reorder_tensor(px, ox, {{}}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
-                               true /* Force copy */);
+                               true /* Force copy */, doCacheAlloc);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, pxw, dimxw, oxw, oyw);
             From_size<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;
@@ -734,7 +744,7 @@ namespace superbblas {
             const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw =
                 reorder_tensor(px, ox, {{}}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
-                               true /* Force copy */);
+                               true /* Force copy */, doCacheAlloc);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, pxw, dimxw, oxw, oyw);
             From_size<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;
