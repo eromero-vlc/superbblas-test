@@ -2543,6 +2543,7 @@ namespace superbblas {
         /// \param o1: dimension labels for the output tensor
         /// \param co: coordinate linearization order
         /// \param force_copy: whether to NOT avoid copy if the partition is the same
+        /// \param cacheAlloc: whether to cache the allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
@@ -2550,13 +2551,13 @@ namespace superbblas {
                        const Coor<N> &size0, const Coor<N> &dim0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const From_size<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
-                       bool force_copy = false) {
+                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc) {
 
             // If the two orderings and partitions are equal, return the tensor
             if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
 
             // Allocate the tensor
-            auto v1 = like_this_components(p1, v0, comm);
+            auto v1 = like_this_components(p1, v0, comm, cacheAlloc);
 
             // Copy the content of v0 into v1
             copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {{}}, dim1, o1, v1,
