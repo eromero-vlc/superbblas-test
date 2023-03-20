@@ -404,9 +404,11 @@ namespace superbblas {
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
 #    endif
-            unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
-            vector<T, Cpu> kron_cpu;      ///< Host version of v.kron
-            double kron_nnz_density;      ///< kron_cpu nonzero density
+            unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
+            vector<T, Cpu> kron_cpu;        ///< Host version of v.kron
+            double kron_nnz_density;        ///< kron_cpu nonzero density
+            std::vector<int> kron_disp;     ///< unique index for kron
+            std::vector<int> kron_disp_rev; ///< kron_disp index for each unique kron matrix
 
             SpMMAllowedLayout allowLayout;
             MatrixLayout preferredLayout;
@@ -422,7 +424,44 @@ namespace superbblas {
                 if (volume(v.blocki) != volume(v.blockd))
                     throw std::runtime_error("cuSPARSE does not support non-square blocks");
                 bool is_kron = v.kron_it.size() > 0;
-                auto bsr = !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true);
+
+                // Analyze the density of kron
+                if (is_kron) {
+                    kron_cpu = makeSure(v.kron_it, Cpu{});
+                    std::size_t ki = volume(v.kroni);
+                    std::size_t kd = volume(v.krond);
+                    std::size_t num_nnz_per_row = kron_cpu.size() / ki / kd;
+                    std::size_t nnz = 0;
+                    for (std::size_t i = 0; i < kron_cpu.size(); ++i)
+                        if (std::norm(kron_cpu[i]) > 0) nnz++;
+                    kron_nnz_density = (double)nnz / kron_cpu.size();
+
+                    kron_disp = std::vector<int>(num_nnz_per_row, 0);
+                    for (std::size_t i = 0; i < num_nnz_per_row; i++) {
+                        kron_disp[i] = kron_disp_rev.size();
+                        kron_disp_rev.push_back(i);
+                        for (std::size_t j = 0; j < i; j++) {
+                            bool same = true;
+                            for (std::size_t k = 0; k < ki * kd; k++) {
+                                if (kron_cpu[i * ki * kd + k] != kron_cpu[j * ki * kd + k]) {
+                                    same = false;
+                                    break;
+                                }
+                            }
+                            if (same) {
+                                kron_disp[i] = kron_disp[j];
+                                kron_disp_rev.pop_back();
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    kron_nnz_density = 0;
+                }
+
+                // Get the nonzero pattern
+                auto bsr =
+                    !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true, kron_disp);
                 ii = bsr.i;
                 jj = bsr.j;
                 num_nnz_per_row = bsr.num_nnz_per_row;
@@ -501,19 +540,6 @@ namespace superbblas {
                 gpuSparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
                 gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
 #    endif
-
-                // Analyze the density of kron
-                kron_cpu = makeSure(v.kron_it, Cpu{});
-                if (kron_cpu.size() > 0) {
-                    std::size_t ki = volume(v.kroni);
-                    std::size_t kd = volume(v.krond);
-                    std::size_t nnz = 0, n = ki * kd * num_nnz_per_row;
-                    for (std::size_t i = 0; i < n; ++i)
-                        if (std::norm(kron_cpu[i]) > 0) nnz++;
-                    kron_nnz_density = (double)nnz / n;
-                } else {
-                    kron_nnz_density = 0;
-                }
             }
 
             double getCostPerMatvec() const {
@@ -615,13 +641,13 @@ namespace superbblas {
                 // If the density of the Kronecker factors is low, treat them as sparse;
                 // otherwise, perform the contraction with batched gemm
                 if (kron_nnz_density < .3) {
-                    for (int mu = 0; mu < (int)num_nnz_per_row; ++mu) {
+                    for (int mu = 0; mu < (int)kron_disp_rev.size(); ++mu) {
                         for (int i = 0; i < ki; ++i) {
                             bool column_i_is_zero = true;
                             for (int j = 0; j < kd; ++j) {
-                                T alpha_kron_ijmu =
-                                    kron_cpu[(!tb ? i + j * ki : j + i * kd) + mu * ki * kd] *
-                                    alpha;
+                                T alpha_kron_ijmu = kron_cpu[(!tb ? i + j * ki : j + i * kd) +
+                                                             kron_disp_rev[mu] * ki * kd] *
+                                                    alpha;
                                 if (std::norm(alpha_kron_ijmu) == 0) continue;
                                 if (column_i_is_zero) {
                                     local_copy<IndexType>(
@@ -630,7 +656,7 @@ namespace superbblas {
                                         Coor<3>{block_size * block_cols, dcols, 1},
                                         Coor<3>{block_size * block_cols, ncols, kd}, x, Mask<Gpu>{},
                                         Order<4>{'r', 'm', 'c', 'i'}, Coor<4>{0, mu, 0, i},
-                                        Coor<4>{block_size * block_cols, (int)num_nnz_per_row,
+                                        Coor<4>{block_size * block_cols, (int)kron_disp_rev.size(),
                                                 dcols, ki},
                                         y, Mask<Gpu>{}, EWOp::Copy{}, FastToSlow);
                                 } else {
@@ -640,7 +666,7 @@ namespace superbblas {
                                         Coor<3>{block_size * block_cols, dcols, 1},
                                         Coor<3>{block_size * block_cols, ncols, kd}, x, Mask<Gpu>{},
                                         Order<4>{'r', 'm', 'c', 'i'}, Coor<4>{0, mu, 0, i},
-                                        Coor<4>{block_size * block_cols, (int)num_nnz_per_row,
+                                        Coor<4>{block_size * block_cols, (int)kron_disp_rev.size(),
                                                 dcols, ki},
                                         y, Mask<Gpu>{}, EWOp::Add{}, FastToSlow);
                                 }
@@ -652,18 +678,19 @@ namespace superbblas {
                     auto kron_it_ptr = v.kron_it.data();
                     auto x_ptr = x.data();
                     auto y_ptr = y.data();
-                    unsigned int this_num_nnz_per_row = num_nnz_per_row;
+                    unsigned int kron_disp_rev_size = kron_disp_rev.size();
+                    auto kron_disp_rev_ptr = kron_disp_rev.data();
                     xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
                                    block_size * block_cols * ncols, !tb ? ki : kd, T{0},
-                                   block_size * block_cols * num_nnz_per_row * dcols,
+                                   block_size * block_cols * kron_disp_rev.size() * dcols,
                                    num_nnz_per_row * dcols, x.ctx(),
                                    [=](int i, T **ai, T **bi, T **ci) {
-                                       unsigned int mu = i % this_num_nnz_per_row;
-                                       unsigned int col = i / this_num_nnz_per_row;
+                                       unsigned int mu = i % kron_disp_rev_size;
+                                       unsigned int col = i / kron_disp_rev_size;
                                        *ai = (T *)x_ptr + (col + col0) * block_size * block_cols;
-                                       *bi = kron_it_ptr + ki * kd * mu;
+                                       *bi = kron_it_ptr + ki * kd * kron_disp_rev_ptr[mu];
                                        *ci = y_ptr + block_size * block_cols * mu +
-                                             block_size * block_cols * this_num_nnz_per_row * col;
+                                             block_size * block_cols * kron_disp_rev_size * col;
                                    });
                 }
             }
@@ -792,7 +819,7 @@ namespace superbblas {
 
                     // Limit the amount of auxiliary memory used to 50% maximum cache size
                     std::size_t vector_size =
-                        sizeof(T) * block_size * block_cols * num_nnz_per_row * ki +
+                        sizeof(T) * block_size * block_cols * kron_disp_rev.size() * ki +
                         (sizeof(T) + sizeof(IndexType)) * block_size * block_rows * ki;
                     IndexType max_ncols =
                         std::min(std::max(getMaxGpuCacheSize() / 2u / vector_size, (std::size_t)1),
@@ -807,7 +834,8 @@ namespace superbblas {
                          i0 += ncols0, ncols0 = std::min(ncols - i0, max_ncols)) {
                         // Contract the Kronecker part: for each direction mu do:
                         //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
-                        vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols0 * ki,
+                        vector<T, Gpu> aux(block_size * block_cols * kron_disp_rev.size() * ncols0 *
+                                               ki,
                                            ii.ctx(), doCacheAlloc);
                         contract_kron_cols(alpha, vx, i0, ncols0, ncols, aux);
 
@@ -823,8 +851,9 @@ namespace superbblas {
                             zero_n(auxy.data(), auxy.size(), auxy.ctx());
                             ldy0 = block_size * block_rows;
                         }
-                        matvec(1.0, false, aux.data(), block_size * block_cols * num_nnz_per_row,
-                               ColumnMajor, y0, ldy0, ly, ncols0 * ki,
+                        matvec(1.0, false, aux.data(),
+                               block_size * block_cols * kron_disp_rev.size(), ColumnMajor, y0,
+                               ldy0, ly, ncols0 * ki,
                                (std::norm(beta) == 0 || ncols0 != ncols) ? T{0} : beta);
                         if (ncols0 != ncols) {
                             Coor<3> dimy0{block_size * block_rows, ncols0, ki};
@@ -1119,7 +1148,8 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
                   typename std::enable_if<(Nd > 0 && Ni > 0), bool>::type = true>
         CsrIndices<XPU> get_kron_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
-                                         bool return_jj_blocked = false) {
+                                         bool return_jj_blocked = false,
+                                         std::vector<int> kron_disp = std::vector<int>()) {
             // Check that IndexType is big enough
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
                 throw std::runtime_error("Ups! IndexType isn't big enough");
@@ -1149,6 +1179,11 @@ namespace superbblas {
             IndexType bd = return_jj_blocked ? volume(v.blockd) * volume(v.krond) : 1;
             IndexType rows = volume(v.dimd);
             bool there_are_minus_ones_in_columns = false;
+            if (kron_disp.size() == 0) {
+                kron_disp = std::vector<int>(num_nnz_per_row);
+                for (int i = 0; i < num_nnz_per_row; ++i) kron_disp[i] = i;
+            }
+            if (kron_disp.size() != (std::size_t)num_nnz_per_row) throw std::runtime_error("wtf!");
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
@@ -1156,7 +1191,7 @@ namespace superbblas {
                 if (vj[i][0] == -1) there_are_minus_ones_in_columns = true;
                 jj[i] = (vj[i][0] == -1 ? -1
                                         : coor2index(vj[i], v.dimd, strided) / bd +
-                                              rows / bd * (i % num_nnz_per_row));
+                                              rows / bd * kron_disp[i % num_nnz_per_row]);
             }
 
             // Unsupported -1 in the domain coordinate
