@@ -88,59 +88,73 @@ namespace superbblas {
             // Do the allocation
             setDevice(xpu);
             T *r = nullptr;
-            try {
-                if (getCustomAllocator()) {
-                    r = (T *)getCustomAllocator()(sizeof(T) * n,
-                                                  deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
-                } else if (std::is_same<Cpu, XPU>::value) {
-                    // Allocate the array without calling constructors, specially useful for std::complex
-                    r = (T *)::operator new(sizeof(T) * n);
-                }
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                try {
+                    if (getCustomAllocator()) {
+                        r = (T *)getCustomAllocator()(sizeof(T) * n,
+                                                      deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
+                    } else if (std::is_same<Cpu, XPU>::value) {
+#ifdef SUPERBBLAS_USE_MPI
+                        if (external_use) {
+                            MPI_check(MPI_Alloc_mem(sizeof(T) * n, MPI_INFO_NULL, &r));
+                        } else
+#endif
+                        {
+                            // Allocate the array without calling constructors, specially useful for std::complex
+                            r = (T *)::operator new(sizeof(T) * n);
+                        }
+                    }
 #ifdef SUPERBBLAS_USE_GPU
-                else if (deviceId(xpu) == CPU_DEVICE_ID) {
+                    else if (deviceId(xpu) == CPU_DEVICE_ID) {
 #    ifdef SUPERBBLAS_USE_CUDA
-                    gpuCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
+                        gpuCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
 #    elif defined(SUPERBBLAS_USE_HIP)
-                    gpuCheck(hipHostMalloc(&r, sizeof(T) * n, 0));
+                        gpuCheck(hipHostMalloc(&r, sizeof(T) * n, 0));
 #    endif
-                } else {
+                    } else {
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11020
-                    if (!external_use) {
-                        gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
-                    } else
+                        if (!external_use) {
+                            gpuCheck(cudaMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+                        } else
 #        endif
-                    {
-                        gpuCheck(cudaMalloc(&r, sizeof(T) * n));
-                    }
+                        {
+                            gpuCheck(cudaMalloc(&r, sizeof(T) * n));
+                        }
 #    elif defined(SUPERBBLAS_USE_HIP)
 #        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
-                    if (!external_use) {
+                        if (!external_use) {
 
-                        gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
-                    } else
+                            gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
+                        } else
 #        endif
-                    {
-                        gpuCheck(hipMalloc(&r, sizeof(T) * n));
-                    }
+                        {
+                            gpuCheck(hipMalloc(&r, sizeof(T) * n));
+                        }
 #    endif
-                }
-#endif // SUPERBBLAS_USE_GPU
-                causalConnectTo(getAllocStream(xpu), getStream(xpu));
-                if (r == nullptr) std::runtime_error("Memory allocation failed!");
-            } catch (...) {
-                if (getLogLevel() > 0) {
-                    std::cerr << "superbblas::detail::allocate: error allocating " << sizeof(T) * n
-                              << " bytes";
-                    if (getTrackingMemory()) {
-                        std::cerr << "; superbblas mem usage: cpu "
-                                  << getCpuMemUsed(0) / 1024 / 1024 << " MiB  gpu "
-                                  << getGpuMemUsed(0) / 1024 / 1024 << " MiB";
                     }
-                    std::cerr << std::endl;
+#endif // SUPERBBLAS_USE_GPU
+                    if (r == nullptr) std::runtime_error("Memory allocation failed!");
+                    break;
+                } catch (...) {
+                    if (attempt == 0) {
+                        clearCaches();
+                    } else {
+                        if (getLogLevel() > 0) {
+                            std::cerr << "superbblas::detail::allocate: error allocating "
+                                      << sizeof(T) * n << " bytes";
+                            if (getTrackingMemory()) {
+                                std::cerr << "; superbblas mem usage: cpu "
+                                          << getCpuMemUsed(0) / 1024 / 1024 << " MiB  gpu "
+                                          << getGpuMemUsed(0) / 1024 / 1024 << " MiB";
+                            }
+                            std::cerr << std::endl;
+                        }
+                        throw;
+                    }
                 }
-                throw;
             }
+            causalConnectTo(getAllocStream(xpu), getStream(xpu));
 
             // Annotate allocation
             if (getTrackingMemory()) {
@@ -186,7 +200,14 @@ namespace superbblas {
             if (getCustomDeallocator()) {
                 getCustomDeallocator()((void *)ptr, deviceId(xpu) == CPU_DEVICE_ID ? CPU : GPU);
             } else if (std::is_same<Cpu, XPU>::value) {
-                ::operator delete(ptr);
+#ifdef SUPERBBLAS_USE_MPI
+                if (external_use) {
+                    MPI_check(MPI_Free_mem(ptr));
+                } else
+#endif
+                {
+                    ::operator delete(ptr);
+                }
 #ifdef SUPERBBLAS_USE_GPU
             } else if (deviceId(xpu) == CPU_DEVICE_ID) {
                 sync(getAllocStream(xpu));
@@ -222,68 +243,25 @@ namespace superbblas {
         /// \param n: number of elements of the allocation
         /// \param xpu: context
         /// \param alignment: pointer alignment
+        /// \param external_use: whether the allocation will be used by other libraries such as MPI
 
         template <typename T, typename XPU>
         std::pair<T *, std::shared_ptr<char>> allocateResouce(std::size_t n, XPU xpu,
-                                                              std::size_t alignment = 0) {
+                                                              std::size_t alignment = 0,
+                                                              bool external_use = false) {
             // Shortcut for zero allocations
             if (n == 0) return {nullptr, std::shared_ptr<char>()};
 
             using T_no_const = typename std::remove_const<T>::type;
             if (alignment == 0) alignment = default_alignment<T_no_const>::alignment;
-            T *ptr = allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu);
+            T *ptr = allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu,
+                                          external_use);
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
             T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
             return {ptr_aligned, std::shared_ptr<char>((char *)ptr, [=](char *ptr) {
-                        deallocate<T_no_const>((T_no_const *)ptr, xpu);
+                        deallocate<T_no_const>((T_no_const *)ptr, xpu, external_use);
                     })};
         }
-
-#ifdef SUPERBBLAS_USE_MPI
-        /// Return a memory allocation with at least n elements of type T
-        /// \param n: number of elements of the allocation
-        /// \param xpu: context
-        /// \param alignment: pointer alignment
-
-        template <typename T>
-        std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, Cpu,
-                                                                  std::size_t alignment = 0) {
-            // Shortcut for zero allocations
-            if (n == 0) return {nullptr, std::shared_ptr<char>()};
-
-            if (alignment == 0) alignment = default_alignment<T>::alignment;
-            std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
-            T *ptr = nullptr;
-            MPI_check(MPI_Alloc_mem(size, MPI_INFO_NULL, &ptr));
-            T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
-            return {ptr_aligned, std::shared_ptr<char>((char *)ptr, [=](char *ptr) {
-                        MPI_check(MPI_Free_mem(ptr));
-                    })};
-        }
-
-#    ifdef SUPERBBLAS_USE_GPU
-        template <typename T>
-        std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, const Gpu &xpu,
-                                                                  std::size_t alignment = 0) {
-            // Shortcut for zero allocations
-            if (n == 0) return {nullptr, std::shared_ptr<char>()};
-
-            if (alignment == 0) alignment = default_alignment<T>::alignment;
-            std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
-            T *ptr = allocate<T>(n, xpu, true /* external use */);
-            T *ptr_aligned = align<T>(alignment, sizeof(T) * n, ptr, size);
-            return {ptr_aligned, std::shared_ptr<char>((char *)ptr, [=](char *ptr) {
-                        deallocate<T>((T *)ptr, xpu, true /* external use */);
-                    })};
-        }
-#    endif // SUPERBBLAS_USE_GPU
-#else
-        template <typename T, typename XPU>
-        std::pair<T *, std::shared_ptr<char>> allocateResouce_mpi(std::size_t n, const XPU &xpu,
-                                                                  std::size_t alignment = 0) {
-            return allocateResouce<T>(n, xpu, alignment);
-        }
-#endif // SUPERBBLAS_USE_MPI
 
         inline std::unordered_set<char *> &getAllocatedBuffers(const Cpu &) {
             static std::unordered_set<char *> allocs(16);
@@ -305,10 +283,12 @@ namespace superbblas {
         /// \param n: number of elements of the allocation
         /// \param xpu: context
         /// \param alignment: pointer alignment
+        /// \param external_use: whether the allocation will be used by other libraries such as MPI
 
         template <typename T, typename XPU>
         std::pair<T *, std::shared_ptr<char>> allocateBufferResouce(std::size_t n, XPU xpu,
-                                                                    std::size_t alignment = 0) {
+                                                                    std::size_t alignment = 0,
+                                                                    bool external_use = false) {
 
             // Shortcut for zero allocations
             if (n == 0) return {nullptr, std::shared_ptr<char>()};
@@ -328,6 +308,7 @@ namespace superbblas {
                 std::size_t size;          // allocation size
                 std::shared_ptr<char> res; // allocation resource
                 int device;                // allocStream device
+                bool external_use;         // whether is going to be used for third-party library
             };
             auto cache =
                 getCache<char *, AllocationEntry, std::hash<char *>, allocate_buffer_t>(xpu);
@@ -340,6 +321,7 @@ namespace superbblas {
                 if (it == cache.end()) {
                     buffers_to_remove.push_back(buffer_ptr);
                 } else if (it->second.value.device == backupDeviceId(xpu) &&
+                           it->second.value.external_use == external_use &&
                            it->second.value.res.use_count() == 1 && it->second.value.size >= size &&
                            it->second.value.size < selected_buffer_size) {
                     selected_buffer_size = it->second.value.size;
@@ -350,11 +332,13 @@ namespace superbblas {
 
             // If no suitable buffer was found, create a new one and cache it
             if (!selected_buffer) {
-                selected_buffer = allocateResouce_mpi<T>(n, xpu, alignment).second;
+                selected_buffer = allocateResouce<T>(n, xpu, alignment, external_use).second;
                 selected_buffer_size = size;
                 all_buffers.insert(selected_buffer.get());
-                cache.insert(selected_buffer.get(),
-                             AllocationEntry{size, selected_buffer, backupDeviceId(xpu)}, size);
+                cache.insert(
+                    selected_buffer.get(),
+                    AllocationEntry{size, selected_buffer, backupDeviceId(xpu), external_use},
+                    size);
             }
 
             // Connect the allocation stream with the current stream and make sure to connect back as soon as

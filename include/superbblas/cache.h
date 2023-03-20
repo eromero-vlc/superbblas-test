@@ -1,7 +1,7 @@
 #ifndef __SUPERBBLAS_CACHE__
 #define __SUPERBBLAS_CACHE__
 
-#include "platform.h"
+#include "performance.h"
 #include <limits>
 #include <map>
 #include <mutex>

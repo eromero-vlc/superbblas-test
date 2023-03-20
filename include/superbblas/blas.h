@@ -109,6 +109,25 @@ namespace superbblas {
 
     namespace detail {
 
+#ifdef SUPERBBLAS_USE_GPU
+        /// Wait until everything finishes in the given stream
+        /// \param xpu: context
+
+        inline void sync(GpuStream stream) {
+            tracker<Cpu> _t("sync", Cpu{});
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(stream));
+        }
+
+        /// Wait until everything finishes in the device of the given context
+        /// \param xpu: context
+
+        inline void syncLegacyStream(const Gpu &xpu) {
+            tracker<Cpu> _t("sync legacy stream", Cpu{});
+            setDevice(xpu);
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(DeviceSynchronize)());
+        }
+#endif // SUPERBBLAS_USE_GPU
+
         /// is_array<T>::value is true if T is std::array
         /// \tparam T: type to inspect
 
@@ -213,7 +232,7 @@ namespace superbblas {
         }
 
         /// Whether to cache allocation
-        enum CacheAlloc { dontCacheAlloc, doCacheAlloc };
+        enum CacheAlloc { dontCacheAlloc, doCacheAlloc, doCacheAllocExternal };
 
         /// Vector type a la python, that is, operator= does a reference not a copy
         /// \param T: type of the vector's elements
@@ -233,9 +252,10 @@ namespace superbblas {
             vector(std::size_t n, XPU xpu_, CacheAlloc cacheAlloc = dontCacheAlloc,
                    std::size_t alignment = 0)
                 : n(n), xpu(xpu_) {
-                auto alloc = cacheAlloc == doCacheAlloc
-                                 ? allocateBufferResouce<T_no_const>(n, xpu, alignment)
-                                 : allocateResouce<T_no_const>(n, xpu, alignment);
+                auto alloc = cacheAlloc == dontCacheAlloc
+                                 ? allocateResouce<T_no_const>(n, xpu, alignment)
+                                 : allocateBufferResouce<T_no_const>(
+                                       n, xpu, alignment, cacheAlloc == doCacheAllocExternal);
                 ptr_aligned = alloc.first;
                 ptr = alloc.second;
             }

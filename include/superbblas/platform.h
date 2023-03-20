@@ -1,7 +1,6 @@
 #ifndef __SUPERBBLAS_PLATFORM__
 #define __SUPERBBLAS_PLATFORM__
 
-#include "performance.h"
 #include "superbblas_lib.h"
 #include <complex>
 #include <functional>
@@ -9,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <vector>
 
 #ifdef _OPENMP
 #    include <omp.h>
@@ -106,6 +106,9 @@ namespace superbblas {
 
     /// Function to deallocate memory
     using Deallocator = std::function<void(void *, enum platform)>;
+
+    /// Cache session
+    using Session = unsigned int;
 
     /// Return the custom allocator
 
@@ -320,13 +323,9 @@ namespace superbblas {
 
         inline GpuStream getAllocStream(const Gpu &xpu) { return xpu.alloc_stream; }
 
-        /// Wait until everything finishes in the given stream
-        /// \param xpu: context
+        /// NOTE: defined at `blas.h`
 
-        inline void sync(GpuStream stream) {
-            tracker<Cpu> _t("sync", Cpu{});
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(stream));
-        }
+        inline void sync(GpuStream stream);
 
         /// Wait until everything finishes in the given context
         /// \param xpu: context
@@ -336,14 +335,9 @@ namespace superbblas {
             sync(getStream(xpu));
         }
 
-        /// Wait until everything finishes in the device of the given context
-        /// \param xpu: context
+        /// NOTE: defined at `blas.h`
 
-        inline void syncLegacyStream(const Gpu &xpu) {
-            tracker<Cpu> _t("sync legacy stream", Cpu{});
-            setDevice(xpu);
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(DeviceSynchronize)());
-        }
+        inline void syncLegacyStream(const Gpu &xpu);
 #endif // SUPERBBLAS_USE_GPU
 
         inline GpuStream createStream(const Cpu &) { return 0; }

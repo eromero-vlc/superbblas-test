@@ -364,7 +364,7 @@ namespace superbblas {
             // NOTE: MPI calls may have problems passing null pointers as buffers
             if (n == 0) n = MpiTypeSize / sizeof(T);
 
-            vector<T, XPUbuff> buf(n, xpu, doCacheAlloc, MpiTypeSize);
+            vector<T, XPUbuff> buf(n, xpu, doCacheAllocExternal, MpiTypeSize);
 
             return PackedValues<T, XPUbuff>{buf, counts, displ};
         }
@@ -832,7 +832,7 @@ namespace superbblas {
             if (buf_count == 0) buf_count = MpiTypeSize / sizeof(T);
 
             // Allocate the buffer
-            vector<T, XPUbuff> buf(buf_count, xpu, doCacheAlloc, MpiTypeSize);
+            vector<T, XPUbuff> buf(buf_count, xpu, doCacheAllocExternal, MpiTypeSize);
 
             return UnpackedValues<IndexType, T, XPUbuff, XPU>{
                 buf, counts, displ, indices_buf, indices, indices_groups, blocksize};
