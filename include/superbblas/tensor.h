@@ -592,8 +592,16 @@ namespace superbblas {
         /// Return the memory footprint of an object
         /// \param v: input object
 
+        template <typename T> std::size_t storageSize(const T &) { return sizeof(T); }
+
         template <typename T, typename XPU> std::size_t storageSize(const vector<T, XPU> &v) {
             return sizeof(T) * v.size();
+        }
+
+        template <typename T> std::size_t storageSize(const std::vector<T> &v) {
+            std::size_t s = 0;
+            for (const auto &it : v) s += storageSize(it);
+            return s;
         }
 
         /// Check that all dimensions with the same label has the same size
@@ -638,6 +646,13 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_GPU
 
         template <typename T> vector<T, Cpu> archive(const vector<T, Cpu> &v) { return v; }
+
+        template <typename T> std::vector<T> archive(const std::vector<T> &v) {
+            std::vector<T> r;
+            r.resize(v.size());
+            for (std::size_t i = 0; i < v.size(); ++i) r[i] = archive(v[i]);
+            return r;
+        }
 
         /// Copy the content of tensor v0 into v1
         /// \param o0: dimension labels for the origin tensor

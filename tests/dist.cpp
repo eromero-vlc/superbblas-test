@@ -75,9 +75,7 @@ template <std::size_t N>
 void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &hole_from,
                     const Coor<N> &hole_size, const Coor<N> &dim) {
 
-    auto r_ = make_hole(from, size, hole_from, hole_size, dim);
-    From_size_out<N> r(r_.size(), Cpu{});
-    std::copy_n(r_.begin(), r_.size(), r.begin());
+    auto r = make_hole(from, size, hole_from, hole_size, dim);
 
     for (const auto &it : r) {
         // Make sure that the resulting range has fully support on (from, size)
@@ -91,7 +89,7 @@ void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &hol
 
     // Check that the resulting ranges have no overlap
     for (std::size_t i = 0; i < r.size() - 1; ++i) {
-        From_size_out<N> ri(r.size() - i - 1, Cpu{});
+        From_size<N> ri(r.size() - i - 1);
         std::copy(r.begin() + i + 1, r.end(), ri.begin());
         if (volume(intersection(ri, r[i][0], r[i][1], dim)) != 0)
             throw std::runtime_error("Unexpected result in `subtract_range`");
@@ -246,9 +244,10 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 t = w_time();
             }
             Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
-            contraction(Scalar{1.0}, t1.p.data(), dim1, 1, "tnsxyzc", false, (const Scalar **)&ptr0,
-                        &ctx, t2.p.data(), dim1, 1, "tNSxyzc", false, (const Scalar **)&ptr1, &ctx,
-                        Scalar{0.0}, tc.p.data(), dimc, 1, "tNSns", &ptrc, &ctx,
+            contraction(Scalar{1.0}, t1.p.data(), {{}}, dim1, dim1, 1, "tnsxyzc", false,
+                        (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, dim1, dim1, 1, "tNSxyzc",
+                        false, (const Scalar **)&ptr1, &ctx, Scalar{0.0}, tc.p.data(), {{}}, dimc,
+                        dimc, 1, "tNSns", &ptrc, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
@@ -433,7 +432,7 @@ int main(int argc, char **argv) {
 #endif
     if (rank == 0) std::cout << "Tests with " << num_threads << " threads" << std::endl;
 
-    {
+     {
         Context ctx = createCpuContext();
         test(dim, procs, rank, nprocs, ctx, ctx.toCpu(0), nrep);
         clearCaches();

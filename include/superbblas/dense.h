@@ -348,7 +348,7 @@ namespace superbblas {
             // Create partition
             Coor<N> perm0 = find_permutation<N, N>(o0, o_r);
             Coor<N> dimr = reorder_coor<N, N>(dim, perm0, 1);
-            From_size_out<N> pr(p0.size(), p0.ctx());
+            From_size<N> pr(p0.size(), p0.ctx());
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 if (volume(p0[i][1]) == 0) {
                     pr[i][0] = pr[i][1] = Coor<N>{};

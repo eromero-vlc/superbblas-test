@@ -1723,8 +1723,8 @@ namespace superbblas {
             }
 
             // Create partition
-            From_size_out<Nx> pxr(px.size(), px.ctx());
-            From_size_out<Ny> pyr(px.size(), px.ctx());
+            From_size<Nx> pxr(px.size(), px.ctx());
+            From_size<Ny> pyr(px.size(), px.ctx());
             for (unsigned int i = 0; i < px.size(); ++i) {
                 pxr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_ox, false);
                 pxr[i][1] =
