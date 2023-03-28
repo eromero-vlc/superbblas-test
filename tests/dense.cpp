@@ -179,6 +179,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
     tx = ones<Q>(volx, xpu);
     ty = vector<Q, XPU>(tx.size(), xpu);
 
+    resetTimings();
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
