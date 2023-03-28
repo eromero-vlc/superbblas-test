@@ -112,7 +112,7 @@ namespace superbblas {
                                                     &ms, ev[0], ev[1]);
                                                 if (err == SUPERBBLAS_GPU_SYMBOL(Success)) {
                                                     // If successful, register the time and erase the entry in the vector
-                                                    new_time += ms;
+                                                    new_time += ms / 1000.0;
                                                     return true;
                                                 } else {
                                                     // Otherwise, do nothing
