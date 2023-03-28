@@ -901,14 +901,13 @@ namespace superbblas {
 
             tracker<Cpu> _t("prepare and pack", Cpu{});
 
-            unsigned int ncomponents0 = toSend.size();
             PackedValues<Q, XPUbuff> r = prepare_pack<Q>(toSend, comm, xpu);
 
             Indices<Cpu> buf_disp(comm.nprocs, Cpu{});
             for (unsigned int rank = 0; rank < comm.nprocs; ++rank)
                 buf_disp[rank] = r.displ[rank] * (MpiTypeSize / sizeof(Q));
 
-            for (unsigned int componentId0 = 0; componentId0 < ncomponents0; ++componentId0) {
+            for (unsigned int componentId0 = 0; componentId0 < toSend.size(); ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first)
                     if (c.componentId == componentId0)
                         pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
@@ -1100,20 +1099,22 @@ namespace superbblas {
                 for (std::size_t rank = 0; rank < comm.nprocs; ++rank) {
                     if (rank == comm.rank) continue;
 
-                    for (std::size_t irange = 0; irange < toReceive.size(); ++irange) {
-                        for (const auto &lranges : toReceive[irange][rank]) {
-                            for (const auto &fsi : lranges) {
+                    const std::size_t srcrange1 =
+                        (toReceive.size() > 0 ? toReceive[0][rank].size() : 0);
+                    for (std::size_t srcrange = 0; srcrange < srcrange1; ++srcrange) {
+                        for (std::size_t dstrange = 0; dstrange < toReceive.size(); ++dstrange) {
+                            for (const auto &fsi : toReceive[dstrange][rank][srcrange]) {
                                 Coor<Nd> fromi = fsi[0], sizei = fsi[1];
                                 auto indices1_pair = get_permutation_destination<IndexType>(
-                                    o, {{}}, sizei, sizei, o, fromi, component_dims[irange],
-                                    DontAllowImplicitPermutation, Cpu{}, co, nblock[irange]);
+                                    o, {{}}, sizei, sizei, o, fromi, component_dims[dstrange],
+                                    DontAllowImplicitPermutation, Cpu{}, co, nblock[dstrange]);
                                 IndicesT<IndexType, Cpu> indices1 = indices1_pair.first;
                                 IndexType disp = indices1_pair.second;
 
                                 // Apply the masks
-                                if (masks[irange].size() > 0)
+                                if (masks[dstrange].size() > 0)
                                     indices1 =
-                                        select(indices1, masks[irange].data() + disp, indices1);
+                                        select(indices1, masks[dstrange].data() + disp, indices1);
                                 else
                                     indices1 = clone(indices1);
 
@@ -1122,11 +1123,11 @@ namespace superbblas {
                                               [=](IndexType &d) { d += disp; });
 
                                 // Store the number of permutation and the number of elements
-                                n[rank] += indices1.size() * blocksize[irange];
-                                num_elems[irange] += indices1.size();
-                                indices0_groups[irange].push_back(indices1);
-                                disp_bufs[irange].push_back(disp_buf);
-                                disp_buf += indices1.size() * blocksize[irange];
+                                n[rank] += indices1.size() * blocksize[dstrange];
+                                num_elems[dstrange] += indices1.size();
+                                indices0_groups[dstrange].push_back(indices1);
+                                disp_bufs[dstrange].push_back(disp_buf);
+                                disp_buf += indices1.size() * blocksize[dstrange];
                             }
                         }
                     }
@@ -2196,7 +2197,7 @@ namespace superbblas {
                                                    c1.it, c1.mask_it, ewop, co);
                     }
                 }
-                for (const Component<Nd1, Q, XPU0> &c1 : v1.second) {
+                for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
                     const auto &toSend0 = toSend[c0.componentId][comm.rank][c1.componentId];
                     const auto &toReceive0 = toReceive[c1.componentId][comm.rank][c0.componentId];
                     assert(toSend0.size() == toReceive0.size());
@@ -2207,7 +2208,7 @@ namespace superbblas {
                     }
                 }
             }
-            for (const Component<Nd0, const T, XPU0> &c0 : v0.second) {
+            for (const Component<Nd0, const T, XPU1> &c0 : v0.second) {
                 for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
                     const auto &toSend0 = toSend[c0.componentId][comm.rank][c1.componentId];
                     const auto &toReceive0 = toReceive[c1.componentId][comm.rank][c0.componentId];
@@ -2218,7 +2219,7 @@ namespace superbblas {
                                                    c1.it, c1.mask_it, ewop, co);
                     }
                 }
-                for (const Component<Nd1, Q, XPU0> &c1 : v1.second) {
+                for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
                     const auto &toSend0 = toSend[c0.componentId][comm.rank][c1.componentId];
                     const auto &toReceive0 = toReceive[c1.componentId][comm.rank][c0.componentId];
                     assert(toSend0.size() == toReceive0.size());
