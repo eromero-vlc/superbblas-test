@@ -165,6 +165,8 @@ namespace superbblas {
 
             /// Create a new context but with a cpu device
             Cpu toCpuPinned() const { return *this; }
+
+            Cpu(const Session &session = 0) : session(session) {}
         };
 
 #ifdef SUPERBBLAS_USE_GPU
