@@ -887,11 +887,11 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU0, typename XPU1>
         struct BSRComponents_tmpl : BSR_handle {
             /// Partition of the domain space
-            From_size<Nd> pd;
+            Proc_ranges<Nd> pd;
             /// Dimensions of the domain space
             Coor<Nd> dimd;
             /// Partition of the image space
-            From_size<Ni> pi;
+            Proc_ranges<Ni> pi;
             // Dimensiosn of the image space
             Coor<Ni> dimi;
             /// Components of the BSR operator
@@ -906,8 +906,8 @@ namespace superbblas {
                        unsigned int ncomponents, unsigned int nprocs, unsigned int rank,
                        CoorOrder co) override {
                 (void)rank;
-                if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type ||
-                    nprocs * ncomponents != pd.size())
+                if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type || nprocs != pd.size() ||
+                    ncomponents != pd[rank].size())
                     return false;
 
                 if (c.first.size() + c.second.size() != ncomponents) return false;
@@ -956,8 +956,8 @@ namespace superbblas {
             BSRComponents<Nd, Ni, T> r{};
             r.dimd = dimd;
             r.dimi = dimi;
-            r.pd = detail::get_from_size(pd, ncomponents * comm.nprocs, session);
-            r.pi = detail::get_from_size(pi, ncomponents * comm.nprocs, session);
+            r.pd = detail::get_from_size(pd, ncomponents * comm.nprocs, comm);
+            r.pi = detail::get_from_size(pi, ncomponents * comm.nprocs, comm);
             r.blockd = blockd;
             r.blocki = blocki;
             r.krond = krond;
@@ -1021,7 +1021,7 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm>
         BSRComponents<Nd, Ni, T> *
         get_bsr_components_from_handle(BSR_handle *bsrh, const Context *ctx, int ncomponents,
-                                       Comm comm, CoorOrder co) {
+                                       const Comm &comm, CoorOrder co) {
             if (!bsrh->check(Nd, Ni, detail::num_type_v<T>::value, ctx, ncomponents, comm.nprocs,
                              comm.rank, co))
                 throw std::runtime_error(
@@ -1685,22 +1685,21 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny>
-        std::pair<From_size<Nx>, From_size<Ny>>
-        get_output_partition(From_size<Nd> pd, const Order<Nd> &od, From_size<Ni> pi,
-                             const Order<Ni> &oi, From_size<Nx> px, const Order<Nx> &ox,
+        std::pair<Proc_ranges<Nx>, Proc_ranges<Ny>>
+        get_output_partition(Proc_ranges<Nd> pd, const Order<Nd> &od, Proc_ranges<Ni> pi,
+                             const Order<Ni> &oi, Proc_ranges<Nx> px, const Order<Nx> &ox,
                              const Order<Nx> &sug_ox, const Coor<Nx> &sizex, const Order<Ny> &oy,
                              const Order<Ny> &sug_oy, char okr) {
             assert(pd.size() == pi.size() && pi.size() == px.size());
 
             // Find partition on cache
             Order<Nd + Ni> om = concat(od, oi);
-            using Key = std::tuple<From_size<Nd>, From_size<Ni>, From_size<Nx>, Coor<Nx>,
+            using Key = std::tuple<Proc_ranges<Nd>, Proc_ranges<Ni>, Proc_ranges<Nx>, Coor<Nx>,
                                    PairPerms<Nd + Ni, Nx>, PairPerms<Nx, Ny>,
                                    PairPerms<Nd + Ni, Ny>, PairPerms<Nx, Nx>, PairPerms<Ny, Ny>>;
             struct cache_tag {};
-            auto cache =
-                getCache<Key, std::pair<From_size<Nx>, From_size<Ny>>, TupleHash<Key>, cache_tag>(
-                    pd.ctx());
+            auto cache = getCache<Key, std::pair<Proc_ranges<Nx>, Proc_ranges<Ny>>, TupleHash<Key>,
+                                  cache_tag>(Cpu{});
             Key key{pd,
                     pi,
                     px,
@@ -1723,23 +1722,29 @@ namespace superbblas {
             }
 
             // Create partition
-            From_size<Nx> pxr(px.size(), px.ctx());
-            From_size<Ny> pyr(px.size(), px.ctx());
-            for (unsigned int i = 0; i < px.size(); ++i) {
-                pxr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_ox, false);
-                pxr[i][1] =
-                    get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_ox, false);
-                pyr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_oy, false);
-                pyr[i][1] =
-                    get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_oy, false);
-                if (okr != 0) {
-                    pyr[i][0][power_pos] = 0;
-                    pyr[i][1][power_pos] = 1;
-                }
+            Proc_ranges<Nx> pxr(px.size());
+            Proc_ranges<Ny> pyr(px.size());
+            for (unsigned int i = 0; i < pi.size(); ++i) {
+                pxr[i].resize(pi[i].size());
+                pyr[i].resize(pi[i].size());
+                for (unsigned int j = 0; j < pi[i].size(); ++j) {
+                    pxr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
+                                                  sug_ox, false);
+                    pxr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
+                                                  sug_ox, false);
+                    pyr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
+                                                  sug_oy, false);
+                    pyr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
+                                                  sug_oy, false);
+                    if (okr != 0) {
+                        pyr[i][j][0][power_pos] = 0;
+                        pyr[i][j][1][power_pos] = 1;
+                    }
 
-                // Normalize range
-                if (volume(pxr[i][1]) == 0) pxr[i][0] = pxr[i][1] = Coor<Nx>{{}};
-                if (volume(pyr[i][1]) == 0) pyr[i][0] = pyr[i][1] = Coor<Ny>{{}};
+                    // Normalize range
+                    if (volume(pxr[i][j][1]) == 0) pxr[i][j][0] = pxr[i][j][1] = Coor<Nx>{{}};
+                    if (volume(pyr[i][j][1]) == 0) pyr[i][j][0] = pyr[i][j][1] = Coor<Ny>{{}};
+                }
             }
             cache.insert(key, {pxr, pyr}, storageSize(pxr) + storageSize(pyr));
 
@@ -1763,12 +1768,13 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
                   typename Comm, typename XPU0, typename XPU1>
         Request bsr_krylov(T alpha, const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> bsr,
-                           const Order<Ni> oim, const Order<Nd> odm, const From_size<Nx> &px,
+                           const Order<Ni> oim, const Order<Nd> odm, const Proc_ranges<Nx> &px,
                            const Order<Nx> &ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
                            const Coor<Nx> &dimx, const Components_tmpl<Nx, T, XPU0, XPU1> &vx,
-                           T beta, const From_size<Ny> py, const Order<Ny> oy, const Coor<Ny> fromy,
-                           const Coor<Ny> sizey, const Coor<Ny> dimy, char okr,
-                           const Components_tmpl<Ny, T, XPU0, XPU1> vy, Comm comm, CoorOrder co) {
+                           T beta, const Proc_ranges<Ny> py, const Order<Ny> oy,
+                           const Coor<Ny> fromy, const Coor<Ny> sizey, const Coor<Ny> dimy,
+                           char okr, const Components_tmpl<Ny, T, XPU0, XPU1> vy, Comm comm,
+                           CoorOrder co) {
 
             if (getDebugLevel() >= 1) {
                 barrier(comm);
@@ -1843,10 +1849,9 @@ namespace superbblas {
 
             auto pxy_ = get_output_partition(bsr.pd, odm, bsr.pi, oim, px, ox, sug_ox, sizex, oy,
                                              sug_oy, okr);
-            unsigned int ncomponents = vx.first.size() + vx.second.size();
 
             // Copy the input dense tensor to a compatible layout to the sparse tensor
-            From_size<Nx> px_ = pxy_.first;
+            Proc_ranges<Nx> px_ = pxy_.first;
             auto vx_and_req =
                 reorder_tensor_request(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm,
                                        co, doCacheAlloc, power > 1 /* force copy when power > 1 */);
@@ -1864,7 +1869,7 @@ namespace superbblas {
                 wait(vx_and_req.second);
 
                 // Allocate the output tensor
-                From_size<Ny> py_ = pxy_.second;
+                Proc_ranges<Ny> py_ = pxy_.second;
                 Components_tmpl<Ny, T, XPU0, XPU1> vy_ =
                     like_this_components(py_, vx_, comm, doCacheAlloc);
 
@@ -1872,17 +1877,17 @@ namespace superbblas {
                 for (unsigned int p = 0; p < power; ++p) {
                     for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
                         const unsigned int componentId = bsr.c.first[i].v.componentId;
-                        const unsigned int pi = comm.rank * ncomponents + componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm, px_[pi][1], sug_ox,
-                            vx_.first[i].it, py_[pi][1], sug_oy, okr, vy_.first[i].it);
+                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm,
+                            px_[comm.rank][componentId][1], sug_ox, vx_.first[i].it,
+                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.first[i].it);
                     }
                     for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                         const unsigned int componentId = bsr.c.second[i].v.componentId;
-                        const unsigned int pi = comm.rank * ncomponents + componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm, px_[pi][1], sug_ox,
-                            vx_.second[i].it, py_[pi][1], sug_oy, okr, vy_.second[i].it);
+                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm,
+                            px_[comm.rank][componentId][1], sug_ox, vx_.second[i].it,
+                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.second[i].it);
                     }
 
                     // Copy the result to final tensor
@@ -2026,10 +2031,10 @@ namespace superbblas {
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
         Request r = detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
-            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
+            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, comm),
             ox_, fromx, sizex, dimx,
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
-            beta, detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey,
+            beta, detail::get_from_size(py, ncomponents * comm.nprocs, comm), oy_, fromy, sizey,
             dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
             comm, co);
 
@@ -2190,10 +2195,10 @@ namespace superbblas {
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
         wait(detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
-            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
+            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, comm),
             ox_, fromx, sizex, dimx,
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
-            beta, detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey,
+            beta, detail::get_from_size(py, ncomponents * comm.nprocs, comm), oy_, fromy, sizey,
             dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
             comm, co));
         if (request) *request = Request{};

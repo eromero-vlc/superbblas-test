@@ -124,9 +124,9 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 
     // Contract the distributed matrices
 
-    contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(), dim1,
-                1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), dim2, 1, &o2[0],
-                &ptrv2, &ctx,
+    contraction(T{1}, p0.data(), {{}}, dim0, dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx,
+                p1.data(), {{}}, dim1, dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0},
+                p2.data(), {{}}, dim2, dim2, 1, &o2[0], &ptrv2, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                 MPI_COMM_WORLD,
 #endif
@@ -167,9 +167,9 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 #endif
     if (!is_correct) {
         // NOTE: Put a breakpoint here to debug the cases producing wrong answers!
-        contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(),
-                    dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), dim2, 1,
-                    &o2[0], &ptrv2, &ctx,
+        contraction(T{1}, p0.data(), {{}}, dim0, dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx,
+                    p1.data(), {{}}, dim1, dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0},
+                    p2.data(), {{}}, dim2, dim2, 1, &o2[0], &ptrv2, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
 #endif

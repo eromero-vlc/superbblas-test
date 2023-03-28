@@ -1103,9 +1103,9 @@ namespace superbblas {
         void save(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, Order<Nd1> o1,
-                  Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, Comm comm, CoorOrder co) {
+                  Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, CoorOrder co) {
 
-            tracker<XPU1> _t("save", p0.ctx());
+            tracker<XPU1> _t("save", Cpu{});
 
             // Turn o1 and from1 into SlowToFast
             if (co == FastToSlow) {
@@ -1114,10 +1114,7 @@ namespace superbblas {
             }
 
             // Generate the list of subranges to send from each component from v0 to v1
-            unsigned int ncomponents0 = v0.first.size() + v0.second.size();
-            auto overlaps = get_overlap_ranges(
-                dim0, to_vector(p0.data() + comm.rank * ncomponents0, ncomponents0, p0.ctx()), o0,
-                from0, size0, sto.blocks, o1, from1);
+            auto overlaps = get_overlap_ranges(dim0, p0, o0, from0, size0, sto.blocks, o1, from1);
 
             // Do the local file modifications
             for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
@@ -1164,9 +1161,9 @@ namespace superbblas {
         void load(typename elem<T>::type alpha, Storage_context<Nd0, Comm> &sto, Coor<Nd0> from0,
                   Coor<Nd0> size0, Order<Nd0> o0, const From_size<Nd1> &p1, const Coor<Nd1> &from1,
                   const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP, CoorOrder co) {
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, EWOP, CoorOrder co) {
 
-            tracker<XPU1> _t("load", p1.ctx());
+            tracker<XPU1> _t("load", Cpu{});
 
             // Turn o0, from0, and size0 into SlowToFast
             if (co == FastToSlow) {
@@ -1176,12 +1173,9 @@ namespace superbblas {
             }
 
             // Generate the list of subranges to send from each component from v0 to v1
-            unsigned int ncomponents1 = v1.first.size() + v1.second.size();
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
-            auto overlaps = get_overlap_ranges(
-                dim1, to_vector(p1.data() + comm.rank * ncomponents1, ncomponents1, p1.ctx()), o1,
-                from1, size1, sto.blocks, o0, from0);
+            auto overlaps = get_overlap_ranges(dim1, p1, o1, from1, size1, sto.blocks, o0, from0);
 
             // Synchronize the content of the storage before reading from it
             if (sto.modified_for_flush) {
@@ -2043,10 +2037,10 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
-            dim0, detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
+            size0, dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, co);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -2077,17 +2071,17 @@ namespace superbblas {
         if (copyadd == Copy)
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                comm, detail::EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                comm, detail::EWOp::Add{}, co);
+                detail::EWOp::Add{}, co);
     }
 
     /// Return the nonzero blocks stored
@@ -2322,10 +2316,10 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, session), from0, size0,
-            dim0, detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
+            size0, dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), sto, from1, comm, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, co);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -2356,17 +2350,17 @@ namespace superbblas {
         if (copyadd == Copy)
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                comm, detail::EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
-                detail::get_from_size(p1, ncomponents1 * comm.nprocs, session), from1, dim1,
+                detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                comm, detail::EWOp::Add{}, co);
+                detail::EWOp::Add{}, co);
     }
 
     /// Return the nonzero blocks stored

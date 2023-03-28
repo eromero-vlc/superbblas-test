@@ -194,7 +194,7 @@ namespace superbblas {
         template <std::size_t Nd, typename T, typename Comm>
         Components<Nd, T> get_components(T **v, const MaskType **mask, const Context *ctx,
                                          unsigned int ncomponents, From_size_iterator<Nd> p,
-                                         Comm comm, Session session) {
+                                         const Comm &comm, Session session) {
             // Get components on the local process
             From_size_iterator<Nd> fs = p + comm.rank * ncomponents;
 
@@ -586,7 +586,6 @@ namespace superbblas {
                                           r[i][0], r[i][1]);
             return r;
         }
-
 
         /// Throw an error if not all processes give the same value
         /// \param t: value to test
@@ -1007,7 +1006,7 @@ namespace superbblas {
         ///
         /// NOTE: the allocation streams are the ones that live forever, while the regular
         /// streams can come from coflow and be destroy anytime.
-	/// NOTE: the following implementations support doing `archive(indices)` in `prepare_unpack`
+        /// NOTE: the following implementations support doing `archive(indices)` in `prepare_unpack`
 
         template <typename T, typename Q> std::pair<T, Q> archive(const std::pair<T, Q> &v) {
             return {archive(v.first), archive(v.second)};
@@ -1098,7 +1097,7 @@ namespace superbblas {
                 std::vector<std::vector<IndexType>> disp_bufs(toReceive.size());
                 std::size_t disp_buf = 0;
                 const std::size_t num_T = MpiTypeSize / sizeof(T);
-                for (std::size_t rank = 0; rank < toReceive.size(); ++rank) {
+                for (std::size_t rank = 0; rank < comm.nprocs; ++rank) {
                     if (rank == comm.rank) continue;
 
                     for (std::size_t irange = 0; irange < toReceive.size(); ++irange) {
@@ -1252,7 +1251,8 @@ namespace superbblas {
                             alpha, r.buf.data(), r.buf.ctx(), r.blocksize[irange],
                             r.indices_buf[irange].data() + disp, r.indices_buf[irange].ctx(),
                             r.indices_groups[irange][i], v.first[j].it.data(), v.first[j].it.ctx(),
-                            r.indices.first[j].it.data() + disp, r.indices.first[j].it.ctx(), EWOP{});
+                            r.indices.first[j].it.data() + disp, r.indices.first[j].it.ctx(),
+                            EWOP{});
                         disp += r.indices_groups[irange][i];
                     }
                     _t.cost +=
@@ -2629,13 +2629,14 @@ namespace superbblas {
         /// \param force_copy: whether to NOT avoid copy if the partition is the same
         /// \param cacheAlloc: whether to cache the allocation
 
-        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1,
+                  std::size_t N1, typename Q>
         Components_tmpl<N, T, XPU0, XPU1>
         reorder_tensor(const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
                        const Coor<N> &size0, const Coor<N> &dim0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1,
-                       const Components_tmpl<N, T, XPU0, XPU1> &v1_sample, Comm comm, CoorOrder co,
+                       const Components_tmpl<N1, Q, XPU0, XPU1> &v1_sample, Comm comm, CoorOrder co,
                        bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc) {
 
             // If the two orderings and partitions are equal, return the tensor

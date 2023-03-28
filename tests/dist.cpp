@@ -432,7 +432,7 @@ int main(int argc, char **argv) {
 #endif
     if (rank == 0) std::cout << "Tests with " << num_threads << " threads" << std::endl;
 
-     {
+    {
         Context ctx = createCpuContext();
         test(dim, procs, rank, nprocs, ctx, ctx.toCpu(0), nrep);
         clearCaches();
