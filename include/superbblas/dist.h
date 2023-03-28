@@ -2783,11 +2783,15 @@ namespace superbblas {
                 }
             }
 
+            Coor<Nd0> sug_from0 = reorder_coor(from0, perm0);
+            Coor<Nd0> sug_size0 = reorder_coor(size0, perm0);
             Proc_ranges<Ndo> pr(p0.size());
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 pr[i].resize(p0r[i].size());
                 for (unsigned int j = 0; j < p0r[i].size(); ++j) {
-                    pr[i][j][0] = get_dimensions(sug_o0, p0r[i][j][0], o1, from1, o_r, false);
+                    pr[i][j][0] =
+                        get_dimensions(sug_o0, normalize_coor(p0r[i][j][0] - sug_from0, sug_size0),
+                                       o1, Coor<Nd1>{{}}, o_r, false);
                     pr[i][j][1] = get_dimensions(sug_o0, p0r[i][j][1], o1, size1, o_r, false);
                 }
             }
@@ -2867,7 +2871,7 @@ namespace superbblas {
                                              sug_o1, sug_or, swap_operands, co);
             Coor<Nd0> sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
             Coor<Nd1> sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
-            Coor<Ndo> sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
+            Coor<Ndo> sug_sizer = reorder_coor(sizer, find_permutation(o_r, sug_or));
 
             // Change the partition of the input tensors so that the local portions to contract
             // are local
@@ -2905,11 +2909,11 @@ namespace superbblas {
             }
 
             // Scale the output tensor by beta
-            copy<Ndo, Ndo, T>(beta, pr, {{}}, dimr, dimr, o_r, toConst(vr), pr, {{}}, dimr, o_r, vr,
-                              comm, EWOp::Copy{}, co);
+            copy<Ndo, Ndo, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr, o_r,
+                              vr, comm, EWOp::Copy{}, co);
 
             // Scale the output tensor by beta and reduce all the subtensors to the final tensor
-            copy<Ndo, Ndo, T>(1, pr_, {{}}, sug_dimr, sug_dimr, sug_or, toConst(vr_), pr, {{}},
+            copy<Ndo, Ndo, T>(1, pr_, {{}}, sug_sizer, sug_sizer, sug_or, toConst(vr_), pr, fromr,
                               dimr, o_r, vr, comm, EWOp::Add{}, co);
 
             _t.stop();
