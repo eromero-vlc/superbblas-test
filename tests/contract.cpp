@@ -1,7 +1,7 @@
 #include "superbblas.h"
+#include <cstdlib>
 #include <iostream>
 #include <vector>
-#include <cstdlib>
 
 using namespace superbblas;
 
@@ -122,8 +122,8 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
     PartitionStored<N1> p1_(nprocs, {{{{}}, size1}}); // tensor replicated partitioning
     T const *ptrv1_ = v1_.data();
     T *ptrv1 = v1.data();
-    copy(1.0, p1_.data(), 1, &o1[0], {{}}, size1, size1, (const T **)&ptrv1_, nullptr, &ctx, p1.data(),
-         1, &o1[0], from1, dim1, &ptrv1, nullptr, &ctx,
+    copy(1.0, p1_.data(), 1, &o1[0], {{}}, size1, size1, (const T **)&ptrv1_, nullptr, &ctx,
+         p1.data(), 1, &o1[0], from1, dim1, &ptrv1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
