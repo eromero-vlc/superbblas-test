@@ -2769,7 +2769,9 @@ namespace superbblas {
             Proc_ranges<Nd0> p0r(p0.size());
             Coor<Nd0> perm0 = find_permutation(o0, sug_o0);
             for (unsigned int i = 0; i < p0_.size(); ++i) {
-                p0r[i] = reorder_coor(intersection(p0_[i], from0, size0, dim0), perm0);
+                p0r[i] = reorder_coor(
+                    shift_ranges(intersection(p0_[i], from0, size0, dim0), from0, {{}}, dim0),
+                    perm0);
             }
 
             // Change the second partition by using the same distribution as the first tensor
@@ -2778,20 +2780,16 @@ namespace superbblas {
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 p1r[i].resize(p0r[i].size());
                 for (unsigned int j = 0; j < p0r[i].size(); ++j) {
-                    p1r[i][j][0] = get_dimensions(sug_o0, p0r[i][j][0], o1, from1, sug_o1, false);
+                    p1r[i][j][0] = get_dimensions(sug_o0, p0r[i][j][0], o1, {{}}, sug_o1, false);
                     p1r[i][j][1] = get_dimensions(sug_o0, p0r[i][j][1], o1, size1, sug_o1, false);
                 }
             }
 
-            Coor<Nd0> sug_from0 = reorder_coor(from0, perm0);
-            Coor<Nd0> sug_size0 = reorder_coor(size0, perm0);
             Proc_ranges<Ndo> pr(p0.size());
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 pr[i].resize(p0r[i].size());
                 for (unsigned int j = 0; j < p0r[i].size(); ++j) {
-                    pr[i][j][0] =
-                        get_dimensions(sug_o0, normalize_coor(p0r[i][j][0] - sug_from0, sug_size0),
-                                       o1, Coor<Nd1>{{}}, o_r, false);
+                    pr[i][j][0] = get_dimensions(sug_o0, p0r[i][j][0], o1, {{}}, o_r, false);
                     pr[i][j][1] = get_dimensions(sug_o0, p0r[i][j][1], o1, size1, o_r, false);
                 }
             }
@@ -2869,8 +2867,8 @@ namespace superbblas {
             bool swap_operands;
             suggested_orders_for_contraction(o0, size0, conj0, o1, size1, conj1, o_r, sizer, sug_o0,
                                              sug_o1, sug_or, swap_operands, co);
-            Coor<Nd0> sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
-            Coor<Nd1> sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
+            Coor<Nd0> sug_size0 = reorder_coor(size0, find_permutation(o0, sug_o0));
+            Coor<Nd1> sug_size1 = reorder_coor(size1, find_permutation(o1, sug_o1));
             Coor<Ndo> sug_sizer = reorder_coor(sizer, find_permutation(o_r, sug_or));
 
             // Change the partition of the input tensors so that the local portions to contract
@@ -2880,11 +2878,11 @@ namespace superbblas {
             const auto &p0_ = std::get<0>(p01);
             const auto &p1_ = std::get<1>(p01);
             Components_tmpl<Nd0, T, XPU0, XPU1> v0_ =
-                reorder_tensor(p0, o0, Coor<Nd0>{{}}, dim0, dim0, v0, p0_, sug_dim0, sug_o0, comm,
-                               co, false /* don't force copy */, doCacheAlloc);
+                reorder_tensor(p0, o0, from0, size0, dim0, v0, p0_, sug_size0, sug_o0, comm, co,
+                               false /* don't force copy */, doCacheAlloc);
             Components_tmpl<Nd1, T, XPU0, XPU1> v1_ =
-                reorder_tensor(p1, o1, Coor<Nd1>{{}}, dim1, dim1, v1, p1_, sug_dim1, sug_o1, v0_,
-                               comm, co, false /* don't force copy */, doCacheAlloc);
+                reorder_tensor(p1, o1, from1, size1, dim1, v1, p1_, sug_size1, sug_o1, v0_, comm,
+                               co, false /* don't force copy */, doCacheAlloc);
 
             // Generate the partitioning and the storage for the output tensor
             const auto &pr_ = std::get<2>(p01);
