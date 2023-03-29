@@ -225,8 +225,8 @@ namespace superbblas {
 
             tracker<Cpu> _t("local gesm (Cpu)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
-            _t.cost = (double)n * n * n * 2 / 3 * k +
-                      (double)n * n * m * k * multiplication_cost<T>::value;
+            _t.cost =
+                ((double)n * n * n * 2 / 3 + (double)n * n * m) * k * multiplication_cost<T>::value;
 
             using BLASINT = std::int64_t;
             T *ap = a.data(), *xp = x.data();
@@ -278,8 +278,8 @@ namespace superbblas {
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
-            _t.cost = (double)n * n * n * 2 / 3 * k +
-                      (double)n * n * m * k * multiplication_cost<T>::value;
+            _t.cost =
+                ((double)n * n * n * 2 / 3 + (double)n * n * m) * k * multiplication_cost<T>::value;
 
             vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
             auto xpu_host = a.ctx().toCpuPinned();
@@ -323,6 +323,124 @@ namespace superbblas {
 #    endif
             checkLapack(info_getrs);
             causalConnectTo(a.ctx(), x.ctx());
+        }
+#endif // SUPERBBLAS_USE_GPU
+
+        template <typename T>
+        void local_inversion(std::size_t n, std::size_t k, const vector<T, Cpu> &a) {
+
+            tracker<Cpu> _t("local inv (Cpu)", a.ctx());
+            // Cost approximated as the cost of LU plus multiplying two triangular matrices
+            _t.cost = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
+
+            using BLASINT = std::int64_t;
+            T *ap = a.data();
+
+#ifdef _OPENMP
+            int num_threads = omp_get_max_threads();
+#else
+            int num_threads = 1;
+#endif
+            BLASINT *ipivs = new BLASINT[n * num_threads];
+            std::vector<int> info(num_threads, 0);
+
+            T worksize = 0;
+            checkLapack(xgetri(n, ap, n, ipivs, &worksize, (BLASINT)-1, Cpu{}));
+            BLASINT lwork = std::real(worksize);
+            std::vector<T> work(num_threads * lwork);
+
+#ifdef _OPENMP
+#    pragma omp parallel
+#endif
+            {
+#ifdef _OPENMP
+                int id = omp_get_thread_num();
+#else
+                int id = 0;
+#endif
+                BLASINT *ipiv = ipivs + n * id;
+                T *iwork = work.data() + lwork * id;
+#ifdef _OPENMP
+#    pragma omp for schedule(static)
+#endif
+                for (std::size_t i = 0; i < k; ++i) {
+                    if (info[id] == 0) info[id] = xgetrf(n, n, ap + n * n * i, n, ipiv, Cpu{});
+                    if (info[id] == 0)
+                        info[id] = xgetri(n, ap + n * n * i, n, ipiv, iwork, lwork, Cpu{});
+                }
+            }
+            for (int i : info) checkLapack(i);
+
+            delete[] ipivs;
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+        template <typename T>
+        void local_inversion(std::size_t n, std::size_t k, const vector<T, Gpu> &a) {
+
+            if (n == 0 || k == 0) return;
+            if (deviceId(a.ctx()) == CPU_DEVICE_ID)
+                throw std::runtime_error(
+                    "superbblas::detail::local_gesm: unsupported allocation device");
+
+            tracker<Gpu> _t("local gesm (GPU)", a.ctx());
+            // Cost approximated as the cost of LU plus multiplying two triangular matrices
+            _t.cost = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
+
+            vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
+            auto xpu_host = a.ctx().toCpuPinned();
+#    ifdef SUPERBBLAS_USE_CUDA
+            vector<T, Gpu> x(a.size(), a.ctx(), doCacheAlloc);
+            vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
+            auto a_ps_ptr = a_ps.data();
+            auto x_ps_ptr = x_ps.data();
+            auto a_ptr = a.data();
+            auto x_ptr = x.data();
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i) a_ps_ptr[i] = a_ptr + n * n * i;
+                    for (std::size_t i = 0; i < k; ++i) x_ps_ptr[i] = x_ptr + n * n * i;
+                },
+                xpu_host);
+            vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
+                             x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
+            gpuBlasCheck(cublasXgetrfBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
+                                             ipivs.data(), info.data(), k));
+#    else
+            gpuBlasCheck(hipblasXgetrfStridedBatched(getGpuBlasHandle(a.ctx()), n, a.data(), n,
+                                                     n * n, ipivs.data(), n, info.data(), k));
+#    endif
+            {
+                vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+                auto info_cpu_ptr = info_cpu.data();
+                launchHostKernel(
+                    [=] {
+                        for (std::size_t i = 0; i < k; ++i)
+                            checkLapack(info_cpu_ptr[i], true /* terminate */);
+                    },
+                    xpu_host);
+            }
+#    ifdef SUPERBBLAS_USE_CUDA
+            gpuBlasCheck(cublasXgetriBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
+                                             ipivs.data(), x_ps_gpu.data(), n, info.data(), k));
+#    else
+            gpuBlasCheck(hipblasXgetriStridedBatched(getGpuBlasHandle(a.ctx()), n, a.data(), n,
+                                                     n * n, ipivs.data(), n, x.data(), n, n * n,
+                                                     info.data(), k));
+#    endif
+            {
+                vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+                auto info_cpu_ptr = info_cpu.data();
+                launchHostKernel(
+                    [=] {
+                        for (std::size_t i = 0; i < k; ++i)
+                            checkLapack(info_cpu_ptr[i], true /* terminate */);
+                    },
+                    xpu_host);
+            }
+
+            // Copy the inverted matrix into `a`
+            copy_n(x.data(), x.ctx(), x.size(), a.data(), a.ctx());
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -825,6 +943,58 @@ namespace superbblas {
                 barrier(comm);
             }
         }
+
+        /// Compute the inversion of several matrices
+        /// \param p0: partitioning of the first origin tensor in consecutive ranges
+        /// \param o0: dimension labels for the first operator
+        /// \param v0: data for the first operator
+        /// \param orows: labels on the rows
+        /// \param ocols: labels on the columns
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        void inversion(const Proc_ranges<N> &p, const Coor<N> &dim, const Order<N> &o,
+                       const Components_tmpl<N, T, XPU0, XPU1> &v, const char *orows,
+                       const char *ocols, Comm comm, CoorOrder co) {
+
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : v.first) sync(i.it.ctx());
+                for (const auto &i : v.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+
+            tracker<Cpu> _t("distributed cholesky", Cpu{});
+
+            // Reorder the tensor so can be processed by local_inversion
+            auto t = prepare_for_cholesky(p, dim, o, v, orows, ocols, comm, co);
+            Proc_ranges<N> &pw = std::get<0>(t);
+            const Coor<N> &dimw = std::get<1>(t);
+            Order<N> &ow = std::get<2>(t);
+            Components_tmpl<N, T, XPU0, XPU1> &vw = std::get<3>(t);
+            std::size_t n = std::get<4>(t);
+
+            // Do cholesky on the local pieces
+            for (unsigned int i = 0; i < vw.first.size(); ++i) {
+                const unsigned int componentId = vw.first[i].componentId;
+                std::size_t ki = volume(pw[comm.rank][componentId][1]) / n / n;
+                local_inversion(n, ki, vw.first[i].it);
+            }
+            for (unsigned int i = 0; i < vw.second.size(); ++i) {
+                const unsigned int componentId = vw.second[i].componentId;
+                std::size_t ki = volume(pw[comm.rank][componentId][1]) / n / n;
+                local_inversion(n, ki, vw.second[i].it);
+            }
+
+            // Copy the working tensor into the given tensor
+            copy<N, N, T>(T{1}, pw, {{}}, dimw, dimw, ow, toConst(vw), p, {{}}, dim, o, v, comm,
+                          EWOp::Copy{}, co);
+
+            _t.stop();
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : v.first) sync(i.it.ctx());
+                for (const auto &i : v.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+        }
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -941,6 +1111,32 @@ namespace superbblas {
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
     }
+
+    /// Compute the inversion of several matrices
+    /// \param p: partitioning of the first origin tensor in consecutive ranges
+    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param o: dimension labels for the first operator
+    /// \param v: data for the first operator
+    /// \param orows: labels on the rows
+    /// \param ocols: labels on the columns
+    /// \param ctx: context for each data pointer in v0
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
+
+    template <std::size_t N, typename T>
+    void inversion(const PartitionItem<N> *p, const Coor<N> &dim, int ncomponents, const char *o,
+                   T **v, const char *orows, const char *ocols, const Context *ctx,
+                   MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
+
+        Order<N> o_ = detail::toArray<N>(o, "o");
+
+        detail::MpiComm comm = detail::get_comm(mpicomm);
+
+        detail::inversion<N>(
+            detail::get_from_size(p, ncomponents * comm.nprocs, comm), dim, o_,
+            detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
+            comm, co);
+    }
 #endif // SUPERBBLAS_USE_MPI
 
     /// Compute the Cholesky factorization of several matrices
@@ -1055,6 +1251,32 @@ namespace superbblas {
             detail::get_from_size(py, ncomponentsy * comm.nprocs, comm), dimy, oy_,
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
+    }
+
+    /// Compute the inversion of several matrices
+    /// \param p: partitioning of the first origin tensor in consecutive ranges
+    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param o: dimension labels for the first operator
+    /// \param v: data for the first operator
+    /// \param orows: labels on the rows
+    /// \param ocols: labels on the columns
+    /// \param ctx: context for each data pointer in v0
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
+
+    template <std::size_t N, typename T>
+    void inversion(const PartitionItem<N> *p, const Coor<N> &dim, int ncomponents, const char *o,
+                   T **v, const char *orows, const char *ocols, const Context *ctx, CoorOrder co,
+                   Session session = 0) {
+
+        Order<N> o_ = detail::toArray<N>(o, "o");
+
+        detail::SelfComm comm = detail::get_comm();
+
+        detail::inversion<N>(
+            detail::get_from_size(p, ncomponents * comm.nprocs, comm), dim, o_,
+            detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
+            comm, co);
     }
 }
 

@@ -332,13 +332,14 @@ namespace superbblas {
             return linfo;
         }
 
-        inline int xgetri(BLASINT n, SCALAR *a, BLASINT lda, BLASINT *ipivot, SCALAR *work,
+        inline int xgetri(BLASINT n, SCALAR *a, BLASINT lda, std::int64_t *ipivot, SCALAR *work,
                           BLASINT lwork, Cpu) {
             /* Zero dimension matrix may cause problems */
             if (n == 0) return 0;
 
             BLASINT info = 0;
-            XGETRI(&n, (LAPACK_SCALAR *)a, &lda, ipivot, (LAPACK_SCALAR *)work, &lwork, &info);
+            XGETRI(&n, (LAPACK_SCALAR *)a, &lda, (BLASINT *)ipivot, (LAPACK_SCALAR *)work, &lwork,
+                   &info);
             return info;
         }
 
@@ -517,6 +518,16 @@ namespace superbblas {
                              devIpiv, (CUSPARSE_SCALAR *const *)Barray, ldb, info, batchSize);
         }
 
+        inline cublasStatus_t cublasXgetriBatched(cublasHandle_t handle, int n,
+                                                  const SCALAR *const Aarray[], int lda,
+                                                  const int *devIpiv, SCALAR *const Barray[],
+                                                  int ldb, int *info, int batchSize) {
+            return ARITH(, , cublasSgetriBatched, cublasCgetriBatched, cublasDgetriBatched,
+                         cublasZgetriBatched, , )(handle, n, (const CUSPARSE_SCALAR *const *)Aarray,
+                                                  lda, devIpiv, (CUSPARSE_SCALAR *const *)Barray,
+                                                  ldb, info, batchSize);
+        }
+
         inline cusolverStatus_t cusolverDnXpotrfBatched(cusolverDnHandle_t handle,
                                                         cublasFillMode_t uplo, int n,
                                                         SCALAR **Aarray, int lda, int *infoArray,
@@ -577,6 +588,16 @@ namespace superbblas {
                          hipblasDgetrsStridedBatched, hipblasZgetrsStridedBatched,
                          , )(handle, trans, n, nrhs, (HIPBLAS_SCALAR *)A, lda, strideA, devIpiv,
                              strideDevIpiv, (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
+        }
+
+        inline hipblasStatus_t hipblasXgetriStridedBatched(hipblasHandle_t handle, int n, SCALAR *A,
+                                                           int lda, int strideA, const int *devIpiv,
+                                                           int strideDevIpiv, SCALAR *B, int ldb,
+                                                           int strideB, int *info, int batchSize) {
+            return ARITH(, , hipblasSgetriStridedBatched, hipblasCgetriStridedBatched,
+                         hipblasDgetriStridedBatched, hipblasZgetriStridedBatched,
+                         , )(handle, n, (HIPBLAS_SCALAR *)A, lda, strideA, devIpiv, strideDevIpiv,
+                             (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
         }
 
         inline hipsolverStatus_t hipsolverDnXpotrfBatched(hipsolverDnHandle_t handle,

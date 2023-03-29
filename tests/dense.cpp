@@ -104,19 +104,16 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
-            for (int n = 0; n < dim[N]; ++n) {
-                Q *ptr0 = t0.data();
-                Q *ptrx = tx.data();
-                Q *ptry = ty.data();
-                trsm<Nd + 1, Nd, Nd, Q>(Q{1}, p0.data(), dim0, 1, "xyztscSC", (const Q **)&ptr0,
-                                        "sc", "SC", &ctx, px.data(), dimx, 1, "xyztscn",
-                                        (const Q **)&ptrx, &ctx, px.data(), dimx, 1, "xyztSCn",
-                                        (Q **)&ptry, &ctx,
+            Q *ptr0 = t0.data();
+            Q *ptrx = tx.data();
+            Q *ptry = ty.data();
+            trsm<Nd + 1, Nd, Nd, Q>(Q{1}, p0.data(), dim0, 1, "xyztscSC", (const Q **)&ptr0, "sc",
+                                    "SC", &ctx, px.data(), dimx, 1, "xyztscn", (const Q **)&ptrx,
+                                    &ctx, px.data(), dimx, 1, "xyztSCn", (Q **)&ptry, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                        MPI_COMM_WORLD,
+                                    MPI_COMM_WORLD,
 #endif
-                                        SlowToFast);
-            }
+                                    SlowToFast);
         }
         sync(xpu);
         t = w_time() - t;
@@ -152,19 +149,17 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
-            for (int n = 0; n < dim[N]; ++n) {
-                Q *ptr0 = t0.data();
-                Q *ptrx = tx.data();
-                Q *ptry = ty.data();
-                trsm<5, Nd + 1, Nd + 1, Q>(Q{1}, p0k.data(), dim0k, 1, "kscSC", (const Q **)&ptr0,
-                                           "sc", "SC", &ctx, pxk.data(), dimxk, 1, "kxyztscn",
-                                           (const Q **)&ptrx, &ctx, pxk.data(), dimxk, 1,
-                                           "kxyztSCn", (Q **)&ptry, &ctx,
+            Q *ptr0 = t0.data();
+            Q *ptrx = tx.data();
+            Q *ptry = ty.data();
+            trsm<5, Nd + 1, Nd + 1, Q>(Q{1}, p0k.data(), dim0k, 1, "kscSC", (const Q **)&ptr0, "sc",
+                                       "SC", &ctx, pxk.data(), dimxk, 1, "kxyztscn",
+                                       (const Q **)&ptrx, &ctx, pxk.data(), dimxk, 1, "kxyztSCn",
+                                       (Q **)&ptry, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                           MPI_COMM_WORLD,
+                                       MPI_COMM_WORLD,
 #endif
-                                           SlowToFast);
-            }
+                                       SlowToFast);
         }
         sync(xpu);
         t = w_time() - t;
@@ -183,23 +178,43 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
     try {
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
-            for (int n = 0; n < dim[N]; ++n) {
-                Q *ptr0 = t0.data();
-                Q *ptrx = tx.data();
-                Q *ptry = ty.data();
-                gesm<Nd + 1, Nd, Nd, Q>(Q{1}, p0.data(), dim0, 1, "xyztscSC", (const Q **)&ptr0,
-                                        "sc", "SC", &ctx, px.data(), dimx, 1, "xyztSCn",
-                                        (const Q **)&ptrx, &ctx, px.data(), dimx, 1, "xyztscn",
-                                        (Q **)&ptry, &ctx,
+            Q *ptr0 = t0.data();
+            Q *ptrx = tx.data();
+            Q *ptry = ty.data();
+            gesm<Nd + 1, Nd, Nd, Q>(Q{1}, p0.data(), dim0, 1, "xyztscSC", (const Q **)&ptr0, "sc",
+                                    "SC", &ctx, px.data(), dimx, 1, "xyztSCn", (const Q **)&ptrx,
+                                    &ctx, px.data(), dimx, 1, "xyztscn", (Q **)&ptry, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
-                                        MPI_COMM_WORLD,
+                                    MPI_COMM_WORLD,
 #endif
-                                        SlowToFast);
-            }
+                                    SlowToFast);
         }
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in gesm " << t / nrep << std::endl;
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
+
+    tx = ones<Q>(t0.size(), xpu);
+    ty = vector<Q, XPU>(0, xpu); // release memory
+
+    resetTimings();
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            copy_n(t0.data(), t0.ctx(), t0.size(), tx.data(), tx.ctx());
+            Q *ptrx = tx.data();
+            inversion<Nd + 1, Q>(p0.data(), dim0, 1, "xyztscSC", (Q **)&ptrx, "sc", "SC", &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                                 MPI_COMM_WORLD,
+#endif
+                                 SlowToFast);
+        }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in inversion " << t / nrep << std::endl;
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     if (rank == 0) reportTimings(std::cout);
