@@ -829,36 +829,6 @@ namespace superbblas {
         }
     }
 
-    /// Allocate memory on a device
-    /// \param n: number of element of type `T` to allocate
-    /// \param ctx: context
-
-    template <typename T> T *allocate(std::size_t n, Context ctx) {
-        switch (ctx.plat) {
-        case CPU: return detail::allocate<T>(n, ctx.toCpu(0));
-#ifdef SUPERBBLAS_USE_GPU
-        case CUDA: // Do the same as with HIP
-        case HIP: return detail::allocate<T>(n, ctx.toGpu(0));
-#endif
-        default: throw std::runtime_error("Unsupported platform");
-        }
-    }
-
-    /// Deallocate memory on a device
-    /// \param ptr: pointer to the memory to deallocate
-    /// \param ctx: context
-
-    template <typename T> void deallocate(T *ptr, Context ctx) {
-        switch (ctx.plat) {
-        case CPU: detail::deallocate(ptr, ctx.toCpu(0)); break;
-#ifdef SUPERBBLAS_USE_GPU
-        case CUDA: // Do the same as with HIP
-        case HIP: detail::deallocate(ptr, ctx.toGpu(0)); break;
-#endif
-        default: throw std::runtime_error("Unsupported platform");
-        }
-    }
-
     /// Force a synchronization on the device for superbblas stream
     /// \param ctx: context
 

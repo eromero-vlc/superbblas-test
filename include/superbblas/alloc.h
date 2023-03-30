@@ -361,6 +361,51 @@ namespace superbblas {
             return {ptr_aligned, return_buffer};
         }
     }
+
+    /// Allocate memory
+    /// \param n: number of element of type `T` to allocate
+    /// \param ctx: context
+
+    template <typename T> T *allocate(std::size_t n, Context ctx) {
+        switch (ctx.plat) {
+        case CPU: return detail::allocate<T>(n, ctx.toCpu(0));
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with HIP
+        case HIP: return detail::allocate<T>(n, ctx.toGpu(0));
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+    }
+
+    /// Deallocate memory
+    /// \param ptr: pointer to the memory to deallocate
+    /// \param ctx: context
+
+    template <typename T> void deallocate(T *ptr, Context ctx) {
+        switch (ctx.plat) {
+        case CPU: detail::deallocate(ptr, ctx.toCpu(0)); break;
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with HIP
+        case HIP: detail::deallocate(ptr, ctx.toGpu(0)); break;
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+    }
+
+    /// Allocate memory fast from the cache
+    /// \param n: number of element of type `T` to allocate
+    /// \param ctx: context
+
+    template <typename T> std::shared_ptr<char> allocate_from_cache(std::size_t n, Context ctx) {
+        switch (ctx.plat) {
+        case CPU: return detail::allocateBufferResouce<T>(n, ctx.toCpu(0)).second;
+#ifdef SUPERBBLAS_USE_GPU
+        case CUDA: // Do the same as with HIP
+        case HIP: return detail::allocateBufferResouce<T>(n, ctx.toGpu(0)).second;
+#endif
+        default: throw std::runtime_error("Unsupported platform");
+        }
+    }
 }
 
 #endif // __SUPERBBLAS_ALLOC__
