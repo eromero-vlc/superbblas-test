@@ -1387,8 +1387,6 @@ namespace superbblas {
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
-            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()), vr.ctx());
-
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))
                 throw std::runtime_error("all arrays should be on the same device");
@@ -1409,6 +1407,8 @@ namespace superbblas {
                     v1, beta, reverse(o_r), reverse(dimr), vr, SlowToFast);
                 return;
             }
+
+            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()), vr.ctx());
 
             // If o0, o1, and o_r aren't appropriate, permute the input operands and the output
             unsigned int nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1,
