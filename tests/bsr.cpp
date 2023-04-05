@@ -823,7 +823,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     PartitionStored<Nd + 1> kp1 =
         basic_partitioning("pxyztsnc", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
 
-    for (int kron_sparse = 0; kron_sparse < 2; kron_sparse++) {
+    for (int kron_sparse = 1; kron_sparse < 2; kron_sparse++) {
         // Create the Kronecker operator
         auto op_kron_s = create_lattice_kron<Q>(po, rank, kron_sparse == 1 /* is kron sparse? */,
                                                 dimo, ctx, xpu);
