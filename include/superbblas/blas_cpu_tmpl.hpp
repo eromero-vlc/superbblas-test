@@ -590,14 +590,13 @@ namespace superbblas {
                              strideDevIpiv, (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
         }
 
-        inline hipblasStatus_t hipblasXgetriStridedBatched(hipblasHandle_t handle, int n, SCALAR *A,
-                                                           int lda, int strideA, const int *devIpiv,
-                                                           int strideDevIpiv, SCALAR *B, int ldb,
-                                                           int strideB, int *info, int batchSize) {
-            return ARITH(, , hipblasSgetriStridedBatched, hipblasCgetriStridedBatched,
-                         hipblasDgetriStridedBatched, hipblasZgetriStridedBatched,
-                         , )(handle, n, (HIPBLAS_SCALAR *)A, lda, strideA, devIpiv, strideDevIpiv,
-                             (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
+        inline hipblasStatus_t hipblasXgetriBatched(hipblasHandle_t handle, int n, SCALAR **A,
+                                                    int lda, int *devIpiv, SCALAR **B, int ldb,
+                                                    int *info, int batchSize) {
+            return ARITH(, , hipblasSgetriBatched, hipblasCgetriBatched, hipblasDgetriBatched,
+                         hipblasZgetriBatched, , )(handle, n, (HIPBLAS_SCALAR *const *)A, lda,
+                                                   devIpiv, (HIPBLAS_SCALAR *const *)B, ldb, info,
+                                                   batchSize);
         }
 
         inline hipsolverStatus_t hipsolverDnXpotrfBatched(hipsolverDnHandle_t handle,

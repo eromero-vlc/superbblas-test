@@ -208,8 +208,9 @@ namespace superbblas {
                 {
                     ::operator delete(ptr);
                 }
+            }
 #ifdef SUPERBBLAS_USE_GPU
-            } else if (deviceId(xpu) == CPU_DEVICE_ID) {
+            else if (deviceId(xpu) == CPU_DEVICE_ID) {
                 sync(getAllocStream(xpu));
                 gpuCheck(SUPERBBLAS_GPU_SELECT(xxx, cudaFreeHost, hipHostFree)((void *)ptr));
             } else {
@@ -228,15 +229,14 @@ namespace superbblas {
                 if (!external_use) {
                     gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
                 } else
-#        else
+#        endif
                 {
                     sync(getAllocStream(xpu));
                     gpuCheck(hipFree((void *)ptr));
                 }
-#        endif
 #    endif
-#endif // SUPERBBLAS_USE_GPU
             }
+#endif // SUPERBBLAS_USE_GPU
         }
 
         /// Return a memory allocation with at least n elements of type T

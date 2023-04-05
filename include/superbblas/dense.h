@@ -389,7 +389,6 @@ namespace superbblas {
 
             vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
             auto xpu_host = a.ctx().toCpuPinned();
-#    ifdef SUPERBBLAS_USE_CUDA
             vector<T, Gpu> x(a.size(), a.ctx(), doCacheAlloc);
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
             auto a_ps_ptr = a_ps.data();
@@ -404,6 +403,7 @@ namespace superbblas {
                 xpu_host);
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
                              x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
+#    ifdef SUPERBBLAS_USE_CUDA
             gpuBlasCheck(cublasXgetrfBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
                                              ipivs.data(), info.data(), k));
 #    else
@@ -424,9 +424,8 @@ namespace superbblas {
             gpuBlasCheck(cublasXgetriBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
                                              ipivs.data(), x_ps_gpu.data(), n, info.data(), k));
 #    else
-            gpuBlasCheck(hipblasXgetriStridedBatched(getGpuBlasHandle(a.ctx()), n, a.data(), n,
-                                                     n * n, ipivs.data(), n, x.data(), n, n * n,
-                                                     info.data(), k));
+            gpuBlasCheck(hipblasXgetriBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
+                                              ipivs.data(), x_ps_gpu.data(), n, info.data(), k));
 #    endif
             {
                 vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);

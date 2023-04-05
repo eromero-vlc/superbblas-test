@@ -44,9 +44,15 @@
 
 #ifdef SUPERBBLAS_USE_HIP
 #    include <hip/hip_runtime_api.h>
-#    include <hipblas/hipblas.h>
-#    include <hipsolver/hipsolver.h>
-#    include <hipsparse/hipsparse.h>
+#    if HIP_VERSION_MAJOR > 5 || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 4)
+#        include <hipblas/hipblas.h>
+#        include <hipsolver/hipsolver.h>
+#        include <hipsparse/hipsparse.h>
+#    else
+#        include <hipblas.h>
+#        include <hipsolver.h>
+#        include <hipsparse.h>
+#    endif
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
