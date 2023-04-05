@@ -511,15 +511,15 @@ namespace superbblas {
                         implementation_ = "cusparse_csr";
                         gpuSparseCheck(cusparseCreateCsr(
                             &*descrA_other, num_rows / ki,
-                            num_cols / kd * (is_kron ? num_nnz_per_row : 1), bsr.nnz, ii.data(),
-                            jj.data(), v.it.data(), CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                            CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                            num_cols / kd * (is_kron ? kron_disp_rev.size() : 1), bsr.nnz,
+                            ii.data(), jj.data(), v.it.data(), CUSPARSE_INDEX_32I,
+                            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     } else {
                         implementation_ = "cusparse_ell";
                         gpuSparseCheck(cusparseCreateBlockedEll(
                             &*descrA_other, num_rows / ki,
-                            num_cols / kd * (is_kron ? num_nnz_per_row : 1), block_size,
-                            block_size * num_nnz_per_row, jj.data(), v.it.data(),
+                            num_cols / kd * (is_kron ? kron_disp_rev.size() : 1), block_size,
+                            block_size * kron_disp_rev.size(), jj.data(), v.it.data(),
                             CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     }
                 }
@@ -580,14 +580,15 @@ namespace superbblas {
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                           : CUSPARSE_OPERATION_TRANSPOSE,
-                        block_rows, ncols, block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks,
-                        alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size, x, ldx,
-                        beta, y, ldy));
+                        block_rows, ncols, block_cols * (is_kron ? kron_disp_rev.size() : 1),
+                        num_blocks, alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(),
+                        block_size, x, ldx, beta, y, ldy));
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
                     gpuSparseCheck(cusparseCreateDnMat(
-                        &matx, !conjA ? num_cols / kd * (is_kron ? num_nnz_per_row : 1) : num_rows,
+                        &matx,
+                        !conjA ? num_cols / kd * (is_kron ? kron_disp_rev.size() : 1) : num_rows,
                         ncols, ldx, (void *)x, cudaType,
                         lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     gpuSparseCheck(cusparseCreateDnMat(
@@ -619,9 +620,9 @@ namespace superbblas {
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                     lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                                       : HIPSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks,
-                    alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size, x, ldx, beta,
-                    y, ldy));
+                    block_rows, ncols, block_cols * (is_kron ? kron_disp_rev.size() : 1),
+                    num_blocks, alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size,
+                    x, ldx, beta, y, ldy));
 #    endif
             }
 
