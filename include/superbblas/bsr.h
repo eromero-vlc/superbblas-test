@@ -404,7 +404,11 @@ namespace superbblas {
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
 #    endif
-            unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
+            unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
+            vector<T, Cpu> kron_cpu;        ///< Host version of v.kron
+            double kron_nnz_density;        ///< kron_cpu nonzero density
+            std::vector<int> kron_disp;     ///< unique index for kron
+            std::vector<int> kron_disp_rev; ///< kron_disp index for each unique kron matrix
 
             SpMMAllowedLayout allowLayout;
             MatrixLayout preferredLayout;
@@ -420,7 +424,44 @@ namespace superbblas {
                 if (volume(v.blocki) != volume(v.blockd))
                     throw std::runtime_error("cuSPARSE does not support non-square blocks");
                 bool is_kron = v.kron_it.size() > 0;
-                auto bsr = !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true);
+
+                // Analyze the density of kron
+                if (is_kron) {
+                    kron_cpu = makeSure(v.kron_it, Cpu{});
+                    std::size_t ki = volume(v.kroni);
+                    std::size_t kd = volume(v.krond);
+                    std::size_t num_nnz_per_row = kron_cpu.size() / ki / kd;
+                    std::size_t nnz = 0;
+                    for (std::size_t i = 0; i < kron_cpu.size(); ++i)
+                        if (std::norm(kron_cpu[i]) > 0) nnz++;
+                    kron_nnz_density = (double)nnz / kron_cpu.size();
+
+                    kron_disp = std::vector<int>(num_nnz_per_row, 0);
+                    for (std::size_t i = 0; i < num_nnz_per_row; i++) {
+                        kron_disp[i] = kron_disp_rev.size();
+                        kron_disp_rev.push_back(i);
+                        for (std::size_t j = 0; j < i; j++) {
+                            bool same = true;
+                            for (std::size_t k = 0; k < ki * kd; k++) {
+                                if (kron_cpu[i * ki * kd + k] != kron_cpu[j * ki * kd + k]) {
+                                    same = false;
+                                    break;
+                                }
+                            }
+                            if (same) {
+                                kron_disp[i] = kron_disp[j];
+                                kron_disp_rev.pop_back();
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    kron_nnz_density = 0;
+                }
+
+                // Get the nonzero pattern
+                auto bsr =
+                    !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true, kron_disp);
                 ii = bsr.i;
                 jj = bsr.j;
                 num_nnz_per_row = bsr.num_nnz_per_row;
@@ -470,15 +511,15 @@ namespace superbblas {
                         implementation_ = "cusparse_csr";
                         gpuSparseCheck(cusparseCreateCsr(
                             &*descrA_other, num_rows / ki,
-                            num_cols / kd * (is_kron ? num_nnz_per_row : 1), bsr.nnz, ii.data(),
-                            jj.data(), v.it.data(), CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                            CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
+                            num_cols / kd * (is_kron ? kron_disp_rev.size() : 1), bsr.nnz,
+                            ii.data(), jj.data(), v.it.data(), CUSPARSE_INDEX_32I,
+                            CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     } else {
                         implementation_ = "cusparse_ell";
                         gpuSparseCheck(cusparseCreateBlockedEll(
                             &*descrA_other, num_rows / ki,
-                            num_cols / kd * (is_kron ? num_nnz_per_row : 1), block_size,
-                            block_size * num_nnz_per_row, jj.data(), v.it.data(),
+                            num_cols / kd * (is_kron ? kron_disp_rev.size() : 1), block_size,
+                            block_size * kron_disp_rev.size(), jj.data(), v.it.data(),
                             CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, toCudaDataType<T>()));
                     }
                 }
@@ -495,9 +536,9 @@ namespace superbblas {
                                                                       hipsparseDestroyMatDescr(*p);
                                                                       delete p;
                                                                   });
-                hipsparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
-                hipsparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
-                hipsparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                gpuSparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
+                gpuSparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
+                gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
 #    endif
             }
 
@@ -529,6 +570,7 @@ namespace superbblas {
                 IndexType num_blocks = jj.size();
                 bool is_kron = v.kron_it.size() > 0;
 
+                auto gpuSparseHandle = getGpuSparseHandle(ii.ctx());
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (spFormat == FORMAT_BSR) {
                     gpuSparseCheck(cusparseXbsrmm(
@@ -538,15 +580,15 @@ namespace superbblas {
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         lx == ColumnMajor ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                           : CUSPARSE_OPERATION_TRANSPOSE,
-                        block_rows, ncols, block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks,
-                        alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size, x, ldx,
-                        beta, y, ldy));
+                        block_rows, ncols, block_cols * (is_kron ? kron_disp_rev.size() : 1),
+                        num_blocks, alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(),
+                        block_size, x, ldx, beta, y, ldy));
                 } else {
                     cusparseDnMatDescr_t matx, maty;
                     cudaDataType cudaType = toCudaDataType<T>();
-                    auto cusparseHandle = getGpuSparseHandle(ii.ctx());
                     gpuSparseCheck(cusparseCreateDnMat(
-                        &matx, !conjA ? num_cols / kd * (is_kron ? num_nnz_per_row : 1) : num_rows,
+                        &matx,
+                        !conjA ? num_cols / kd * (is_kron ? kron_disp_rev.size() : 1) : num_rows,
                         ncols, ldx, (void *)x, cudaType,
                         lx == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     gpuSparseCheck(cusparseCreateDnMat(
@@ -554,14 +596,14 @@ namespace superbblas {
                         ly == ColumnMajor ? CUSPARSE_ORDER_COL : CUSPARSE_ORDER_ROW));
                     std::size_t bufferSize;
                     gpuSparseCheck(cusparseSpMM_bufferSize(
-                        cusparseHandle,
+                        gpuSparseHandle,
                         !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                         CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, *descrA_other, matx, &beta, maty,
                         cudaType, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize));
                     vector<T, Gpu> buffer((bufferSize + sizeof(T) - 1) / sizeof(T), ii.ctx(),
                                           doCacheAlloc);
-                    gpuSparseCheck(cusparseSpMM(cusparseHandle,
+                    gpuSparseCheck(cusparseSpMM(gpuSparseHandle,
                                                 !conjA ? CUSPARSE_OPERATION_NON_TRANSPOSE
                                                        : CUSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                                                 CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
@@ -571,17 +613,87 @@ namespace superbblas {
                     gpuSparseCheck(cusparseDestroyDnMat(maty));
                 }
 #    else
-                hipsparseCheck(hipsparseXbsrmm(
-                    ii.ctx().hipsparseHandle,
+                gpuSparseCheck(hipsparseXbsrmm(
+                    gpuSparseHandle,
                     v.blockImFast ? HIPSPARSE_DIRECTION_COLUMN : HIPSPARSE_DIRECTION_ROW,
                     !conjA ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                            : HIPSPARSE_OPERATION_CONJUGATE_TRANSPOSE,
                     lx == ColumnMajor ? HIPSPARSE_OPERATION_NON_TRANSPOSE
                                       : HIPSPARSE_OPERATION_TRANSPOSE,
-                    block_rows, ncols, block_cols * (is_kron ? num_nnz_per_row : 1), num_blocks,
-                    alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size, x, ldx, beta,
-                    y, ldy));
+                    block_rows, ncols, block_cols * (is_kron ? kron_disp_rev.size() : 1),
+                    num_blocks, alpha, *descrA_bsr, v.it.data(), ii.data(), jj.data(), block_size,
+                    x, ldx, beta, y, ldy));
 #    endif
+            }
+
+            // Contract the Kronecker part: for each direction mu do:
+            //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+
+            void contract_kron_cols(T alpha, const vector<const T, Gpu> &x, int col0, int dcols,
+                                    int ncols, vector<T, Gpu> &y) const {
+                IndexType num_cols = volume(v.dimd);
+                IndexType block_size = volume(v.blocki);
+                IndexType ki = volume(v.kroni);
+                IndexType kd = volume(v.krond);
+                IndexType block_cols = num_cols / block_size / kd;
+                const bool tb = !v.blockImFast;
+
+                zero_n(y.data(), y.size(), y.ctx());
+                // If the density of the Kronecker factors is low, treat them as sparse;
+                // otherwise, perform the contraction with batched gemm
+                if (kron_nnz_density < .3) {
+                    for (int mu = 0; mu < (int)kron_disp_rev.size(); ++mu) {
+                        for (int i = 0; i < ki; ++i) {
+                            bool column_i_is_zero = true;
+                            for (int j = 0; j < kd; ++j) {
+                                T alpha_kron_ijmu = kron_cpu[(!tb ? i + j * ki : j + i * kd) +
+                                                             kron_disp_rev[mu] * ki * kd] *
+                                                    alpha;
+                                if (std::norm(alpha_kron_ijmu) == 0) continue;
+                                if (column_i_is_zero) {
+                                    local_copy<IndexType>(
+                                        alpha_kron_ijmu, Order<3>{'r', 'c', 'd'},
+                                        Coor<3>{0, col0, j},
+                                        Coor<3>{block_size * block_cols, dcols, 1},
+                                        Coor<3>{block_size * block_cols, ncols, kd}, x, Mask<Gpu>{},
+                                        Order<4>{'r', 'm', 'c', 'i'}, Coor<4>{0, mu, 0, i},
+                                        Coor<4>{block_size * block_cols, (int)kron_disp_rev.size(),
+                                                dcols, ki},
+                                        y, Mask<Gpu>{}, EWOp::Copy{}, FastToSlow);
+                                } else {
+                                    local_copy<IndexType>(
+                                        alpha_kron_ijmu, Order<3>{'r', 'c', 'd'},
+                                        Coor<3>{0, col0, j},
+                                        Coor<3>{block_size * block_cols, dcols, 1},
+                                        Coor<3>{block_size * block_cols, ncols, kd}, x, Mask<Gpu>{},
+                                        Order<4>{'r', 'm', 'c', 'i'}, Coor<4>{0, mu, 0, i},
+                                        Coor<4>{block_size * block_cols, (int)kron_disp_rev.size(),
+                                                dcols, ki},
+                                        y, Mask<Gpu>{}, EWOp::Add{}, FastToSlow);
+                                }
+                                column_i_is_zero = false;
+                            }
+                        }
+                    }
+                } else {
+                    auto kron_it_ptr = v.kron_it.data();
+                    auto x_ptr = x.data();
+                    auto y_ptr = y.data();
+                    unsigned int kron_disp_rev_size = kron_disp_rev.size();
+                    auto kron_disp_rev_ptr = kron_disp_rev.data();
+                    xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
+                                   block_size * block_cols * ncols, !tb ? ki : kd, T{0},
+                                   block_size * block_cols * kron_disp_rev.size() * dcols,
+                                   num_nnz_per_row * dcols, x.ctx(),
+                                   [=](int i, T **ai, T **bi, T **ci) {
+                                       unsigned int mu = i % kron_disp_rev_size;
+                                       unsigned int col = i / kron_disp_rev_size;
+                                       *ai = (T *)x_ptr + (col + col0) * block_size * block_cols;
+                                       *bi = kron_it_ptr + ki * kd * kron_disp_rev_ptr[mu];
+                                       *ci = y_ptr + block_size * block_cols * mu +
+                                             block_size * block_cols * kron_disp_rev_size * col;
+                                   });
+                }
             }
 
         public:
@@ -599,7 +711,6 @@ namespace superbblas {
 
                 IndexType num_cols = volume(v.dimd);
                 IndexType num_rows = volume(v.dimi);
-                xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
                 if (num_cols == 0 || num_rows == 0 || ncols == 0) return;
 
                 if (deviceId(vx.ctx()) == CPU_DEVICE_ID || deviceId(vy.ctx()) == CPU_DEVICE_ID)
@@ -607,8 +718,7 @@ namespace superbblas {
                                              "cpu input/output tensors");
 
                 if (!is_kron) {
-                    matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols,
-                           std::norm(beta) == 0 ? T{0} : T{1});
+                    matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols, beta);
                     causalConnectTo(ii.ctx(), vy.ctx());
                     return;
                 }
@@ -620,70 +730,150 @@ namespace superbblas {
                 IndexType block_size = volume(v.blocki);
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
-                IndexType block_cols = num_cols / block_size / ki;
+                IndexType block_cols = num_cols / block_size / kd;
+                IndexType block_rows = num_rows / block_size / ki;
 
+                assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
+                assert(vy.size() == (std::size_t)(block_size * block_rows * ncols * ki));
+                assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
                 if (ly == RowMajor && lx == RowMajor) {
-                    // Contract the Kronecker part: for each direction mu do:
-                    //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
-                    vector<T, Gpu> aux(ki * ncols * block_size * block_cols * num_nnz_per_row,
-                                       v.it.ctx(), doCacheAlloc);
-                    zero_n(aux.data(), aux.size(), aux.ctx());
-                    const bool tb = !v.blockImFast;
-                    xgemm_batch_strided(
-                        !tb ? 'N' : 'T', 'N', ki, ncols * block_size * block_cols, kd, alpha,
-                        v.kron_it.data(), !tb ? ki : kd, ki * kd, x, kd, 0, T{0}, aux.data(), ki,
-                        ki * ncols * block_size * block_cols, num_nnz_per_row, aux.ctx());
+                    assert(ldy == ki * ncols);
 
-                    // Contract the block part:
-                    // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
-                    matvec(1.0, false, aux.data(), ki * ncols, RowMajor, y, ldy, ly, ncols * ki,
-                           std::norm(beta) == 0 ? T{0} : T{1});
-                } else if (ly == ColumnMajor && lx == ColumnMajor) {
-                    // Contract the Kronecker part: for each direction mu do:
-                    //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
-                    assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
-                    assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
-                    vector<T, Gpu> aux(block_size * block_cols * num_nnz_per_row * ncols * ki,
-                                       ii.ctx(), doCacheAlloc);
-                    zero_n(aux.data(), aux.size(), aux.ctx());
-                    const bool tb = !v.blockImFast;
-                    auto xpu_host = ii.ctx().toCpuPinned();
-                    vector<T *, Gpu> a_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    vector<T *, Gpu> b_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    vector<T *, Gpu> c_cpu(num_nnz_per_row * ncols, xpu_host, doCacheAlloc);
-                    auto kron_it_ptr = v.kron_it.data();
-                    auto aux_ptr = aux.data();
-                    auto a_cpu_ptr = a_cpu.data();
-                    auto b_cpu_ptr = b_cpu.data();
-                    auto c_cpu_ptr = c_cpu.data();
-                    unsigned int this_num_nnz_per_row = num_nnz_per_row;
-                    launchHostKernel(
-                        [=] {
-                            for (unsigned int ij = 0;
-                                 ij < this_num_nnz_per_row * (unsigned int)ncols; ++ij) {
-                                unsigned int mu = ij % this_num_nnz_per_row;
-                                unsigned int col = ij / this_num_nnz_per_row;
-                                a_cpu_ptr[ij] = (T *)x + col * block_size * block_cols;
-                                b_cpu_ptr[ij] = kron_it_ptr + ki * kd * mu;
-                                c_cpu_ptr[ij] =
-                                    aux_ptr + block_size * block_cols * mu +
-                                    block_size * block_cols * this_num_nnz_per_row * col;
+                    // Limit the amount of auxiliary memory used to 50% maximum cache size
+                    std::size_t vector_size =
+                        sizeof(T) * ki * block_size * block_cols * num_nnz_per_row +
+                        (sizeof(T) + sizeof(IndexType)) * kd * block_size * block_cols +
+                        (sizeof(T) + sizeof(IndexType)) * ki * block_size * block_rows;
+                    IndexType max_ncols = (int)std::min(
+                        std::max((size_t)getMaxGpuCacheSize() / 2u / vector_size, (std::size_t)1),
+                        (std::size_t)ncols);
+
+                    // Pre-apply the beta if the computation is going to break in chunks
+                    if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
+                        xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+
+                    // Process up to `max_ncols` at a time
+                    for (IndexType i0 = 0, ncols0 = std::min(ncols, max_ncols); i0 < ncols;
+                         i0 += ncols0, ncols0 = std::min(ncols - i0, max_ncols)) {
+                        // Copy the columns [i0,i0+ncols0-1] columns of x into a continuous allocation
+                        const T *x0 = x;
+                        vector<T, Gpu> auxx;
+                        if (ncols0 != ncols) {
+                            auxx =
+                                vector<T, Gpu>((std::size_t)kd * ncols0 * block_size * block_cols,
+                                               v.it.ctx(), doCacheAlloc);
+                            x0 = auxx.data();
+                            Coor<3> dimx{kd, ncols, block_size * block_cols};
+                            Coor<3> dimx0{kd, ncols0, block_size * block_cols};
+                            local_copy<IndexType>(
+                                T{1}, trivial_order<3>(), Coor<3>{0, i0, 0}, dimx0, dimx,
+                                (vector<const T, Gpu>)vx, Mask<Gpu>{}, trivial_order<3>(),
+                                Coor<3>{{}}, dimx0, auxx, Mask<Gpu>{}, EWOp::Copy{}, FastToSlow);
+                        }
+
+                        // Contract the Kronecker part: for each direction mu do:
+                        //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
+                        vector<T, Gpu> aux(ki * ncols0 * block_size * block_cols * num_nnz_per_row,
+                                           v.it.ctx(), doCacheAlloc);
+                        zero_n(aux.data(), aux.size(), aux.ctx());
+                        const bool tb = !v.blockImFast;
+                        xgemm_batch_strided(
+                            !tb ? 'N' : 'T', 'N', ki, ncols0 * block_size * block_cols, kd, alpha,
+                            v.kron_it.data(), !tb ? ki : kd, ki * kd, x0, kd, 0, T{0}, aux.data(),
+                            ki, ki * ncols0 * block_size * block_cols, num_nnz_per_row, aux.ctx());
+
+                        // Contract the block part:
+                        // \sum_i (bi,bd)[i,col,mu] x (ki,ncols,bd,rows,mu)[rows=col,mu] -> (ki,ncols,bi,rows)
+                        T *y0 = y;
+                        IndexType ldy0 = ldy;
+                        vector<T, Gpu> auxy;
+                        if (ncols0 != ncols) {
+                            auxy = vector<T, Gpu>(ki * ncols0 * block_size * block_rows, aux.ctx(),
+                                                  doCacheAlloc);
+                            zero_n(auxy.data(), auxy.size(), auxy.ctx());
+                            y0 = auxy.data();
+                            ldy0 = ki * ncols0;
+                        }
+                        matvec(1.0, false, aux.data(), ki * ncols0, RowMajor, y0, ldy0, ly,
+                               ncols0 * ki,
+                               (std::norm(beta) == 0 || ncols0 != ncols) ? T{0} : T{1});
+                        if (ncols0 != ncols) {
+                            Coor<3> dimy0{ki, ncols0, block_size * block_rows};
+                            Coor<3> dimy{ki, ncols, block_size * block_rows};
+                            if (std::norm(beta) == 0) {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Copy{}, FastToSlow);
+                            } else {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Add{}, FastToSlow);
                             }
-                        },
-                        xpu_host);
-                    auto a_xpu = makeSure(a_cpu, aux.ctx(), doCacheAlloc);
-                    auto b_xpu = makeSure(b_cpu, aux.ctx(), doCacheAlloc);
-                    auto c_xpu = makeSure(c_cpu, aux.ctx(), doCacheAlloc);
-                    xgemm_batch<T>('N', !tb ? 'T' : 'N', block_size * block_cols, ki, kd, alpha,
-                                   (const T **)a_xpu.data(), block_size * block_cols * ncols,
-                                   (const T **)b_xpu.data(), !tb ? ki : kd, T{0}, c_xpu.data(),
-                                   block_size * block_cols * num_nnz_per_row * ncols, a_xpu.size(),
-                                   aux.ctx());
+                        }
+                    }
+                } else if (ly == ColumnMajor && lx == ColumnMajor) {
+                    assert(ldy == block_size * block_rows);
 
-                    // Contract the block part:
-                    // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
-                    matvec(1.0, false, aux.data(), block_size * block_cols * num_nnz_per_row,
-                           ColumnMajor, y, ldy, ly, ncols * ki, std::norm(beta) == 0 ? T{0} : T{1});
+                    // Limit the amount of auxiliary memory used to 50% maximum cache size
+                    std::size_t vector_size =
+                        sizeof(T) * block_size * block_cols * kron_disp_rev.size() * ki +
+                        (sizeof(T) + sizeof(IndexType)) * block_size * block_rows * ki;
+                    IndexType max_ncols =
+                        std::min(std::max(getMaxGpuCacheSize() / 2u / vector_size, (std::size_t)1),
+                                 (std::size_t)ncols);
+
+                    // Pre-apply the beta if the computation is going to break in chunks
+                    if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
+                        xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+
+                    // Process up to `max_ncols` at a time
+                    for (IndexType i0 = 0, ncols0 = std::min(ncols, max_ncols); i0 < ncols;
+                         i0 += ncols0, ncols0 = std::min(ncols - i0, max_ncols)) {
+                        // Contract the Kronecker part: for each direction mu do:
+                        //  (bd,rows,ncols,kd) x (ki,kd)[mu] -> (bd,rows,mu,ncols,ki)
+                        vector<T, Gpu> aux(block_size * block_cols * kron_disp_rev.size() * ncols0 *
+                                               ki,
+                                           ii.ctx(), doCacheAlloc);
+                        contract_kron_cols(alpha, vx, i0, ncols0, ncols, aux);
+
+                        // Contract the block part:
+                        // \sum_i (bi,bd)[i,col,mu] x (bd,rows,mu,ncols,ki)[rows=col,mu] -> (bi,rows,ncols,ki)
+                        T *y0 = y;
+                        IndexType ldy0 = ldy;
+                        vector<T, Gpu> auxy;
+                        if (ncols0 != ncols) {
+                            auxy = vector<T, Gpu>(block_size * block_rows * ncols0 * ki, aux.ctx(),
+                                                  doCacheAlloc);
+                            y0 = auxy.data();
+                            zero_n(auxy.data(), auxy.size(), auxy.ctx());
+                            ldy0 = block_size * block_rows;
+                        }
+                        matvec(1.0, false, aux.data(),
+                               block_size * block_cols * kron_disp_rev.size(), ColumnMajor, y0,
+                               ldy0, ly, ncols0 * ki,
+                               (std::norm(beta) == 0 || ncols0 != ncols) ? T{0} : beta);
+                        if (ncols0 != ncols) {
+                            Coor<3> dimy0{block_size * block_rows, ncols0, ki};
+                            Coor<3> dimy{block_size * block_rows, ncols, ki};
+                            if (std::norm(beta) == 0) {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Copy{}, FastToSlow);
+                            } else {
+                                local_copy<IndexType>(T{1}, trivial_order<3>(), Coor<3>{{}}, dimy0,
+                                                      dimy0, (vector<const T, Gpu>)auxy,
+                                                      Mask<Gpu>{}, trivial_order<3>(),
+                                                      Coor<3>{0, i0, 0}, dimy, vy, Mask<Gpu>{},
+                                                      EWOp::Add{}, FastToSlow);
+                            }
+                        }
+                    }
                 } else
                     throw std::runtime_error(
                         "BSR operator(): unsupported input/output tensor layout");
@@ -698,11 +888,11 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU0, typename XPU1>
         struct BSRComponents_tmpl : BSR_handle {
             /// Partition of the domain space
-            From_size<Nd> pd;
+            Proc_ranges<Nd> pd;
             /// Dimensions of the domain space
             Coor<Nd> dimd;
             /// Partition of the image space
-            From_size<Ni> pi;
+            Proc_ranges<Ni> pi;
             // Dimensiosn of the image space
             Coor<Ni> dimi;
             /// Components of the BSR operator
@@ -717,8 +907,8 @@ namespace superbblas {
                        unsigned int ncomponents, unsigned int nprocs, unsigned int rank,
                        CoorOrder co) override {
                 (void)rank;
-                if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type ||
-                    nprocs * ncomponents != pd.size())
+                if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type || nprocs != pd.size() ||
+                    ncomponents != pd[rank].size())
                     return false;
 
                 if (c.first.size() + c.second.size() != ncomponents) return false;
@@ -767,8 +957,8 @@ namespace superbblas {
             BSRComponents<Nd, Ni, T> r{};
             r.dimd = dimd;
             r.dimi = dimi;
-            r.pd = detail::get_from_size(pd, ncomponents * comm.nprocs, session);
-            r.pi = detail::get_from_size(pi, ncomponents * comm.nprocs, session);
+            r.pd = detail::get_from_size(pd, ncomponents * comm.nprocs, comm);
+            r.pi = detail::get_from_size(pi, ncomponents * comm.nprocs, comm);
             r.blockd = blockd;
             r.blocki = blocki;
             r.krond = krond;
@@ -832,7 +1022,7 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm>
         BSRComponents<Nd, Ni, T> *
         get_bsr_components_from_handle(BSR_handle *bsrh, const Context *ctx, int ncomponents,
-                                       Comm comm, CoorOrder co) {
+                                       const Comm &comm, CoorOrder co) {
             if (!bsrh->check(Nd, Ni, detail::num_type_v<T>::value, ctx, ncomponents, comm.nprocs,
                              comm.rank, co))
                 throw std::runtime_error(
@@ -959,7 +1149,8 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
                   typename std::enable_if<(Nd > 0 && Ni > 0), bool>::type = true>
         CsrIndices<XPU> get_kron_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
-                                         bool return_jj_blocked = false) {
+                                         bool return_jj_blocked = false,
+                                         std::vector<int> kron_disp = std::vector<int>()) {
             // Check that IndexType is big enough
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
                 throw std::runtime_error("Ups! IndexType isn't big enough");
@@ -989,6 +1180,11 @@ namespace superbblas {
             IndexType bd = return_jj_blocked ? volume(v.blockd) * volume(v.krond) : 1;
             IndexType rows = volume(v.dimd);
             bool there_are_minus_ones_in_columns = false;
+            if (kron_disp.size() == 0) {
+                kron_disp = std::vector<int>(num_nnz_per_row);
+                for (int i = 0; i < num_nnz_per_row; ++i) kron_disp[i] = i;
+            }
+            if (kron_disp.size() != (std::size_t)num_nnz_per_row) throw std::runtime_error("wtf!");
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
@@ -996,7 +1192,7 @@ namespace superbblas {
                 if (vj[i][0] == -1) there_are_minus_ones_in_columns = true;
                 jj[i] = (vj[i][0] == -1 ? -1
                                         : coor2index(vj[i], v.dimd, strided) / bd +
-                                              rows / bd * (i % num_nnz_per_row));
+                                              rows / bd * kron_disp[i % num_nnz_per_row]);
             }
 
             // Unsupported -1 in the domain coordinate
@@ -1490,22 +1686,21 @@ namespace superbblas {
         /// \param o_r: dimension labels for the output operator
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny>
-        std::pair<From_size<Nx>, From_size<Ny>>
-        get_output_partition(From_size<Nd> pd, const Order<Nd> &od, From_size<Ni> pi,
-                             const Order<Ni> &oi, From_size<Nx> px, const Order<Nx> &ox,
+        std::pair<Proc_ranges<Nx>, Proc_ranges<Ny>>
+        get_output_partition(Proc_ranges<Nd> pd, const Order<Nd> &od, Proc_ranges<Ni> pi,
+                             const Order<Ni> &oi, Proc_ranges<Nx> px, const Order<Nx> &ox,
                              const Order<Nx> &sug_ox, const Coor<Nx> &sizex, const Order<Ny> &oy,
                              const Order<Ny> &sug_oy, char okr) {
             assert(pd.size() == pi.size() && pi.size() == px.size());
 
             // Find partition on cache
             Order<Nd + Ni> om = concat(od, oi);
-            using Key = std::tuple<From_size<Nd>, From_size<Ni>, From_size<Nx>, Coor<Nx>,
+            using Key = std::tuple<Proc_ranges<Nd>, Proc_ranges<Ni>, Proc_ranges<Nx>, Coor<Nx>,
                                    PairPerms<Nd + Ni, Nx>, PairPerms<Nx, Ny>,
                                    PairPerms<Nd + Ni, Ny>, PairPerms<Nx, Nx>, PairPerms<Ny, Ny>>;
             struct cache_tag {};
-            auto cache =
-                getCache<Key, std::pair<From_size<Nx>, From_size<Ny>>, TupleHash<Key>, cache_tag>(
-                    pd.ctx());
+            auto cache = getCache<Key, std::pair<Proc_ranges<Nx>, Proc_ranges<Ny>>, TupleHash<Key>,
+                                  cache_tag>(Cpu{});
             Key key{pd,
                     pi,
                     px,
@@ -1528,23 +1723,29 @@ namespace superbblas {
             }
 
             // Create partition
-            From_size_out<Nx> pxr(px.size(), px.ctx());
-            From_size_out<Ny> pyr(px.size(), px.ctx());
-            for (unsigned int i = 0; i < px.size(); ++i) {
-                pxr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_ox, false);
-                pxr[i][1] =
-                    get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_ox, false);
-                pyr[i][0] = get_dimensions(om, concat(pd[i][0], pi[i][0]), ox, {{}}, sug_oy, false);
-                pyr[i][1] =
-                    get_dimensions(om, concat(pd[i][1], pi[i][1]), ox, sizex, sug_oy, false);
-                if (okr != 0) {
-                    pyr[i][0][power_pos] = 0;
-                    pyr[i][1][power_pos] = 1;
-                }
+            Proc_ranges<Nx> pxr(px.size());
+            Proc_ranges<Ny> pyr(px.size());
+            for (unsigned int i = 0; i < pi.size(); ++i) {
+                pxr[i].resize(pi[i].size());
+                pyr[i].resize(pi[i].size());
+                for (unsigned int j = 0; j < pi[i].size(); ++j) {
+                    pxr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
+                                                  sug_ox, false);
+                    pxr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
+                                                  sug_ox, false);
+                    pyr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
+                                                  sug_oy, false);
+                    pyr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
+                                                  sug_oy, false);
+                    if (okr != 0) {
+                        pyr[i][j][0][power_pos] = 0;
+                        pyr[i][j][1][power_pos] = 1;
+                    }
 
-                // Normalize range
-                if (volume(pxr[i][1]) == 0) pxr[i][0] = pxr[i][1] = Coor<Nx>{{}};
-                if (volume(pyr[i][1]) == 0) pyr[i][0] = pyr[i][1] = Coor<Ny>{{}};
+                    // Normalize range
+                    if (volume(pxr[i][j][1]) == 0) pxr[i][j][0] = pxr[i][j][1] = Coor<Nx>{{}};
+                    if (volume(pyr[i][j][1]) == 0) pyr[i][j][0] = pyr[i][j][1] = Coor<Ny>{{}};
+                }
             }
             cache.insert(key, {pxr, pyr}, storageSize(pxr) + storageSize(pyr));
 
@@ -1568,12 +1769,13 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
                   typename Comm, typename XPU0, typename XPU1>
         Request bsr_krylov(T alpha, const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> bsr,
-                           const Order<Ni> oim, const Order<Nd> odm, const From_size<Nx> &px,
+                           const Order<Ni> oim, const Order<Nd> odm, const Proc_ranges<Nx> &px,
                            const Order<Nx> &ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
                            const Coor<Nx> &dimx, const Components_tmpl<Nx, T, XPU0, XPU1> &vx,
-                           T beta, const From_size<Ny> py, const Order<Ny> oy, const Coor<Ny> fromy,
-                           const Coor<Ny> sizey, const Coor<Ny> dimy, char okr,
-                           const Components_tmpl<Ny, T, XPU0, XPU1> vy, Comm comm, CoorOrder co) {
+                           T beta, const Proc_ranges<Ny> py, const Order<Ny> oy,
+                           const Coor<Ny> fromy, const Coor<Ny> sizey, const Coor<Ny> dimy,
+                           char okr, const Components_tmpl<Ny, T, XPU0, XPU1> vy, Comm comm,
+                           CoorOrder co) {
 
             if (getDebugLevel() >= 1) {
                 barrier(comm);
@@ -1648,10 +1850,9 @@ namespace superbblas {
 
             auto pxy_ = get_output_partition(bsr.pd, odm, bsr.pi, oim, px, ox, sug_ox, sizex, oy,
                                              sug_oy, okr);
-            unsigned int ncomponents = vx.first.size() + vx.second.size();
 
             // Copy the input dense tensor to a compatible layout to the sparse tensor
-            From_size<Nx> px_ = pxy_.first;
+            Proc_ranges<Nx> px_ = pxy_.first;
             auto vx_and_req =
                 reorder_tensor_request(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm,
                                        co, doCacheAlloc, power > 1 /* force copy when power > 1 */);
@@ -1669,7 +1870,7 @@ namespace superbblas {
                 wait(vx_and_req.second);
 
                 // Allocate the output tensor
-                From_size<Ny> py_ = pxy_.second;
+                Proc_ranges<Ny> py_ = pxy_.second;
                 Components_tmpl<Ny, T, XPU0, XPU1> vy_ =
                     like_this_components(py_, vx_, comm, doCacheAlloc);
 
@@ -1677,17 +1878,17 @@ namespace superbblas {
                 for (unsigned int p = 0; p < power; ++p) {
                     for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
                         const unsigned int componentId = bsr.c.first[i].v.componentId;
-                        const unsigned int pi = comm.rank * ncomponents + componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm, px_[pi][1], sug_ox,
-                            vx_.first[i].it, py_[pi][1], sug_oy, okr, vy_.first[i].it);
+                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm,
+                            px_[comm.rank][componentId][1], sug_ox, vx_.first[i].it,
+                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.first[i].it);
                     }
                     for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                         const unsigned int componentId = bsr.c.second[i].v.componentId;
-                        const unsigned int pi = comm.rank * ncomponents + componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm, px_[pi][1], sug_ox,
-                            vx_.second[i].it, py_[pi][1], sug_oy, okr, vy_.second[i].it);
+                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm,
+                            px_[comm.rank][componentId][1], sug_ox, vx_.second[i].it,
+                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.second[i].it);
                     }
 
                     // Copy the result to final tensor
@@ -1831,10 +2032,10 @@ namespace superbblas {
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
         Request r = detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
-            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
+            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, comm),
             ox_, fromx, sizex, dimx,
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
-            beta, detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey,
+            beta, detail::get_from_size(py, ncomponents * comm.nprocs, comm), oy_, fromy, sizey,
             dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
             comm, co);
 
@@ -1995,10 +2196,10 @@ namespace superbblas {
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
         wait(detail::bsr_krylov<Nd, Ni, Nx, Ny, T>(
-            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, session),
+            alpha, *bsr, oim_, odm_, detail::get_from_size(px, ncomponents * comm.nprocs, comm),
             ox_, fromx, sizex, dimx,
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
-            beta, detail::get_from_size(py, ncomponents * comm.nprocs, session), oy_, fromy, sizey,
+            beta, detail::get_from_size(py, ncomponents * comm.nprocs, comm), oy_, fromy, sizey,
             dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
             comm, co));
         if (request) *request = Request{};

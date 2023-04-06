@@ -109,6 +109,25 @@ namespace superbblas {
 
     namespace detail {
 
+#ifdef SUPERBBLAS_USE_GPU
+        /// Wait until everything finishes in the given stream
+        /// \param xpu: context
+
+        inline void sync(GpuStream stream) {
+            tracker<Cpu> _t("sync", Cpu{});
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(stream));
+        }
+
+        /// Wait until everything finishes in the device of the given context
+        /// \param xpu: context
+
+        inline void syncLegacyStream(const Gpu &xpu) {
+            tracker<Cpu> _t("sync legacy stream", Cpu{});
+            setDevice(xpu);
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(DeviceSynchronize)());
+        }
+#endif // SUPERBBLAS_USE_GPU
+
         /// is_array<T>::value is true if T is std::array
         /// \tparam T: type to inspect
 
@@ -185,15 +204,11 @@ namespace superbblas {
                     setDevice(xpu1);
                     stream = getStream(xpu1);
                 }
-#    ifdef SUPERBBLAS_USE_CUDA
-                gpuCheck(cudaMemcpyAsync(
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyAsync)(
                     w, v, sizeof(T) * n,
-                    !v_is_on_cpu ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice, stream));
-#    elif defined(SUPERBBLAS_USE_HIP)
-                hipCheck(hipMemcpyAsync(
-                    w, v, sizeof(T) * n,
-                    !v_is_on_cpu ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice, stream));
-#    endif
+                    !v_is_on_cpu ? SUPERBBLAS_GPU_SYMBOL(MemcpyDeviceToHost)
+                                 : SUPERBBLAS_GPU_SYMBOL(MemcpyHostToDevice),
+                    stream));
                 if (op_on_first) {
                     causalConnectTo(xpu0, xpu1);
                 } else {
@@ -203,32 +218,21 @@ namespace superbblas {
                 // Both pointers are on device
                 causalConnectTo(xpu1, xpu0);
                 setDevice(xpu0);
-#    ifdef SUPERBBLAS_USE_CUDA
                 if (deviceId(xpu0) == deviceId(xpu1)) {
-                    gpuCheck(cudaMemcpyAsync(w, v, sizeof(T) * n, cudaMemcpyDeviceToDevice,
-                                             getStream(xpu0)));
+                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyAsync)(
+                        w, v, sizeof(T) * n, SUPERBBLAS_GPU_SYMBOL(MemcpyDeviceToDevice),
+                        getStream(xpu0)));
                 } else {
-                    gpuCheck(cudaMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0),
-                                                 sizeof(T) * n, getStream(xpu0)));
+                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyPeerAsync)(
+                        w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n, getStream(xpu0)));
                 }
-#    elif defined(SUPERBBLAS_USE_HIP)
-                if (deviceId(xpu0) == deviceId(xpu1)) {
-                    hipCheck(hipMemcpyAsync(w, v, sizeof(T) * n, hipMemcpyDeviceToDevice,
-                                            getStream(xpu0)));
-                } else {
-                    hipCheck(hipMemcpyPeerAsync(w, deviceId(xpu1), v, deviceId(xpu0), sizeof(T) * n,
-                                                getStream(xpu0)));
-                }
-#    else
-                throw std::runtime_error("superbblas compiled with GPU support!");
-#    endif
                 causalConnectTo(xpu0, xpu1);
             }
 #endif // SUPERBBLAS_USE_GPU
         }
 
         /// Whether to cache allocation
-        enum CacheAlloc { dontCacheAlloc, doCacheAlloc };
+        enum CacheAlloc { dontCacheAlloc, doCacheAlloc, doCacheAllocExternal };
 
         /// Vector type a la python, that is, operator= does a reference not a copy
         /// \param T: type of the vector's elements
@@ -248,9 +252,10 @@ namespace superbblas {
             vector(std::size_t n, XPU xpu_, CacheAlloc cacheAlloc = dontCacheAlloc,
                    std::size_t alignment = 0)
                 : n(n), xpu(xpu_) {
-                auto alloc = cacheAlloc == doCacheAlloc
-                                 ? allocateBufferResouce<T_no_const>(n, xpu, alignment)
-                                 : allocateResouce<T_no_const>(n, xpu, alignment);
+                auto alloc = cacheAlloc == dontCacheAlloc
+                                 ? allocateResouce<T_no_const>(n, xpu, alignment)
+                                 : allocateBufferResouce<T_no_const>(
+                                       n, xpu, alignment, cacheAlloc == doCacheAllocExternal);
                 ptr_aligned = alloc.first;
                 ptr = alloc.second;
             }
@@ -445,8 +450,11 @@ namespace superbblas {
             if (deviceId(xpu) != CPU_DEVICE_ID)
                 throw std::runtime_error("launchHostKernel: the context should be on cpu");
 
+#    if defined(SUPERBBLAS_USE_CUDA) ||                                                            \
+        (defined(SUPERBBLAS_USE_HIP) &&                                                            \
+         ((HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 4)))
             struct F {
-                static void CUDART_CB callback(void *data) {
+                static void SUPERBBLAS_GPU_SELECT(, CUDART_CB, ) callback(void *data) {
                     auto f = (std::function<void()> *)data;
                     (*f)();
                     delete f;
@@ -456,6 +464,10 @@ namespace superbblas {
             setDevice(xpu);
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(LaunchHostFunc)(
                 getStream(xpu), (SUPERBBLAS_GPU_SYMBOL(HostFn_t))F::callback, (void *)fp));
+#    else
+            sync(xpu);
+            f();
+#    endif
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -520,8 +532,8 @@ namespace superbblas {
         void xscal(int n, T alpha, T *x, int incx, Gpu xpu) {
             if (std::norm(alpha) == 0.0) {
                 setDevice(xpu);
-                SUPERBBLAS_GPU_SYMBOL(Memset2DAsync)
-                (x, sizeof(T) * incx, 0, sizeof(T), n, getStream(xpu));
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(Memset2DAsync)(x, sizeof(T) * incx, 0, sizeof(T), n,
+                                                              getStream(xpu)));
                 return;
             }
             if (alpha == typename elem<T>::type{1}) return;
@@ -593,6 +605,50 @@ namespace superbblas {
         }
 
         template <typename T>
+        void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, int lda, int ldb,
+                         T beta, int ldc, int batch_size, Gpu xpu,
+                         const std::function<void(int, T **, T **, T **)> abc) {
+            // Quick exits
+            if (m == 0 || n == 0) return;
+
+            // Replace some invalid arguments when k is zero
+            if (k == 0) { lda = ldb = 1; }
+
+            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
+                auto cT = toCudaDataType<T>();
+                for (int i = 0; i < batch_size; ++i) {
+                    T *a = nullptr, *b = nullptr, *c = nullptr;
+                    abc(i, &a, &b, &c);
+                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc,
+                        toCudaComputeType<T>(),
+                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                }
+            } else {
+                auto xpu_host = xpu.toCpuPinned();
+                vector<T *, Gpu> a_cpu(batch_size, xpu_host, doCacheAlloc);
+                vector<T *, Gpu> b_cpu(batch_size, xpu_host, doCacheAlloc);
+                vector<T *, Gpu> c_cpu(batch_size, xpu_host, doCacheAlloc);
+                auto a_cpu_ptr = a_cpu.data();
+                auto b_cpu_ptr = b_cpu.data();
+                auto c_cpu_ptr = c_cpu.data();
+                launchHostKernel(
+                    [=] {
+                        for (int i = 0; i < batch_size; ++i)
+                            abc(i, &a_cpu_ptr[i], &b_cpu_ptr[i], &c_cpu_ptr[i]);
+                    },
+                    xpu_host);
+                auto a_xpu = makeSure(a_cpu, xpu, doCacheAlloc);
+                auto b_xpu = makeSure(b_cpu, xpu, doCacheAlloc);
+                auto c_xpu = makeSure(c_cpu, xpu, doCacheAlloc);
+                xgemm_batch<T>(transa, transb, m, n, k, alpha, (const T **)a_xpu.data(), lda,
+                               (const T **)b_xpu.data(), ldb, beta, c_xpu.data(), ldc, batch_size,
+                               xpu);
+            }
+        }
+
+        template <typename T>
         void xgemm_batch_strided(char transa, char transb, int m, int n, int k, T alpha, const T *a,
                                  int lda, int stridea, const T *b, int ldb, int strideb, T beta,
                                  T *c, int ldc, int stridec, int batch_size, Gpu xpu) {
@@ -606,11 +662,14 @@ namespace superbblas {
             }
 
             auto cT = toCudaDataType<T>();
-            if (batch_size == 1) {
-                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
-                    getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
-                    &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
-                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
+                for (int i = 0; i < batch_size; ++i) {
+                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a + i * stridea, cT, lda, b + i * strideb, cT, ldb, &beta,
+                        c + i * stridec, cT, ldc, toCudaComputeType<T>(),
+                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                }
             } else {
                 gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmStridedBatchedEx)(
                     getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
@@ -767,36 +826,6 @@ namespace superbblas {
 
         inline void anabranch_end(const Cpu &) {
             // Do nothing when context is on cpu
-        }
-    }
-
-    /// Allocate memory on a device
-    /// \param n: number of element of type `T` to allocate
-    /// \param ctx: context
-
-    template <typename T> T *allocate(std::size_t n, Context ctx) {
-        switch (ctx.plat) {
-        case CPU: return detail::allocate<T>(n, ctx.toCpu(0));
-#ifdef SUPERBBLAS_USE_GPU
-        case CUDA: // Do the same as with HIP
-        case HIP: return detail::allocate<T>(n, ctx.toGpu(0));
-#endif
-        default: throw std::runtime_error("Unsupported platform");
-        }
-    }
-
-    /// Deallocate memory on a device
-    /// \param ptr: pointer to the memory to deallocate
-    /// \param ctx: context
-
-    template <typename T> void deallocate(T *ptr, Context ctx) {
-        switch (ctx.plat) {
-        case CPU: detail::deallocate(ptr, ctx.toCpu(0)); break;
-#ifdef SUPERBBLAS_USE_GPU
-        case CUDA: // Do the same as with HIP
-        case HIP: detail::deallocate(ptr, ctx.toGpu(0)); break;
-#endif
-        default: throw std::runtime_error("Unsupported platform");
         }
     }
 

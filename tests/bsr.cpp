@@ -48,6 +48,16 @@ template <typename T, typename XPU> vector<T, XPU> ones(std::size_t size, XPU xp
     return makeSure(r, xpu);
 }
 
+// Return a vector of vectorizing identity matrices
+template <typename T, typename XPU>
+vector<T, XPU> eyes(std::size_t n, std::size_t k, const T &scale, XPU xpu) {
+    vector<T, Cpu> r(n * n * k, Cpu{});
+    zero_n(r.data(), r.size(), r.ctx());
+    for (std::size_t i = 0; i < k; ++i)
+        for (std::size_t j = 0; j < n; ++j) r[i * n * n + j * n + j] = scale;
+    return makeSure(r, xpu);
+}
+
 /// Extend the region one element in each direction
 std::array<Coor<6>, 2> extend(std::array<Coor<6>, 2> fs, const Coor<6> &dim) {
     for (int i = 0; i < 4; ++i) {
@@ -528,7 +538,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
 /// Create a 4D lattice with dimensions tzyxsc and Kronecker products
 template <typename T, typename XPU>
 std::pair<BSR_handle *, std::array<vectors<T, XPU>, 2>>
-create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim,
+create_lattice_kron(const PartitionStored<6> &pi, int rank, bool sparse_kron, const Coor<6> op_dim,
                     const std::vector<Context> &ctx, const std::vector<XPU> &xpu) {
 
     bool check_results = getDebugLevel() > 0;
@@ -597,7 +607,8 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim
             kron_xpu = makeSure(kron_cpu, xpu[component]);
         } else {
             data_xpu = ones<T>(vol_data, xpu[component]);
-            kron_xpu = ones<T>(vol_kron, xpu[component]);
+            kron_xpu = (sparse_kron ? eyes<T>(op_dim[4], neighbors, (T)op_dim[4], xpu[component])
+                                    : ones<T>(vol_kron, xpu[component]));
         }
 
         ii_xpus.push_back(makeSure(ii, xpu[component]));
@@ -800,9 +811,6 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     if (rank == 0) reportTimings(std::cout);
     if (rank == 0) reportCacheUsage(std::cout);
 
-    // Create the Kronecker operator
-    auto op_kron_s = create_lattice_kron<Q>(po, rank, dimo, ctx, xpu);
-
     const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
                                 dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
     PartitionStored<Nd + 1> kp0 =
@@ -815,30 +823,41 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     PartitionStored<Nd + 1> kp1 =
         basic_partitioning("pxyztsnc", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
 
-    // Copy tensor t0 into each of the c components of tensor 1
-    resetTimings();
-    try {
-        double t = w_time();
-        for (unsigned int rep = 0; rep < nrep; ++rep) {
-            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-                Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", kp0.data(), ctx.size(), "pXYZTSnC", {{}},
-                kdim0, kdim0, (const Q **)t0.data(), Q{0}, kp1.data(), "pxyztsnc", {{}}, kdim1,
-                kdim1, 'p', t1.data(), ctx.data(),
+    for (int kron_sparse = 1; kron_sparse < 2; kron_sparse++) {
+        // Create the Kronecker operator
+        auto op_kron_s = create_lattice_kron<Q>(po, rank, kron_sparse == 1 /* is kron sparse? */,
+                                                dimo, ctx, xpu);
+
+        // Copy tensor t0 into each of the c components of tensor 1
+        resetTimings();
+        try {
+            double t = w_time();
+            for (unsigned int rep = 0; rep < nrep; ++rep) {
+                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                    Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", kp0.data(), ctx.size(), "pXYZTSnC",
+                    {{}}, kdim0, kdim0, (const Q **)t0.data(), Q{0}, kp1.data(), "pxyztsnc", {{}},
+                    kdim1, kdim1, 'p', t1.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
-                MPI_COMM_WORLD,
+                    MPI_COMM_WORLD,
 #endif
-                SlowToFast);
+                    SlowToFast);
+            }
+            for (const auto &xpui : xpu) sync(xpui);
+            t = w_time() - t;
+            if (rank == 0)
+                std::cout << "Time in mavec per rhs (kron "
+                          << (kron_sparse == 0 ? "dense" : "sparse") << "): " << t / nrep / dim[N]
+                          << std::endl;
+            test_contraction(kp1, rank, "pxyztsnc", t1, dimo, true, ctx);
+        } catch (const std::exception &e) {
+            std::cout << "Caught error: " << e.what() << std::endl;
         }
-        for (const auto &xpui : xpu) sync(xpui);
-        t = w_time() - t;
-        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
-        test_contraction(kp1, rank, "pxyztsnc", t1, dimo, true, ctx);
-    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
-    destroy_bsr(op_kron_s.first);
+        destroy_bsr(op_kron_s.first);
 
-    if (rank == 0) reportTimings(std::cout);
-    if (rank == 0) reportCacheUsage(std::cout);
+        if (rank == 0) reportTimings(std::cout);
+        if (rank == 0) reportCacheUsage(std::cout);
+    }
 }
 
 int main(int argc, char **argv) {

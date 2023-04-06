@@ -1,7 +1,7 @@
 #ifndef __SUPERBBLAS_CACHE__
 #define __SUPERBBLAS_CACHE__
 
-#include "platform.h"
+#include "performance.h"
 #include <limits>
 #include <map>
 #include <mutex>
@@ -229,6 +229,36 @@ namespace superbblas {
             return caches;
         }
 
+        /// Return the maximum size of the cpu cache in bytes
+        inline std::size_t getMaxCpuCacheSize() {
+            static std::size_t max_size = [=] {
+                if (getMaxCacheGiBCpu() >= 0) {
+                    return std::size_t(getMaxCacheGiBCpu() * 1024 * 1024 * 1024);
+                } else {
+                    return std::size_t(sysconf(_SC_PAGESIZE)) * sysconf(_SC_PHYS_PAGES) / 10;
+                }
+            }();
+            return max_size;
+        }
+
+        /// Return the maximum size of the gpu cache in bytes
+        inline std::size_t getMaxGpuCacheSize() {
+            static std::size_t max_size = [=] {
+#ifdef SUPERBBLAS_USE_GPU
+                if (getMaxCacheGiBGpu() >= 0) {
+                    return std::size_t(getMaxCacheGiBGpu() * 1024 * 1024 * 1024);
+                } else {
+                    std::size_t free = 0, total = 0;
+                    gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemGetInfo)(&free, &total));
+                    return total / 10;
+                }
+#else
+                return (std::size_t)0;
+#endif
+            }();
+            return max_size;
+        }
+
         /// Return the caches associated to the devices
         inline std::vector<cache> &getCaches(Session session) {
             auto &caches = getCaches();
@@ -241,13 +271,7 @@ namespace superbblas {
                 if (caches[255].size() == 0) {
                     for (Session s = 0; s < 256; ++s) {
                         // Get maximum memory use for CPU cache
-                        std::size_t cacheMaxSizeCpu = 0;
-                        if (getMaxCacheGiBCpu() >= 0) {
-                            cacheMaxSizeCpu = std::size_t(getMaxCacheGiBCpu() * 1024 * 1024 * 1024);
-                        } else {
-                            cacheMaxSizeCpu =
-                                std::size_t(sysconf(_SC_PAGESIZE)) * sysconf(_SC_PHYS_PAGES) / 10;
-                        }
+                        std::size_t cacheMaxSizeCpu = getMaxCpuCacheSize();
 
                         // Create the cache for the cpu objects and set the maximum size
                         std::vector<cache> cache_s(1);
@@ -255,14 +279,7 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_GPU
                         // Get maximum memory use for GPU cache
-                        std::size_t cacheMaxSizeGpu = 0;
-                        if (getMaxCacheGiBGpu() >= 0) {
-                            cacheMaxSizeGpu = std::size_t(getMaxCacheGiBGpu() * 1024 * 1024 * 1024);
-                        } else {
-                            std::size_t free = 0, total = 0;
-                            gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemGetInfo)(&free, &total));
-                            cacheMaxSizeGpu = total / 10;
-                        }
+                        std::size_t cacheMaxSizeGpu = getMaxGpuCacheSize();
 
                         // Create the caches for the gpu objects and set the maximum size
                         int numDevices = getGpuDevicesCount();

@@ -1,7 +1,6 @@
 #ifndef __SUPERBBLAS_PLATFORM__
 #define __SUPERBBLAS_PLATFORM__
 
-#include "performance.h"
 #include "superbblas_lib.h"
 #include <complex>
 #include <functional>
@@ -9,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <vector>
 
 #ifdef _OPENMP
 #    include <omp.h>
@@ -44,9 +44,15 @@
 
 #ifdef SUPERBBLAS_USE_HIP
 #    include <hip/hip_runtime_api.h>
-#    include <hipblas.h>
-#    include <hipsolver.h>
-#    include <hipsparse.h>
+#    if HIP_VERSION_MAJOR > 5 || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 4)
+#        include <hipblas/hipblas.h>
+#        include <hipsolver/hipsolver.h>
+#        include <hipsparse/hipsparse.h>
+#    else
+#        include <hipblas.h>
+#        include <hipsolver.h>
+#        include <hipsparse.h>
+#    endif
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
@@ -107,6 +113,9 @@ namespace superbblas {
     /// Function to deallocate memory
     using Deallocator = std::function<void(void *, enum platform)>;
 
+    /// Cache session
+    using Session = unsigned int;
+
     /// Return the custom allocator
 
     inline Allocator &getCustomAllocator() {
@@ -162,6 +171,8 @@ namespace superbblas {
 
             /// Create a new context but with a cpu device
             Cpu toCpuPinned() const { return *this; }
+
+            Cpu(const Session &session = 0) : session(session) {}
         };
 
 #ifdef SUPERBBLAS_USE_GPU
@@ -269,11 +280,12 @@ namespace superbblas {
         /// Return a string identifying the platform
         /// \param xpu: context
 
-        inline std::string platformToStr(const Cpu &) { return "CPU"; }
+        inline std::string platformToStr(const Cpu &) { return "cpu"; }
 
 #ifdef SUPERBBLAS_USE_GPU
-        inline std::string platformToStr(const Gpu &) {
-            return SUPERBBLAS_GPU_SELECT("", "CUDA", "HIP");
+        inline std::string platformToStr(const Gpu &gpu) {
+            return deviceId(gpu) == CPU_DEVICE_ID ? "host"
+                                                  : SUPERBBLAS_GPU_SELECT("", "cuda", "hip");
         }
 #endif
 
@@ -319,13 +331,9 @@ namespace superbblas {
 
         inline GpuStream getAllocStream(const Gpu &xpu) { return xpu.alloc_stream; }
 
-        /// Wait until everything finishes in the given stream
-        /// \param xpu: context
+        /// NOTE: defined at `blas.h`
 
-        inline void sync(GpuStream stream) {
-            tracker<Cpu> _t("sync", Cpu{});
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamSynchronize)(stream));
-        }
+        inline void sync(GpuStream stream);
 
         /// Wait until everything finishes in the given context
         /// \param xpu: context
@@ -335,14 +343,9 @@ namespace superbblas {
             sync(getStream(xpu));
         }
 
-        /// Wait until everything finishes in the device of the given context
-        /// \param xpu: context
+        /// NOTE: defined at `blas.h`
 
-        inline void syncLegacyStream(const Gpu &xpu) {
-            tracker<Cpu> _t("sync legacy stream", Cpu{});
-            setDevice(xpu);
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(DeviceSynchronize)());
-        }
+        inline void syncLegacyStream(const Gpu &xpu);
 #endif // SUPERBBLAS_USE_GPU
 
         inline GpuStream createStream(const Cpu &) { return 0; }
@@ -367,7 +370,7 @@ namespace superbblas {
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventCreateWithFlags)(
                 &ev, SUPERBBLAS_GPU_SYMBOL(EventDisableTiming)));
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventRecord)(ev, s0));
-            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamWaitEvent)(s1, ev));
+            gpuCheck(SUPERBBLAS_GPU_SYMBOL(StreamWaitEvent)(s1, ev, 0));
             gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventDestroy)(ev));
 #else
             throw std::runtime_error("causalConnectTo: invalid operation!");
@@ -482,7 +485,7 @@ namespace superbblas {
 
 #elif defined(SUPERBBLAS_USE_HIP)
             if (status != HIPBLAS_STATUS_SUCCESS) {
-                std::stream err = "(unknown error code)";
+                const char *err = "(unknown error code)";
                 // clang-format off
                 if (status == HIPBLAS_STATUS_SUCCESS         ) err = "HIPBLAS_STATUS_SUCCESS";
                 if (status == HIPBLAS_STATUS_NOT_INITIALIZED ) err = "HIPBLAS_STATUS_NOT_INITIALIZED";
@@ -578,20 +581,20 @@ namespace superbblas {
             }
 
 #elif defined(SUPERBBLAS_USE_HIP)
-            if (status != HIPSPARSE_STATUS_SUCCESS) {
+            if (status != HIPSOLVER_STATUS_SUCCESS) {
                 std::string str = "(unknown error code)";
                 // clang-format off
-                if (status == HIPSPARSE_STATUS_NOT_INITIALIZED          ) str = "HIPSPARSE_STATUS_NOT_INITIALIZED";
-                if (status == HIPSPARSE_STATUS_ALLOC_FAILED             ) str = "HIPSPARSE_STATUS_ALLOC_FAILED";
-                if (status == HIPSPARSE_STATUS_INVALID_VALUE            ) str = "HIPSPARSE_STATUS_INVALID_VALUE";
-                if (status == HIPSPARSE_STATUS_ARCH_MISMATCH            ) str = "HIPSPARSE_STATUS_ARCH_MISMATCH";
-                if (status == HIPSPARSE_STATUS_MAPPING_ERROR            ) str = "HIPSPARSE_STATUS_MAPPING_ERROR";
-                if (status == HIPSPARSE_STATUS_EXECUTION_FAILED         ) str = "HIPSPARSE_STATUS_EXECUTION_FAILED";
-                if (status == HIPSPARSE_STATUS_INTERNAL_ERROR           ) str = "HIPSPARSE_STATUS_INTERNAL_ERROR";
-                if (status == HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED) str = "HIPSPARSE_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
-                if (status == HIPSPARSE_STATUS_ZERO_PIVOT               ) str = "HIPSPARSE_STATUS_ZERO_PIVOT";
-                if (status == HIPSPARSE_STATUS_NOT_SUPPORTED            ) str = "HIPSPARSE_STATUS_NOT_SUPPORTED";
-                if (status == HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES   ) str = "HIPSPARSE_STATUS_INSUFFICIENT_RESOURCES";
+                if (status == HIPSOLVER_STATUS_NOT_INITIALIZED  ) str = "HIPSOLVER_STATUS_NOT_INITIALIZED";
+                if (status == HIPSOLVER_STATUS_ALLOC_FAILED     ) str = "HIPSOLVER_STATUS_ALLOC_FAILED";
+                if (status == HIPSOLVER_STATUS_INVALID_VALUE    ) str = "HIPSOLVER_STATUS_INVALID_VALUE";
+                if (status == HIPSOLVER_STATUS_MAPPING_ERROR    ) str = "HIPSOLVER_STATUS_MAPPING_ERROR";
+                if (status == HIPSOLVER_STATUS_EXECUTION_FAILED ) str = "HIPSOLVER_STATUS_EXECUTION_FAILED";
+                if (status == HIPSOLVER_STATUS_INTERNAL_ERROR   ) str = "HIPSOLVER_STATUS_INTERNAL_ERROR";
+                if (status == HIPSOLVER_STATUS_NOT_SUPPORTED    ) str = "HIPSOLVER_STATUS_NOT_SUPPORTED";
+                if (status == HIPSOLVER_STATUS_ARCH_MISMATCH    ) str = "HIPSOLVER_STATUS_ARCH_MISMATCH";
+                if (status == HIPSOLVER_STATUS_HANDLE_IS_NULLPTR) str = "HIPSOLVER_STATUS_HANDLE_IS_NULLPTR";
+                if (status == HIPSOLVER_STATUS_INVALID_ENUM     ) str = "HIPSOLVER_STATUS_INVALID_ENUM";
+                if (status == HIPSOLVER_STATUS_UNKNOWN          ) str = "HIPSOLVER_STATUS_UNKNOWN";
                 // clang-format on
 
                 std::stringstream ss;

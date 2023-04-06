@@ -607,8 +607,16 @@ namespace superbblas {
         /// Return the memory footprint of an object
         /// \param v: input object
 
+        template <typename T> std::size_t storageSize(const T &) { return sizeof(T); }
+
         template <typename T, typename XPU> std::size_t storageSize(const vector<T, XPU> &v) {
             return sizeof(T) * v.size();
+        }
+
+        template <typename T> std::size_t storageSize(const std::vector<T> &v) {
+            std::size_t s = 0;
+            for (const auto &it : v) s += storageSize(it);
+            return s;
         }
 
         /// Check that all dimensions with the same label has the same size
@@ -653,6 +661,13 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_GPU
 
         template <typename T> vector<T, Cpu> archive(const vector<T, Cpu> &v) { return v; }
+
+        template <typename T> std::vector<T> archive(const std::vector<T> &v) {
+            std::vector<T> r;
+            r.resize(v.size());
+            for (std::size_t i = 0; i < v.size(); ++i) r[i] = archive(v[i]);
+            return r;
+        }
 
         /// Copy the content of tensor v0 into v1
         /// \param o0: dimension labels for the origin tensor
@@ -1386,8 +1401,6 @@ namespace superbblas {
                                bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
                                const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
 
-            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()), vr.ctx());
-
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))
                 throw std::runtime_error("all arrays should be on the same device");
@@ -1408,6 +1421,8 @@ namespace superbblas {
                     v1, beta, reverse(o_r), reverse(dimr), vr, SlowToFast);
                 return;
             }
+
+            tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()), vr.ctx());
 
             // If o0, o1, and o_r aren't appropriate, permute the input operands and the output
             unsigned int nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1,

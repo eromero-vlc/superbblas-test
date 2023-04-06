@@ -1,4 +1,5 @@
 #include "superbblas.h"
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -59,6 +60,12 @@ void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> 
             test_contraction(op0, d[i], op1, d[j], op2, d[i], conj0, conj1, dist_dir);
 }
 
+template <std::size_t N> Coor<N> random_from() {
+    Coor<N> r;
+    for (std::size_t i = 0; i < N; ++i) r[i] = (std::rand() % 2 == 0 ? 0 : 1);
+    return r;
+}
+
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T>
 void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1, distribution d1,
                       Operator<N2, T> op2, distribution d2, bool conj0, bool conj1, char dist_dir) {
@@ -71,9 +78,16 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
     rank = 0;
 #endif
 
-    const Coor<N0> dim0 = std::get<0>(op0);
-    const Coor<N1> dim1 = std::get<0>(op1);
-    const Coor<N2> dim2 = std::get<0>(op2);
+    const Coor<N0> from0 = random_from<N0>();
+    const Coor<N1> from1 = random_from<N1>();
+    const Coor<N2> from2 = random_from<N2>();
+    const Coor<N0> size0 = std::get<0>(op0);
+    const Coor<N1> size1 = std::get<0>(op1);
+    const Coor<N2> size2 = std::get<0>(op2);
+    using namespace superbblas::detail;
+    const Coor<N0> dim0 = from0 + size0;
+    const Coor<N1> dim1 = from1 + size1;
+    const Coor<N2> dim2 = from2 + size2;
     const auto o0 = toStr(std::get<1>(op0));
     const auto o1 = toStr(std::get<1>(op1));
     const auto o2 = toStr(std::get<1>(op2));
@@ -90,11 +104,11 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
         procs0[i] = (d0 == OnEveryone && o0[i] == dist_dir ? nprocs : 1);
     PartitionStored<N0> p0 = basic_partitioning(dim0, procs0, nprocs, d0 == OnEveryoneReplicated);
     std::vector<T> v0(detail::volume(p0[rank][1]));
-    PartitionStored<N0> p0_(nprocs, {{{{}}, dim0}}); // tensor replicated partitioning
+    PartitionStored<N0> p0_(nprocs, {{{{}}, size0}}); // tensor replicated partitioning
     T const *ptrv0_ = v0_.data();
     T *ptrv0 = v0.data();
-    copy(1.0, p0_.data(), 1, &o0[0], {}, dim0, dim0, (const T **)&ptrv0_, nullptr, &ctx, p0.data(),
-         1, &o0[0], {}, dim0, &ptrv0, nullptr, &ctx,
+    copy(1.0, p0_.data(), 1, &o0[0], {{}}, size0, size0, (const T **)&ptrv0_, nullptr, &ctx,
+         p0.data(), 1, &o0[0], from0, dim0, &ptrv0, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -105,11 +119,11 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
         procs1[i] = (d1 == OnEveryone && o1[i] == dist_dir ? nprocs : 1);
     PartitionStored<N1> p1 = basic_partitioning(dim1, procs1, nprocs, d1 == OnEveryoneReplicated);
     std::vector<T> v1(detail::volume(p1[rank][1]));
-    PartitionStored<N1> p1_(nprocs, {{{{}}, dim1}}); // tensor replicated partitioning
+    PartitionStored<N1> p1_(nprocs, {{{{}}, size1}}); // tensor replicated partitioning
     T const *ptrv1_ = v1_.data();
     T *ptrv1 = v1.data();
-    copy(1.0, p1_.data(), 1, &o1[0], {}, dim1, dim1, (const T **)&ptrv1_, nullptr, &ctx, p1.data(),
-         1, &o1[0], {}, dim1, &ptrv1, nullptr, &ctx,
+    copy(1.0, p1_.data(), 1, &o1[0], {{}}, size1, size1, (const T **)&ptrv1_, nullptr, &ctx,
+         p1.data(), 1, &o1[0], from1, dim1, &ptrv1, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -124,9 +138,9 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 
     // Contract the distributed matrices
 
-    contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(), dim1,
-                1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), dim2, 1, &o2[0],
-                &ptrv2, &ctx,
+    contraction(T{1}, p0.data(), from0, size0, dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx,
+                p1.data(), from1, size1, dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0},
+                p2.data(), from2, size2, dim2, 1, &o2[0], &ptrv2, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                 MPI_COMM_WORLD,
 #endif
@@ -134,11 +148,11 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 
     // Move the result to proc 0
     PartitionStored<N2> pr(nprocs, {{{{}}, {{}}}});
-    pr[0][1] = dim2; // tensor only supported on proc 0
+    pr[0][1] = size2; // tensor only supported on proc 0
     std::vector<T> vr(detail::volume(pr[rank][1]));
     T *ptrvr = vr.data();
-    copy(1, p2.data(), 1, &o2[0], {}, dim2, dim2, (const T **)&ptrv2, nullptr, &ctx, pr.data(), 1,
-         &o2[0], {}, dim2, &ptrvr, nullptr, &ctx,
+    copy(1, p2.data(), 1, &o2[0], from2, size2, dim2, (const T **)&ptrv2, nullptr, &ctx, pr.data(),
+         1, &o2[0], {{}}, size2, &ptrvr, nullptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
          MPI_COMM_WORLD,
 #endif
@@ -167,9 +181,9 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 #endif
     if (!is_correct) {
         // NOTE: Put a breakpoint here to debug the cases producing wrong answers!
-        contraction(T{1}, p0.data(), dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx, p1.data(),
-                    dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0}, p2.data(), dim2, 1,
-                    &o2[0], &ptrv2, &ctx,
+        contraction(T{1}, p0.data(), from0, size0, dim0, 1, &o0[0], conj0, (const T **)&ptrv0, &ctx,
+                    p1.data(), from1, size1, dim1, 1, &o1[0], conj1, (const T **)&ptrv1, &ctx, T{0},
+                    p2.data(), from2, size2, dim2, 1, &o2[0], &ptrv2, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
 #endif
@@ -326,6 +340,7 @@ int main(int argc, char **argv) {
     (void)argv;
 #endif
 
+    std::srand(0);
     test<double>();
     test<std::complex<double>>();
 

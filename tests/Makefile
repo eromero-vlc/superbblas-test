@@ -123,7 +123,8 @@ hist_cpu hist_cuda hist_hip: hist_%:
 clean:
 	rm -f ${CPU_TARGETS} ${CPU_LIB_TARGETS} ${CUDA_TARGETS} ${CUDA_LIB_TARGETS} ${HIP_TARGETS} ${HIP_LIB_TARGETS} storage_details
 
-known_issues: dist_cpu
+known_issues: dist_cpu dense_cuda
+	OPENBLAS_NUM_THREADS=1 ./dense_cuda --dim='200000 1 1 1 4 4'
 	# Hangs for Open MPI 4.0.3 since commit 3530391ab167425aacee9e42b3abcacd9c85b117 (already fixed)
 	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 mpirun -np 3 ./dist_cpu  --procs='1 1 1 3' --dim='1 1 1 2 4'
 	# MPI_Ialltoallv hungs (already fixed)

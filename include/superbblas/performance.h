@@ -1,12 +1,13 @@
 #ifndef __SUPERBBLAS_PERFORMANCE__
 #define __SUPERBBLAS_PERFORMANCE__
 
+#include "platform.h"
 #include "runtime_features.h"
-#include "superbblas_flags.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <complex>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -21,9 +22,6 @@
 
 namespace superbblas {
 
-    /// Cache session
-    using Session = unsigned int;
-
     namespace detail {
         /// Return the relative cost of the multiplication with respect to real floating point
         /// \tparam T: type to consider
@@ -34,31 +32,6 @@ namespace superbblas {
         template <> struct multiplication_cost<std::complex<double>> {
             static const int value = 8;
         };
-    }
-
-    /// Total time and number of invocations or cost factor
-    struct Timing {
-        double time;
-        double cost;
-        Timing() : time(0), cost(0) {}
-    };
-
-    /// Type for storing the timings
-    using Timings = std::unordered_map<std::string, Timing>;
-
-    /// Return the performance timings
-    inline Timings &getTimings(Session session) {
-        static std::vector<Timings> timings(256, Timings{16});
-        return timings[session];
-    }
-
-    /// Type for storing the memory usage
-    using CacheUsage = std::unordered_map<std::string, double>;
-
-    /// Return the performance timings
-    inline CacheUsage &getCacheUsage(Session session) {
-        static std::vector<CacheUsage> cacheUsage(256, CacheUsage{16});
-        return cacheUsage[session];
     }
 
     /// Get total memory allocated on the host/cpu if tracking memory consumption (see `getTrackingMemory`)
@@ -75,7 +48,122 @@ namespace superbblas {
         return mem[session];
     }
 
+#ifdef SUPERBBLAS_USE_GPU
+    using GpuEvent = SUPERBBLAS_GPU_SYMBOL(Event_t);
+    using TimingGpuEvent = std::array<GpuEvent, 2>;
+
+    /// A list of pairs of starting and ending timing events
+    using TimingGpuEvents = std::vector<TimingGpuEvent>;
+#endif
+
+    /// Performance metrics, time, memory usage, etc
+    struct Metric {
+        double cpu_time;   ///< wall-clock time for the cpu
+        double gpu_time;   ///< wall-clock time for the gpu
+        double cost;       ///< flops or entities processed (eg, rhs for matvecs)
+        double max_mem;    ///< memory usage in bytes
+        std::size_t calls; ///< number of times the function was called
+#ifdef SUPERBBLAS_USE_GPU
+        /// List of start-end gpu events for calls of this function in course
+        TimingGpuEvents timing_events;
+#endif
+        Metric() : cpu_time(0), gpu_time(0), cost(0), max_mem(0), calls(0) {}
+    };
+
+    /// Type for storing the timings
+    using Timings = std::unordered_map<std::string, Metric>;
+
+    /// Return the performance timings
+    inline Timings &getTimings(Session session) {
+        static std::vector<Timings> timings(256, Timings{16});
+        return timings[session];
+    }
+
+    /// Type for storing the memory usage
+    using CacheUsage = std::unordered_map<std::string, double>;
+
+    /// Return the performance timings
+    inline CacheUsage &getCacheUsage(Session session) {
+        static std::vector<CacheUsage> cacheUsage(256, CacheUsage{16});
+        return cacheUsage[session];
+    }
+
     namespace detail {
+
+        /// Template namespace for managing the gpu timings
+        template <typename XPU> struct TimingEvents;
+
+#ifdef SUPERBBLAS_USE_GPU
+        template <> struct TimingEvents<Gpu> {
+            /// Gpu timing event
+            using TimingEvent = TimingGpuEvent;
+
+            /// Extract the timings from the recorded events just finished, remove them from the vector,
+            /// and return the accumulated time
+            /// \param events: (in/out) vector of events to inspect
+
+            static double processEvents(TimingGpuEvents &events) {
+                double new_time = 0;
+                events.erase(std::remove_if(events.begin(), events.end(),
+                                            [&](const TimingGpuEvent &ev) {
+                                                // Try to get the elapsed time between the two events
+                                                float ms = 0;
+                                                auto err = SUPERBBLAS_GPU_SYMBOL(EventElapsedTime)(
+                                                    &ms, ev[0], ev[1]);
+                                                if (err == SUPERBBLAS_GPU_SYMBOL(Success)) {
+                                                    // If successful, register the time and erase the entry in the vector
+                                                    new_time += ms / 1000.0;
+                                                    return true;
+                                                } else {
+                                                    // Otherwise, do nothing
+                                                    return false;
+                                                }
+                                            }),
+                             events.end());
+                return new_time;
+            }
+
+            /// Return a gpu timing event and start counting
+            /// \param xpu: context
+
+            static TimingEvent startRecordingEvent(const Gpu &xpu) {
+                TimingEvent tev;
+                setDevice(xpu);
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventCreate)(&tev[0]));
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventCreate)(&tev[1]));
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventRecord)(tev[0], getStream(xpu)));
+                return tev;
+            }
+
+            /// Mark the end of a recording
+            /// \param tev: gpu timing event
+            /// \param xpu: context
+
+            static void endRecordingEvent(const TimingEvent &tev, const Gpu &xpu) {
+                setDevice(xpu);
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(EventRecord)(tev[1], getStream(xpu)));
+            }
+
+            static void updateGpuTimingEvents(Metric &metric) {
+                metric.gpu_time += processEvents(metric.timing_events);
+            }
+
+            static void updateGpuTimingEvents(Metric &metric, const TimingEvent &tev) {
+                updateGpuTimingEvents(metric);
+                metric.timing_events.push_back(tev);
+            }
+        };
+#endif
+
+        /// Dummy implementation of `TimingEvents` for cpu
+
+        template <> struct TimingEvents<Cpu> {
+            using TimingEvent = char;
+            static TimingEvent startRecordingEvent(const Cpu &) { return 0; }
+            static void endRecordingEvent(const TimingEvent &, const Cpu &) {}
+            static void updateGpuTimingEvents(Metric &) {}
+            static void updateGpuTimingEvents(Metric &, const TimingEvent &) {}
+        };
 
         /// Stack of function calls being tracked
         using CallStack = std::vector<std::string>;
@@ -129,29 +217,35 @@ namespace superbblas {
             const std::chrono::time_point<std::chrono::system_clock> start;
             /// Context
             const XPU xpu;
-            /// Elapsed time
+            /// Cpu elapsed time
             double elapsedTime;
+            /// Gpu starting and ending events
+            typename TimingEvents<XPU>::TimingEvent timingEvent;
             /// Equivalent units of cost
             double cost;
 
             /// Start a tracker
-            tracker(std::string funcName, XPU xpu, bool timeAnyway = false)
+            tracker(const std::string &funcName, XPU xpu, bool timeAnyway = false)
                 : stopped(!(timeAnyway || getTrackingTime())),
 #ifdef SUPERBBLAS_USE_NVTX
                   reported(false),
 #endif
-                  funcName(!stopped ? funcName : std::string()),
+                  funcName(funcName),
                   mem_cpu(getTrackingMemory() ? getCpuMemUsed(xpu.session) : 0),
                   mem_gpu(getTrackingMemory() ? getGpuMemUsed(xpu.session) : 0),
                   start(!stopped ? std::chrono::system_clock::now()
                                  : std::chrono::time_point<std::chrono::system_clock>{}),
                   xpu(xpu),
                   elapsedTime(0),
-                  cost(1) {
-                if (!stopped) pushCall(funcName, xpu.session); // NOTE: well this is timed...
+                  cost(0) {
+
+                if (!stopped) {
+                    pushCall(funcName, xpu.session);
+                    timingEvent = TimingEvents<XPU>::startRecordingEvent(xpu);
+                }
 #ifdef SUPERBBLAS_USE_NVTX
                 // Register this scope of time starting
-                nvtxRangePushA(funcName.c_str());
+                nvtxRangePushA(this->funcName.c_str());
 #endif
             }
 
@@ -170,6 +264,9 @@ namespace superbblas {
                 if (stopped) return;
                 stopped = true;
 
+                // Record gpu ending event
+                TimingEvents<XPU>::endRecordingEvent(timingEvent, xpu);
+
                 // Enforce a synchronization
                 if (getTrackingTimeSync()) sync(xpu);
 
@@ -182,8 +279,10 @@ namespace superbblas {
 
                 // Record the time
                 auto &timing = getTimings(xpu.session)[funcNameWithStack];
-                timing.time += elapsedTime;
+                timing.cpu_time += elapsedTime;
                 timing.cost += cost;
+                timing.calls++;
+                TimingEvents<XPU>::updateGpuTimingEvents(timing, timingEvent);
 
                 // Record memory not released
                 if (getTrackingMemory())
@@ -222,18 +321,29 @@ namespace superbblas {
             for (const auto &it : getTimings(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
         for (const auto &name : names) {
-            double total = 0, cost = 0;
+            double cpu_time = 0, gpu_time = 0, cost = 0, calls = 0;
             for (Session session = 0; session < 256; ++session) {
                 auto it = getTimings(session).find(name);
                 if (it != getTimings(session).end()) {
-                    total += it->second.time;
+#ifdef SUPERBBLAS_USE_GPU
+                    detail::TimingEvents<detail::Gpu>::updateGpuTimingEvents(it->second);
+                    gpu_time += it->second.gpu_time;
+#endif
+                    cpu_time += it->second.cpu_time;
                     cost += it->second.cost;
+                    calls += it->second.calls;
                 }
             }
-            s << name << " : " << total << " s (calls/cost: " << cost
-              << " calls/cost_per_sec: " << (std::fabs(total) == 0 ? 0 : cost / total) << " )"
-              << std::endl;
+            double time = (gpu_time > 0 ? gpu_time : cpu_time);
+            double gcost_per_sec = (time > 0 ? cost / time : 0) / 1024u / 1024u / 1024u;
+            s << name << " : " << std::fixed << std::setprecision(3) << cpu_time << " s ("
+#ifdef SUPERBBLAS_USE_GPU
+              << "gpu_time: " << gpu_time << " "
+#endif
+              << "calls: " << std::setprecision(0) << calls << " cost: " << cost << std::scientific
+              << std::setprecision(3) << " gcost_per_sec: " << gcost_per_sec << " )" << std::endl;
         }
+        s << std::defaultfloat;
     }
 
     /// Report all tracked cache memory usage
