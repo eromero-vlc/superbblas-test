@@ -191,6 +191,13 @@ namespace superbblas {
             return r;
         }
 
+        template <typename T, std::size_t N>
+        std::array<T, N> reverse(const std::array<T, N> v, const std::size_t n) {
+            std::array<T, N> r = v;
+            std::reverse(r.begin(), r.begin() + n);
+            return r;
+        }
+
         template <std::size_t N> Coor<N> ones() {
             Coor<N> r;
             for (auto &c : r) c = 1;
@@ -1204,149 +1211,47 @@ namespace superbblas {
                     new_disp1};
         }
 
-        /// Recommended orderings for contracting two tensors
-        /// \param o0: dimension labels for the first operator
-        /// \param dim0: dimension size for the first operator
-        /// \param conj0: whether element-wise conjugate the first operator
-        /// \param o1: dimension labels for the second operator
-        /// \param dim1: dimension size for the second operator
-        /// \param conj1: whether element-wise conjugate the second operator
-        /// \param o_r: dimension labels for the output operator
-        /// \param dimr: dimension size for the output operator
-        /// \param sug_o0: (out) suggested dimension labels for the first operator
-        /// \param sug_o1: (out) suggested dimension labels for the second operator
-        /// \param sug_or: (out) suggested dimension labels for the output operator
-        /// \param swap_operands: (out) suggest to swap the first and the second operator
-        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+        /// Return c0 and c1 ordered following their positions p0 and p1 in ascending order
+        /// \param p0: position of the character `c0`
+        /// \param c0: character value for position `p0`
+        /// \param p1: position of the character `c1`
+        /// \param c1: character value for position `p1`
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
-        void suggested_orders_for_contraction(
-            const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0, const Order<Nd1> &o1,
-            const Coor<Nd1> &dim1, bool conj1, const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
-            Order<Nd0> &sug_o0, Order<Nd1> &sug_o1, Order<Ndo> &sug_or, bool &swap_operands,
-            unsigned int &nT, unsigned int &posT0, unsigned int &posT1, unsigned int &posTr,
-            unsigned int &nA, unsigned int &posA0, unsigned int &posA1, unsigned int &nB,
-            unsigned int &posB0, unsigned int &posBr, unsigned int &nC, unsigned int &posC1,
-            unsigned int &posCr, CoorOrder co) {
-
-            // TODO: not consider dimensions with a single element
-            (void)dim0;
-            (void)dim1;
-            (void)dimr;
-
-            // The rest of the code is for SlowToFast; so reverse if that is the case
-            if (co == FastToSlow) {
-                suggested_orders_for_contraction<Nd0, Nd1, Ndo>(
-                    reverse(o0), reverse(dim0), conj0, reverse(o1), reverse(dim1), conj1,
-                    reverse(o_r), reverse(dimr), sug_o0, sug_o1, sug_or, swap_operands, nT, posT0,
-                    posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1, posCr, SlowToFast);
-                sug_o0 = reverse(sug_o0);
-                sug_o1 = reverse(sug_o1);
-                sug_or = reverse(sug_or);
-                posT0 = o0.size() - (posT0 + nT);
-                posT1 = o1.size() - (posT1 + nT);
-                posTr = o_r.size() - (posTr + nT);
-                posA0 = o0.size() - (posA0 + nA);
-                posA1 = o1.size() - (posA1 + nA);
-                posB0 = o0.size() - (posB0 + nB);
-                posBr = o_r.size() - (posBr + nB);
-                posC1 = o1.size() - (posC1 + nC);
-                posCr = o_r.size() - (posCr + nC);
-                return;
+        template <typename Pos>
+        Order<2> order_from_pos(const Pos &p0, char c0, const Pos &p1, char c1) {
+            if (p0 < p1) {
+                return Order<2>{{c0, c1}};
+            } else {
+                return Order<2>{{c1, c0}};
             }
+        }
 
-            // Find all common labels in o0, o1, and o_r
-            Order<Nd0> oT;
-            nT = 0;
-            for (char c : o0)
-                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
-                    std::find(o_r.begin(), o_r.end(), c) != o_r.end())
-                    oT[nT++] = c;
+        /// Return c0, c1, and c2 ordered following their positions p0, p1, and p2 in ascending order
+        /// \param p0: position of the character `c0`
+        /// \param c0: character value for position `p0`
+        /// \param p1: position of the character `c1`
+        /// \param c1: character value for position `p1`
+        /// \param p2: position of the character `c2`
+        /// \param c2: character value for position `p2`
 
-            // Find all common labels in o0 and o1 but not in oT
-            Order<Nd0> oA;
-            nA = 0;
-            for (char c : o0)
-                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
-                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
-                    oA[nA++] = c;
-
-            // Find all common labels in o0 and o_r but not in oT
-            Order<Nd0> oB;
-            nB = 0;
-            for (char c : o0)
-                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
-                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
-                    oB[nB++] = c;
-
-            // Find all common labels in o1 and o_r but not in oT
-            Order<Nd1> oC;
-            nC = 0;
-            for (char c : o1)
-                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
-                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT)
-                    oC[nC++] = c;
-
-            // Check that o0 is made of the pieces T, A and B
-            if (o0.size() != nT + nA + nB) throw std::runtime_error("o0 has unmatched dimensions");
-            // Check that o1 is made of the pieces T, C and A
-            if (o1.size() != nT + nA + nC) throw std::runtime_error("o1 has unmatched directions");
-            // Check that o_r is made of the pieces T, C and B
-            if (o_r.size() != nT + nB + nC)
-                throw std::runtime_error("o_r has unmatched dimensions");
-
-            // If oT, oA, or oB aren't found as either oT+oA+oB or oA+oT+oB or oT+oB+oA or oB+oT+oA for !conj,
-            // and oT+oB+oA or oB+oT+oA for conj, then reorder the labels appropriately
-            auto sT0 = std::search(o0.begin(), o0.end(), oT.begin(), oT.begin() + nT);
-            auto sA0 = std::search(o0.begin(), o0.end(), oA.begin(), oA.begin() + nA);
-            auto sB0 = std::search(o0.begin(), o0.end(), oB.begin(), oB.begin() + nB);
-            if (sT0 == o0.end() || sA0 == o0.end() || sB0 == o0.end() ||
-                (!conj0 && nT > 0 && nA > 0 && nB > 0 && sA0 < sT0 && sB0 < sT0) ||
-                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0)))) {
-                std::copy_n(oT.begin(), nT, sug_o0.begin());
-                std::copy_n(oA.begin(), nA, sug_o0.begin() + nT + (!conj0 ? 0 : nB));
-                std::copy_n(oB.begin(), nB, sug_o0.begin() + nT + (!conj0 ? nA : 0));
-            } else
-                sug_o0 = o0;
-
-            // If oT, oA, or oC aren't found as either oT+oC+oA or oC+oT+oA or oT+oA+oC or oA+oT+oC for !conj,
-            // and oT+oA+oC or oA+oT+oC for conj, then reorder the labels appropriately
-            auto sT1 = std::search(o1.begin(), o1.end(), oT.begin(), oT.begin() + nT);
-            auto sA1 = std::search(o1.begin(), o1.end(), oA.begin(), oA.begin() + nA);
-            auto sC1 = std::search(o1.begin(), o1.end(), oC.begin(), oC.begin() + nC);
-            if (sT1 == o1.end() || sA1 == o1.end() || sC1 == o1.end() ||
-                (!conj1 && nT > 0 && nA > 0 && nC > 0 && sA1 < sT1 && sC1 < sT1) ||
-                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1)))) {
-                std::copy_n(oT.begin(), nT, sug_o1.begin());
-                std::copy_n(oC.begin(), nC, sug_o1.begin() + nT + (!conj1 ? 0 : nA));
-                std::copy_n(oA.begin(), nA, sug_o1.begin() + nT + (!conj1 ? nC : 0));
-            } else
-                sug_o1 = o1;
-
-            // If oT, oB, or oC aren't found as either oT+oC+oB or oC+oT+oB, then reorder the labels appropriately
-            auto sTr = std::search(o_r.begin(), o_r.end(), oT.begin(), oT.begin() + nT);
-            auto sBr = std::search(o_r.begin(), o_r.end(), oB.begin(), oB.begin() + nB);
-            auto sCr = std::search(o_r.begin(), o_r.end(), oC.begin(), oC.begin() + nC);
-            swap_operands = false;
-            if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
-                (nT > 0 && nB > 0 && sBr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
-                swap_operands = (nB > 0 && nC > 0 && sBr < sCr);
-                std::copy_n(oT.begin(), nT, sug_or.begin());
-                std::copy_n(oC.begin(), nC, sug_or.begin() + nT);
-                std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
-            } else
-                sug_or = o_r;
-
-            // Return positions
-            posT0 = sT0 - o0.begin();
-            posT1 = sT1 - o1.begin();
-            posTr = sTr - o_r.begin();
-            posA0 = sA0 - o0.begin();
-            posA1 = sA1 - o1.begin();
-            posB0 = sB0 - o0.begin();
-            posBr = sBr - o_r.begin();
-            posC1 = sC1 - o1.begin();
-            posCr = sCr - o_r.begin();
+        template <typename Pos>
+        Order<3> order_from_pos(const Pos &p0, char c0, const Pos &p1, char c1, const Pos &p2,
+                                char c2) {
+            Order<3> r;
+            Order<2> r2;
+            if (p0 < p1 && p0 < p2) {
+                r[0] = c0;
+                r2 = order_from_pos(p1, c1, p2, c2);
+            } else if (p1 < p2) {
+                r[0] = c1;
+                r2 = order_from_pos(p0, c0, p2, c2);
+            } else {
+                r[0] = c2;
+                r2 = order_from_pos(p0, c0, p1, c1);
+            }
+            r[1] = r2[0];
+            r[2] = r2[1];
+            return r;
         }
 
         /// Recommended orderings for contracting two tensors
@@ -1364,19 +1269,175 @@ namespace superbblas {
         /// \param swap_operands: (out) suggest to swap the first and the second operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
-        void
-        suggested_orders_for_contraction(const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
-                                         const Order<Nd1> &o1, const Coor<Nd1> &dim1, bool conj1,
-                                         const Order<Ndo> &o_r, const Coor<Ndo> &dimr,
-                                         Order<Nd0> &sug_o0, Order<Nd1> &sug_o1, Order<Ndo> &sug_or,
-                                         bool &swap_operands, CoorOrder co) {
+        template <std::size_t Nd>
+        void suggested_orders_for_contraction(
+            const std::size_t Nd0, const Order<Nd> &o0, const Coor<Nd> &dim0, bool conj0,
+            const std::size_t Nd1, const Order<Nd> &o1, const Coor<Nd> &dim1, bool conj1,
+            const std::size_t Ndo, const Order<Nd> &o_r, const Coor<Nd> &dimr,
+            CoorOrder co, //
+            Order<Nd> &sug_o0, Order<Nd> &sug_o1, Order<Nd> &sug_or, bool &swap_operands,
+            Order<3> &norm_o0, Order<3> &norm_o1, Order<3> &norm_or, std::size_t &volT,
+            std::size_t &volA, std::size_t &volB, std::size_t &volC) {
 
-            unsigned int nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1,
-                posCr;
-            suggested_orders_for_contraction(
-                o0, dim0, conj0, o1, dim1, conj1, o_r, dimr, sug_o0, sug_o1, sug_or, swap_operands,
-                nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1, posCr, co);
+            // TODO: not consider dimensions with a single element
+            (void)dimr;
+
+            // The rest of the code is for SlowToFast; so reverse if that is the case
+            if (co == FastToSlow) {
+                suggested_orders_for_contraction(Nd0, reverse(o0, Nd0), reverse(dim0, Nd0), conj0,
+                                                 Nd1, reverse(o1, Nd1), reverse(dim1, Nd1), conj1,
+                                                 Ndo, reverse(o_r, Ndo), reverse(dimr, Ndo),
+                                                 SlowToFast, sug_o0, sug_o1, sug_or, swap_operands,
+                                                 norm_o0, norm_o1, norm_or, volT, volA, volB, volC);
+                sug_o0 = reverse(sug_o0, Nd0);
+                sug_o1 = reverse(sug_o1, Nd1);
+                sug_or = reverse(sug_or, Ndo);
+                return;
+            }
+
+            // Find all common labels in o0, o1, and o_r
+            Order<Nd> oT;
+            volT = 1;
+            unsigned int nT = 0;
+            for (unsigned int i = 0; i < Nd0; ++i) {
+                char c = o0[i];
+                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
+                    std::find(o_r.begin(), o_r.end(), c) != o_r.end()) {
+                    oT[nT++] = c;
+                    volT *= dim0[i];
+                }
+            }
+
+            // Find all common labels in o0 and o1 but not in oT
+            Order<Nd> oA;
+            volA = 1;
+            unsigned int nA = 0;
+            for (unsigned int i = 0; i < Nd0; ++i) {
+                char c = o0[i];
+                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
+                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT) {
+                    oA[nA++] = c;
+                    volA *= dim0[i];
+                }
+            }
+
+            // Find all common labels in o0 and o_r but not in oT
+            Order<Nd> oB;
+            volB = 1;
+            unsigned int nB = 0;
+            for (unsigned int i = 0; i < Nd0; ++i) {
+                char c = o0[i];
+                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
+                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT) {
+                    oB[nB++] = c;
+                    volB *= dim0[i];
+                }
+            }
+
+            // Find all common labels in o1 and o_r but not in oT
+            Order<Nd> oC;
+            volC = 1;
+            unsigned int nC = 0;
+            for (unsigned int i = 0; i < Nd1; ++i) {
+                char c = o1[i];
+                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
+                    std::find(oT.begin(), oT.begin() + nT, c) == oT.begin() + nT) {
+                    oC[nC++] = c;
+                    volC *= dim1[i];
+                }
+            }
+
+            // Check that o0 is made of the pieces T, A and B
+            if (Nd0 != nT + nA + nB) throw std::runtime_error("o0 has unmatched dimensions");
+            // Check that o1 is made of the pieces T, C and A
+            if (Nd1 != nT + nA + nC) throw std::runtime_error("o1 has unmatched directions");
+            // Check that o_r is made of the pieces T, C and B
+            if (Ndo != nT + nB + nC) throw std::runtime_error("o_r has unmatched dimensions");
+
+            // If oT, oA, or oB aren't found as either oT+oA+oB or oA+oT+oB or oT+oB+oA or oB+oT+oA for !conj,
+            // and oT+oB+oA or oB+oT+oA for conj, then reorder the labels appropriately
+            auto sT0 = std::search(o0.begin(), o0.end(), oT.begin(), oT.begin() + nT);
+            auto sA0 = std::search(o0.begin(), o0.end(), oA.begin(), oA.begin() + nA);
+            auto sB0 = std::search(o0.begin(), o0.end(), oB.begin(), oB.begin() + nB);
+            if (sT0 == o0.end() || sA0 == o0.end() || sB0 == o0.end() ||
+                (!conj0 && nT > 0 && nA > 0 && nB > 0 && sA0 < sT0 && sB0 < sT0) ||
+                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0)))) {
+                std::copy_n(oT.begin(), nT, sug_o0.begin());
+                std::copy_n(oA.begin(), nA, sug_o0.begin() + nT + (!conj0 ? 0 : nB));
+                std::copy_n(oB.begin(), nB, sug_o0.begin() + nT + (!conj0 ? nA : 0));
+                std::copy_n(o0.begin() + nT + nA + nB, o0.size() - nT - nA - nB,
+                            sug_o0.begin() + nT + nA + nB);
+                norm_o0 = Order<3>{{'t', 'a', 'b'}};
+            } else {
+                sug_o0 = o0;
+                norm_o0 = order_from_pos(sT0, 't', sA0, 'a', sB0, 'b');
+            }
+
+            // If oT, oA, or oC aren't found as either oT+oC+oA or oC+oT+oA or oT+oA+oC or oA+oT+oC for !conj,
+            // and oT+oA+oC or oA+oT+oC for conj, then reorder the labels appropriately
+            auto sT1 = std::search(o1.begin(), o1.end(), oT.begin(), oT.begin() + nT);
+            auto sA1 = std::search(o1.begin(), o1.end(), oA.begin(), oA.begin() + nA);
+            auto sC1 = std::search(o1.begin(), o1.end(), oC.begin(), oC.begin() + nC);
+            if (sT1 == o1.end() || sA1 == o1.end() || sC1 == o1.end() ||
+                (!conj1 && nT > 0 && nA > 0 && nC > 0 && sA1 < sT1 && sC1 < sT1) ||
+                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1)))) {
+                std::copy_n(oT.begin(), nT, sug_o1.begin());
+                std::copy_n(oC.begin(), nC, sug_o1.begin() + nT + (!conj1 ? 0 : nA));
+                std::copy_n(oA.begin(), nA, sug_o1.begin() + nT + (!conj1 ? nC : 0));
+                std::copy_n(o1.begin() + nT + nC + nA, o1.size() - nT - nC - nA,
+                            sug_o1.begin() + nT + nC + nA);
+                norm_o1 = Order<3>{{'t', 'c', 'a'}};
+            } else {
+                sug_o1 = o1;
+                norm_o1 = order_from_pos(sT1, 't', sA1, 'a', sC1, 'c');
+            }
+
+            // If oT, oB, or oC aren't found as either oT+oC+oB or oC+oT+oB, then reorder the labels appropriately
+            auto sTr = std::search(o_r.begin(), o_r.end(), oT.begin(), oT.begin() + nT);
+            auto sBr = std::search(o_r.begin(), o_r.end(), oB.begin(), oB.begin() + nB);
+            auto sCr = std::search(o_r.begin(), o_r.end(), oC.begin(), oC.begin() + nC);
+            swap_operands = false;
+            if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
+                (nT > 0 && nB > 0 && sBr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
+                swap_operands = (nB > 0 && nC > 0 && sBr < sCr);
+                std::copy_n(oT.begin(), nT, sug_or.begin());
+                std::copy_n(oC.begin(), nC, sug_or.begin() + nT);
+                std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
+                std::copy_n(o_r.begin() + nT + nC + nB, o_r.size() - nT - nC - nB,
+                            sug_or.begin() + nT + nC + nB);
+                norm_or = Order<3>{{'t', 'c', 'b'}};
+            } else {
+                sug_or = o_r;
+                norm_or = order_from_pos(sTr, 't', sBr, 'b', sCr, 'c');
+            }
+        }
+
+        /// Recommended orderings for contracting two tensors
+        /// \param o0: dimension labels for the first operator
+        /// \param dim0: dimension size for the first operator
+        /// \param conj0: whether element-wise conjugate the first operator
+        /// \param o1: dimension labels for the second operator
+        /// \param dim1: dimension size for the second operator
+        /// \param conj1: whether element-wise conjugate the second operator
+        /// \param o_r: dimension labels for the output operator
+        /// \param dimr: dimension size for the output operator
+        /// \param sug_o0: (out) suggested dimension labels for the first operator
+        /// \param sug_o1: (out) suggested dimension labels for the second operator
+        /// \param sug_or: (out) suggested dimension labels for the output operator
+        /// \param swap_operands: (out) suggest to swap the first and the second operator
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd>
+        void suggested_orders_for_contraction(
+            const std::size_t Nd0, const Order<Nd> &o0, const Coor<Nd> &dim0, bool conj0,
+            const std::size_t Nd1, const Order<Nd> &o1, const Coor<Nd> &dim1, bool conj1,
+            const std::size_t Ndo, const Order<Nd> &o_r, const Coor<Nd> &dimr, Order<Nd> &sug_o0,
+            Order<Nd> &sug_o1, Order<Nd> &sug_or, bool &swap_operands, CoorOrder co) {
+            Order<3> norm_o0, norm_o1, norm_or;
+            std::size_t volT, volA, volB, volC;
+            suggested_orders_for_contraction(Nd0, o0, dim0, conj0, Nd1, o1, dim1, conj1, Ndo, o_r,
+                                             dimr, co, sug_o0, sug_o1, sug_or, swap_operands,
+                                             norm_o0, norm_o1, norm_or, volT, volA, volB, volC);
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
@@ -1395,11 +1456,13 @@ namespace superbblas {
         /// \param vr: data for the second operator
         /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename XPU>
-        void local_contraction(T alpha, const Order<Nd0> &o0, const Coor<Nd0> &dim0, bool conj0,
-                               vector<const T, XPU> v0, const Order<Nd1> &o1, const Coor<Nd1> &dim1,
-                               bool conj1, vector<const T, XPU> v1, T beta, const Order<Ndo> &o_r,
-                               const Coor<Ndo> &dimr, vector<T, XPU> vr, CoorOrder co) {
+        template <typename T, typename XPU>
+        void local_contraction_normalized(const T &alpha, const T &beta, const Order<3> &o0,
+                                          const Order<3> &o1, const Order<3> &o_r,
+                                          const std::size_t &volT, const std::size_t &volA,
+                                          const std::size_t &volB, const std::size_t &volC,
+                                          bool conj0, bool conj1, const vector<const T, XPU> &v0,
+                                          const vector<const T, XPU> &v1, vector<T, XPU> &vr) {
 
             if (deviceId(v0.ctx()) != deviceId(v1.ctx()) ||
                 deviceId(v1.ctx()) != deviceId(vr.ctx()))
@@ -1409,149 +1472,59 @@ namespace superbblas {
             if (!check_order(o0)) throw std::runtime_error("o0 has repeated labels");
             if (!check_order(o1)) throw std::runtime_error("o1 has repeated labels");
             if (!check_order(o_r)) throw std::runtime_error("o_r has repeated labels");
-
-            // Check dimensions
-            if (!check_dimensions<Nd0, Nd1, Ndo>(o0, dim0, o1, dim1, o_r, dimr))
-                throw std::runtime_error("some dimension does not match");
-
-            // The rest of the code is for SlowToFast; so reverse if that is the case
-            if (co == FastToSlow) {
-                local_contraction<Nd0, Nd1, Ndo, T, XPU>(
-                    alpha, reverse(o0), reverse(dim0), conj0, v0, reverse(o1), reverse(dim1), conj1,
-                    v1, beta, reverse(o_r), reverse(dimr), vr, SlowToFast);
-                return;
-            }
+            assert(v0.size() >= volT * volA * volB);
+            assert(v1.size() >= volT * volA * volC);
+            assert(vr.size() >= volT * volB * volC);
 
             tracker<XPU> _t(std::string("local contraction ") + platformToStr(vr.ctx()), vr.ctx());
 
-            // If o0, o1, and o_r aren't appropriate, permute the input operands and the output
-            unsigned int nT, posT0, posT1, posTr, nA, posA0, posA1, nB, posB0, posBr, nC, posC1,
-                posCr;
-            {
-                Order<Nd0> sug_o0;
-                Order<Nd1> sug_o1;
-                Order<Ndo> sug_or;
-                bool swap_operands;
-                suggested_orders_for_contraction(o0, dim0, conj0, o1, dim1, conj1, o_r, dimr,
-                                                 sug_o0, sug_o1, sug_or, swap_operands, nT, posT0,
-                                                 posT1, posTr, nA, posA0, posA1, nB, posB0, posBr,
-                                                 nC, posC1, posCr, co);
-                if (swap_operands) {
-                    local_contraction<Nd1, Nd0, Ndo, T, XPU>(alpha, o1, dim1, conj1, v1, o0, dim0,
-                                                             conj0, v0, beta, o_r, dimr, vr,
-                                                             SlowToFast);
-                    return;
-                }
-                if (sug_o0 != o0 || sug_o1 != o1 || sug_or != o_r) {
-                    Coor<Nd0> sug_dim0 = dim0;
-                    vector<const T, XPU> sug_v0 = v0;
-                    if (sug_o0 != o0) {
-                        sug_dim0 = reorder_coor(dim0, find_permutation(o0, sug_o0));
-                        vector<T, XPU> sug_v0_(v0.size(), v0.ctx());
-                        local_copy<Nd0, Nd0>(T{1}, o0, {{}}, dim0, dim0, v0, Mask<XPU>{}, sug_o0,
-                                             {{}}, sug_dim0, sug_v0_, Mask<XPU>{}, EWOp::Copy{},
-                                             SlowToFast);
-                        sug_v0 = sug_v0_;
-                    }
-
-                    Coor<Nd1> sug_dim1 = dim1;
-                    vector<const T, XPU> sug_v1 = v1;
-                    if (sug_o1 != o1) {
-                        sug_dim1 = reorder_coor(dim1, find_permutation(o1, sug_o1));
-                        vector<T, XPU> sug_v1_(v1.size(), v1.ctx());
-                        local_copy<Nd1, Nd1>(T{1}, o1, {{}}, dim1, dim1, v1, Mask<XPU>{}, sug_o1,
-                                             {{}}, sug_dim1, sug_v1_, Mask<XPU>{}, EWOp::Copy{},
-                                             SlowToFast);
-                        sug_v1 = sug_v1_;
-                    }
-
-                    Coor<Ndo> sug_dimr = dimr;
-                    vector<T, XPU> sug_vr = vr;
-                    if (sug_or != o_r) {
-                        sug_dimr = reorder_coor(dimr, find_permutation(o_r, sug_or));
-                        sug_vr = vector<T, XPU>(vr.size(), vr.ctx());
-                        if (std::fabs(beta) != 0)
-                            local_copy<Ndo, Ndo, T, T>(T{1}, o_r, {{}}, dimr, dimr,
-                                                       vector<const T, XPU>(vr), Mask<XPU>{},
-                                                       sug_or, {{}}, sug_dimr, sug_vr, Mask<XPU>{},
-                                                       EWOp::Copy{}, SlowToFast);
-                    }
-
-                    local_contraction<Nd0, Nd1, Ndo, T, XPU>(alpha, sug_o0, sug_dim0, conj0, sug_v0,
-                                                             sug_o1, sug_dim1, conj1, sug_v1, beta,
-                                                             sug_or, sug_dimr, sug_vr, SlowToFast);
-
-                    if (sug_or != o_r)
-                        local_copy<Ndo, Ndo>(T{1}, sug_or, {{}}, sug_dimr, sug_dimr,
-                                             vector<const T, XPU>(sug_vr), Mask<XPU>{}, o_r, {{}},
-                                             dimr, vr, Mask<XPU>{}, EWOp::Copy{}, SlowToFast);
-                    return;
-                }
-            }
-
-            // Compute the volume for each piece
-            std::size_t volT = volume<Nd0>(dim0.begin() + posT0, dim0.begin() + posT0 + nT);
-            std::size_t volA = volume<Nd0>(dim0.begin() + posA0, dim0.begin() + posA0 + nA);
-            std::size_t volB = volume<Nd0>(dim0.begin() + posB0, dim0.begin() + posB0 + nB);
-            std::size_t volC = volume<Nd1>(dim1.begin() + posC1, dim1.begin() + posC1 + nC);
-            std::size_t vol0 = volume<Nd0>(dim0);
-            std::size_t vol1 = volume<Nd1>(dim1);
-            std::size_t volr = volume<Ndo>(dimr);
-
             // Deal with zero dimensions and implicit dimensions
-            if (volr == 0) return;
-            if (volT == 0) volT = 1;
-            if ((vol0 > 0 || vol1 > 0) && volA == 0) volA = 1;
-            if ((vol0 > 0 || volr > 0) && volB == 0) volB = 1;
-            if ((vol1 > 0 || volr > 0) && volC == 0) volC = 1;
-            assert(volT * volA * volB == vol0);
-            assert(volT * volA * volC == vol1);
-            assert(volT * volB * volC == volr);
+            if (volT == 0 || volB == 0 || volC == 0) return;
+
+            // Find the positions for each label
+            unsigned int posT0 = std::find(o0.begin(), o0.end(), 't') - o0.begin();
+            unsigned int posT1 = std::find(o1.begin(), o1.end(), 't') - o1.begin();
+            unsigned int posTr = std::find(o_r.begin(), o_r.end(), 't') - o_r.begin();
+            unsigned int posA0 = std::find(o0.begin(), o0.end(), 'a') - o0.begin();
+            unsigned int posA1 = std::find(o1.begin(), o1.end(), 'a') - o1.begin();
+            unsigned int posB0 = std::find(o0.begin(), o0.end(), 'b') - o0.begin();
+            unsigned int posBr = std::find(o_r.begin(), o_r.end(), 'b') - o_r.begin();
+            unsigned int posC1 = std::find(o1.begin(), o1.end(), 'c') - o1.begin();
+            unsigned int posCr = std::find(o_r.begin(), o_r.end(), 'c') - o_r.begin();
 
             // Avoid issues with uninitialized memory by zeroing out
-            if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volume<Ndo>(dimr), vr.ctx());
+            if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volT * volB * volC, vr.ctx());
 
             // Quick exit
             if (volA == 0) return;
 
             // Check that no order ends with T
-            if (nT > 0 && posT0 + nT == o0.size() && volA > 1 && volB > 1)
+            if (volT > 1 && posT0 == 2 && volA > 1 && volB > 1)
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the first tensor");
-            if (nT > 0 && posT1 + nT == o1.size() && volA > 1 && volC > 1)
+            if (volT > 1 && posT1 == 2 && volA > 1 && volC > 1)
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the second tensor");
-            if (nT > 0 && posTr + nT == o_r.size() && volB > 1 && volC > 1)
+            if (volT > 1 && posTr == 2 && volB > 1 && volC > 1)
                 throw std::runtime_error(
                     "Unsupported contraction: the common dimensions to the input and "
                     "output tensors cannot be packed at the end of the output tensor");
 
-            // We don't support empty tensors
-            if ((o0.size() == 0) xor (o1.size() == 0))
-                throw std::runtime_error("Unsupported contraction: one of the input tensors is "
-                                         "empty and the other is not");
-            if (o_r.size() == 0 && o0.size() + o1.size() > 0)
-                throw std::runtime_error("Unsupported contraction: the output tensor is empty but "
-                                         "some of the input tensors is not");
-
             // Check whether each order starts with T
-            bool o0_starts_with_T = (volT <= 1);
-            for (unsigned int i = 0; i < Nd0; ++i) {
-                if (i == posT0) o0_starts_with_T = true;
-                if (dim0[i] > 1) break;
-            }
-            bool o1_starts_with_T = (volT <= 1);
-            for (unsigned int i = 0; i < Nd1; ++i) {
-                if (i == posT1) o1_starts_with_T = true;
-                if (dim1[i] > 1) break;
-            }
-            bool or_starts_with_T = (volT <= 1);
-            for (unsigned int i = 0; i < Ndo; ++i) {
-                if (i == posTr) or_starts_with_T = true;
-                if (dimr[i] > 1) break;
-            }
+            bool o0_starts_with_T =
+                (volT <= 1 || posT0 == 0 ||
+                 (posT0 == 1 && ((posA0 == 0 && volA == 1) || (posB0 == 0 && volB == 1))) ||
+                 (volA == 1 && volB == 1));
+            bool o1_starts_with_T =
+                (volT <= 1 || posT1 == 0 ||
+                 (posT1 == 1 && ((posA1 == 0 && volA == 1) || (posC1 == 0 && volC == 1))) ||
+                 (volA == 1 && volC == 1));
+            bool or_starts_with_T =
+                (volT <= 1 || posTr == 0 ||
+                 (posTr == 1 && ((posBr == 0 && volB == 1) || (posCr == 0 && volC == 1))) ||
+                 (volB == 1 && volC == 1));
 
             // Check if o0 and o1 need transpose TAB, TCA, TCB -> BA, AC, BC
             bool o0_trans = (volA > 1 && volB > 1 && posB0 < posA0) |              // BA
@@ -1607,6 +1580,45 @@ namespace superbblas {
                                 stridecb, volT, vr.ctx());
         }
 
+        /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+        /// \param alpha: factor on the contraction
+        /// \param o0: dimension labels for the first operator
+        /// \param dim0: dimension size for the first operator
+        /// \param conj0: whether element-wise conjugate the first operator
+        /// \param v0: data for the first operator
+        /// \param o1: dimension labels for the second operator
+        /// \param dim1: dimension size for the second operator
+        /// \param conj1: whether element-wise conjugate the second operator
+        /// \param v1: data for the second operator
+        /// \param beta: factor on the destination tensor
+        /// \param o_r: dimension labels for the output operator
+        /// \param dimr: dimension size for the output operator
+        /// \param vr: data for the second operator
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd, typename T, typename XPU>
+        void local_contraction_normalized(T alpha, const Order<Nd> &o0, const Coor<Nd> &dim0,
+                                          bool conj0, vector<const T, XPU> v0,
+                                          const std::size_t Nd0, const Order<Nd> &o1,
+                                          const Coor<Nd> &dim1, bool conj1, vector<const T, XPU> v1,
+                                          const std::size_t &Nd1, T beta, const Order<Nd> &o_r,
+                                          const Coor<Nd> &dimr, vector<T, XPU> vr,
+                                          const std::size_t &Ndo) {
+            Order<Nd> sug_o0;
+            Order<Nd> sug_o1;
+            Order<Nd> sug_or;
+            bool swap_operands;
+            Order<3> norm_o0, norm_o1, norm_or;
+            std::size_t volT, volA, volB, volC;
+            suggested_orders_for_contraction(
+                Nd0, o0, dim0, conj0, Nd1, o1, dim1, conj1, Ndo, o_r, dimr, SlowToFast, sug_o0,
+                sug_o1, sug_or, swap_operands, norm_o0, norm_o1, norm_or, volT, volA, volB, volC);
+            if (sug_o0 != o0 || sug_o1 != o1 || sug_or != o_r)
+                throw std::runtime_error("local_contraction_normalized: unsupported ordering");
+            local_contraction_normalized(alpha, beta, norm_o0, norm_o1, norm_or, volT, volA, volB,
+                                         volC, conj0, conj1, v0, v1, vr);
+        }
+
         /// Copy the content of tensor o0 into o1
         /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
@@ -1640,136 +1652,6 @@ namespace superbblas {
                                      mask1, EWOp::Add{}, co);
                 break;
             }
-        }
-    }
-
-    /// Copy the content of tensor o0 into o1
-    /// \param alpha: factor on the copy
-    /// \param o0: dimension labels for the origin tensor
-    /// \param from0: first coordinate to copy from the origin tensor
-    /// \param size0: number of coordinates to copy in each direction
-    /// \param dim0: dimension size for the origin tensor
-    /// \param v0: data for the origin tensor
-    /// \param mask0: mask for the origin tensor
-    /// \param ctx0: device context for v0
-    /// \param o1: dimension labels for the destination tensor
-    /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-    /// \param dim1: dimension size for the destination tensor
-    /// \param v1: data for the destination tensor
-    /// \param mask1: mask for the destination tensor
-    /// \param ctx1: device context for v1
-    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
-    /// \param copyadd: either copy or add the origin value to the destination values
-    /// \param session: concurrent calls should have different session
-
-    template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q>
-    void local_copy(typename elem<T>::type alpha, const char *o0, const Coor<Nd0> &from0,
-                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const T *v0,
-                    const MaskType *mask0, const Context ctx0, const char *o1,
-                    const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q *v1, const MaskType *mask1,
-                    const Context ctx1, CoorOrder co, CopyAdd copyadd, Session session = 0) {
-
-        const Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
-        const Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
-
-        // Check the validity of the operation
-        if (!detail::check_positive<Nd0>(from0))
-            throw std::runtime_error("All values in `from0` should be non-negative");
-
-        if (!detail::check_positive<Nd0>(size0))
-            throw std::runtime_error("All values in `size0` should be non-negative");
-
-        if (!detail::check_positive<Nd1>(from1))
-            throw std::runtime_error("All values in `from1` should be non-negative");
-
-        if (!detail::check_isomorphic<Nd0, Nd1>(o0_, size0, dim0, o1_, dim1))
-            throw std::runtime_error("The orders and dimensions of the origin tensor are not "
-                                     "compatible with the destination tensor");
-
-        std::size_t vol0 = detail::volume(dim0);
-        std::size_t vol1 = detail::volume(dim1);
-        std::size_t volmask0 = mask0 ? vol0 : 0;
-        std::size_t volmask1 = mask1 ? vol1 : 0;
-
-        // Do the operation
-        if (ctx0.plat == CPU && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, detail::volume(dim1), ctx1.toCpu(session)),
-                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
-        }
-#ifdef SUPERBBLAS_USE_GPU
-        else if (ctx0.plat == CPU && ctx1.plat == GPU) {
-            detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toCpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toCpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
-                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
-        } else if (ctx0.plat == GPU && ctx1.plat == CPU) {
-            detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, vol1, ctx1.toCpu(session)),
-                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toCpu(session)), copyadd, co);
-        } else if (ctx0.plat == GPU && ctx1.plat == GPU) {
-            detail::local_copy<Nd0, Nd1, T, Q>(
-                alpha, o0_, from0, size0, dim0, detail::to_vector(v0, vol0, ctx0.toGpu(session)),
-                detail::to_vector((MaskType *)mask0, volmask0, ctx0.toGpu(session)), o1_, from1,
-                dim1, detail::to_vector(v1, vol1, ctx1.toGpu(session)),
-                detail::to_vector((MaskType *)mask1, volmask1, ctx1.toGpu(session)), copyadd, co);
-        }
-#endif
-        else {
-            throw std::runtime_error("Unsupported platform");
-        }
-    }
-
-    /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
-    /// \param alpha: factor on the contraction
-    /// \param o0: dimension labels for the first operator
-    /// \param dim0: dimension size for the first operator
-    /// \param conj0: whether element-wise conjugate the first operator
-    /// \param v0: data for the first operator
-    /// \param o1: dimension labels for the second operator
-    /// \param dim1: dimension size for the second operator
-    /// \param conj1: whether element-wise conjugate the second operator
-    /// \param v1: data for the second operator
-    /// \param beta: factor on the destination tensor
-    /// \param o_r: dimension labels for the output operator
-    /// \param dimr: dimension size for the output operator
-    /// \param vr: data for the second operator
-    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
-    /// \param session: concurrent calls should have different session
-
-    template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T>
-    void local_contraction(T alpha, const char *o0, const Coor<Nd0> &dim0, bool conj0, const T *v0,
-                           const char *o1, const Coor<Nd1> &dim1, bool conj1, const T *v1, T beta,
-                           const char *o_r, const Coor<Ndo> &dimr, T *vr, const Context ctx,
-                           CoorOrder co, Session session = 0) {
-
-        Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
-        Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
-        Order<Ndo> o_r_ = detail::toArray<Ndo>(o_r, "o_r");
-
-        switch (ctx.plat) {
-        case CPU:
-            detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0,
-                detail::to_vector(v0, detail::volume(dim0), ctx.toCpu(session)), o1_, dim1, conj1,
-                detail::to_vector(v1, detail::volume(dim1), ctx.toCpu(session)), beta, o_r_, dimr,
-                detail::to_vector(vr, detail::volume(dimr), ctx.toCpu(session)), co);
-            break;
-#ifdef SUPERBBLAS_USE_GPU
-        case GPU:
-            detail::local_contraction<Nd0, Nd1, Ndo, T>(
-                alpha, o0_, dim0, conj0,
-                detail::to_vector(v0, detail::volume(dim0), ctx.toGpu(session)), o1_, dim1, conj1,
-                detail::to_vector(v1, detail::volume(dim1), ctx.toGpu(session)), beta, o_r_, dimr,
-                detail::to_vector(vr, detail::volume(dimr), ctx.toGpu(session)), co);
-            break;
-#endif
-        default: throw std::runtime_error("Unsupported platform");
         }
     }
 }
