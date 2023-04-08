@@ -58,8 +58,17 @@ EMIT_define(SUPERBBLAS_USE_MPI)
             REPLACE(Nd, COOR_DIMS) REPLACE_T_Q REPLACE(Comm, COMMS) REPLACE(XPU0 XPU1, XPUS_COMP)  \
                 REPLACE_EWOP template __VA_ARGS__;
 
+/// Generate template instantiations for contraction functions with template parameters Nd and T
+
+#    define DECL_CONTRACTION_ND_T(...)                                                             \
+        EMIT REPLACE1(contraction_normalized,                                                      \
+                      superbblas::detail::contraction_normalized<Nd, T, Comm, XPU0, XPU1>)         \
+            REPLACE(Nd, COOR_DIMS) REPLACE(T, SUPERBBLAS_TYPES) REPLACE(Comm, COMMS)               \
+                REPLACE(XPU0 XPU1, XPUS_COMP) template __VA_ARGS__;
+
 #else
 #    define DECL_COPY_REQUEST_T_Q(...) __VA_ARGS__
+#    define DECL_CONTRACTION_ND_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -2135,13 +2144,13 @@ namespace superbblas {
 
         template <std::size_t Nd, typename T, typename Q, typename Comm, typename XPU0,
                   typename XPU1, typename EWOP>
-        DECL_COPY_REQUEST_T_Q(Request copy_request(typename elem<T>::type alpha, const Proc_ranges<Nd> &p0,
-                             const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &dim0,
-                             const Order<Nd> &o0,
-                             const Components_tmpl<Nd, const T, XPU0, XPU1> &v0,
-                             const Proc_ranges<Nd> &p1, const Coor<Nd> &from1, const Coor<Nd> &dim1,
-                             const Order<Nd> &o1, const Components_tmpl<Nd, Q, XPU0, XPU1> &v1,
-                             Comm comm, EWOP ewop, CoorOrder co, bool do_test)) 
+        DECL_COPY_REQUEST_T_Q(Request copy_request(
+            typename elem<T>::type alpha, const Proc_ranges<Nd> &p0, const Coor<Nd> &from0,
+            const Coor<Nd> &size0, const Coor<Nd> &dim0, const Order<Nd> &o0,
+            const Components_tmpl<Nd, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd> &p1,
+            const Coor<Nd> &from1, const Coor<Nd> &dim1, const Order<Nd> &o1,
+            const Components_tmpl<Nd, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
+            bool do_test))
         IMPL({
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
@@ -2261,7 +2270,7 @@ namespace superbblas {
             }
 
             return mpi_req;
-        }
+        })
 
         /// Return an empty mask, all levels are free to be used
 
@@ -2845,18 +2854,18 @@ namespace superbblas {
         }
 
         template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1>
-        void
-        contraction_normalized(T alpha, const Proc_ranges<Nd> &p0, const Coor<Nd> &from0,
-                               const Coor<Nd> &size0, const Coor<Nd> &dim0, const Order<Nd> &o0,
-                               bool conj0, const Components_tmpl<Nd, T, XPU0, XPU1> &v0,
-                               const std::size_t &Nd0, const Proc_ranges<Nd> &p1,
-                               const Coor<Nd> &from1, const Coor<Nd> &size1, const Coor<Nd> &dim1,
-                               const Order<Nd> &o1, bool conj1,
-                               const Components_tmpl<Nd, T, XPU0, XPU1> &v1, const std::size_t Nd1,
-                               T beta, const Proc_ranges<Nd> &pr, const Coor<Nd> &fromr,
-                               const Coor<Nd> &sizer, const Coor<Nd> &dimr, const Order<Nd> &o_r,
-                               const Components_tmpl<Nd, T, XPU0, XPU1> &vr, const std::size_t Ndo,
-                               const Comm &comm, CoorOrder co) {
+        DECL_CONTRACTION_ND_T(void contraction_normalized(
+            T alpha, const Proc_ranges<Nd> &p0, const Coor<Nd> &from0, const Coor<Nd> &size0,
+            const Coor<Nd> &dim0, const Order<Nd> &o0, bool conj0,
+            const Components_tmpl<Nd, T, XPU0, XPU1> &v0, const std::size_t &Nd0,
+            const Proc_ranges<Nd> &p1, const Coor<Nd> &from1, const Coor<Nd> &size1,
+            const Coor<Nd> &dim1, const Order<Nd> &o1, bool conj1,
+            const Components_tmpl<Nd, T, XPU0, XPU1> &v1, const std::size_t Nd1, T beta,
+            const Proc_ranges<Nd> &pr, const Coor<Nd> &fromr, const Coor<Nd> &sizer,
+            const Coor<Nd> &dimr, const Order<Nd> &o_r,
+            const Components_tmpl<Nd, T, XPU0, XPU1> &vr, const std::size_t Ndo, const Comm &comm,
+            CoorOrder co))
+        IMPL({
             if (getDebugLevel() >= 1) {
                 for (const auto &i : vr.first) sync(i.it.ctx());
                 for (const auto &i : vr.second) sync(i.it.ctx());
@@ -2952,6 +2961,53 @@ namespace superbblas {
                 for (const auto &i : vr.second) sync(i.it.ctx());
                 barrier(comm);
             }
+        })
+
+        /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
+        /// \param alpha: factor on the contraction
+        /// \param p0: partitioning of the first origin tensor in consecutive ranges
+        /// \param ncomponents0: number of consecutive components in each MPI rank
+        /// \param o0: dimension labels for the first operator
+        /// \param conj0: whether element-wise conjugate the first operator
+        /// \param v0: data for the first operator
+        /// \param ctx0: context for each data pointer in v0
+        /// \param p1: partitioning of the second origin tensor in consecutive ranges
+        /// \param ncomponents1: number of consecutive components in each MPI rank
+        /// \param o1: dimension labels for the second operator
+        /// \param conj1: whether element-wise conjugate the second operator
+        /// \param v1: data for the second operator
+        /// \param ctx1: context for each data pointer in v1
+        /// \param beta: factor on the destination tensor
+        /// \param pr: partitioning of the resulting tensor in consecutive ranges
+        /// \param ncomponentsr: number of consecutive components in each MPI rank
+        /// \param o_r: dimension labels for the output operator
+        /// \param vr: data for the second operator
+        /// \param ctxr: context for each data pointer in vr
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename Comm,
+                  typename XPU0, typename XPU1>
+        void
+        contraction(T alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0, bool conj0,
+                    const Components_tmpl<Nd0, T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
+                    const Coor<Nd1> &from1, const Coor<Nd1> &size1, const Coor<Nd1> &dim1,
+                    const Order<Nd1> &o1, bool conj1, const Components_tmpl<Nd1, T, XPU0, XPU1> &v1,
+                    T beta, const Proc_ranges<Ndo> &pr, const Coor<Ndo> &fromr,
+                    const Coor<Ndo> &sizer, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
+                    const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, const Comm &comm, CoorOrder co) {
+
+            auto m = get_labels_mask();
+            update_label_mask(o0, m);
+            update_label_mask(o1, m);
+            update_label_mask(o_r, m);
+            constexpr std::size_t Nd = std::max(std::max(Nd0, Nd1), Ndo);
+            auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
+            auto t1 = dummy_normalize_copy<Nd>(p1, from1, size1, dim1, o1, v1, m);
+            auto tr = dummy_normalize_copy<Nd>(pr, fromr, sizer, dimr, o_r, vr, m);
+            contraction_normalized(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, conj0, t0.v, Nd0, //
+                                   t1.p, t1.from, t1.size, t1.dim, t1.o, conj1, t1.v, Nd1,        //
+                                   beta, tr.p, tr.from, tr.size, tr.dim, tr.o, tr.v, Ndo, comm, co);
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
