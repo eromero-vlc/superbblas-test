@@ -303,9 +303,14 @@ void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
             Order<7> oy_cpu = toArray<7>("xyztnsc", "");
             Coor<7> dimy_cpu = reorder_coor(pi[component_idx][1], find_permutation(oy, oy_cpu), 1);
             vector<T, Cpu> y_cpu(y.size(), Cpu{});
-            local_copy(1.0, oy_, Coor<N>{{}}, pi[component_idx][1], pi[component_idx][1], y.data(),
-                       nullptr, ctx, "xyztnsc", Coor<7>{{}}, dimy_cpu, y_cpu.data(), nullptr,
-                       cpu_ctx, SlowToFast, Copy);
+            PartitionStored<N> p0(1, {Coor<N>{{}}, pi[component_idx][1]});
+            PartitionStored<7> p1(1, {Coor<7>{{}}, dimy_cpu});
+            const T *ptr0 = y.data();
+            T *ptr1 = y_cpu.data();
+            copy<N, 7, T, T>(T{1}, p0.data(), 1, oy_, Coor<N>{{}}, pi[component_idx][1],
+                             pi[component_idx][1], &ptr0, nullptr, &ctx, p1.data(), 1, "xyztnsc",
+                             Coor<7>{{}}, dimy_cpu, &ptr1, nullptr, &cpu_ctx, SlowToFast, Copy);
+
             unsigned int ncols = dimy_cpu[4];
 
             // Compute the coordinates for all nonzeros

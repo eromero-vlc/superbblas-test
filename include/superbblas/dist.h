@@ -1445,11 +1445,9 @@ namespace superbblas {
                 unpack(v1ToReceive, v1, EWOP{}, Q(alpha));
             };
         }
-#else
+#endif // SUPERBBLAS_USE_MPI
 
         inline void barrier(SelfComm) {}
-
-#endif // SUPERBBLAS_USE_MPI
 
         /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
         /// \param o0: dimension labels for the origin tensor
@@ -2113,7 +2111,6 @@ namespace superbblas {
                              const Proc_ranges<Nd> &p1, const Coor<Nd> &from1, const Coor<Nd> &dim1,
                              const Order<Nd> &o1, const Components_tmpl<Nd, Q, XPU0, XPU1> &v1,
                              Comm comm, EWOP ewop, CoorOrder co, bool do_test) {
-
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
                 struct tag_type {}; // For hashing template arguments
@@ -2467,6 +2464,21 @@ namespace superbblas {
             return r;
         }
 
+        /// Return value for the dimensions in o_r matching the given for o0 and o1 and o2
+
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Nd2, std::size_t Ndo>
+        Coor<Ndo> get_dimensions(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                                 const Coor<Nd1> &dim1, const Order<Nd2> &o2, const Coor<Nd2> &dim2,
+                                 const Order<Ndo> &o_r) {
+            std::map<char, IndexType> m;
+            for (std::size_t i = 0; i < Nd2; ++i) m[o2[i]] = dim2[i];
+            for (std::size_t i = 0; i < Nd1; ++i) m[o1[i]] = dim1[i];
+            for (std::size_t i = 0; i < Nd0; ++i) m[o0[i]] = dim0[i];
+            Coor<Ndo> r;
+            for (std::size_t i = 0; i < Ndo; ++i) r[i] = m[o_r[i]];
+            return r;
+        }
+
         /// Return value for the dimensions in o_r matching the given for o0 and o1
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
@@ -2747,7 +2759,7 @@ namespace superbblas {
         /// \param sug_o1: suggested dimension labels for the second operator
         /// \param o_r: dimension labels for the output operator
 
-        template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo>
+        template <std::size_t Nd0, std::size_t Nd1, std::size_t Nd2, std::size_t Ndo>
         std::tuple<Proc_ranges<Nd0>, Proc_ranges<Nd1>, Proc_ranges<Ndo>>
         get_partitions_for_contraction(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
                                        const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
@@ -2755,12 +2767,14 @@ namespace superbblas {
                                        const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
                                        const Coor<Nd1> &size1, const Coor<Nd1> &dim1,
                                        const Order<Nd1> &o1, const Order<Nd1> &sug_o1,
+                                       const Coor<Nd2> &dim2, const Order<Nd2> &o2,
                                        const Order<Ndo> &o_r) {
 
             // Normalize the first tensor as the larger of the two in volume
             if (volume(size0) < volume(size1)) {
-                auto p10 = get_partitions_for_contraction(p1, from1, size1, dim1, o1, sug_o1, p0,
-                                                          from0, size0, dim0, o0, sug_o0, o_r);
+                auto p10 =
+                    get_partitions_for_contraction(p1, from1, size1, dim1, o1, sug_o1, p0, from0,
+                                                   size0, dim0, o0, sug_o0, dim2, o2, o_r);
                 return {std::get<1>(p10), std::get<0>(p10), std::get<2>(p10)};
             }
 
@@ -2789,13 +2803,123 @@ namespace superbblas {
             for (unsigned int i = 0; i < p0.size(); ++i) {
                 pr[i].resize(p0r[i].size());
                 for (unsigned int j = 0; j < p0r[i].size(); ++j) {
-                    pr[i][j][0] = get_dimensions(sug_o0, p0r[i][j][0], o1, {{}}, o_r, false);
-                    pr[i][j][1] = get_dimensions(sug_o0, p0r[i][j][1], o1, size1, o_r, false);
+                    pr[i][j][0] = get_dimensions(sug_o0, p0r[i][j][0], o1, {{}}, o2, {{}}, o_r);
+                    pr[i][j][1] = get_dimensions(sug_o0, p0r[i][j][1], o1, size1, o2, dim2, o_r);
                 }
             }
 
             // Return
             return {p0r, p1r, pr};
+        }
+
+        template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1>
+        void
+        contraction_normalized(T alpha, const Proc_ranges<Nd> &p0, const Coor<Nd> &from0,
+                               const Coor<Nd> &size0, const Coor<Nd> &dim0, const Order<Nd> &o0,
+                               bool conj0, const Components_tmpl<Nd, T, XPU0, XPU1> &v0,
+                               const std::size_t &Nd0, const Proc_ranges<Nd> &p1,
+                               const Coor<Nd> &from1, const Coor<Nd> &size1, const Coor<Nd> &dim1,
+                               const Order<Nd> &o1, bool conj1,
+                               const Components_tmpl<Nd, T, XPU0, XPU1> &v1, const std::size_t Nd1,
+                               T beta, const Proc_ranges<Nd> &pr, const Coor<Nd> &fromr,
+                               const Coor<Nd> &sizer, const Coor<Nd> &dimr, const Order<Nd> &o_r,
+                               const Components_tmpl<Nd, T, XPU0, XPU1> &vr, const std::size_t Ndo,
+                               const Comm &comm, CoorOrder co) {
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : vr.first) sync(i.it.ctx());
+                for (const auto &i : vr.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("contraction"), alpha, p0, from0,
+                                                  size0, dim0, o0, conj0, p1, from1, size1, dim1,
+                                                  o1, conj1, beta, fromr, sizer, dimr, o_r, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
+            // Check the compatibility of the tensors
+            if (!check_dimensions(o0, size0, o1, size1, o_r, sizer))
+                throw std::runtime_error("some dimension does not match");
+
+            // Check that v0 and v1 have the same components and on the same device
+            if (!check_components_compatibility(v0, v1))
+                throw std::runtime_error(
+                    "contraction: the two input tensors don't have the same number of components "
+                    "or they don't follow the same order on the devices");
+
+            // Get the optimal ordering for the output tensor pr_
+            Order<Nd> sug_o0;
+            Order<Nd> sug_o1;
+            Order<Nd> sug_or;
+            bool swap_operands;
+            suggested_orders_for_contraction(Nd0, o0, size0, conj0, Nd1, o1, size1, conj1, Ndo, o_r,
+                                             sizer, sug_o0, sug_o1, sug_or, swap_operands, co);
+            if (swap_operands) {
+                contraction_normalized(alpha, p1, from1, size1, dim1, o1, conj1, v1, Nd1, p0, from0,
+                                       size0, dim0, o0, conj0, v0, Nd0, beta, pr, fromr, sizer,
+                                       dimr, o_r, vr, Ndo, comm, co);
+                return;
+            }
+
+            tracker<Cpu> _t("distributed contraction", Cpu{});
+
+            Coor<Nd> sug_size0 = reorder_coor(size0, find_permutation(o0, sug_o0));
+            Coor<Nd> sug_size1 = reorder_coor(size1, find_permutation(o1, sug_o1));
+            Coor<Nd> sug_sizer = reorder_coor(sizer, find_permutation(o_r, sug_or));
+
+            // Change the partition of the input tensors so that the local portions to contract
+            // are local
+            auto p01 = get_partitions_for_contraction(p0, from0, size0, dim0, o0, sug_o0, p1, from1,
+                                                      size1, dim1, o1, sug_o1, dimr, o_r, sug_or);
+            const auto &p0_ = std::get<0>(p01);
+            const auto &p1_ = std::get<1>(p01);
+            Components_tmpl<Nd, T, XPU0, XPU1> v0_ =
+                reorder_tensor(p0, o0, from0, size0, dim0, v0, p0_, sug_size0, sug_o0, comm, co,
+                               false /* don't force copy */, doCacheAlloc);
+            Components_tmpl<Nd, T, XPU0, XPU1> v1_ =
+                reorder_tensor(p1, o1, from1, size1, dim1, v1, p1_, sug_size1, sug_o1, v0_, comm,
+                               co, false /* don't force copy */, doCacheAlloc);
+
+            // Generate the partitioning and the storage for the output tensor
+            const auto &pr_ = std::get<2>(p01);
+            Components_tmpl<Nd, T, XPU0, XPU1> vr_ =
+                like_this_components(pr_, v0_, comm, doCacheAlloc);
+
+            for (unsigned int i = 0; i < v0_.first.size(); ++i) {
+                const unsigned int componentId = v0_.first[i].componentId;
+                local_contraction_normalized(
+                    alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
+                    vector<const T, XPU0>(v0_.first[i].it), Nd0, sug_o1,
+                    p1_[comm.rank][componentId][1], conj1, vector<const T, XPU0>(v1_.first[i].it),
+                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.first[i].it, Ndo);
+            }
+            for (unsigned int i = 0; i < v0_.second.size(); ++i) {
+                const unsigned int componentId = v0_.second[i].componentId;
+                local_contraction_normalized(
+                    alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
+                    vector<const T, XPU1>(v0_.second[i].it), Nd0, sug_o1,
+                    p1_[comm.rank][componentId][1], conj1, vector<const T, XPU1>(v1_.second[i].it),
+                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.second[i].it, Ndo);
+            }
+
+            // Scale the output tensor by beta
+            copy<Nd, Nd, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr, o_r,
+                            vr, comm, EWOp::Copy{}, co);
+
+            // Scale the output tensor by beta and reduce all the subtensors to the final tensor
+            copy<Nd, Nd, T>(1, pr_, {{}}, sug_sizer, sug_sizer, sug_or, toConst(vr_), pr, fromr,
+                            dimr, o_r, vr, comm, EWOp::Add{}, co);
+
+            _t.stop();
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : vr.first) sync(i.it.ctx());
+                for (const auto &i : vr.second) sync(i.it.ctx());
+                barrier(comm);
+            }
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
@@ -2822,104 +2946,27 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void contraction(T alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
-                         const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                         bool conj0, const Components_tmpl<Nd0, T, XPU0, XPU1> &v0,
-                         const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1, const Coor<Nd1> &size1,
-                         const Coor<Nd1> &dim1, const Order<Nd1> &o1, bool conj1,
-                         const Components_tmpl<Nd1, T, XPU0, XPU1> &v1, T beta,
-                         const Proc_ranges<Ndo> &pr, const Coor<Ndo> &fromr, const Coor<Ndo> &sizer,
-                         const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
-                         const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, Comm comm, CoorOrder co) {
+        void
+        contraction(T alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+                    const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0, bool conj0,
+                    const Components_tmpl<Nd0, T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
+                    const Coor<Nd1> &from1, const Coor<Nd1> &size1, const Coor<Nd1> &dim1,
+                    const Order<Nd1> &o1, bool conj1, const Components_tmpl<Nd1, T, XPU0, XPU1> &v1,
+                    T beta, const Proc_ranges<Ndo> &pr, const Coor<Ndo> &fromr,
+                    const Coor<Ndo> &sizer, const Coor<Ndo> &dimr, const Order<Ndo> &o_r,
+                    const Components_tmpl<Ndo, T, XPU0, XPU1> &vr, const Comm &comm, CoorOrder co) {
 
-            if (getDebugLevel() >= 1) {
-                for (const auto &i : vr.first) sync(i.it.ctx());
-                for (const auto &i : vr.second) sync(i.it.ctx());
-                barrier(comm);
-            }
-
-            // Check that common arguments have the same value in all processes
-            if (getDebugLevel() > 0) {
-                struct tag_type {}; // For hashing template arguments
-                check_consistency(std::make_tuple(std::string("contraction"), alpha, p0, from0,
-                                                  size0, dim0, o0, conj0, p1, from1, size1, dim1,
-                                                  o1, conj1, beta, fromr, sizer, dimr, o_r, co,
-                                                  typeid(tag_type).hash_code()),
-                                  comm);
-            }
-
-            tracker<Cpu> _t("distributed contraction", Cpu{});
-
-            // Check the compatibility of the tensors
-            if (!check_dimensions<Nd0, Nd1, Ndo>(o0, size0, o1, size1, o_r, sizer))
-                throw std::runtime_error("some dimension does not match");
-
-            // Check that v0 and v1 have the same components and on the same device
-            if (!check_components_compatibility(v0, v1))
-                throw std::runtime_error(
-                    "contraction: the two input tensors don't have the same number of components "
-                    "or they don't follow the same order on the devices");
-
-            // Get the optimal ordering for the output tensor pr_
-            Order<Nd0> sug_o0;
-            Order<Nd1> sug_o1;
-            Order<Ndo> sug_or;
-            bool swap_operands;
-            suggested_orders_for_contraction(o0, size0, conj0, o1, size1, conj1, o_r, sizer, sug_o0,
-                                             sug_o1, sug_or, swap_operands, co);
-            Coor<Nd0> sug_size0 = reorder_coor(size0, find_permutation(o0, sug_o0));
-            Coor<Nd1> sug_size1 = reorder_coor(size1, find_permutation(o1, sug_o1));
-            Coor<Ndo> sug_sizer = reorder_coor(sizer, find_permutation(o_r, sug_or));
-
-            // Change the partition of the input tensors so that the local portions to contract
-            // are local
-            auto p01 = get_partitions_for_contraction(p0, from0, size0, dim0, o0, sug_o0, p1, from1,
-                                                      size1, dim1, o1, sug_o1, sug_or);
-            const auto &p0_ = std::get<0>(p01);
-            const auto &p1_ = std::get<1>(p01);
-            Components_tmpl<Nd0, T, XPU0, XPU1> v0_ =
-                reorder_tensor(p0, o0, from0, size0, dim0, v0, p0_, sug_size0, sug_o0, comm, co,
-                               false /* don't force copy */, doCacheAlloc);
-            Components_tmpl<Nd1, T, XPU0, XPU1> v1_ =
-                reorder_tensor(p1, o1, from1, size1, dim1, v1, p1_, sug_size1, sug_o1, v0_, comm,
-                               co, false /* don't force copy */, doCacheAlloc);
-
-            // Generate the partitioning and the storage for the output tensor
-            const auto &pr_ = std::get<2>(p01);
-            Components_tmpl<Ndo, T, XPU0, XPU1> vr_ =
-                like_this_components(pr_, v0_, comm, doCacheAlloc);
-
-            for (unsigned int i = 0; i < v0_.first.size(); ++i) {
-                const unsigned int componentId = v0_.first[i].componentId;
-                local_contraction<Nd0, Nd1, Ndo, T>(
-                    alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
-                    vector<const T, XPU0>(v0_.first[i].it), sug_o1, p1_[comm.rank][componentId][1],
-                    conj1, vector<const T, XPU0>(v1_.first[i].it), T{0.0}, sug_or,
-                    pr_[comm.rank][componentId][1], vr_.first[i].it, co);
-            }
-            for (unsigned int i = 0; i < v0_.second.size(); ++i) {
-                const unsigned int componentId = v0_.second[i].componentId;
-                local_contraction<Nd0, Nd1, Ndo, T>(
-                    alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
-                    vector<const T, XPU1>(v0_.second[i].it), sug_o1, p1_[comm.rank][componentId][1],
-                    conj1, vector<const T, XPU1>(v1_.second[i].it), T{0.0}, sug_or,
-                    pr_[comm.rank][componentId][1], vr_.second[i].it, co);
-            }
-
-            // Scale the output tensor by beta
-            copy<Ndo, Ndo, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr, o_r,
-                              vr, comm, EWOp::Copy{}, co);
-
-            // Scale the output tensor by beta and reduce all the subtensors to the final tensor
-            copy<Ndo, Ndo, T>(1, pr_, {{}}, sug_sizer, sug_sizer, sug_or, toConst(vr_), pr, fromr,
-                              dimr, o_r, vr, comm, EWOp::Add{}, co);
-
-            _t.stop();
-            if (getDebugLevel() >= 1) {
-                for (const auto &i : vr.first) sync(i.it.ctx());
-                for (const auto &i : vr.second) sync(i.it.ctx());
-                barrier(comm);
-            }
+            auto m = get_labels_mask();
+            update_label_mask(o0, m);
+            update_label_mask(o1, m);
+            update_label_mask(o_r, m);
+            constexpr std::size_t Nd = std::max(std::max(Nd0, Nd1), Ndo);
+            auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
+            auto t1 = dummy_normalize_copy<Nd>(p1, from1, size1, dim1, o1, v1, m);
+            auto tr = dummy_normalize_copy<Nd>(pr, fromr, sizer, dimr, o_r, vr, m);
+            contraction_normalized(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, conj0, t0.v, Nd0, //
+                                   t1.p, t1.from, t1.size, t1.dim, t1.o, conj1, t1.v, Nd1,        //
+                                   beta, tr.p, tr.from, tr.size, tr.dim, tr.o, tr.v, Ndo, comm, co);
         }
 
         /// Return a From_size from a partition that can be hashed and stored
