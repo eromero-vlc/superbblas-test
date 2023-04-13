@@ -1588,16 +1588,16 @@ namespace superbblas {
                                           const Coor<Nd> &dim1, bool conj1, vector<const T, XPU> v1,
                                           const std::size_t &Nd1, T beta, const Order<Nd> &o_r,
                                           const Coor<Nd> &dimr, vector<T, XPU> vr,
-                                          const std::size_t &Ndo) {
+                                          const std::size_t &Ndo, CoorOrder co) {
             Order<Nd> sug_o0;
             Order<Nd> sug_o1;
             Order<Nd> sug_or;
             bool swap_operands;
             Order<3> norm_o0, norm_o1, norm_or;
             std::size_t volT, volA, volB, volC;
-            suggested_orders_for_contraction(
-                Nd0, o0, dim0, conj0, Nd1, o1, dim1, conj1, Ndo, o_r, dimr, SlowToFast, sug_o0,
-                sug_o1, sug_or, swap_operands, norm_o0, norm_o1, norm_or, volT, volA, volB, volC);
+            suggested_orders_for_contraction(Nd0, o0, dim0, conj0, Nd1, o1, dim1, conj1, Ndo, o_r,
+                                             dimr, co, sug_o0, sug_o1, sug_or, swap_operands,
+                                             norm_o0, norm_o1, norm_or, volT, volA, volB, volC);
             if (sug_o0 != o0 || sug_o1 != o1 || sug_or != o_r)
                 throw std::runtime_error("local_contraction_normalized: unsupported ordering");
             local_contraction_normalized(alpha, beta, norm_o0, norm_o1, norm_or, volT, volA, volB,

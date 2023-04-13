@@ -2895,7 +2895,7 @@ namespace superbblas {
                     alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
                     vector<const T, XPU0>(v0_.first[i].it), Nd0, sug_o1,
                     p1_[comm.rank][componentId][1], conj1, vector<const T, XPU0>(v1_.first[i].it),
-                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.first[i].it, Ndo);
+                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.first[i].it, Ndo, co);
             }
             for (unsigned int i = 0; i < v0_.second.size(); ++i) {
                 const unsigned int componentId = v0_.second[i].componentId;
@@ -2903,7 +2903,7 @@ namespace superbblas {
                     alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
                     vector<const T, XPU1>(v0_.second[i].it), Nd0, sug_o1,
                     p1_[comm.rank][componentId][1], conj1, vector<const T, XPU1>(v1_.second[i].it),
-                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.second[i].it, Ndo);
+                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.second[i].it, Ndo, co);
             }
 
             // Scale the output tensor by beta
