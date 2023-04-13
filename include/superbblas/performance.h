@@ -4,6 +4,7 @@
 #include "platform.h"
 #include "runtime_features.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <complex>
