@@ -178,6 +178,7 @@ namespace superbblas {
 
         template <typename T, std::size_t N>
         std::array<T, N> reverse(const std::array<T, N> v, const std::size_t n) {
+            if (n > N) throw std::runtime_error("reverse: invalid value of `n`");
             std::array<T, N> r = v;
             std::reverse(r.begin(), r.begin() + n);
             return r;
