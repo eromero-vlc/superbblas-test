@@ -924,7 +924,7 @@ namespace superbblas {
             if (do_change_endianness) change_endianness(v0_host.data(), v0_host.size());
 
             // Do the copy
-            _t.cost = (double)indices0.size() * sizeof(Q);
+            _t.memops = (double)indices0.size() * sizeof(Q);
             std::size_t disp = sto.disp_values[blockIndex];
             for (std::size_t i = 0; i < indices1.size();) {
                 std::size_t n = 1;
@@ -1033,7 +1033,7 @@ namespace superbblas {
             IndexType disp0 = indices0_pair.second, disp1 = indices1_pair.second;
 
             // Do the reading
-            _t.cost = (double)indices0.size() * sizeof(T);
+            _t.memops = (double)indices0.size() * sizeof(T);
             vector<T, Cpu> v0(indices0.size(), cpu);
             for (std::size_t i = 0; i < indices0.size();) {
                 std::size_t n = 1;

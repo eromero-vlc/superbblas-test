@@ -26,12 +26,19 @@ namespace superbblas {
     namespace detail {
         /// Return the relative cost of the multiplication with respect to real floating point
         /// \tparam T: type to consider
-        template <typename T> struct multiplication_cost { static const int value = 0; };
-        template <> struct multiplication_cost<float> { static const int value = 1; };
-        template <> struct multiplication_cost<double> { static const int value = 2; };
-        template <> struct multiplication_cost<std::complex<float>> { static const int value = 4; };
+        template <typename T>
+        struct multiplication_cost; // { constexpr static double value = 0.0; };
+        template <> struct multiplication_cost<float> { constexpr static double value = 1.0; };
+        template <> struct multiplication_cost<double> { constexpr static double value = 2.0; };
+        template <> struct multiplication_cost<std::complex<float>> {
+            constexpr static double value = 4.0;
+        };
         template <> struct multiplication_cost<std::complex<double>> {
-            static const int value = 8;
+            constexpr static double value = 8.0;
+        };
+        template <> struct multiplication_cost<int> { constexpr static double value = 1.0; };
+        template <> struct multiplication_cost<std::size_t> {
+            constexpr static double value = 2.0;
         };
     }
 
@@ -61,14 +68,16 @@ namespace superbblas {
     struct Metric {
         double cpu_time;   ///< wall-clock time for the cpu
         double gpu_time;   ///< wall-clock time for the gpu
-        double cost;       ///< flops or entities processed (eg, rhs for matvecs)
+        double flops;      ///< single precision multiplications
+        double memops;     ///< bytes read and write from memory
+        double arity;      ///< entities processed (eg, rhs for matvecs)
         double max_mem;    ///< memory usage in bytes
         std::size_t calls; ///< number of times the function was called
 #ifdef SUPERBBLAS_USE_GPU
         /// List of start-end gpu events for calls of this function in course
         TimingGpuEvents timing_events;
 #endif
-        Metric() : cpu_time(0), gpu_time(0), cost(0), max_mem(0), calls(0) {}
+        Metric() : cpu_time(0), gpu_time(0), flops(0), memops(0), arity(0), max_mem(0), calls(0) {}
     };
 
     /// Type for storing the timings
@@ -188,11 +197,13 @@ namespace superbblas {
         }
 
         /// Pop function call from the stack
-        inline std::string popCall(Session session) {
+        inline std::array<std::string, 2> popCall(Session session) {
             assert(getCallStackWithPath(session).size() > 0);
             std::string back = getCallStackWithPath(session).back();
             getCallStackWithPath(session).pop_back();
-            return back;
+            return {back, getCallStackWithPath(session).size() > 0
+                              ? getCallStackWithPath(session).back()
+                              : std::string{}};
         }
 
         /// Return the number of seconds from some start
@@ -222,8 +233,12 @@ namespace superbblas {
             double elapsedTime;
             /// Gpu starting and ending events
             typename TimingEvents<XPU>::TimingEvent timingEvent;
-            /// Equivalent units of cost
-            double cost;
+            /// Single precision multiplications
+            double flops;
+            /// Bytes read and write from memory
+            double memops;
+            /// Entities processed (eg, rhs for matvecs)
+            double arity;
 
             /// Start a tracker
             tracker(const std::string &funcName, XPU xpu, bool timeAnyway = false)
@@ -238,7 +253,9 @@ namespace superbblas {
                                  : std::chrono::time_point<std::chrono::system_clock>{}),
                   xpu(xpu),
                   elapsedTime(0),
-                  cost(0) {
+                  flops(0),
+                  memops(0),
+                  arity(0) {
 
                 if (!stopped) {
                     pushCall(funcName, xpu.session);
@@ -276,14 +293,25 @@ namespace superbblas {
                     std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
 
                 // Pop out this call and get a string representing the current call stack
-                std::string funcNameWithStack = popCall(xpu.session);
+                auto funcNameWithStackAndParent = popCall(xpu.session);
+                const std::string &funcNameWithStack = funcNameWithStackAndParent[0];
+                const std::string &parent = funcNameWithStackAndParent[1];
 
                 // Record the time
                 auto &timing = getTimings(xpu.session)[funcNameWithStack];
                 timing.cpu_time += elapsedTime;
-                timing.cost += cost;
+                timing.flops += flops;
+                timing.memops += memops;
+                timing.arity += arity;
                 timing.calls++;
                 TimingEvents<XPU>::updateGpuTimingEvents(timing, timingEvent);
+
+                // Add flops and memops to parent call
+                if (parent.size() > 0) {
+                    auto &parent_timing = getTimings(xpu.session)[parent];
+                    parent_timing.flops += flops;
+                    parent_timing.memops += memops;
+                }
 
                 // Record memory not released
                 if (getTrackingMemory())
@@ -322,7 +350,7 @@ namespace superbblas {
             for (const auto &it : getTimings(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
         for (const auto &name : names) {
-            double cpu_time = 0, gpu_time = 0, cost = 0, calls = 0;
+            double cpu_time = 0, gpu_time = 0, flops = 0, memops = 0, calls = 0;
             for (Session session = 0; session < 256; ++session) {
                 auto it = getTimings(session).find(name);
                 if (it != getTimings(session).end()) {
@@ -331,18 +359,22 @@ namespace superbblas {
                     gpu_time += it->second.gpu_time;
 #endif
                     cpu_time += it->second.cpu_time;
-                    cost += it->second.cost;
+                    flops += it->second.flops;
+                    memops += it->second.memops;
                     calls += it->second.calls;
                 }
             }
             double time = (gpu_time > 0 ? gpu_time : cpu_time);
-            double gcost_per_sec = (time > 0 ? cost / time : 0) / 1024u / 1024u / 1024u;
+            double gflops_per_sec = (time > 0 ? flops / time : 0) / 1000.0 / 1000.0 / 1000.0;
+            double gmemops_per_sec = (time > 0 ? memops / time : 0) / 1024.0 / 1024.0 / 1024.0;
             s << name << " : " << std::fixed << std::setprecision(3) << cpu_time << " s ("
 #ifdef SUPERBBLAS_USE_GPU
               << "gpu_time: " << gpu_time << " "
 #endif
-              << "calls: " << std::setprecision(0) << calls << " cost: " << cost << std::scientific
-              << std::setprecision(3) << " gcost_per_sec: " << gcost_per_sec << " )" << std::endl;
+              << "calls: " << std::setprecision(0) << calls << " flops: " << flops
+              << " bytes: " << memops << std::scientific << std::setprecision(3)
+              << " GFLOPs_single: " << gflops_per_sec << " GBYTES/s: " << gmemops_per_sec << " )"
+              << std::endl;
         }
         s << std::defaultfloat;
     }

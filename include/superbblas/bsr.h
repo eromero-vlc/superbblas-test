@@ -163,12 +163,49 @@ namespace superbblas {
                     SPARSE_LAYOUT_ROW_MAJOR, 100, 1000));
             }
 
-            double getCostPerMatvec() const {
-                double block_size = (double)volume(v.blocki);
+            /// Return the number of flops for a given number of right-hand-sides
+            /// \param rhs: number of vectors to multiply
+
+            double getFlopsPerMatvec(int rhs, MatrixLayout) const {
+                double b = (double)volume(v.blocki);
                 double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+
+                // For the Kronecker variant, each operator nonzero block will involve the contraction
+                // with the kronecker block (ki*kd*b*rhs flops) and with the rest (b*b*ki*rhs flops)
                 if (v.kron_it.size() > 0)
-                    return (kd * block_size * block_size + kd * ki * block_size) * jj.size();
-                return block_size * block_size * jj.size();
+                    return (ki * b * b + kd * ki * b) * jj.size() * rhs *
+                           multiplication_cost<T>::value;
+
+                // For the regular variant, each operator nonzero block will involve the contraction
+                // of the block will all the rhs (b*b*rhs flops)
+                return b * b * jj.size() * rhs * multiplication_cost<T>::value;
+            }
+
+            /// Return the number of memory operations for a given number of right-hand-sides
+            /// \param rhs: number of vectors to multiply
+
+            double getMemopsPerMatvec(int rhs, MatrixLayout) const {
+                double b = (double)volume(v.blocki);
+                double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+
+                // For the Kronecker variant, each operator nonzero block will involve reading the
+                // input vectors and the kronecker blocks and writing all combinations, plus
+                // reading the nonzero regular blocks and the input right-hand-size for each nonzero block
+                // and writing the output vectors
+                if (v.kron_it.size() > 0)
+                    return sizeof(T) * (
+                                           // reading the input vecs and kronecker contr.
+                                           volume(v.dimd) * (num_nnz_per_row + 1) * rhs +
+                                           // reading the kronecker elements
+                                           ki * kd * num_nnz_per_row +
+                                           // reading regular elements and the rhs
+                                           (b * b + b * rhs * ki) * jj.size() +
+                                           // writing the output
+                                           volume(v.dimi) * rhs);
+
+                // For the regular variant, each operator nonzero block will involve reading the
+                // nonzero block and the input right-hand-size, plus writing the output vectors
+                return (volume(v.dimi) * rhs + (b * b + b * rhs) * jj.size()) * sizeof(T);
             }
 
             void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
@@ -272,11 +309,55 @@ namespace superbblas {
                 num_nnz_per_row = bsr.num_nnz_per_row;
             }
 
-            double getCostPerMatvec() const {
+            /// Return the number of flops for a given number of right-hand-sides
+            /// \param rhs: number of vectors to multiply
+
+            double getFlopsPerMatvec(int rhs, MatrixLayout) const {
                 double bi = (double)volume(v.blocki), bd = (double)volume(v.blockd);
                 double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
-                if (v.kron_it.size() > 0) return (kd * bi * bd + kd * ki * bi) * jj.size();
-                return bi * bd * jj.size();
+
+                // For the Kronecker variant, each operator nonzero block will involve the contraction
+                // with the kronecker block (ki*kd*bd*rhs flops) and with the rest (bi*bd*ki*rhs flops)
+                if (v.kron_it.size() > 0)
+                    return (ki * bi * bd + kd * ki * bd) * jj.size() * rhs *
+                           multiplication_cost<T>::value;
+
+                // For the regular variant, each operator nonzero block will involve the contraction
+                // of the block will all the rhs (bi*bd*rhs flops)
+                return bi * bd * jj.size() * rhs * multiplication_cost<T>::value;
+            }
+
+            /// Return the number of memory operations for a given number of right-hand-sides
+            /// \param rhs: number of vectors to multiply
+            /// \param layout: input/output vector layout
+
+            double getMemopsPerMatvec(int rhs, MatrixLayout layout) const {
+                double bi = (double)volume(v.blocki), bd = (double)volume(v.blockd);
+                double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+
+                // For the Kronecker variant, each operator nonzero block will involve reading the
+                // input vectors and the kronecker blocks and the nonzero regular blocks,
+                // and writing the output vectors
+                if (v.kron_it.size() > 0)
+                    return sizeof(T) *
+                           (layout == RowMajor
+                                ? (
+                                      // reading the input vecs and kronecker element and regular block elements
+                                      (bd * kd * rhs + ki * kd + bi * bd) * jj.size() +
+                                      // writing the output
+                                      volume(v.dimi) * rhs)
+                                : (
+                                      // contracting the input vectors and the kronecker elements
+                                      ki * kd * num_nnz_per_row +
+                                      volume(v.dimd) * (num_nnz_per_row + 1) * rhs +
+                                      // contracting with the regular block elements
+                                      (bi * bd + bd * rhs * ki) * jj.size() +
+                                      // writing the output
+                                      volume(v.dimi) * rhs));
+
+                // For the regular variant, each operator nonzero block will involve reading the
+                // nonzero block and the input right-hand-size, plus writing the output vectors
+                return (volume(v.dimi) * rhs + (bi * bd + bd * rhs) * jj.size()) * sizeof(T);
             }
 
             void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
@@ -542,12 +623,53 @@ namespace superbblas {
 #    endif
             }
 
-            double getCostPerMatvec() const {
-                double block_size = (double)volume(v.blocki);
+            /// Return the number of flops for a given number of right-hand-sides
+            /// \param rhs: number of vectors to multiply
+
+            double getFlopsPerMatvec(int rhs, MatrixLayout layout) const {
+                double b = (double)volume(v.blocki);
                 double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+
+                // For the Kronecker variant, each operator nonzero block will involve the contraction
+                // with the kronecker block (ki*kd*b*rhs flops) and with the rest (b*b*ki*rhs flops)
                 if (v.kron_it.size() > 0)
-                    return (kd * block_size * block_size + kd * ki * block_size) * jj.size();
-                return block_size * block_size * jj.size();
+                    return (layout == RowMajor ? (ki * b * b + kd * ki * b) * jj.size()
+                                               : kron_disp_rev.size() * ki * volume(v.dimd) +
+                                                     ki * b * b * jj.size()) *
+                           rhs * multiplication_cost<T>::value;
+
+                // For the regular variant, each operator nonzero block will involve the contraction
+                // of the block will all the rhs (b*b*rhs flops)
+                return b * b * jj.size() * rhs * multiplication_cost<T>::value;
+            }
+
+            /// Return the number of memory operations for a given number of right-hand-sides
+            /// \param rhs: number of vectors to multiply
+
+            double getMemopsPerMatvec(int rhs, MatrixLayout layout) const {
+                double b = (double)volume(v.blocki);
+                double ki = (double)volume(v.kroni), kd = (double)volume(v.krond);
+
+                // For the Kronecker variant, each operator nonzero block will involve reading the
+                // input vectors and the kronecker blocks and writing all combinations, plus
+                // reading the nonzero regular blocks and the input right-hand-size for each nonzero block
+                // and writing the output vectors
+                std::size_t nnz_per_row_proccess =
+                    (layout == RowMajor ? num_nnz_per_row : kron_disp_rev.size());
+                if (v.kron_it.size() > 0)
+                    return sizeof(T) * (
+                                           // reading the input vecs and kronecker contr.
+                                           volume(v.dimd) * (nnz_per_row_proccess + 1) * rhs +
+                                           // reading the kronecker elements
+                                           ki * kd * nnz_per_row_proccess +
+                                           // reading regular elements and the rhs
+                                           (b * b + b * rhs * ki) * jj.size() +
+                                           // writing the output
+                                           volume(v.dimi) * rhs);
+
+                // For the regular variant, each operator nonzero block will involve reading the
+                // nonzero block and the input right-hand-size, plus writing the output vectors
+                return (volume(v.dimi) * rhs + (b * b + b * rhs) * jj.size()) * sizeof(T);
             }
 
         private:
@@ -1673,7 +1795,9 @@ namespace superbblas {
                                               : (!transSp ? ki : kd) * volC;
 
             // Do the contraction
-            _t.cost = bsr.getCostPerMatvec() * volC * multiplication_cost<T>::value;
+            _t.flops = bsr.getFlopsPerMatvec(volC, lx);
+            _t.memops = bsr.getMemopsPerMatvec(volC, lx);
+            _t.arity = volC;
             bsr(alpha, transSp, vx, ldx, lx, vy, ldy, ly, volC);
         }
 

@@ -874,7 +874,7 @@ namespace superbblas {
             tracker<XPUbuff> _t(std::string("local copy from ") + platformToStr(v0.ctx()) +
                                     std::string(" to ") + platformToStr(v1.ctx()),
                                 v1.ctx());
-            _t.cost = (double)sizeof(Q) * indices0_xpu.size() * blocksize;
+            _t.memops = (double)(sizeof(T) + sizeof(Q)) * indices0_xpu.size() * blocksize;
             copy_n_blocking<IndexType, T, Q>(1.0, v0.data(), v0.ctx(), blocksize,
                                              indices0_xpu.begin(), indices0_xpu.ctx(),
                                              indices0_xpu.size(), v1.data(), v1.ctx(),
@@ -1256,8 +1256,8 @@ namespace superbblas {
                             EWOP{});
                         disp += r.indices_groups[irange][i];
                     }
-                    _t.cost +=
-                        (double)sizeof(T) * r.indices.first[j].it.size() * r.blocksize[irange];
+                    _t.memops += (double)sizeof(T) * 2.0 * r.indices.first[j].it.size() *
+                                 r.blocksize[irange];
                 }
                 for (unsigned int j = 0; j < r.indices.second.size(); ++j) {
                     if (r.indices.second[j].componentId != irange) continue;
@@ -1271,8 +1271,8 @@ namespace superbblas {
                             r.indices.second[j].it.ctx(), EWOP{});
                         disp += r.indices_groups[irange][i];
                     }
-                    _t.cost +=
-                        (double)sizeof(T) * r.indices.second[j].it.size() * r.blocksize[irange];
+                    _t.memops += (double)sizeof(T) * 2.0 * r.indices.second[j].it.size() *
+                                 r.blocksize[irange];
                 }
             }
         }

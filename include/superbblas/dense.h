@@ -50,7 +50,8 @@ namespace superbblas {
         template <typename T> void local_cholesky(std::size_t n, std::size_t k, vector<T, Cpu> v) {
 
             tracker<Cpu> _t("local cholesky (Cpu)", v.ctx());
-            _t.cost = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
+            _t.flops = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
+            _t.memops = (double)n * n * k * sizeof(T);
 
 #ifdef _OPENMP
             int num_threads = omp_get_max_threads();
@@ -91,7 +92,8 @@ namespace superbblas {
                     "superbblas::detail::local_cholesky: unsupported allocation device");
 
             tracker<Gpu> _t("local cholesky (GPU)", v.ctx());
-            _t.cost = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
+            _t.flops = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
+            _t.memops = (double)n * n * k * sizeof(T);
 
             auto xpu_host = v.ctx().toCpuPinned();
             vector<T *, Gpu> v_ps_cpu(k, xpu_host, doCacheAlloc);
@@ -132,7 +134,8 @@ namespace superbblas {
             if (n == 0 || k == 0 || m == 0) return;
 
             tracker<Cpu> _t("local trsm (Cpu)", a.ctx());
-            _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
+            _t.flops = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
+            _t.memops = (double)(n * n / 2 + n * m * 2) * k * sizeof(T);
 
             const T *ap = a.data();
             T *xp = x.data();
@@ -158,7 +161,8 @@ namespace superbblas {
             causalConnectTo(x.ctx(), a.ctx());
 
             tracker<Gpu> _t("local trsm (GPU)", a.ctx());
-            _t.cost = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
+            _t.flops = (double)n * n / 2 * m * k * multiplication_cost<T>::value;
+            _t.memops = (double)(n * n / 2 + n * m * 2) * k * sizeof(T);
 
 #    ifdef SUPERBBLAS_USE_CUDA
             // NOTE: cublasXtrsmBatched presents an undocumented limitation: it fails when
@@ -225,8 +229,9 @@ namespace superbblas {
 
             tracker<Cpu> _t("local gesm (Cpu)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
-            _t.cost =
+            _t.flops =
                 ((double)n * n * n * 2 / 3 + (double)n * n * m) * k * multiplication_cost<T>::value;
+            _t.memops = ((double)n * n * 3 + n * m * 4) * k * sizeof(T);
 
             using BLASINT = std::int64_t;
             T *ap = a.data(), *xp = x.data();
@@ -278,8 +283,9 @@ namespace superbblas {
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
-            _t.cost =
+            _t.flops =
                 ((double)n * n * n * 2 / 3 + (double)n * n * m) * k * multiplication_cost<T>::value;
+            _t.memops = ((double)n * n * 3 + n * m * 4) * k * sizeof(T);
 
             vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
             auto xpu_host = a.ctx().toCpuPinned();
@@ -331,7 +337,8 @@ namespace superbblas {
 
             tracker<Cpu> _t("local inv (Cpu)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
-            _t.cost = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
+            _t.flops = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
+            _t.memops = (double)n * n * 7 * k * sizeof(T);
 
             using BLASINT = std::int64_t;
             T *ap = a.data();
@@ -385,7 +392,8 @@ namespace superbblas {
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
-            _t.cost = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
+            _t.flops = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
+            _t.memops = (double)n * n * 7 * k * sizeof(T);
 
             vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
             auto xpu_host = a.ctx().toCpuPinned();
