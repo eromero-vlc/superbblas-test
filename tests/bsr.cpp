@@ -817,16 +817,16 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     if (rank == 0) reportCacheUsage(std::cout);
 
     const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
-                                dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
+                                dim[T], dim[C], dim[N], dim[S]}; // pxyztcns
     PartitionStored<Nd + 1> kp0 =
-        basic_partitioning("pxyztsnc", kdim0, procs0, "xyzt", nprocs, ctx.size());
-    t0 = create_tensor_data<Q>(kp0, rank, "pxyztsnc", dimo, dim[N], xpu);
+        basic_partitioning("pxyztcns", kdim0, procs0, "xyzt", nprocs, ctx.size());
+    t0 = create_tensor_data<Q>(kp0, rank, "pxyztcns", dimo, dim[N], xpu);
     Coor<Nd + 1> kdim1 =
-        Coor<Nd + 1>{max_power, dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[N], dim[C]}; // pxyztsnc
+        Coor<Nd + 1>{max_power, dim[X], dim[Y], dim[Z], dim[T], dim[C], dim[N], dim[S]}; // pxyztcns
     const Coor<Nd + 1> kprocs1 =
-        Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztsnc
+        Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztcns
     PartitionStored<Nd + 1> kp1 =
-        basic_partitioning("pxyztsnc", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
+        basic_partitioning("pxyztcns", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
 
     for (int kron_sparse = 1; kron_sparse < 2; kron_sparse++) {
         // Create the Kronecker operator
@@ -839,8 +839,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-                    Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", kp0.data(), ctx.size(), "pXYZTSnC",
-                    {{}}, kdim0, kdim0, (const Q **)t0.data(), Q{0}, kp1.data(), "pxyztsnc", {{}},
+                    Q{1}, op_kron_s.first, "xyztsc", "XYZTSC", kp0.data(), ctx.size(), "pXYZTCnS",
+                    {{}}, kdim0, kdim0, (const Q **)t0.data(), Q{0}, kp1.data(), "pxyztcns", {{}},
                     kdim1, kdim1, 'p', t1.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
