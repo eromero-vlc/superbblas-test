@@ -77,7 +77,19 @@ namespace superbblas {
         /// List of start-end gpu events for calls of this function in course
         TimingGpuEvents timing_events;
 #endif
-        Metric() : cpu_time(0), gpu_time(0), flops(0), memops(0), arity(0), max_mem(0), calls(0) {}
+        /// Name of the parent call
+        std::string parent;
+	/// Whether the parent has been set
+	bool is_parent_set;
+    Metric()
+        : cpu_time(0),
+          gpu_time(0),
+          flops(0),
+          memops(0),
+          arity(0),
+          max_mem(0),
+          calls(0),
+          is_parent_set(false) {}
     };
 
     /// Type for storing the timings
@@ -304,6 +316,10 @@ namespace superbblas {
                 timing.memops += memops;
                 timing.arity += arity;
                 timing.calls++;
+                if (!timing.is_parent_set) {
+                    timing.parent = parent;
+                    timing.is_parent_set = true;
+                }
                 TimingEvents<XPU>::updateGpuTimingEvents(timing, timingEvent);
 
                 // Add flops and memops to parent call
@@ -349,32 +365,61 @@ namespace superbblas {
         for (Session session = 0; session < 256; ++session)
             for (const auto &it : getTimings(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
+
+	// Update the gpu timings
+#ifdef SUPERBBLAS_USE_GPU
+        // Aggregate all gpu time of the called functions; that's used as an approximation of the
+        // total gpu time spent by the function if no gpu time has been actually recorded.
+        // NOTE: visiting the functions in reverse lexicographic order is a way to guarantee visiting
+        // all children before visiting the parent node
+        std::unordered_map<std::string, double> children_gpu_time(16);
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            const auto &name = names[names.size() - i - 1];
+            for (Session session = 0; session < 256; ++session) {
+                auto it = getTimings(session).find(name);
+                if (it != getTimings(session).end()) {
+                    detail::TimingEvents<detail::Gpu>::updateGpuTimingEvents(it->second);
+                    children_gpu_time[it->second.parent] +=
+                        (it->second.gpu_time > 0 ? it->second.gpu_time
+                                                 : children_gpu_time[it->first]);
+                }
+            }
+        }
+#endif
+
         for (const auto &name : names) {
+            // Gather the metrics for a given function on all sessions
             double cpu_time = 0, gpu_time = 0, flops = 0, memops = 0, calls = 0;
             for (Session session = 0; session < 256; ++session) {
                 auto it = getTimings(session).find(name);
                 if (it != getTimings(session).end()) {
-#ifdef SUPERBBLAS_USE_GPU
-                    detail::TimingEvents<detail::Gpu>::updateGpuTimingEvents(it->second);
-                    gpu_time += it->second.gpu_time;
-#endif
                     cpu_time += it->second.cpu_time;
+                    gpu_time += it->second.gpu_time;
                     flops += it->second.flops;
                     memops += it->second.memops;
                     calls += it->second.calls;
                 }
             }
+#ifdef SUPERBBLAS_USE_GPU
+            // Use the aggregate gpu time of the called functions if no gpu time was recorded
+            if (gpu_time == 0) gpu_time = children_gpu_time[name];
+#endif
+            // For computing flops and memory bandwidth, use gpu time if given
             double time = (gpu_time > 0 ? gpu_time : cpu_time);
             double gflops_per_sec = (time > 0 ? flops / time : 0) / 1000.0 / 1000.0 / 1000.0;
             double gmemops_per_sec = (time > 0 ? memops / time : 0) / 1024.0 / 1024.0 / 1024.0;
+            double intensity = (memops > 0 ? flops / memops : 0.0);
             s << name << " : " << std::fixed << std::setprecision(3) << cpu_time << " s ("
 #ifdef SUPERBBLAS_USE_GPU
               << "gpu_time: " << gpu_time << " "
 #endif
-              << "calls: " << std::setprecision(0) << calls << " flops: " << flops
-              << " bytes: " << memops << std::scientific << std::setprecision(3)
-              << " GFLOPs_single: " << gflops_per_sec << " GBYTES/s: " << gmemops_per_sec << " )"
-              << std::endl;
+              << "calls: " << std::setprecision(0) << calls                                      //
+              << " flops: " << flops                                                             //
+              << " bytes: " << memops                                                            //
+              << " GFLOPs_single: " << std::scientific << std::setprecision(3) << gflops_per_sec //
+              << " GBYTES/s: " << gmemops_per_sec                                                //
+              << " intensity: " << std::fixed << std::setprecision(1) << intensity               //
+              << " )" << std::endl;
         }
         s << std::defaultfloat;
     }
