@@ -79,17 +79,17 @@ namespace superbblas {
 #endif
         /// Name of the parent call
         std::string parent;
-	/// Whether the parent has been set
-	bool is_parent_set;
-    Metric()
-        : cpu_time(0),
-          gpu_time(0),
-          flops(0),
-          memops(0),
-          arity(0),
-          max_mem(0),
-          calls(0),
-          is_parent_set(false) {}
+        /// Whether the parent has been set
+        bool is_parent_set;
+        Metric()
+            : cpu_time(0),
+              gpu_time(0),
+              flops(0),
+              memops(0),
+              arity(0),
+              max_mem(0),
+              calls(0),
+              is_parent_set(false) {}
     };
 
     /// Type for storing the timings
@@ -366,7 +366,7 @@ namespace superbblas {
             for (const auto &it : getTimings(session)) names.push_back(it.first);
         std::sort(names.begin(), names.end());
 
-	// Update the gpu timings
+        // Update the gpu timings
 #ifdef SUPERBBLAS_USE_GPU
         // Aggregate all gpu time of the called functions; that's used as an approximation of the
         // total gpu time spent by the function if no gpu time has been actually recorded.
