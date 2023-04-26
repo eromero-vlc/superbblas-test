@@ -597,11 +597,21 @@ namespace superbblas {
             }
 
             auto cT = toCudaDataType<T>();
-            gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmBatchedEx)(
-                getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
-                &alpha, (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c, cT,
-                ldc, batch_size, toCudaComputeType<T>(),
-                SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
+                for (int i = 0; i < batch_size; ++i) {
+                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a[i], cT, lda, b[i], cT, ldb, &beta, c[i], cT, ldc,
+                        toCudaComputeType<T>(),
+                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                }
+            } else {
+                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmBatchedEx)(
+                    getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                    &alpha, (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c,
+                    cT, ldc, batch_size, toCudaComputeType<T>(),
+                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+            }
         }
 
         template <typename T>
