@@ -1979,7 +1979,7 @@ namespace superbblas {
             Proc_ranges<Nx> px_ = pxy_.first;
             auto vx_and_req =
                 reorder_tensor_request(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm,
-                                       co, doCacheAlloc, power > 1 /* force copy when power > 1 */);
+                                       co, power > 1 /* force copy when power > 1 */, doCacheAlloc);
             Components_tmpl<Nx, T, XPU0, XPU1> vx_ = vx_and_req.first;
 
             // Scale the output vector if beta isn't 0 or 1
