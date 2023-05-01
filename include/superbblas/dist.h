@@ -2262,7 +2262,7 @@ namespace superbblas {
                                      Coor<Nd1>{{}}, fsi[1]);
                     for (unsigned int i = 0, i1 = tozero.size(); i < i1; ++i) {
                         local_copy<Nd1, Nd1, Q, Q>(Q{0}, o1, tozero[i][0], tozero[i][1], c1.dim,
-                                                   vector<const Q, XPU0>(c1.it), c1.mask_it, o1,
+                                                   vector<const Q, XPU1>(c1.it), c1.mask_it, o1,
                                                    tozero[i][0], c1.dim, c1.it, c1.mask_it,
                                                    EWOp::Copy{}, co);
                     }
