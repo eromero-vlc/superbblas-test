@@ -98,6 +98,8 @@ namespace superbblas {
             static constexpr bool value = false;
         };
 
+        enum ForceLocal { dontForceLocal, doForceLocal };
+
         //
         // Auxiliary functions
         //
@@ -2013,7 +2015,7 @@ namespace superbblas {
 
                 // Copy the indices
                 copy(1, p0, from0, size0, dim0, o0, v0_, p1, from1, dim1, o1, v1_, comm, EWOP{}, co,
-                     false);
+                     dontForceLocal, false /* don't do test */);
 
                 // Check that the modified elements on v1_ are what they should be
                 for (const Component<Nd1, std::size_t, XPU0> &c : v1_.first) {
@@ -2433,28 +2435,41 @@ namespace superbblas {
         /// \param comm: communicator context
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
+        /// \param force_local: whether to avoid communications
         ///
         /// NOTE: this function makes the origin and the destination tensor of the same number of dimensions
         /// to reduce the compilation time
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOP>
-        Request copy_request_normalized(typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0,
-                                        const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                                        const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                                        const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                                        const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
-                                        const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                                        const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
-                                        EWOP ewop, CoorOrder co, bool do_test = true) {
+        Request copy_request_normalized(
+            typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
+            const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+            const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
+            ForceLocal force_local = dontForceLocal, bool do_test = true) {
+
+            Proc_ranges<Nd0> new_p0 =
+                (force_local == dontForceLocal
+                     ? p0
+                     : Proc_ranges<Nd0>(p0.begin() + comm.rank, p0.begin() + comm.rank + 1));
+            Proc_ranges<Nd1> new_p1 =
+                (force_local == dontForceLocal
+                     ? p1
+                     : Proc_ranges<Nd1>(p1.begin() + comm.rank, p1.begin() + comm.rank + 1));
             auto m = get_labels_mask();
             update_label_mask(o0, m);
             update_label_mask(o1, m);
             constexpr std::size_t Nd = std::max(Nd0, Nd1);
-            auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
-            auto t1 = dummy_normalize_copy<Nd>(p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
-            return copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p, t1.from,
-                                t1.dim, t1.o, t1.v, comm, ewop, co, do_test);
+            auto t0 = dummy_normalize_copy<Nd>(new_p0, from0, size0, dim0, o0, v0, m);
+            auto t1 = dummy_normalize_copy<Nd>(new_p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
+            return force_local == dontForceLocal
+                       ? copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p,
+                                      t1.from, t1.dim, t1.o, t1.v, comm, ewop, co, do_test)
+                       : copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p,
+                                      t1.from, t1.dim, t1.o, t1.v, detail::get_comm(), ewop, co,
+                                      do_test);
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2472,6 +2487,7 @@ namespace superbblas {
         /// \param comm: communicator context
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
+        /// \param force_local: whether to avoid communications
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOp>
@@ -2480,10 +2496,10 @@ namespace superbblas {
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
                   const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
-                  bool do_test = true) {
+                  ForceLocal force_local = dontForceLocal, bool do_test = true) {
 
             wait(copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
-                                         v1, comm, ewop, co, do_test));
+                                         v1, comm, ewop, co, force_local, do_test));
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2787,6 +2803,7 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param force_copy: whether to NOT avoid copy if the partition is the same
         /// \param cacheAlloc: whether to cache the allocation
+        /// \param force_local: whether to avoid communications
         /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
@@ -2795,7 +2812,7 @@ namespace superbblas {
             const Coor<N> &size0, const Coor<N> &dim0, const Components_tmpl<N, T, XPU0, XPU1> &v0,
             const Proc_ranges<N> &p1, const Coor<N> &dim1, const Order<N> &o1, Comm comm,
             CoorOrder co, bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
-            ZeroInit zero_init = dontZeroInit) {
+            ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
             if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request()};
@@ -2806,7 +2823,7 @@ namespace superbblas {
             // Copy the content of v0 into v1
             return {v1, copy_request_normalized<N, N, T>(T{1}, p0, from0, size0, dim0, o0,
                                                          toConst(v0), p1, {{}}, dim1, o1, v1, comm,
-                                                         EWOp::Copy{}, co, true /* do test */)};
+                                                         EWOp::Copy{}, co, force_local)};
         }
 
         /// Check that the given components are compatible
