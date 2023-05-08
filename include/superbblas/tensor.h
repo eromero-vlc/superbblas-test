@@ -1120,6 +1120,27 @@ namespace superbblas {
             }
         }
 
+        /// Check the content of a tensor
+        /// \param o: dimension labels for the origin tensor
+        /// \param from: first coordinate to copy from the origin tensor
+        /// \param size: number of coordinates to copy in each direction
+        /// \param dim: dimension size for the origin tensor
+        /// \param v: data for the origin tensor
+        /// \param mask: mask for the origin tensor
+
+        template <typename IndexType, std::size_t Nd, typename T, typename XPU>
+        void local_check(const Coor<Nd> &from, const Coor<Nd> &size, const Coor<Nd> &dim,
+                         const vector<T, XPU> &v, const Mask<XPU> &mask, CoorOrder co) {
+
+            IndicesT<IndexType, XPU> indices =
+                get_permutation(from, size, dim, get_strides<IndexType>(dim, co),
+                                DontAllowImplicitPermutation, v.ctx());
+
+            if (mask.size() > 0) indices = select(indices, mask.data(), indices);
+            check_nan_n<IndexType, T>(v.data(), v.ctx(), indices.begin(), indices.ctx(),
+                                      indices.size());
+        }
+
         /// Return the permutation on the origin to copy from the origin tensor into the destination tensor
         /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor

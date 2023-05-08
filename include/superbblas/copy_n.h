@@ -20,13 +20,20 @@
 /// Generate template instantiations for zero_n functions with template parameters IndexType and T
 
 #    define DECL_ZERO_T(...)                                                                       \
-        EMIT REPLACE1(zero_n, superbblas::detail::zero_n<IndexType, T>)                            \
+        EMIT REPLACE1(zero_n, superbblas::detail::zero_n<IndexType, T>) REPLACE_IndexType REPLACE( \
+            T, SUPERBBLAS_REAL_TYPES, SUPERBBLAS_COMPLEX_TYPES) template __VA_ARGS__;
+
+/// Generate template instantiations for check_nan_n functions with template parameters IndexType and T
+
+#    define DECL_CHECK_NAN_T(...)                                                                  \
+        EMIT REPLACE1(check_nan_n, superbblas::detail::check_nan_n<IndexType, T>)                  \
             REPLACE_IndexType REPLACE_T template __VA_ARGS__;
 
 #else
 #    define DECL_COPY_LOWER_T_Q_EWOP(...) __VA_ARGS__
 #    define DECL_COPY_BLOCKING_LOWER_T_Q_EWOP(...) __VA_ARGS__
 #    define DECL_ZERO_T(...) __VA_ARGS__
+#    define DECL_CHECK_NAN_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -407,6 +414,90 @@ namespace superbblas {
             causalConnectTo(xpui, xpuv);
             zero_n_thrust<IndexType, T>(v, indices, n, xpuv);
         })
+
+#endif // SUPERBBLAS_USE_GPU
+
+#ifdef SUPERBBLAS_USE_THRUST
+        /// Check if the elements are nan
+        /// \param v: first element to set
+        /// \param indices: indices of the elements to set
+        /// \param n: number of elements to set
+        /// \param xpu: device context
+
+        template <typename IndexType, typename T>
+        void check_nan_n_thrust(T *v, const IndexType *indices, IndexType n, Gpu xpu) {
+            if (n == 0) return;
+            if (deviceId(xpu) == CPU_DEVICE_ID) {
+                launchHostKernel(
+                    [=] {
+                        // No openmp: we avoid spawning threads inside a host kernel, they may not run on multiple cores
+                        for (IndexType i = 0; i < n; ++i)
+                            if (std::isnan(v[indices[i]]))
+                                throw std::runtime_error("check_nan_n: detected nan values");
+                    },
+                    xpu);
+            } else {
+                setDevice(xpu);
+                auto itv = thrust::make_permutation_iterator(encapsulate_pointer(v),
+                                                             encapsulate_pointer(indices));
+                struct isnan_test {
+                    __host__ __device__ bool operator()(const T &a) const { return isnan(a); }
+                };
+                if (thrust::any_of(thrust_par_on(xpu), itv, n, isnan_test{}))
+                    throw std::runtime_error("check_nan_n: detected nan values");
+            }
+        }
+
+#endif // SUPERBBLAS_USE_THRUST
+
+        template <typename T, typename std::enable_if<!is_complex<T>::value, bool>::type = true>
+        bool isnan_gen(const T &t) {
+            return std::isnan(t);
+        }
+
+        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = true>
+        bool isnan_gen(const T &t) {
+            return std::isnan(std::real(t)) || std::isnan(std::imag(t));
+        }
+
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param indices: indices of the elements to set
+        /// \param n: number of elements to set
+        /// \param cpu: device context
+
+        template <typename IndexType, typename T>
+        void check_nan_n(T *v, Cpu, const IndexType *indices, Cpu, std::size_t n) {
+            bool some_mismatch = false;
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+            for (std::size_t i = 0; i < n; ++i)
+                if (isnan_gen(v[indices[i]])) some_mismatch = true;
+
+            if (some_mismatch) std::cout << "check_nan_n: detected nan values";
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+
+        /// Set the first `n` elements to zero
+        /// \param v: first element to set
+        /// \param indices: indices of the elements to set
+        /// \param n: number of elements to set
+        /// \param xpu: device context
+
+        template <typename IndexType, typename T>
+        DECL_CHECK_NAN_T(void check_nan_n(T *v, const Gpu &xpuv, const IndexType *indices,
+                                          const Gpu &xpui, IndexType n))
+        IMPL({
+            check_same_device(xpuv, xpui);
+            causalConnectTo(xpui, xpuv);
+            check_nan_n_thrust<IndexType, T>(v, indices, n, xpuv);
+        })
+
+#endif // SUPERBBLAS_USE_GPU
+
+#ifdef SUPERBBLAS_USE_GPU
 
         /// Copy n values, w[indicesw[i]] (+)= v[indicesv[i]] when v and w are on device
 

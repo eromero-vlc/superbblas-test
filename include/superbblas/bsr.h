@@ -1930,6 +1930,8 @@ namespace superbblas {
                 }
                 for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
                 for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
+                if (getDebugLevel() >= 2)
+                    check_component(px, fromx, sizex, dimx, toConst(vx), comm, co);
             }
 
             tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
@@ -2077,6 +2079,10 @@ namespace superbblas {
                 for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
                 for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
                 if (!just_local) barrier(comm);
+                if (getDebugLevel() >= 2) {
+                    wait(r);
+                    check_component(py, fromy, sizey, dimy, toConst(vy), comm, co);
+                }
             }
 
             return r;

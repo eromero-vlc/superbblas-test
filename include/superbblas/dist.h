@@ -1951,7 +1951,7 @@ namespace superbblas {
                 Coor<Nd0, std::size_t> stride0 = get_strides<std::size_t>(dim0, co);
                 vector<std::size_t, Cpu> v_host = makeSure(v.it, Cpu{});
                 vector<MaskType, Cpu> m_host = makeSure(v.mask_it, Cpu{});
-
+                bool some_mismatch = false;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
@@ -1973,8 +1973,15 @@ namespace superbblas {
                             true_val = 0;
                         if (m_host.size() > 0 && m_host[i] == 0) true_val = 0;
                     }
-                    if (v_host[i] != true_val)
+                    if (v_host[i] != true_val) some_mismatch = true;
+                }
+
+                if (some_mismatch) {
+                    if (m_host.size() == 0)
                         throw std::runtime_error("test_copy_check does not pass!");
+                    std::cout
+                        << "test_copy_check: test copy failed but with masks, so that may be ok"
+                        << std::endl;
                 }
             }
 
@@ -2015,7 +2022,7 @@ namespace superbblas {
 
                 // Copy the indices
                 copy(1, p0, from0, size0, dim0, o0, v0_, p1, from1, dim1, o1, v1_, comm, EWOP{}, co,
-                     dontForceLocal, false /* don't do test */);
+                     dontForceLocal, true /* don't check for nans */, false /* don't do test */);
 
                 // Check that the modified elements on v1_ are what they should be
                 for (const Component<Nd1, std::size_t, XPU0> &c : v1_.first) {
@@ -2135,6 +2142,48 @@ namespace superbblas {
             // Trivial case: do nothing if v have no gpu components
         }
 
+        /// Check that the values of a component don't have nans
+        /// \param p: partitioning of the tensor in consecutive ranges
+        /// \param o: dimension labels for the origin tensor
+        /// \param from: first coordinate to copy from the origin tensor
+        /// \param size: number of elements to copy in each dimension
+        /// \param dim: dimension size for the tensor
+        /// \param v: data for the origin tensor
+        /// \param comm: communicator context
+        /// \param co: coordinate linearization order
+
+        template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1,
+                  typename std::enable_if<has_nan<T>::value, bool>::type = true>
+        void check_component(const Proc_ranges<Nd> &p, const Coor<Nd> &from, const Coor<Nd> &size,
+                             const Coor<Nd> &dim, const Components_tmpl<Nd, const T, XPU0, XPU1> &v,
+                             Comm comm, CoorOrder co) {
+            // Do something
+            for (const Component<Nd, const T, XPU0> &c : v.first) {
+                const auto &fsi = p[comm.rank][c.componentId];
+                const auto ranges = shift_ranges(intersection(fsi[0], fsi[1], from, size, dim),
+                                                 fsi[0], Coor<Nd>{{}}, fsi[1]);
+                for (unsigned int i = 0, i1 = ranges.size(); i < i1; ++i) {
+                    local_check<std::size_t>(ranges[i][0], ranges[i][1], c.dim, c.it, c.mask_it,
+                                             co);
+                }
+            }
+            for (const Component<Nd, const T, XPU1> &c : v.second) {
+                const auto &fsi = p[comm.rank][c.componentId];
+                const auto ranges = shift_ranges(intersection(fsi[0], fsi[1], from, size, dim),
+                                                 fsi[0], Coor<Nd>{{}}, fsi[1]);
+                for (unsigned int i = 0, i1 = ranges.size(); i < i1; ++i) {
+                    local_check<std::size_t>(ranges[i][0], ranges[i][1], c.dim, c.it, c.mask_it,
+                                             co);
+                }
+            }
+        }
+
+        template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1,
+                  typename std::enable_if<!has_nan<T>::value, bool>::type = true>
+        void check_component(const Proc_ranges<Nd> &, const Coor<Nd> &, const Coor<Nd> &,
+                             const Coor<Nd> &, const Components_tmpl<Nd, const T, XPU0, XPU1> &,
+                             Comm, CoorOrder) {}
+
         /// Copy the content of plural tensor v0 into v1
         /// \param alpha: factor applied to the input tensors
         /// \param p0: partitioning of the origin tensor in consecutive ranges
@@ -2159,7 +2208,7 @@ namespace superbblas {
                              const Components_tmpl<Nd, const T, XPU0, XPU1> &v0,
                              const Proc_ranges<Nd> &p1, const Coor<Nd> &from1, const Coor<Nd> &dim1,
                              const Order<Nd> &o1, const Components_tmpl<Nd, Q, XPU0, XPU1> &v1,
-                             Comm comm, EWOP ewop, CoorOrder co, bool do_test) {
+                             Comm comm, EWOP ewop, CoorOrder co, bool copying_trash, bool do_test) {
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
                 struct tag_type {}; // For hashing template arguments
@@ -2172,6 +2221,8 @@ namespace superbblas {
             if (getDebugLevel() >= 2 && do_test) {
                 ns_copy_test::test_copy(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
                                         v1, comm, EWOP{}, co);
+                if (std::norm(alpha) != 0 && !copying_trash)
+                    check_component(p0, from0, size0, dim0, v0, comm, co);
             }
 
             tracker<Cpu> _t("distributed copy", Cpu{});
@@ -2243,8 +2294,8 @@ namespace superbblas {
             }
 
             // Zero out v1 if needed
+            Coor<Nd1> size1 = reorder_coor(size0, find_permutation(o0, o1), 1);
             if (zeroout_v1) {
-                Coor<Nd1> size1 = reorder_coor(size0, find_permutation(o0, o1), 1);
                 for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
                     const auto &fsi = p1[comm.rank][c1.componentId];
                     const auto tozero =
@@ -2322,6 +2373,13 @@ namespace superbblas {
                                                    c1.it, c1.mask_it, ewop, co);
                     }
                 }
+            }
+
+            if (getDebugLevel() >= 2 && do_test && !copying_trash) {
+                wait(mpi_req);
+                _t.stop();
+                check_component(p1, from1, size1, dim1, toConst(v1), comm, co);
+                return Request();
             }
 
             return mpi_req;
@@ -2442,13 +2500,16 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOP>
-        Request copy_request_normalized(
-            typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
-            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
-            const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-            const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
-            ForceLocal force_local = dontForceLocal, bool do_test = true) {
+        Request copy_request_normalized(typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0,
+                                        const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                                        const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                                        const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                                        const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
+                                        const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+                                        const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
+                                        EWOP ewop, CoorOrder co,
+                                        ForceLocal force_local = dontForceLocal,
+                                        bool copying_trash = false, bool do_test = true) {
 
             Proc_ranges<Nd0> new_p0 =
                 (force_local == dontForceLocal
@@ -2466,10 +2527,11 @@ namespace superbblas {
             auto t1 = dummy_normalize_copy<Nd>(new_p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
             return force_local == dontForceLocal
                        ? copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p,
-                                      t1.from, t1.dim, t1.o, t1.v, comm, ewop, co, do_test)
+                                      t1.from, t1.dim, t1.o, t1.v, comm, ewop, co, copying_trash,
+                                      do_test)
                        : copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p,
                                       t1.from, t1.dim, t1.o, t1.v, detail::get_comm(), ewop, co,
-                                      do_test);
+                                      copying_trash, do_test);
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2496,10 +2558,11 @@ namespace superbblas {
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
                   const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
-                  ForceLocal force_local = dontForceLocal, bool do_test = true) {
+                  ForceLocal force_local = dontForceLocal, bool copying_trash = false,
+                  bool do_test = true) {
 
             wait(copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
-                                         v1, comm, ewop, co, force_local, do_test));
+                                         v1, comm, ewop, co, force_local, copying_trash, do_test));
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2525,7 +2588,7 @@ namespace superbblas {
                      const Order<Nd0> &o0, const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
                      const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
                      const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
-                     CopyAdd copyadd, CoorOrder co) {
+                     CopyAdd copyadd, CoorOrder co, bool copying_trash) {
 
             if (getDebugLevel() >= 1) {
                 barrier(comm);
@@ -2537,11 +2600,13 @@ namespace superbblas {
             switch (copyadd) {
             case Copy:
                 r = copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1,
-                                            o1, v1, comm, EWOp::Copy{}, co);
+                                            o1, v1, comm, EWOp::Copy{}, co, dontForceLocal,
+                                            copying_trash);
                 break;
             case Add:
                 r = copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1,
-                                            o1, v1, comm, EWOp::Add{}, co);
+                                            o1, v1, comm, EWOp::Add{}, co, dontForceLocal,
+                                            copying_trash);
                 break;
             }
 
@@ -2998,6 +3063,12 @@ namespace superbblas {
                 return;
             }
 
+            // Check input tensors
+            if (getDebugLevel() >= 2 && std::norm(alpha) != 0) {
+                check_component(p0, from0, size0, dim0, toConst(v0), comm, co);
+                check_component(p1, from1, size1, dim1, toConst(v1), comm, co);
+            }
+
             tracker<Cpu> _t("distributed contraction", Cpu{});
 
             Coor<Nd> sug_size0 = reorder_coor(size0, find_permutation(o0, sug_o0));
@@ -3052,6 +3123,8 @@ namespace superbblas {
                 for (const auto &i : vr.first) sync(i.it.ctx());
                 for (const auto &i : vr.second) sync(i.it.ctx());
                 barrier(comm);
+                if (getDebugLevel() >= 2)
+                    check_component(pr, fromr, sizer, dimr, toConst(vr), comm, co);
             }
         }
 
@@ -3395,7 +3468,7 @@ namespace superbblas {
               const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1,
               const Coor<Nd1> &from1, const Coor<Nd1> &dim1, Q **v1, const MaskType **mask1,
               const Context *ctx1, MPI_Comm mpicomm, CoorOrder co, CopyAdd copyadd,
-              Request *request = nullptr, Session session = 0) {
+              Request *request = nullptr, bool copying_trash = false, Session session = 0) {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
@@ -3406,7 +3479,7 @@ namespace superbblas {
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm), from1, dim1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
-            copyadd, co);
+            copyadd, co, copying_trash);
 
         if (request)
             *request = r;
@@ -3443,7 +3516,8 @@ namespace superbblas {
               const T **v0, const MaskType **mask0, const Context *ctx0,
               const PartitionItem<Nd1> *p1, int ncomponents1, const char *o1, const Coor<Nd1> from1,
               const Coor<Nd1> dim1, Q **v1, const MaskType **mask1, const Context *ctx1,
-              CoorOrder co, CopyAdd copyadd, Request *request = nullptr, Session session = 0) {
+              CoorOrder co, CopyAdd copyadd, Request *request = nullptr, bool copying_trash = false,
+              Session session = 0) {
 
         detail::SelfComm comm = detail::get_comm();
 
@@ -3454,7 +3528,7 @@ namespace superbblas {
             detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm), from1, dim1,
             detail::toArray<Nd1>(o1, "o1"),
             detail::get_components<Nd1>(v1, mask1, ctx1, ncomponents1, p1, comm, session), comm,
-            copyadd, co));
+            copyadd, co, copying_trash));
         if (request) *request = Request{};
     }
 

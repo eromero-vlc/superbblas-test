@@ -490,6 +490,63 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_GPU
 
+        /// has_nan<T>::value is true if T is float, double, or std::complex
+        /// \tparam T: type to inspect
+
+        template <typename T> struct has_nan { static const bool value = false; };
+        template <typename T> struct has_nan<std::complex<T>> { static const bool value = true; };
+        template <> struct has_nan<float> { static const bool value = true; };
+        template <> struct has_nan<double> { static const bool value = true; };
+        template <typename T> struct has_nan<const T> {
+            static const bool value = has_nan<T>::value;
+        };
+
+        template <typename T> struct getNan { static constexpr const T value{0}; };
+        template <> struct getNan<float> {
+            static constexpr const float value = std::numeric_limits<float>::quiet_NaN();
+        };
+        template <> struct getNan<double> {
+            static constexpr const double value = std::numeric_limits<double>::quiet_NaN();
+        };
+        template <typename T> struct getNan<std::complex<T>> {
+            static constexpr const std::complex<T> value{getNan<T>::value, getNan<T>::value};
+        };
+
+        /// Set the first `n` elements to nan
+        /// \param v: first element to set
+        /// \param n: number of elements to set
+        /// \param cpu: device context
+
+        template <typename T, typename std::enable_if<has_nan<T>::value, bool>::type = true>
+        void nan_n(T *v, std::size_t n, Cpu) {
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+            for (std::size_t i = 0; i < n; ++i) v[i] = getNan<T>::value;
+        }
+
+        template <typename T, typename std::enable_if<!has_nan<T>::value, bool>::type = true>
+        void nan_n(T *, std::size_t, Cpu) {}
+
+#ifdef SUPERBBLAS_USE_GPU
+        /// Set the first `n` elements to nan
+        /// \param v: first element to set
+        /// \param n: number of elements to set
+        /// \param xpu: device context
+
+        template <typename T> void nan_n(T *v, std::size_t n, const Gpu &xpu) {
+            if (n == 0) return;
+            if (deviceId(xpu) == CPU_DEVICE_ID) {
+                launchHostKernel([=] { std::memset((void *)v, getNan<T>::value, sizeof(T) * n); },
+                                 xpu);
+            } else {
+                setDevice(xpu);
+                gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemsetAsync)(v, getNan<T>::value, sizeof(T) * n,
+                                                            getStream(xpu)));
+            }
+        }
+#endif // SUPERBBLAS_USE_GPU
+
         /// Return a copy of a vector
 
         template <typename T, typename XPU,

@@ -167,6 +167,9 @@ namespace superbblas {
                     getCpuMemUsed(xpu.session) += double(sizeof(T) * n);
             }
 
+            // Set nans
+            if (getDebugLevel() >= 2) nan_n(r, n, xpu);
+
             return r;
         }
 
@@ -354,6 +357,9 @@ namespace superbblas {
                         causalConnectTo(stream, allocStream);
                     }
                 });
+
+            // Set nans
+            if (getDebugLevel() >= 2) nan_n(selected_buffer.get(), n, xpu);
 
             // Align and return the buffer
             T *ptr_aligned = align<T>(alignment, sizeof(T) * n, (T *)selected_buffer.get(),
