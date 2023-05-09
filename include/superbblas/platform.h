@@ -293,7 +293,6 @@ namespace superbblas {
         /// fashion. If `plat` is `CUDA` and `HIP`, the value is the device identification.
         int device;
 
-    private:
         /// Optional function for allocating memory on devices
         const Allocator alloc;
 
@@ -306,7 +305,6 @@ namespace superbblas {
         std::shared_ptr<hipblasHandle_t> hipblasHandle;
 #endif
 
-    public:
         Context(enum platform plat, int device, Allocator alloc = Allocator(),
                 Deallocator dealloc = Deallocator())
             : plat(plat), device(device), alloc(alloc), dealloc(dealloc) {
