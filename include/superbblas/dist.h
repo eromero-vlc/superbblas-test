@@ -587,6 +587,53 @@ namespace superbblas {
             return r;
         }
 
+        /// Return whether p1 - p0 is empty
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param o1: dimension labels for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        bool has_full_support(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+                              const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                              const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
+                              const Coor<Nd1> &dim1, const Order<Nd1> &o1) {
+
+            // Compute r0 = (from, size) - p0
+            From_size<Nd0> r0(1, {from0, size0});
+            From_size<Nd0> aux;
+            for (const auto pi : p0) {
+                for (const auto fs_p : pi) {
+                    aux.resize(0);
+                    for (const auto fs_r : r0) {
+                        auto left = make_hole(fs_r[0], fs_r[1], fs_p[0], fs_p[1], dim0);
+                        aux.insert(aux.end(), left.begin(), left.end());
+                    }
+                    std::swap(r0, aux);
+                }
+            }
+
+            // Shortcut when the remaining list is empty
+            if (volume(r0) == 0) return true;
+
+            // Translate the restricted range to the destination lattice
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            From_size<Nd1> r1 = translate_range(r0, from0, dim0, from1, dim1, perm0);
+
+            for (const auto pi : p1) {
+                for (const auto fs_p : pi) {
+                    if (volume(intersection(r1, fs_p[0], fs_p[1], dim1)) > 0) return false;
+                }
+            }
+
+            return true;
+        }
+
         /// Throw an error if not all processes give the same value
         /// \param t: value to test
         /// \param comm: communicator
@@ -997,53 +1044,6 @@ namespace superbblas {
                 }
             }
             return false;
-        }
-
-        /// Return whether p1 - p0 is empty
-        /// \param p0: partitioning of the origin tensor in consecutive ranges
-        /// \param from0: first coordinate to copy from the origin tensor
-        /// \param size0: number of elements to copy in each dimension
-        /// \param dim0: dimension size for the origin tensor
-        /// \param o0: dimension labels for the origin tensor
-        /// \param p1: partitioning of the destination tensor in consecutive ranges
-        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
-        /// \param dim1: dimension size for the destination tensor
-        /// \param o1: dimension labels for the destination tensor
-
-        template <std::size_t Nd0, std::size_t Nd1>
-        bool has_full_support(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
-                              const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                              const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
-                              const Coor<Nd1> &dim1, const Order<Nd1> &o1) {
-
-            // Compute r0 = (from, size) - p0
-            From_size<Nd0> r0(1, {from0, size0});
-            From_size<Nd0> aux;
-            for (const auto pi : p0) {
-                for (const auto fs_p : pi) {
-                    aux.resize(0);
-                    for (const auto fs_r : r0) {
-                        auto left = make_hole(fs_r[0], fs_r[1], fs_p[0], fs_p[1], dim0);
-                        aux.insert(aux.end(), left.begin(), left.end());
-                    }
-                    std::swap(r0, aux);
-                }
-            }
-
-            // Shortcut when the remaining list is empty
-            if (volume(r0) == 0) return true;
-
-            // Translate the restricted range to the destination lattice
-            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-            From_size<Nd1> r1 = translate_range(r0, from0, dim0, from1, dim1, perm0);
-
-            for (const auto pi : p1) {
-                for (const auto fs_p : pi) {
-                    if (volume(intersection(r1, fs_p[0], fs_p[1], dim1)) > 0) return false;
-                }
-            }
-
-            return true;
         }
 
         /// Return a copy of the given tensor with an allocation stream suitable to be stored
