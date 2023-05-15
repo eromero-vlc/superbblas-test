@@ -88,7 +88,7 @@ EMIT_define(SUPERBBLAS_USE_MKL)
 #define SUPERBBLAS_GPUSPARSE_SYMBOL(X)                                                             \
     SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusparse, hipsparse), X)
 #define SUPERBBLAS_GPUSOLVER_SYMBOL(X)                                                             \
-    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusolverDn, hipsolverDn), X)
+    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusolverDn, hipsolver), X)
 
 namespace superbblas {
 

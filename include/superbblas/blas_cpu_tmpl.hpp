@@ -599,13 +599,26 @@ namespace superbblas {
                                                    batchSize);
         }
 
-        inline hipsolverStatus_t hipsolverDnXpotrfBatched(hipsolverDnHandle_t handle,
-                                                          hipsolverFillMode_t uplo, int n,
-                                                          SCALAR **Aarray, int lda, int *infoArray,
-                                                          int batchSize) {
-            return ARITH(, , hipsolverDnSpotrfBatched, hipsolverDnCpotrfBatched,
-                         hipsolverDnDpotrfBatched, hipsolverDnZpotrfBatched, , )(
-                handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda, infoArray, batchSize);
+        inline int hipsolverXpotrfBatched_bufferSize(hipsolverFillMode_t uplo, int n,
+                                                     SCALAR **Aarray, int lda, int *, int batchSize,
+                                                     Gpu ctx) {
+            auto handle = getGpuSolverHandle(ctx);
+            int lwork;
+            gpuSolverCheck(
+                ARITH(, , hipsolverSpotrfBatched_bufferSize, hipsolverCpotrfBatched_bufferSize,
+                      hipsolverDpotrfBatched_bufferSize, hipsolverZpotrfBatched_bufferSize,
+                      , )(handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda, &lwork, batchSize));
+            return lwork;
+        }
+
+        inline void hipsolverXpotrfBatched(hipsolverFillMode_t uplo, int n, SCALAR **Aarray,
+                                           int lda, SCALAR *work, int lwork, int *infoArray,
+                                           int batchSize, Gpu ctx) {
+            auto handle = getGpuSolverHandle(ctx);
+            gpuSolverCheck(ARITH(, , hipsolverSpotrfBatched, hipsolverCpotrfBatched,
+                                 hipsolverDpotrfBatched, hipsolverZpotrfBatched,
+                                 , )(handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda,
+                                     (HIPSPARSE_SCALAR *)work, lwork, infoArray, batchSize));
         }
 
 #        undef HIPSPARSE_SCALAR

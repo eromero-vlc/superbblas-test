@@ -105,11 +105,19 @@ namespace superbblas {
                 },
                 xpu_host);
             vector<T *, Gpu> v_ps_gpu = makeSure(v_ps_cpu, v.ctx(), doCacheAlloc);
-            vector<int, Gpu> info(k, v.ctx());
+            vector<int, Gpu> info(k, v.ctx(), doCacheAlloc);
+#    ifdef SUPERBBLAS_USE_CUDA
             gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(XpotrfBatched)(
-                getGpuSolverHandle(v.ctx()),
+                getGpuSolverHandle(v.ctx()), CUBLAS_FILL_MODE_UPPER, n, v_ps_gpu.data(), n,
+                info.data(), k));
+#    else
+            int lwork = hipsolverXpotrfBatched_bufferSize(
+                HIPSOLVER_FILL_MODE_UPPER, n, v_ps_gpu.data(), n, info.data(), k, v.ctx());
+            vector<T, Gpu> aux(lwork, v.ctx(), doCacheAlloc);
+            hipsolverXpotrfBatched(
                 SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_FILL_MODE_UPPER, HIPSOLVER_FILL_MODE_UPPER), n,
-                v_ps_gpu.data(), n, info.data(), k));
+                v_ps_gpu.data(), n, aux.data(), aux.size(), info.data(), k, v.ctx());
+#    endif
             vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
             auto info_cpu_ptr = info_cpu.data();
             launchHostKernel(
