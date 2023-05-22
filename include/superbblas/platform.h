@@ -158,7 +158,7 @@ namespace superbblas {
         using GpuSparseHandle = SUPERBBLAS_GPU_SELECT(int, cusparseHandle_t, hipsparseHandle_t);
 
         /// Datatype to represent the cusolver/hipsolver handle
-        using GpuSolverHandle = SUPERBBLAS_GPU_SELECT(int, cusolverDnHandle_t, hipsolverDnHandle_t);
+        using GpuSolverHandle = SUPERBBLAS_GPU_SELECT(int, cusolverDnHandle_t, hipsolverHandle_t);
 
         /// Low-level Cpu context
 
