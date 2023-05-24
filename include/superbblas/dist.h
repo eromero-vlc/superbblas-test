@@ -609,10 +609,10 @@ namespace superbblas {
             // Compute r0 = (from, size) - p0
             From_size<Nd0> r0(1, {from0, size0});
             From_size<Nd0> aux;
-            for (const auto pi : p0) {
+            for (const auto &pi : p0) {
                 for (const auto fs_p : pi) {
                     aux.resize(0);
-                    for (const auto fs_r : r0) {
+                    for (const auto &fs_r : r0) {
                         auto left = make_hole(fs_r[0], fs_r[1], fs_p[0], fs_p[1], dim0);
                         aux.insert(aux.end(), left.begin(), left.end());
                     }
@@ -627,8 +627,8 @@ namespace superbblas {
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             From_size<Nd1> r1 = translate_range(r0, from0, dim0, from1, dim1, perm0);
 
-            for (const auto pi : p1) {
-                for (const auto fs_p : pi) {
+            for (const auto &pi : p1) {
+                for (const auto &fs_p : pi) {
                     if (volume(intersection(r1, fs_p[0], fs_p[1], dim1)) > 0) return false;
                 }
             }
