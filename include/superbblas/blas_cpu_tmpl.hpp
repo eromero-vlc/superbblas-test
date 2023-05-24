@@ -39,6 +39,7 @@ namespace superbblas {
 
 #    define REAL ARITH(, , float, float, double, double, , )
 #    define SCALAR ARITH(, , float, std::complex<float>, double, std::complex<double>, , )
+#    define CONJ(X) ARITH(, , X, std::conj(X), X, std::conj(X), , )
 
         //
         // Basic BLAS
@@ -289,9 +290,6 @@ namespace superbblas {
 #        endif
 #    else
             SCALAR r = (SCALAR)0.0;
-#        ifdef _OPENMP
-#            pragma omp parallel for schedule(static)
-#        endif
             for (int i = 0; i < n; i++) r += std::conj(x[i * incx]) * y[i * incy];
             return r;
 #    endif // __SUPERBBLAS_USE_COMPLEX
@@ -374,12 +372,11 @@ namespace superbblas {
         // Batched GEMM
         //
 
-#    ifdef SUPERBBLAS_USE_MKL
-
         inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
                                         const SCALAR *a, int lda, int stridea, const SCALAR *b,
                                         int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
                                         int stridec, int batch_size, Cpu) {
+#    ifdef SUPERBBLAS_USE_MKL
 #        if INTEL_MKL_VERSION >= 20210000
             if (lda <= stridea && ldb <= strideb && ldc <= stridec) {
                 CONCAT(cblas_, CONCAT(ARITH(, , s, c, d, z, , ), gemm_batch_strided))
@@ -400,25 +397,60 @@ namespace superbblas {
             (CblasColMajor, &transa_, &transb_, &m, &n, &k, &alpha, PASS_SCALARcpp(av.data()), &lda,
              PASS_SCALARcpp(bv.data()), &ldb, &beta, PASS_SCALARpp(cv.data()), &ldc, 1,
              &batch_size);
-        }
 
 #    else // SUPERBBLAS_USE_MKL
 
-        inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
-                                        const SCALAR *a, int lda, int stridea, const SCALAR *b,
-                                        int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
-                                        int stridec, int batch_size, Cpu cpu) {
+            if (m == 1 && n == 1) {
+                bool ca = (transa == 'c' || transa == 'C');
+                bool cb = (transb == 'c' || transb == 'C');
+#        ifdef _OPENMP
+#            pragma omp parallel for schedule(static)
+#        endif
+                for (int i = 0; i < batch_size; ++i) {
+                    SCALAR r{0.0};
+                    if (!ca && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j * lda] * b[strideb * i + j];
+                    if (!ca && cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j * lda] * CONJ(b[strideb * i + j * ldb]);
+                    if (ca && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += CONJ(a[stridea * i + j]) * b[strideb * i + j];
+                    if (ca && cb)
+                        for (int j = 0; j < k; j++)
+                            r += CONJ(a[stridea * i + j]) * CONJ(b[strideb * i + j * ldb]);
+                    c[stridec * i] =
+                        alpha * r + (std::norm(beta) == 0 ? SCALAR{0} : beta * c[stridec * i]);
+                }
+                return;
+            } else if (n == 1
+#        ifndef __SUPERBBLAS_USE_COMPLEX
+                       && transb != 'c' && transb != 'C'
+#        endif
+            ) {
+                int mA = (transa == 'n' || transa == 'N') ? m : k;
+                int nA = (transa == 'n' || transa == 'N') ? k : m;
+                int incb = (transb == 'n' || transb == 'N') ? 1 : ldb;
+#        ifdef _OPENMP
+#            pragma omp parallel for schedule(static)
+#        endif
+                for (int i = 0; i < batch_size; ++i) {
+                    xgemv(transa, mA, nA, alpha, a + stridea * i, lda, b + strideb * i, incb, beta,
+                          c + stridec * i, 1, Cpu{});
+                }
+                return;
+            }
 
 #        ifdef _OPENMP
 #            pragma omp parallel for schedule(static)
 #        endif
             for (int i = 0; i < batch_size; ++i) {
                 xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i, ldb,
-                      beta, c + stridec * i, ldc, cpu);
+                      beta, c + stridec * i, ldc, Cpu{});
             }
-        }
-
 #    endif // SUPERBBLAS_USE_MKL
+        }
 
 #    ifdef SUPERBBLAS_USE_CBLAS
 #        undef PASS_SCALAR
@@ -628,6 +660,7 @@ namespace superbblas {
 #    undef BLASINT
 #    undef REAL
 #    undef SCALAR
+#    undef CONJ
     }
 }
 #endif // !defined(__SUPERBBLAS_USE_HALF) && !defined(__SUPERBBLAS_USE_HALFCOMPLEX)
