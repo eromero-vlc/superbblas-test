@@ -27,6 +27,9 @@ template <std::size_t N> Order<N + 1> toStr(Order<N> o) {
 
 static std::size_t progress = 0;
 static char progress_mark = 0;
+constexpr std::size_t no_test = std::numeric_limits<std::size_t>::max();
+static std::size_t test_number = 0;
+static std::size_t do_test = no_test;
 
 template <std::size_t NA, std::size_t NB, std::size_t NC, typename T>
 Operator<NA + NB + NC, T> generate_tensor(char a, char b, char c, const std::map<char, int> &dims) {
@@ -69,6 +72,7 @@ template <std::size_t N> Coor<N> random_from() {
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T>
 void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1, distribution d1,
                       Operator<N2, T> op2, distribution d2, bool conj0, bool conj1, char dist_dir) {
+
     int nprocs, rank;
 #ifdef SUPERBBLAS_USE_MPI
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
@@ -94,6 +98,14 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
     const std::vector<T> v0_ = std::get<2>(op0);
     const std::vector<T> v1_ = std::get<2>(op1);
     const std::vector<T> v2_ = std::get<2>(op2);
+
+    // Skip if this is not the test number to test
+    if (do_test != no_test) {
+        if (do_test != test_number) {
+            test_number++;
+            return;
+        }
+    }
 
     Context ctx = createCpuContext();
 
@@ -188,9 +200,13 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
                     MPI_COMM_WORLD,
 #endif
                     SlowToFast);
-
-        throw std::runtime_error("Result of contraction does not match with the correct answer");
+        std::stringstream ss;
+        ss << "Result of contraction does not match with the correct answer for test "
+           << test_number;
+        throw std::runtime_error(ss.str());
     }
+
+    test_number++;
 }
 
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T>
@@ -339,6 +355,22 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 #endif
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strncmp("--test=", argv[i], 7) == 0) {
+            if (sscanf(argv[i] + 7, "%ld", &do_test) != 1) {
+                std::cerr << "--test= should follow 1 numbers, for instance --test=42" << std::endl;
+                return -1;
+            }
+        } else if (std::strncmp("--help", argv[i], 6) == 0) {
+            std::cout << "Commandline option:\n  " << argv[0] << " [--test=#test] [--help]"
+                      << std::endl;
+            return 0;
+        } else {
+            std::cerr << "Not sure what is this: `" << argv[i] << "`" << std::endl;
+            return -1;
+        }
+    }
 
     std::srand(0);
     test<double>();
