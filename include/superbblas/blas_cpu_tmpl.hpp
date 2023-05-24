@@ -280,7 +280,8 @@ namespace superbblas {
 #    endif
         }
 
-        inline SCALAR xdot(BLASINT n, SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
+        inline SCALAR xdot(BLASINT n, SCALAR *SB_RESTRICT x, BLASINT incx, SCALAR *SB_RESTRICT y,
+                           BLASINT incy, Cpu) {
             if (n == 0) return (SCALAR)0;
 #    ifndef __SUPERBBLAS_USE_COMPLEX
 #        ifndef SUPERBBLAS_USE_CBLAS
@@ -295,7 +296,7 @@ namespace superbblas {
 #    endif // __SUPERBBLAS_USE_COMPLEX
         }
 
-        inline void xscal(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, Cpu) {
+        inline void xscal(BLASINT n, SCALAR alpha, SCALAR *SB_RESTRICT x, BLASINT incx, Cpu) {
             if (n == 0) return;
             if (std::fabs(alpha) == SCALAR{0.0}) {
 #    ifdef _OPENMP
@@ -373,9 +374,10 @@ namespace superbblas {
         //
 
         inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
-                                        const SCALAR *a, int lda, int stridea, const SCALAR *b,
-                                        int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
-                                        int stridec, int batch_size, Cpu) {
+                                        const SCALAR *SB_RESTRICT a, int lda, int stridea,
+                                        const SCALAR *SB_RESTRICT b, int ldb, int strideb,
+                                        SCALAR beta, SCALAR *SB_RESTRICT c, int ldc, int stridec,
+                                        int batch_size, Cpu) {
 #    ifdef SUPERBBLAS_USE_MKL
 #        if INTEL_MKL_VERSION >= 20210000
             if (lda <= stridea && ldb <= strideb && ldc <= stridec) {
@@ -403,21 +405,37 @@ namespace superbblas {
             if (m == 1 && n == 1) {
                 bool ca = (transa == 'c' || transa == 'C');
                 bool cb = (transb == 'c' || transb == 'C');
+                bool ta = (transa != 'n' && transa != 'N');
+                bool tb = (transb != 'n' && transb != 'N');
 #        ifdef _OPENMP
 #            pragma omp parallel for schedule(static)
 #        endif
                 for (int i = 0; i < batch_size; ++i) {
                     SCALAR r{0.0};
-                    if (!ca && !cb)
+                    if (!ta && !tb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j * lda] * b[strideb * i + j];
-                    if (!ca && cb)
+                    else if (!ta && tb && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j * lda] * b[strideb * i + j * ldb];
+                    else if (!ta && tb && cb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j * lda] * CONJ(b[strideb * i + j * ldb]);
-                    if (ca && !cb)
+                    else if (ta && !ca && !tb)
+                        for (int j = 0; j < k; j++) r += a[stridea * i + j] * b[strideb * i + j];
+                    else if (ta && ca && !tb)
                         for (int j = 0; j < k; j++)
                             r += CONJ(a[stridea * i + j]) * b[strideb * i + j];
-                    if (ca && cb)
+                    else if (ta && !ca && tb && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j] * b[strideb * i + j * ldb];
+                    else if (ta && ca && tb && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += CONJ(a[stridea * i + j]) * b[strideb * i + j * ldb];
+                    else if (ta && !ca && tb && cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j] * CONJ(b[strideb * i + j * ldb]);
+                    else if (ta && ca && tb && cb)
                         for (int j = 0; j < k; j++)
                             r += CONJ(a[stridea * i + j]) * CONJ(b[strideb * i + j * ldb]);
                     c[stridec * i] =

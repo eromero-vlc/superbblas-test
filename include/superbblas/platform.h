@@ -90,6 +90,8 @@ EMIT_define(SUPERBBLAS_USE_MKL)
 #define SUPERBBLAS_GPUSOLVER_SYMBOL(X)                                                             \
     SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusolverDn, hipsolver), X)
 
+#define SB_RESTRICT __restrict__
+
 namespace superbblas {
 
     /// Where the data is

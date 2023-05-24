@@ -93,8 +93,6 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
 #    define DECL_SELECT_T(...) __VA_ARGS__
 #endif
 
-#define SB_RESTRICT __restrict__
-
 namespace superbblas {
 
     /// elem<T>::type is T::value_type if T is an array; otherwise it is T
