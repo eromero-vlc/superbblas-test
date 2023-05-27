@@ -516,16 +516,16 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_GPU
         template <typename T>
-        SUPERBBLAS_GPU_SELECT(xxx, cudaDataType_t, hipblasDatatype_t)
+        SUPERBBLAS_GPU_SELECT(xxx, cudaDataType_t, rocblas_datatype)
         toCudaDataType(void) {
             if (std::is_same<T, float>::value)
-                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_R_32F, HIPBLAS_R_32F);
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_R_32F, rocblas_datatype_f32_r);
             if (std::is_same<T, double>::value)
-                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_R_64F, HIPBLAS_R_64F);
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_R_64F, rocblas_datatype_f64_r);
             if (std::is_same<T, std::complex<float>>::value)
-                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_C_32F, HIPBLAS_C_32F);
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_C_32F, rocblas_datatype_f32_c);
             if (std::is_same<T, std::complex<double>>::value)
-                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_C_64F, HIPBLAS_C_64F);
+                return SUPERBBLAS_GPU_SELECT(xxx, CUDA_C_64F, rocblas_datatype_f64_c);
             throw std::runtime_error("toCudaDataType: unsupported type");
         }
 
@@ -542,8 +542,8 @@ namespace superbblas {
             }
             if (alpha == typename elem<T>::type{1}) return;
             auto cT = toCudaDataType<T>();
-            gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(ScalEx)(getGpuBlasHandle(xpu), n, &alpha, cT, x,
-                                                           cT, incx, cT));
+            gpuBlasCheck(SUPERBBLAS_GPU_SELECT(XXX, cublasScalEx, rocblas_scal_ex)(
+                getGpuBlasHandle(xpu), n, &alpha, cT, x, cT, incx, cT));
         }
 #endif // SUPERBBLAS_USE_GPU
 
@@ -572,20 +572,8 @@ namespace superbblas {
         template <typename T> cudaDataType_t toCudaComputeType() { return toCudaDataType<T>(); }
 #        endif
 #    elif defined(SUPERBBLAS_USE_HIP)
-        template <typename T> hipblasDatatype_t toCudaComputeType() { return toCudaDataType<T>(); }
+        template <typename T> rocblas_datatype toCudaComputeType() { return toCudaDataType<T>(); }
 #    endif
-
-        inline SUPERBBLAS_GPUBLAS_SYMBOL(Operation_t) toCublasTrans(char trans) {
-            switch (trans) {
-            case 'n':
-            case 'N': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_N, HIPBLAS_OP_N);
-            case 't':
-            case 'T': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_T, HIPBLAS_OP_T);
-            case 'c':
-            case 'C': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_C, HIPBLAS_OP_C);
-            default: throw std::runtime_error("Not valid value of trans");
-            }
-        }
 
         template <typename T>
         void xgemm_batch(char transa, char transb, int m, int n, int k, T alpha, const T *a[],
@@ -601,20 +589,38 @@ namespace superbblas {
             }
 
             auto cT = toCudaDataType<T>();
-            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
+            if (batch_size <= 1 /* || m > 1024 || n > 1024 || k > 1024 */) {
                 for (int i = 0; i < batch_size; ++i) {
+#    ifdef SUPERBBLAS_USE_CUDA
                     gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
                         getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
                         k, &alpha, a[i], cT, lda, b[i], cT, ldb, &beta, c[i], cT, ldc,
-                        toCudaComputeType<T>(),
-                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                        toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+#    else
+                    gpuBlasCheck(rocblas_gemm_ex(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a[i], cT, lda, b[i], cT, ldb, &beta, c[i], cT, ldc, c[i], cT,
+                        ldc, cT, rocblas_gemm_algo_standard, 0, rocblas_gemm_flags_none));
+#    endif
                 }
-            } else {
-                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmBatchedEx)(
+                return;
+            }
+
+            {
+#    ifdef SUPERBBLAS_USE_CUDA
+                gpuBlasCheck(cublasGemmBatchedEx(
                     getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
                     &alpha, (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta, (void **)c,
-                    cT, ldc, batch_size, toCudaComputeType<T>(),
-                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                    cT, ldc, batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+
+#    else
+                gpuBlasCheck(rocblas_gemm_batched_ex(
+                    getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
+                    &alpha, (const void **)a, cT, lda, (const void **)b, cT, ldb, &beta,
+                    (const void **)c, cT, ldc, (void **)c, cT, ldc, batch_size, cT,
+                    rocblas_gemm_algo_standard, 0, rocblas_gemm_flags_none));
+
+#    endif // SUPERBBLAS_USE_CUDA
             }
         }
 
@@ -629,15 +635,11 @@ namespace superbblas {
             if (k == 0) { lda = ldb = 1; }
 
             if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
-                auto cT = toCudaDataType<T>();
                 for (int i = 0; i < batch_size; ++i) {
                     T *a = nullptr, *b = nullptr, *c = nullptr;
                     abc(i, &a, &b, &c);
-                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
-                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
-                        k, &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc,
-                        toCudaComputeType<T>(),
-                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                    xgemm_batch<T>(transa, transb, m, n, k, alpha, (const T **)&a, lda,
+                                   (const T **)&b, ldb, beta, &c, ldc, 1, xpu);
                 }
             } else {
                 auto xpu_host = xpu.toCpuPinned();
@@ -676,20 +678,103 @@ namespace superbblas {
             }
 
             auto cT = toCudaDataType<T>();
-            if (batch_size <= 1 || m > 1024 || n > 1024 || k > 1024) {
-                for (int i = 0; i < batch_size; ++i) {
-                    gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmEx)(
-                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
-                        k, &alpha, a + i * stridea, cT, lda, b + i * strideb, cT, ldb, &beta,
-                        c + i * stridec, cT, ldc, toCudaComputeType<T>(),
-                        SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+            bool ca = (transa == 'c' || transa == 'C');
+            bool cb = (transb == 'c' || transb == 'C');
+            bool ta = (transa != 'n' && transa != 'N');
+            bool tb = (transb != 'n' && transb != 'N');
+            if (batch_size == 1) {
+#    ifdef SUPERBBLAS_USE_CUDA
+                if (m == 1 && n == 1 && ((!ca && !cb) || ca != cb)) {
+                    vector<T, Gpu> v;
+                    T *r = c;
+                    if (std::norm(beta) != 0) {
+                        v = vector<T, Gpu>(m * n * batch_size, xpu);
+                        r = v.data();
+                        xscal(batch_size, beta, c, 1, xpu);
+                    }
+                    if (!ca && !cb)
+                        gpuBlasCheck(cublasDotEx(getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1, b,
+                                                 cT, !tb ? 1 : ldb, r, cT, toCudaComputeType<T>()));
+                    else if (ca && !cb)
+                        gpuBlasCheck(cublasDotcEx(getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1, b,
+                                                  cT, !tb ? 1 : ldb, r, cT,
+                                                  toCudaComputeType<T>()));
+                    else if (!ca && cb)
+                        gpuBlasCheck(cublasDotcEx(getGpuBlasHandle(xpu), k, b, cT, !tb ? 1 : ldb, a,
+                                                  cT, !ta ? lda : 1, r, cT,
+                                                  toCudaComputeType<T>()));
+                    if (std::norm(beta) != 0)
+                        copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                } else {
+                    gpuBlasCheck(cublasGemmEx(getGpuBlasHandle(xpu), toCublasTrans(transa),
+                                              toCublasTrans(transb), m, n, k, &alpha, a, cT, lda, b,
+                                              cT, ldb, &beta, c, cT, ldc, toCudaComputeType<T>(),
+                                              CUBLAS_GEMM_DEFAULT));
                 }
+#    else
+                if (m == 1 && n == 1 && ((!ca && !cb) || ca != cb)) {
+                    vector<T, Gpu> v;
+                    T *r = c;
+                    if (std::norm(beta) != 0) {
+                        v = vector<T, Gpu>(m * n * batch_size, xpu);
+                        r = v.data();
+                        xscal(batch_size, beta, c, 1, xpu);
+                    }
+                    if (!ca && !cb)
+                        gpuBlasCheck(rocblas_dot_ex(getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1,
+                                                    b, cT, !tb ? 1 : ldb, r, cT, cT));
+                    else if (ca && !cb)
+                        gpuBlasCheck(rocblas_dotc_ex(getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1,
+                                                     b, cT, !tb ? 1 : ldb, r, cT, cT));
+                    else if (!ca && cb)
+                        gpuBlasCheck(rocblas_dotc_ex(getGpuBlasHandle(xpu), k, b, cT, !tb ? 1 : ldb,
+                                                     a, cT, !ta ? lda : 1, r, cT, cT));
+                    if (std::norm(beta) != 0)
+                        copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                } else {
+                    gpuBlasCheck(rocblas_gemm_ex(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a, cT, lda, b, cT, ldb, &beta, c, cT, ldc, c, cT, ldc, cT,
+                        rocblas_gemm_algo_standard, 0, rocblas_gemm_flags_none));
+                }
+#    endif
             } else {
+#    ifdef SUPERBBLAS_USE_CUDA
                 gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(GemmStridedBatchedEx)(
                     getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n, k,
                     &alpha, a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc, stridec,
-                    batch_size, toCudaComputeType<T>(),
-                    SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_GEMM_DEFAULT, HIPBLAS_GEMM_DEFAULT)));
+                    batch_size, toCudaComputeType<T>(), CUBLAS_GEMM_DEFAULT));
+#    else
+                if (m == 1 && n == 1 && stridec == 1 && ((!ca && !cb) || ca != cb)) {
+                    vector<T, Gpu> v;
+                    T *r = c;
+                    if (std::norm(beta) != 0) {
+                        v = vector<T, Gpu>(m * n * batch_size, xpu);
+                        r = v.data();
+                        xscal(batch_size, beta, c, 1, xpu);
+                    }
+                    if (!ca && !cb)
+                        gpuBlasCheck(rocblas_dot_strided_batched_ex(
+                            getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1, stridea, b, cT,
+                            !tb ? 1 : ldb, strideb, batch_size, r, cT, cT));
+                    else if (ca && !cb)
+                        gpuBlasCheck(rocblas_dotc_strided_batched_ex(
+                            getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1, stridea, b, cT,
+                            !tb ? 1 : ldb, strideb, batch_size, r, cT, cT));
+                    else if (!ca && cb)
+                        gpuBlasCheck(rocblas_dotc_strided_batched_ex(
+                            getGpuBlasHandle(xpu), k, b, cT, !tb ? 1 : ldb, strideb, a, cT,
+                            !ta ? lda : 1, stridea, batch_size, r, cT, cT));
+                    if (std::norm(beta) != 0)
+                        copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                } else {
+                    gpuBlasCheck(rocblas_gemm_strided_batched_ex(
+                        getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
+                        k, &alpha, a, cT, lda, stridea, b, cT, ldb, strideb, &beta, c, cT, ldc,
+                        stridec, c, cT, ldc, stridec, batch_size, cT, rocblas_gemm_algo_standard, 0,
+                        rocblas_gemm_flags_none));
+                }
+#    endif
             }
         }
 #endif // SUPERBBLAS_USE_GPU

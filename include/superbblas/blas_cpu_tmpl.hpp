@@ -520,6 +520,26 @@ namespace superbblas {
 
 #    endif // SUPERBBLAS_USE_MKL
 
+#    ifndef __SUPERBBLAS_BLAS_CPU_GPU_PRIVATE
+#        define __SUPERBBLAS_BLAS_CPU_GPU_PRIVATE
+#        ifdef SUPERBBLAS_USE_GPU
+        inline SUPERBBLAS_GPU_SELECT(XXX, cublasOperation_t, rocblas_operation)
+            toCublasTrans(char trans) {
+            switch (trans) {
+            case 'n':
+            case 'N': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_N, rocblas_operation_none);
+            case 't':
+            case 'T': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_T, rocblas_operation_transpose);
+            case 'c':
+            case 'C':
+                return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_C,
+                                             rocblas_operation_conjugate_transpose);
+            default: throw std::runtime_error("Not valid value of trans");
+            }
+        }
+#        endif
+#    endif // __SUPERBBLAS_BLAS_CPU_GPU_PRIVATE
+
 #    if defined(SUPERBBLAS_USE_CUDA)
 
 #        define CUSPARSE_SCALAR ARITH(, , float, cuComplex, double, cuDoubleComplex, , )
@@ -592,7 +612,8 @@ namespace superbblas {
 #    elif defined(SUPERBBLAS_USE_HIP)
 
 #        define HIPSPARSE_SCALAR ARITH(, , float, hipComplex, double, hipDoubleComplex, , )
-#        define HIPBLAS_SCALAR ARITH(, , float, hipblasComplex, double, hipblasDoubleComplex, , )
+#        define ROCBLAS_SCALAR                                                                     \
+            ARITH(, , float, rocblas_float_complex, double, rocblas_double_complex, , )
 
         inline hipsparseStatus_t
         hipsparseXbsrmm(hipsparseHandle_t handle, hipsparseDirection_t dirA,
@@ -608,67 +629,45 @@ namespace superbblas {
                              (HIPSPARSE_SCALAR *)C, ldc);
         }
 
-        inline hipblasStatus_t hipblasXtrsmStridedBatched(
-            hipblasHandle_t handle, hipblasSideMode_t side, hipblasFillMode_t uplo,
-            hipblasOperation_t trans, hipblasDiagType_t diag, int m, int n, SCALAR alpha, SCALAR *A,
-            int lda, int strideA, SCALAR *B, int ldb, int strideB, int batchCount) {
-            return ARITH(, , hipblasStrsmStridedBatched, hipblasCtrsmStridedBatched,
-                         hipblasDtrsmStridedBatched, hipblasZtrsmStridedBatched, , )(
-                handle, side, uplo, trans, diag, m, n, (const HIPBLAS_SCALAR *)&alpha,
-                (HIPBLAS_SCALAR *)A, lda, strideA, (HIPBLAS_SCALAR *)B, ldb, strideB, batchCount);
+        inline void rocblasXgetrfStridedBatched(int n, SCALAR *A, int lda, int strideA,
+                                                int *PivotArray, int stridePivotArray,
+                                                int *infoArray, int batchSize, const Gpu &xpu) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgetrf_strided_batched,
+                                 rocsolver_cgetrf_strided_batched, rocsolver_dgetrf_strided_batched,
+                                 rocsolver_zgetrf_strided_batched,
+                                 , )(getGpuSolverHandle(xpu), n, n, (ROCBLAS_SCALAR *)A, lda,
+                                     strideA, PivotArray, stridePivotArray, infoArray, batchSize));
         }
 
-        inline hipblasStatus_t hipblasXgetrfStridedBatched(hipblasHandle_t handle, int n, SCALAR *A,
-                                                           int lda, int strideA, int *PivotArray,
-                                                           int stridePivotArray, int *infoArray,
-                                                           int batchSize) {
-            return ARITH(, , hipblasSgetrfStridedBatched, hipblasCgetrfStridedBatched,
-                         hipblasDgetrfStridedBatched, hipblasZgetrfStridedBatched,
-                         , )(handle, n, (HIPBLAS_SCALAR *)A, lda, strideA, PivotArray,
-                             stridePivotArray, infoArray, batchSize);
+        inline void rocblasXgetrsStridedBatched(char trans, int n, int nrhs, SCALAR *A, int lda,
+                                                int strideA, const int *devIpiv, int strideDevIpiv,
+                                                SCALAR *B, int ldb, int strideB, int batchSize,
+                                                const Gpu &xpu) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgetrs_strided_batched,
+                                 rocsolver_cgetrs_strided_batched, rocsolver_dgetrs_strided_batched,
+                                 rocsolver_zgetrs_strided_batched, , )(
+                getGpuSolverHandle(xpu), toCublasTrans(trans), n, nrhs, (ROCBLAS_SCALAR *)A, lda,
+                strideA, devIpiv, strideDevIpiv, (ROCBLAS_SCALAR *)B, ldb, strideB, batchSize));
         }
 
-        inline hipblasStatus_t hipblasXgetrsStridedBatched(hipblasHandle_t handle,
-                                                           hipblasOperation_t trans, int n,
-                                                           int nrhs, SCALAR *A, int lda,
-                                                           int strideA, const int *devIpiv,
-                                                           int strideDevIpiv, SCALAR *B, int ldb,
-                                                           int strideB, int *info, int batchSize) {
-            return ARITH(, , hipblasSgetrsStridedBatched, hipblasCgetrsStridedBatched,
-                         hipblasDgetrsStridedBatched, hipblasZgetrsStridedBatched,
-                         , )(handle, trans, n, nrhs, (HIPBLAS_SCALAR *)A, lda, strideA, devIpiv,
-                             strideDevIpiv, (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
+        inline void rocblasXgetriStridedBatched(int n, SCALAR *A, int lda, int strideA,
+                                                int *devIpiv, int strideDevIpriv, int *info,
+                                                int batchSize, const Gpu &xpu) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgetri_strided_batched,
+                                 rocsolver_cgetri_strided_batched, rocsolver_dgetri_strided_batched,
+                                 rocsolver_zgetri_strided_batched,
+                                 , )(getGpuSolverHandle(xpu), n, (ROCBLAS_SCALAR *)A, lda, strideA,
+                                     devIpiv, strideDevIpriv, info, batchSize));
         }
 
-        inline hipblasStatus_t hipblasXgetriBatched(hipblasHandle_t handle, int n, SCALAR **A,
-                                                    int lda, int *devIpiv, SCALAR **B, int ldb,
-                                                    int *info, int batchSize) {
-            return ARITH(, , hipblasSgetriBatched, hipblasCgetriBatched, hipblasDgetriBatched,
-                         hipblasZgetriBatched, , )(handle, n, (HIPBLAS_SCALAR *const *)A, lda,
-                                                   devIpiv, (HIPBLAS_SCALAR *const *)B, ldb, info,
-                                                   batchSize);
-        }
-
-        inline int hipsolverXpotrfBatched_bufferSize(hipsolverFillMode_t uplo, int n,
-                                                     SCALAR **Aarray, int lda, int *, int batchSize,
-                                                     Gpu ctx) {
-            auto handle = getGpuSolverHandle(ctx);
-            int lwork;
-            gpuSolverCheck(
-                ARITH(, , hipsolverSpotrfBatched_bufferSize, hipsolverCpotrfBatched_bufferSize,
-                      hipsolverDpotrfBatched_bufferSize, hipsolverZpotrfBatched_bufferSize,
-                      , )(handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda, &lwork, batchSize));
-            return lwork;
-        }
-
-        inline void hipsolverXpotrfBatched(hipsolverFillMode_t uplo, int n, SCALAR **Aarray,
-                                           int lda, SCALAR *work, int lwork, int *infoArray,
-                                           int batchSize, Gpu ctx) {
-            auto handle = getGpuSolverHandle(ctx);
-            gpuSolverCheck(ARITH(, , hipsolverSpotrfBatched, hipsolverCpotrfBatched,
-                                 hipsolverDpotrfBatched, hipsolverZpotrfBatched,
-                                 , )(handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda,
-                                     (HIPSPARSE_SCALAR *)work, lwork, infoArray, batchSize));
+        inline void rocsolverXpotrfStridedBatched(rocblas_fill uplo, int n, SCALAR *A, int lda,
+                                                  int strideA, int *info, int batchSize,
+                                                  const Gpu &ctx) {
+            gpuSolverCheck(ARITH(, , rocsolver_spotrf_strided_batched,
+                                 rocsolver_cpotrf_strided_batched, rocsolver_dpotrf_strided_batched,
+                                 rocsolver_zpotrf_strided_batched,
+                                 , )(getGpuSolverHandle(ctx), uplo, n, (ROCBLAS_SCALAR *)A, lda,
+                                     strideA, info, batchSize));
         }
 
 #        undef HIPSPARSE_SCALAR
