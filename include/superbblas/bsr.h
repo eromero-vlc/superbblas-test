@@ -10,8 +10,12 @@ namespace superbblas {
     namespace detail {
         enum num_type { float_t, cfloat_t, double_t, cdouble_t };
         template <typename T> struct num_type_v;
-        template <> struct num_type_v<float> { static constexpr num_type value = float_t; };
-        template <> struct num_type_v<double> { static constexpr num_type value = double_t; };
+        template <> struct num_type_v<float> {
+            static constexpr num_type value = float_t;
+        };
+        template <> struct num_type_v<double> {
+            static constexpr num_type value = double_t;
+        };
         template <> struct num_type_v<std::complex<float>> {
             static constexpr num_type value = cfloat_t;
         };

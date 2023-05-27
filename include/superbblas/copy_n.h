@@ -36,9 +36,15 @@ namespace superbblas {
         /// \tparam T: one of float, double, std::complex<T>
         /// \return ccomplex<T>::type has the new type
 
-        template <typename T> struct ccomplex { using type = T; };
-        template <> struct ccomplex<std::complex<float>> { using type = _Complex float; };
-        template <> struct ccomplex<std::complex<double>> { using type = _Complex double; };
+        template <typename T> struct ccomplex {
+            using type = T;
+        };
+        template <> struct ccomplex<std::complex<float>> {
+            using type = _Complex float;
+        };
+        template <> struct ccomplex<std::complex<double>> {
+            using type = _Complex double;
+        };
 
         //template <typename T> struct ccomplex<const T> {
         //    using type = const typename ccomplex<T>::type;

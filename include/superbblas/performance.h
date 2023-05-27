@@ -28,15 +28,21 @@ namespace superbblas {
         /// \tparam T: type to consider
         template <typename T>
         struct multiplication_cost; // { constexpr static double value = 0.0; };
-        template <> struct multiplication_cost<float> { constexpr static double value = 1.0; };
-        template <> struct multiplication_cost<double> { constexpr static double value = 2.0; };
+        template <> struct multiplication_cost<float> {
+            constexpr static double value = 1.0;
+        };
+        template <> struct multiplication_cost<double> {
+            constexpr static double value = 2.0;
+        };
         template <> struct multiplication_cost<std::complex<float>> {
             constexpr static double value = 4.0;
         };
         template <> struct multiplication_cost<std::complex<double>> {
             constexpr static double value = 8.0;
         };
-        template <> struct multiplication_cost<int> { constexpr static double value = 1.0; };
+        template <> struct multiplication_cost<int> {
+            constexpr static double value = 1.0;
+        };
         template <> struct multiplication_cost<std::size_t> {
             constexpr static double value = 2.0;
         };
