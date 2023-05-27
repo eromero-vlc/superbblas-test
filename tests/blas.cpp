@@ -64,18 +64,36 @@ void check_are_equal(vector<T, XPU0> u_, vector<T, XPU1> v_) {
 
 template <typename T> struct toStr;
 
-template <> struct toStr<Cpu> { static constexpr const char *get = "cpu "; };
+template <> struct toStr<Cpu> {
+    static constexpr const char *get = "cpu ";
+};
 #ifdef SUPERBBLAS_USE_CUDA
-template <> struct toStr<Cuda> { static constexpr const char *get = "cuda"; };
+template <> struct toStr<Cuda> {
+    static constexpr const char *get = "cuda";
+};
 #elif defined(SUPERBBLAS_USE_HIP)
-template <> struct toStr<Hip> { static constexpr const char *get = "hip "; };
+template <> struct toStr<Hip> {
+    static constexpr const char *get = "hip ";
+};
 #endif
-template <> struct toStr<EWOp::Add> { static constexpr const char *get = "add "; };
-template <> struct toStr<EWOp::Copy> { static constexpr const char *get = "copy"; };
-template <> struct toStr<float> { static constexpr const char *get = "float  "; };
-template <> struct toStr<double> { static constexpr const char *get = "double "; };
-template <> struct toStr<std::complex<float>> { static constexpr const char *get = "cfloat "; };
-template <> struct toStr<std::complex<double>> { static constexpr const char *get = "cdouble"; };
+template <> struct toStr<EWOp::Add> {
+    static constexpr const char *get = "add ";
+};
+template <> struct toStr<EWOp::Copy> {
+    static constexpr const char *get = "copy";
+};
+template <> struct toStr<float> {
+    static constexpr const char *get = "float  ";
+};
+template <> struct toStr<double> {
+    static constexpr const char *get = "double ";
+};
+template <> struct toStr<std::complex<float>> {
+    static constexpr const char *get = "cfloat ";
+};
+template <> struct toStr<std::complex<double>> {
+    static constexpr const char *get = "cdouble";
+};
 
 template <typename T, typename XPU, typename EWOP>
 void test_copy(std::size_t size, XPU xpu, EWOP, T a, unsigned int nrep = 10) {

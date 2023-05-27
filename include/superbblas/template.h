@@ -55,7 +55,7 @@
 #    define CONCAT(a, b) CONCATX(a, b)
 #    define CONCATX(a, b) a##b
 #    define STR(X) STR0(X)
-#    define STR0(X) #    X
+#    define STR0(X) #X
 
 #    define MACHINE_EPSILON                                                                        \
         ARITH(0.000977, 0.000977, FLT_EPSILON, FLT_EPSILON, DBL_EPSILON, DBL_EPSILON, 1.92593e-34, \

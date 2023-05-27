@@ -78,7 +78,9 @@ namespace superbblas {
             tarray<T, size_right> right;
         };
         template <typename T> struct tarray<T, 0ul> {};
-        template <typename T> struct tarray<T, 1ul> { T leaf; };
+        template <typename T> struct tarray<T, 1ul> {
+            T leaf;
+        };
 
         /// Return the I-th element on a tarray
         /// \tparam I: index of the element to return
