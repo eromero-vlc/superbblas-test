@@ -723,7 +723,7 @@ namespace superbblas {
             for (std::size_t i = 0; i < n; ++i) {
                 char *c = (char *)&v[i];
                 for (std::size_t j = 0; j < sizeof(T) / 2; ++j)
-                    std::swap(c[i], c[sizeof(T) - 1 - j]);
+                    std::swap(c[j], c[sizeof(T) - 1 - j]);
             }
         }
 
