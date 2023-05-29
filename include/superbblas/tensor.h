@@ -1364,12 +1364,13 @@ namespace superbblas {
             auto sB0 = std::search(o0.begin(), o0.end(), oB.begin(), oB.begin() + nB);
             if (sT0 == o0.end() || sA0 == o0.end() || sB0 == o0.end() ||
                 (!conj0 && nT > 0 && nA > 0 && nB > 0 && sA0 < sT0 && sB0 < sT0) ||
-                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0)))) {
+                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0))) ||
+                (volC >= 1024 * 1024 && volA < 64 && volB < 64 && swap_operands && sA0 < sB0)) {
                 // Avoid non-transpose x non-transpose and non-transpose x transposed when contracting
                 // rectangular matrices
                 if (volB < 64 && volC < 64 && volA > 1024 * 1024 && !swap_operands) conj0 = true;
-                // Avoid the second matrix to be transposed when contracting rectangular and small squere matrix
-                if (volB >= 1024 * 1024 && volA < 64 && volC < 64 && swap_operands) conj0 = false;
+                // Avoid the second matrix to be transposed when contracting rectangular and small square matrix
+                if (volC >= 1024 * 1024 && volA < 64 && volB < 64 && swap_operands) conj0 = true;
                 std::copy_n(oT.begin(), nT, sug_o0.begin());
                 std::copy_n(oA.begin(), nA, sug_o0.begin() + nT + (!conj0 ? 0 : nB));
                 std::copy_n(oB.begin(), nB, sug_o0.begin() + nT + (!conj0 ? nA : 0));
@@ -1388,11 +1389,12 @@ namespace superbblas {
             auto sC1 = std::search(o1.begin(), o1.end(), oC.begin(), oC.begin() + nC);
             if (sT1 == o1.end() || sA1 == o1.end() || sC1 == o1.end() ||
                 (!conj1 && nT > 0 && nA > 0 && nC > 0 && sA1 < sT1 && sC1 < sT1) ||
-                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1)))) {
+                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1))) ||
+                (volB >= 1024 * 1024 && volA < 64 && volC < 64 && !swap_operands && sA1 < sC1)) {
                 // Avoid non-transpose x non-transpose and non-transpose x transposed when contracting
                 // rectangular matrices
                 if (volB < 64 && volC < 64 && volA > 1024 * 1024 && swap_operands) conj1 = true;
-                // Avoid the second matrix to be transposed when contracting rectangular and small squere matrix
+                // Avoid the second matrix to be transposed when contracting rectangular and small square matrix
                 if (volB >= 1024 * 1024 && volA < 64 && volC < 64 && !swap_operands) conj1 = false;
                 std::copy_n(oT.begin(), nT, sug_o1.begin());
                 std::copy_n(oC.begin(), nC, sug_o1.begin() + nT + (!conj1 ? 0 : nA));
