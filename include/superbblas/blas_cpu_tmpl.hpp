@@ -615,6 +615,28 @@ namespace superbblas {
 #        define ROCBLAS_SCALAR                                                                     \
             ARITH(, , float, rocblas_float_complex, double, rocblas_double_complex, , )
 
+        inline void xgemv_batched_strided(char transa, BLASINT m, BLASINT n, SCALAR alpha,
+                                          const SCALAR *a, BLASINT lda, BLASINT stridea,
+                                          const SCALAR *x, BLASINT incx, BLASINT stridex,
+                                          SCALAR beta, SCALAR *y, BLASINT incy, BLASINT stridey,
+                                          BLASINT batch_count, const Gpu &xpu) {
+            if (batch_count == 1) {
+                gpuBlasCheck(ARITH(, , rocblas_sgemv, rocblas_cgemv, rocblas_dgemv, rocblas_zgemv,
+                                   , )(getGpuBlasHandle(xpu), toCublasTrans(transa), m, n,
+                                       (const ROCBLAS_SCALAR *)&alpha, (const ROCBLAS_SCALAR *)a,
+                                       lda, (const ROCBLAS_SCALAR *)x, incx,
+                                       (const ROCBLAS_SCALAR *)&beta, (ROCBLAS_SCALAR *)y, incy));
+            } else {
+                gpuBlasCheck(ARITH(, , rocblas_sgemv_strided_batched, rocblas_cgemv_strided_batched,
+                                   rocblas_dgemv_strided_batched, rocblas_zgemv_strided_batched,
+                                   , )(getGpuBlasHandle(xpu), toCublasTrans(transa), m, n,
+                                       (const ROCBLAS_SCALAR *)&alpha, (const ROCBLAS_SCALAR *)a,
+                                       lda, stridea, (const ROCBLAS_SCALAR *)x, incx, stridex,
+                                       (const ROCBLAS_SCALAR *)&beta, (ROCBLAS_SCALAR *)y, incy,
+                                       stridey, batch_count));
+            }
+        }
+
         inline hipsparseStatus_t
         hipsparseXbsrmm(hipsparseHandle_t handle, hipsparseDirection_t dirA,
                         hipsparseOperation_t transA, hipsparseOperation_t transB, int mb, int n,

@@ -671,6 +671,11 @@ namespace superbblas {
             // Quick exits
             if (m == 0 || n == 0 || batch_size == 0) return;
 
+            // Log
+            if (getDebugLevel() > 0)
+                std::cout << "xgemm " << transa << " " << transb << " " << m << " " << n << " "
+                          << batch_size << std::endl;
+
             // Replace some invalid arguments when k is zero
             if (k == 0) {
                 a = b = c;
@@ -682,13 +687,26 @@ namespace superbblas {
             bool cb = (transb == 'c' || transb == 'C');
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
-            if (batch_size == 1) {
+
+            if (n > 1 && n <= 16 && k >= 100000 && !cb) {
+                for (int j = 0; j < n; ++j)
+                    xgemm_batch_strided(transa, transb, m, 1, k, alpha, a, lda, stridea,
+                                        b + j * (!tb ? ldb : 1), ldb, strideb, beta, c + j * ldc,
+                                        ldc, stridec, batch_size, xpu);
+            } else if (m > 1 && m <= 16 && n > 1 && n <= 16 && k >= 100000 &&
+                       ((!ta && !tb) || (!ta && tb))) {
+                for (int i = 0; i < m; ++i)
+                    for (int j = 0; j < n; ++j)
+                        xgemm_batch_strided(transa, transb, 1, 1, k, alpha, a + i * (!ta ? 1 : lda),
+                                            lda, stridea, b + j * (!tb ? ldb : 1), ldb, strideb,
+                                            beta, c + i + j * ldc, ldc, stridec, batch_size, xpu);
+            } else if (batch_size == 1) {
 #    ifdef SUPERBBLAS_USE_CUDA
                 if (m == 1 && n == 1 && ((!ca && !cb) || ca != cb)) {
                     vector<T, Gpu> v;
                     T *r = c;
                     if (std::norm(beta) != 0) {
-                        v = vector<T, Gpu>(m * n * batch_size, xpu);
+                        v = vector<T, Gpu>(m * n * batch_size, xpu, doCacheAlloc);
                         r = v.data();
                         xscal(batch_size, beta, c, 1, xpu);
                     }
@@ -716,7 +734,7 @@ namespace superbblas {
                     vector<T, Gpu> v;
                     T *r = c;
                     if (std::norm(beta) != 0) {
-                        v = vector<T, Gpu>(m * n * batch_size, xpu);
+                        v = vector<T, Gpu>(m * n * batch_size, xpu, doCacheAlloc);
                         r = v.data();
                         xscal(batch_size, beta, c, 1, xpu);
                     }
@@ -731,6 +749,12 @@ namespace superbblas {
                                                      a, cT, !ta ? lda : 1, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                } else if (n == 1 && !cb) {
+                    int mA = !ta ? m : k;
+                    int nA = !ta ? k : m;
+                    int incb = !tb ? 1 : ldb;
+                    xgemv_batched_strided(transa, mA, nA, alpha, a, lda, stridea, b, incb, strideb,
+                                          beta, c, 1, stridec, batch_size, xpu);
                 } else {
                     gpuBlasCheck(rocblas_gemm_ex(
                         getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
@@ -749,7 +773,7 @@ namespace superbblas {
                     vector<T, Gpu> v;
                     T *r = c;
                     if (std::norm(beta) != 0) {
-                        v = vector<T, Gpu>(m * n * batch_size, xpu);
+                        v = vector<T, Gpu>(m * n * batch_size, xpu, doCacheAlloc);
                         r = v.data();
                         xscal(batch_size, beta, c, 1, xpu);
                     }
@@ -767,6 +791,12 @@ namespace superbblas {
                             !ta ? lda : 1, stridea, batch_size, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                } else if (n == 1 && !cb) {
+                    int mA = !ta ? m : k;
+                    int nA = !ta ? k : m;
+                    int incb = !tb ? 1 : ldb;
+                    xgemv_batched_strided(transa, mA, nA, alpha, a, lda, stridea, b, incb, strideb,
+                                          beta, c, 1, stridec, batch_size, xpu);
                 } else {
                     gpuBlasCheck(rocblas_gemm_strided_batched_ex(
                         getGpuBlasHandle(xpu), toCublasTrans(transa), toCublasTrans(transb), m, n,
