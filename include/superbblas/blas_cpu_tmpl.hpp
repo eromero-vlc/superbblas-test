@@ -402,54 +402,62 @@ namespace superbblas {
 
 #    else // SUPERBBLAS_USE_MKL
 
+            bool ca = (transa == 'c' || transa == 'C');
+            bool cb = (transb == 'c' || transb == 'C');
+            bool ta = (transa != 'n' && transa != 'N');
+            bool tb = (transb != 'n' && transb != 'N');
             if (m == 1 && n == 1) {
-                bool ca = (transa == 'c' || transa == 'C');
-                bool cb = (transb == 'c' || transb == 'C');
-                bool ta = (transa != 'n' && transa != 'N');
-                bool tb = (transb != 'n' && transb != 'N');
 #        ifdef _OPENMP
 #            pragma omp parallel for schedule(static)
 #        endif
                 for (int i = 0; i < batch_size; ++i) {
                     SCALAR r{0.0};
+                    // n n
                     if (!ta && !tb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j * lda] * b[strideb * i + j];
+                    // n t
                     else if (!ta && tb && !cb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j * lda] * b[strideb * i + j * ldb];
+                    // n c
                     else if (!ta && tb && cb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j * lda] * CONJ(b[strideb * i + j * ldb]);
+                    // t n
                     else if (ta && !ca && !tb)
                         for (int j = 0; j < k; j++) r += a[stridea * i + j] * b[strideb * i + j];
+                    // c n
                     else if (ta && ca && !tb)
                         for (int j = 0; j < k; j++)
                             r += CONJ(a[stridea * i + j]) * b[strideb * i + j];
+                    // t t
                     else if (ta && !ca && tb && !cb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j] * b[strideb * i + j * ldb];
+                    // c t
                     else if (ta && ca && tb && !cb)
                         for (int j = 0; j < k; j++)
                             r += CONJ(a[stridea * i + j]) * b[strideb * i + j * ldb];
+                    // t c
                     else if (ta && !ca && tb && cb)
                         for (int j = 0; j < k; j++)
                             r += a[stridea * i + j] * CONJ(b[strideb * i + j * ldb]);
+                    // c c
                     else if (ta && ca && tb && cb)
                         for (int j = 0; j < k; j++)
                             r += CONJ(a[stridea * i + j]) * CONJ(b[strideb * i + j * ldb]);
                     c[stridec * i] =
                         alpha * r + (std::norm(beta) == 0 ? SCALAR{0} : beta * c[stridec * i]);
                 }
-                return;
             } else if (n == 1
-#        ifndef __SUPERBBLAS_USE_COMPLEX
-                       && transb != 'c' && transb != 'C'
+#        ifdef __SUPERBBLAS_USE_COMPLEX
+                       && !cb
 #        endif
             ) {
-                int mA = (transa == 'n' || transa == 'N') ? m : k;
-                int nA = (transa == 'n' || transa == 'N') ? k : m;
-                int incb = (transb == 'n' || transb == 'N') ? 1 : ldb;
+                int mA = !ta ? m : k;
+                int nA = !ta ? k : m;
+                int incb = !tb ? 1 : ldb;
 #        ifdef _OPENMP
 #            pragma omp parallel for schedule(static)
 #        endif
@@ -457,15 +465,14 @@ namespace superbblas {
                     xgemv(transa, mA, nA, alpha, a + stridea * i, lda, b + strideb * i, incb, beta,
                           c + stridec * i, 1, Cpu{});
                 }
-                return;
-            }
-
+            } else {
 #        ifdef _OPENMP
 #            pragma omp parallel for schedule(static)
 #        endif
-            for (int i = 0; i < batch_size; ++i) {
-                xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i, ldb,
-                      beta, c + stridec * i, ldc, Cpu{});
+                for (int i = 0; i < batch_size; ++i) {
+                    xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i,
+                          ldb, beta, c + stridec * i, ldc, Cpu{});
+                }
             }
 #    endif // SUPERBBLAS_USE_MKL
         }
