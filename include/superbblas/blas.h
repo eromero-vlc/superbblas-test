@@ -688,7 +688,9 @@ namespace superbblas {
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
 
-            if (n > 1 && n <= 16 && k >= 100000 && !cb) {
+            const int update_max_rows = 1024 * 1024 * 8;
+            if (n > 1 &&
+                ((n <= 16 && k >= 100000) || (m > update_max_rows && n < 256 && k < 256)) && !cb) {
                 for (int j = 0; j < n; ++j)
                     xgemm_batch_strided(transa, transb, m, 1, k, alpha, a, lda, stridea,
                                         b + j * (!tb ? ldb : 1), ldb, strideb, beta, c + j * ldc,
