@@ -714,15 +714,13 @@ namespace superbblas {
                     }
                     if (!ca && !cb)
                         gpuBlasCheck(cublasDotEx(getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1, b,
-                                                 cT, !tb ? 1 : ldb, r, cT, toCudaComputeType<T>()));
+                                                 cT, !tb ? 1 : ldb, r, cT, cT));
                     else if (ca && !cb)
                         gpuBlasCheck(cublasDotcEx(getGpuBlasHandle(xpu), k, a, cT, !ta ? lda : 1, b,
-                                                  cT, !tb ? 1 : ldb, r, cT,
-                                                  toCudaComputeType<T>()));
+                                                  cT, !tb ? 1 : ldb, r, cT, cT));
                     else if (!ca && cb)
                         gpuBlasCheck(cublasDotcEx(getGpuBlasHandle(xpu), k, b, cT, !tb ? 1 : ldb, a,
-                                                  cT, !ta ? lda : 1, r, cT,
-                                                  toCudaComputeType<T>()));
+                                                  cT, !ta ? lda : 1, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
                 } else {
