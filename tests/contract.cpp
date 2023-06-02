@@ -130,6 +130,7 @@ PartitionStored<N> make_partinioning(const Order<N + 1> &o, const Coor<N> &dim, 
         for (std::size_t i = 0; i < N; ++i) procs[i] = (o[i] == dist_dir ? nprocs : 1);
         return basic_partitioning(o.data(), dim, procs, &dist_labels[0], nprocs, ncomponents);
     }
+    default: throw std::runtime_error("wtf");
     }
 }
 
