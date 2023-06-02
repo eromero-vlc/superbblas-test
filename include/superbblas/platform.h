@@ -35,25 +35,21 @@
 #    define __DEVICE__
 #endif
 
-#ifdef SUPERBBLAS_USE_CUDA
-#    include <cublas_v2.h>
-#    include <cuda_runtime.h>
-#    include <cusolverDn.h>
-#    include <cusparse.h>
-#endif
-
-#ifdef SUPERBBLAS_USE_HIP
-#    include <hip/hip_runtime_api.h>
-#    if HIP_VERSION_MAJOR > 5 || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 4)
-#        include <hipblas/hipblas.h>
-#        include <hipsolver/hipsolver.h>
-#        include <hipsparse/hipsparse.h>
-#    else
-#        include <hipblas.h>
-#        include <hipsolver.h>
-#        include <hipsparse.h>
+#if !defined(SUPERBBLAS_CREATING_FLAGS) && !defined(SUPERBBLAS_CREATING_LIB)
+#    ifdef SUPERBBLAS_USE_CUDA
+#        include <cublas_v2.h>
+#        include <cuda_runtime.h>
+#        include <cusolverDn.h>
+#        include <cusparse.h>
 #    endif
-#endif
+
+#    ifdef SUPERBBLAS_USE_HIP
+#        include <hip/hip_runtime_api.h>
+#        include <hipsparse.h>
+#        include <rocblas.h>
+#        include <rocsolver.h>
+#    endif
+#endif // SUPERBBLAS_CREATING_FLAGS
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
 #    ifdef SUPERBBLAS_USE_CUDA
@@ -84,11 +80,13 @@ EMIT_define(SUPERBBLAS_USE_MKL)
 
 #define SUPERBBLAS_GPU_SYMBOL(X) SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cuda, hip), X)
 #define SUPERBBLAS_GPUBLAS_SYMBOL(X)                                                               \
-    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cublas, hipblas), X)
+    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cublas, rocblas), X)
 #define SUPERBBLAS_GPUSPARSE_SYMBOL(X)                                                             \
     SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusparse, hipsparse), X)
 #define SUPERBBLAS_GPUSOLVER_SYMBOL(X)                                                             \
-    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusolverDn, hipsolverDn), X)
+    SUPERBBLAS_CONCAT(SUPERBBLAS_GPU_SELECT(xxx, cusolverDn, rocsolver), X)
+
+#define SB_RESTRICT __restrict__
 
 namespace superbblas {
 
@@ -142,23 +140,23 @@ namespace superbblas {
         /// Datatype to represent a cuda/hip runtime error
         using GpuError = SUPERBBLAS_GPU_SELECT(int, cudaError_t, hipError_t);
 
-        /// Datatype to represent a cublas/hipblas error
-        using GpuBlasError = SUPERBBLAS_GPU_SELECT(int, cublasStatus_t, hipblasStatus_t);
+        /// Datatype to represent a cublas/rocblas error
+        using GpuBlasError = SUPERBBLAS_GPU_SELECT(int, cublasStatus_t, rocblas_status);
 
         /// Datatype to represent a cusparse/hipsparse error
         using GpuSparseError = SUPERBBLAS_GPU_SELECT(int, cusparseStatus_t, hipsparseStatus_t);
 
-        /// Datatype to represent a cusolver/hipsolver error
-        using GpuSolverError = SUPERBBLAS_GPU_SELECT(int, cusolverStatus_t, hipsolverStatus_t);
+        /// Datatype to represent a cusolver/rocsolver error
+        using GpuSolverError = SUPERBBLAS_GPU_SELECT(int, cusolverStatus_t, rocblas_status);
 
-        /// Datatype to represent the cublas/hipblas handle
-        using GpuBlasHandle = SUPERBBLAS_GPU_SELECT(int, cublasHandle_t, hipblasHandle_t);
+        /// Datatype to represent the cublas/rocblas handle
+        using GpuBlasHandle = SUPERBBLAS_GPU_SELECT(int, cublasHandle_t, rocblas_handle);
 
         /// Datatype to represent the cusparse/hipsparse handle
         using GpuSparseHandle = SUPERBBLAS_GPU_SELECT(int, cusparseHandle_t, hipsparseHandle_t);
 
-        /// Datatype to represent the cusolver/hipsolver handle
-        using GpuSolverHandle = SUPERBBLAS_GPU_SELECT(int, cusolverDnHandle_t, hipsolverDnHandle_t);
+        /// Datatype to represent the cusolver/rocsolver handle
+        using GpuSolverHandle = SUPERBBLAS_GPU_SELECT(int, cusolverDnHandle_t, rocblas_handle);
 
         /// Low-level Cpu context
 
@@ -484,21 +482,10 @@ namespace superbblas {
             }
 
 #elif defined(SUPERBBLAS_USE_HIP)
-            if (status != HIPBLAS_STATUS_SUCCESS) {
-                const char *err = "(unknown error code)";
-                // clang-format off
-                if (status == HIPBLAS_STATUS_SUCCESS         ) err = "HIPBLAS_STATUS_SUCCESS";
-                if (status == HIPBLAS_STATUS_NOT_INITIALIZED ) err = "HIPBLAS_STATUS_NOT_INITIALIZED";
-                if (status == HIPBLAS_STATUS_ALLOC_FAILED    ) err = "HIPBLAS_STATUS_ALLOC_FAILED";
-                if (status == HIPBLAS_STATUS_INVALID_VALUE   ) err = "HIPBLAS_STATUS_INVALID_VALUE";
-                if (status == HIPBLAS_STATUS_ARCH_MISMATCH   ) err = "HIPBLAS_STATUS_ARCH_MISMATCH";
-                if (status == HIPBLAS_STATUS_MAPPING_ERROR   ) err = "HIPBLAS_STATUS_MAPPING_ERROR";
-                if (status == HIPBLAS_STATUS_EXECUTION_FAILED) err = "HIPBLAS_STATUS_EXECUTION_FAILED";
-                if (status == HIPBLAS_STATUS_INTERNAL_ERROR  ) err = "HIPBLAS_STATUS_INTERNAL_ERROR";
-                if (status == HIPBLAS_STATUS_NOT_SUPPORTED   ) err = "HIPBLAS_STATUS_NOT_SUPPORTED";
-                // clang-format on
+            if (status != rocblas_status_success) {
+                const char *err = rocblas_status_to_string(status);
                 std::stringstream s;
-                s << "HIPBLAS error: " << err;
+                s << "ROCBLAS error: " << err;
                 throw std::runtime_error(s.str());
             }
 
@@ -581,26 +568,7 @@ namespace superbblas {
             }
 
 #elif defined(SUPERBBLAS_USE_HIP)
-            if (status != HIPSOLVER_STATUS_SUCCESS) {
-                std::string str = "(unknown error code)";
-                // clang-format off
-                if (status == HIPSOLVER_STATUS_NOT_INITIALIZED  ) str = "HIPSOLVER_STATUS_NOT_INITIALIZED";
-                if (status == HIPSOLVER_STATUS_ALLOC_FAILED     ) str = "HIPSOLVER_STATUS_ALLOC_FAILED";
-                if (status == HIPSOLVER_STATUS_INVALID_VALUE    ) str = "HIPSOLVER_STATUS_INVALID_VALUE";
-                if (status == HIPSOLVER_STATUS_MAPPING_ERROR    ) str = "HIPSOLVER_STATUS_MAPPING_ERROR";
-                if (status == HIPSOLVER_STATUS_EXECUTION_FAILED ) str = "HIPSOLVER_STATUS_EXECUTION_FAILED";
-                if (status == HIPSOLVER_STATUS_INTERNAL_ERROR   ) str = "HIPSOLVER_STATUS_INTERNAL_ERROR";
-                if (status == HIPSOLVER_STATUS_NOT_SUPPORTED    ) str = "HIPSOLVER_STATUS_NOT_SUPPORTED";
-                if (status == HIPSOLVER_STATUS_ARCH_MISMATCH    ) str = "HIPSOLVER_STATUS_ARCH_MISMATCH";
-                if (status == HIPSOLVER_STATUS_HANDLE_IS_NULLPTR) str = "HIPSOLVER_STATUS_HANDLE_IS_NULLPTR";
-                if (status == HIPSOLVER_STATUS_INVALID_ENUM     ) str = "HIPSOLVER_STATUS_INVALID_ENUM";
-                if (status == HIPSOLVER_STATUS_UNKNOWN          ) str = "HIPSOLVER_STATUS_UNKNOWN";
-                // clang-format on
-
-                std::stringstream ss;
-                ss << "hipSPARSE function returned error " << str;
-                throw std::runtime_error(ss.str());
-            }
+            gpuBlasCheck(status);
 #else
             // Do nothing
             (void)status;
@@ -624,14 +592,19 @@ namespace superbblas {
                 getGpuBlasHandles()[deviceId(xpu)] = h =
                     std::shared_ptr<GpuBlasHandle>(new GpuBlasHandle, [=](GpuBlasHandle *p) {
                         setDevice(xpu);
-                        gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(Destroy)(*p));
+                        gpuBlasCheck(
+                            SUPERBBLAS_GPU_SELECT(XXX, cublasDestroy, rocblas_destroy_handle)(*p));
                         delete p;
                     });
                 setDevice(xpu);
-                gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(Create)(&*h));
+                gpuBlasCheck(SUPERBBLAS_GPU_SELECT(XXX, cublasCreate, rocblas_create_handle)(&*h));
             }
             setDevice(xpu);
-            gpuBlasCheck(SUPERBBLAS_GPUBLAS_SYMBOL(SetStream)(*h, getStream(xpu)));
+            gpuBlasCheck(SUPERBBLAS_GPU_SELECT(XXX, cublasSetStream,
+                                               rocblas_set_stream)(*h, getStream(xpu)));
+#    ifdef SUPERBBLAS_USE_HIP
+            gpuBlasCheck(rocblas_set_atomics_mode(*h, rocblas_atomics_allowed));
+#    endif
             return *h;
         }
 
@@ -665,14 +638,19 @@ namespace superbblas {
         /// Return all gpu solver handles for all devices
 
         inline std::vector<std::shared_ptr<GpuSolverHandle>> &getGpuSolverHandles() {
+#    ifdef SUPERBBLAS_USE_CUDA
             static std::vector<std::shared_ptr<GpuSolverHandle>> h(getGpuDevicesCount());
             return h;
+#    else
+            return getGpuBlasHandles();
+#    endif
         }
 
         /// Return the gpu solver handle for the given context
         /// \param xpu: context
 
         inline GpuSolverHandle getGpuSolverHandle(const Gpu &xpu) {
+#    ifdef SUPERBBLAS_USE_CUDA
             auto h = getGpuSolverHandles().at(deviceId(xpu));
             if (!h) {
                 getGpuSolverHandles()[deviceId(xpu)] = h =
@@ -687,22 +665,37 @@ namespace superbblas {
             setDevice(xpu);
             gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(SetStream)(*h, getStream(xpu)));
             return *h;
+#    else
+            return getGpuBlasHandle(xpu);
+#    endif
         }
 #endif // SUPERBBLAS_USE_GPU
 
         /// Return if `T` is a supported type
-        template <typename T> struct supported_type { static constexpr bool value = false; };
-        template <> struct supported_type<int> { static constexpr bool value = true; };
-        template <> struct supported_type<float> { static constexpr bool value = true; };
-        template <> struct supported_type<double> { static constexpr bool value = true; };
+        template <typename T> struct supported_type {
+            static constexpr bool value = false;
+        };
+        template <> struct supported_type<int> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<float> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<double> {
+            static constexpr bool value = true;
+        };
         template <> struct supported_type<std::complex<float>> {
             static constexpr bool value = true;
         };
         template <> struct supported_type<std::complex<double>> {
             static constexpr bool value = true;
         };
-        template <> struct supported_type<_Complex float> { static constexpr bool value = true; };
-        template <> struct supported_type<_Complex double> { static constexpr bool value = true; };
+        template <> struct supported_type<_Complex float> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<_Complex double> {
+            static constexpr bool value = true;
+        };
         template <typename T> struct supported_type<const T> {
             static constexpr bool value = supported_type<T>::value;
         };
@@ -825,7 +818,7 @@ namespace superbblas {
         return (unsigned int)numDevices;
     }
 
-    /// Clear all internal handles to streams, cublas/hipblas, cusparse/hipsparse, and cusolver/hipsolver
+    /// Clear all internal handles to streams, cublas/rocblas, cusparse/hipsparse, and cusolver/hipsolver
     inline void clearHandles() {
 #ifdef SUPERBBLAS_USE_GPU
         // Remove handles and streams

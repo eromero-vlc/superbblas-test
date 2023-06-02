@@ -95,7 +95,9 @@ namespace superbblas {
             _t.flops = (double)n * n * n / 3 * k * multiplication_cost<T>::value;
             _t.memops = (double)n * n * k * sizeof(T);
 
+            vector<int, Gpu> info(k, v.ctx(), doCacheAlloc);
             auto xpu_host = v.ctx().toCpuPinned();
+#    ifdef SUPERBBLAS_USE_CUDA
             vector<T *, Gpu> v_ps_cpu(k, xpu_host, doCacheAlloc);
             auto v_ps_cpu_ptr = v_ps_cpu.data();
             auto v_ptr = v.data();
@@ -105,11 +107,13 @@ namespace superbblas {
                 },
                 xpu_host);
             vector<T *, Gpu> v_ps_gpu = makeSure(v_ps_cpu, v.ctx(), doCacheAlloc);
-            vector<int, Gpu> info(k, v.ctx());
             gpuSolverCheck(SUPERBBLAS_GPUSOLVER_SYMBOL(XpotrfBatched)(
-                getGpuSolverHandle(v.ctx()),
-                SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_FILL_MODE_UPPER, HIPSOLVER_FILL_MODE_UPPER), n,
-                v_ps_gpu.data(), n, info.data(), k));
+                getGpuSolverHandle(v.ctx()), CUBLAS_FILL_MODE_UPPER, n, v_ps_gpu.data(), n,
+                info.data(), k));
+#    else
+            rocsolverXpotrfStridedBatched(rocblas_fill_upper, n, v.data(), n, n * n, info.data(), k,
+                                          v.ctx());
+#    endif
             vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
             auto info_cpu_ptr = info_cpu.data();
             launchHostKernel(
@@ -207,11 +211,11 @@ namespace superbblas {
                     left_side ? n : m, k * nk));
             }
 #    else
-            gpuBlasCheck(hipblasXtrsmStridedBatched(
-                getGpuBlasHandle(a.ctx()), left_side ? HIPBLAS_SIDE_LEFT : HIPBLAS_SIDE_RIGHT,
-                HIPBLAS_FILL_MODE_UPPER, HIPBLAS_OP_N, HIPBLAS_DIAG_NON_UNIT, left_side ? n : m,
-                left_side ? m : n, alpha, a.data(), n, n * n, x.data(), left_side ? n : m, n * m,
-                k));
+            gpuBlasCheck(rocblas_trsm_strided_batched_ex(
+                getGpuBlasHandle(a.ctx()), left_side ? rocblas_side_left : rocblas_side_right,
+                rocblas_fill_upper, rocblas_operation_none, rocblas_diagonal_non_unit,
+                left_side ? n : m, left_side ? m : n, &alpha, a.data(), n, n * n, x.data(),
+                left_side ? n : m, n * m, k, nullptr, 0, 0, toCudaComputeType<T>()));
 #    endif
             causalConnectTo(a.ctx(), x.ctx());
         }
@@ -306,8 +310,8 @@ namespace superbblas {
             gpuBlasCheck(cublasXgetrfBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
                                              ipivs.data(), info.data(), k));
 #    else
-            gpuBlasCheck(hipblasXgetrfStridedBatched(getGpuBlasHandle(a.ctx()), n, a.data(), n,
-                                                     n * n, ipivs.data(), n, info.data(), k));
+            rocblasXgetrfStridedBatched(n, a.data(), n, n * n, ipivs.data(), n, info.data(), k,
+                                        a.ctx());
 #    endif
             vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
             auto info_cpu_ptr = info_cpu.data();
@@ -317,17 +321,16 @@ namespace superbblas {
                         checkLapack(info_cpu_ptr[i], true /* terminate */);
                 },
                 xpu_host);
-            int info_getrs;
 #    ifdef SUPERBBLAS_USE_CUDA
+            int info_getrs;
             gpuBlasCheck(cublasXgetrsBatched(getGpuBlasHandle(a.ctx()), toCublasTrans(trans), n, m,
                                              a_ps_gpu.data(), n, ipivs.data(), x_ps_gpu.data(), n,
                                              &info_getrs, k));
-#    else
-            gpuBlasCheck(hipblasXgetrsStridedBatched(
-                getGpuBlasHandle(a.ctx()), toCublasTrans(trans), n, m, a.data(), n, n * n,
-                ipivs.data(), n, x.data(), n, n * m, &info_getrs, k));
-#    endif
             checkLapack(info_getrs);
+#    else
+            rocblasXgetrsStridedBatched(trans, n, m, a.data(), n, n * n, ipivs.data(), n, x.data(),
+                                        n, n * m, k, a.ctx());
+#    endif
             causalConnectTo(a.ctx(), x.ctx());
         }
 #endif // SUPERBBLAS_USE_GPU
@@ -397,6 +400,7 @@ namespace superbblas {
 
             vector<int, Gpu> ipivs(k * n, a.ctx(), doCacheAlloc), info(k, a.ctx(), doCacheAlloc);
             auto xpu_host = a.ctx().toCpuPinned();
+#    ifdef SUPERBBLAS_USE_CUDA
             vector<T, Gpu> x(a.size(), a.ctx(), doCacheAlloc);
             vector<T *, Gpu> a_ps(k, xpu_host, doCacheAlloc), x_ps(k, xpu_host, doCacheAlloc);
             auto a_ps_ptr = a_ps.data();
@@ -411,13 +415,8 @@ namespace superbblas {
                 xpu_host);
             vector<T *, Gpu> a_ps_gpu = makeSure(a_ps, a.ctx(), doCacheAlloc),
                              x_ps_gpu = makeSure(x_ps, a.ctx(), doCacheAlloc);
-#    ifdef SUPERBBLAS_USE_CUDA
             gpuBlasCheck(cublasXgetrfBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
                                              ipivs.data(), info.data(), k));
-#    else
-            gpuBlasCheck(hipblasXgetrfStridedBatched(getGpuBlasHandle(a.ctx()), n, a.data(), n,
-                                                     n * n, ipivs.data(), n, info.data(), k));
-#    endif
             {
                 vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
                 auto info_cpu_ptr = info_cpu.data();
@@ -428,26 +427,27 @@ namespace superbblas {
                     },
                     xpu_host);
             }
-#    ifdef SUPERBBLAS_USE_CUDA
             gpuBlasCheck(cublasXgetriBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
                                              ipivs.data(), x_ps_gpu.data(), n, info.data(), k));
-#    else
-            gpuBlasCheck(hipblasXgetriBatched(getGpuBlasHandle(a.ctx()), n, a_ps_gpu.data(), n,
-                                              ipivs.data(), x_ps_gpu.data(), n, info.data(), k));
-#    endif
-            {
-                vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
-                auto info_cpu_ptr = info_cpu.data();
-                launchHostKernel(
-                    [=] {
-                        for (std::size_t i = 0; i < k; ++i)
-                            checkLapack(info_cpu_ptr[i], true /* terminate */);
-                    },
-                    xpu_host);
-            }
 
             // Copy the inverted matrix into `a`
             copy_n(x.data(), x.ctx(), x.size(), a.data(), a.ctx());
+#    else
+            rocblasXgetrfStridedBatched(n, a.data(), n, n * n, ipivs.data(), n, info.data(), k,
+                                        a.ctx());
+            rocblasXgetriStridedBatched(n, a.data(), n, n * n, ipivs.data(), n, info.data(), k,
+                                        a.ctx());
+#    endif
+            {
+                vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+                auto info_cpu_ptr = info_cpu.data();
+                launchHostKernel(
+                    [=] {
+                        for (std::size_t i = 0; i < k; ++i)
+                            checkLapack(info_cpu_ptr[i], true /* terminate */);
+                    },
+                    xpu_host);
+            }
         }
 #endif // SUPERBBLAS_USE_GPU
 

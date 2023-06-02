@@ -10,8 +10,12 @@ namespace superbblas {
     namespace detail {
         enum num_type { float_t, cfloat_t, double_t, cdouble_t };
         template <typename T> struct num_type_v;
-        template <> struct num_type_v<float> { static constexpr num_type value = float_t; };
-        template <> struct num_type_v<double> { static constexpr num_type value = double_t; };
+        template <> struct num_type_v<float> {
+            static constexpr num_type value = float_t;
+        };
+        template <> struct num_type_v<double> {
+            static constexpr num_type value = double_t;
+        };
         template <> struct num_type_v<std::complex<float>> {
             static constexpr num_type value = cfloat_t;
         };
@@ -1246,6 +1250,16 @@ namespace superbblas {
             r.krond = krond;
             r.kroni = kroni;
             r.co = co;
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("get_bsr_components"), dimd, dimi,
+                                                  r.pd, r.pi, blockd, blocki, krond, kroni, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
             for (unsigned int i = 0; i < ncomponents; ++i) {
                 std::size_t nii = volume(fsi[i][1]) / volume(blocki) / volume(kroni);
                 std::size_t njj =
@@ -1969,19 +1983,21 @@ namespace superbblas {
         /// \param o1: dimension labels for the second operator
         /// \param o_r: dimension labels for the output operator
 
-        template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny>
+        template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename Comm>
         std::pair<Proc_ranges<Nx>, Proc_ranges<Ny>>
         get_output_partition(Proc_ranges<Nd> pd, const Order<Nd> &od, Proc_ranges<Ni> pi,
                              const Order<Ni> &oi, Proc_ranges<Nx> px, const Order<Nx> &ox,
                              const Order<Nx> &sug_ox, const Coor<Nx> &sizex, const Order<Ny> &oy,
-                             const Order<Ny> &sug_oy, char okr) {
+                             const Order<Ny> &sug_oy, char okr, const Comm &comm,
+                             bool just_local = false) {
             assert(pd.size() == pi.size() && pi.size() == px.size());
 
             // Find partition on cache
             Order<Nd + Ni> om = concat(od, oi);
-            using Key = std::tuple<Proc_ranges<Nd>, Proc_ranges<Ni>, Proc_ranges<Nx>, Coor<Nx>,
-                                   PairPerms<Nd + Ni, Nx>, PairPerms<Nx, Ny>,
-                                   PairPerms<Nd + Ni, Ny>, PairPerms<Nx, Nx>, PairPerms<Ny, Ny>>;
+            using Key =
+                std::tuple<Proc_ranges<Nd>, Proc_ranges<Ni>, Proc_ranges<Nx>, Coor<Nx>,
+                           PairPerms<Nd + Ni, Nx>, PairPerms<Nx, Ny>, PairPerms<Nd + Ni, Ny>,
+                           PairPerms<Nx, Nx>, PairPerms<Ny, Ny>, char, bool, int>;
             struct cache_tag {};
             auto cache = getCache<Key, std::pair<Proc_ranges<Nx>, Proc_ranges<Ny>>, TupleHash<Key>,
                                   cache_tag>(Cpu{});
@@ -1993,7 +2009,10 @@ namespace superbblas {
                     get_perms(ox, oy),
                     get_perms(om, oy),
                     get_perms(ox, sug_ox),
-                    get_perms(oy, sug_oy)};
+                    get_perms(oy, sug_oy),
+                    okr,
+                    just_local,
+                    just_local ? comm.rank : 0};
             auto it = cache.find(key);
             if (it != cache.end()) return it->second.value;
 
@@ -2010,6 +2029,7 @@ namespace superbblas {
             Proc_ranges<Nx> pxr(px.size());
             Proc_ranges<Ny> pyr(px.size());
             for (unsigned int i = 0; i < pi.size(); ++i) {
+                if (just_local && i != comm.rank) continue;
                 pxr[i].resize(pi[i].size());
                 pyr[i].resize(pi[i].size());
                 for (unsigned int j = 0; j < pi[i].size(); ++j) {
@@ -2059,10 +2079,19 @@ namespace superbblas {
                            T beta, const Proc_ranges<Ny> py, const Order<Ny> oy,
                            const Coor<Ny> fromy, const Coor<Ny> sizey, const Coor<Ny> dimy,
                            char okr, const Components_tmpl<Ny, T, XPU0, XPU1> vy, Comm comm,
-                           CoorOrder co) {
+                           CoorOrder co, bool just_local = false) {
+
+            // Check that common arguments have the same value in all processes
 
             if (getDebugLevel() >= 1) {
-                barrier(comm);
+                if (!just_local) {
+                    struct tag_type {}; // For hashing template arguments
+                    check_consistency(std::make_tuple(std::string("bsr_krylov"), alpha, oim, odm,
+                                                      px, ox, fromx, sizex, dimx, beta, py, oy,
+                                                      fromy, sizey, dimy, okr, comm.nprocs, co,
+                                                      typeid(tag_type).hash_code()),
+                                      comm);
+                }
                 for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
                 for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
             }
@@ -2133,19 +2162,20 @@ namespace superbblas {
             Coor<Ny> sug_sizey = reorder_coor(sizey0, find_permutation(oy, sug_oy));
 
             auto pxy_ = get_output_partition(bsr.pd, odm, bsr.pi, oim, px, ox, sug_ox, sizex, oy,
-                                             sug_oy, okr);
+                                             sug_oy, okr, comm, just_local);
 
             // Copy the input dense tensor to a compatible layout to the sparse tensor
             Proc_ranges<Nx> px_ = pxy_.first;
-            auto vx_and_req =
-                reorder_tensor_request(px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm,
-                                       co, doCacheAlloc, power > 1 /* force copy when power > 1 */);
+            ForceLocal force_local = (just_local ? doForceLocal : dontForceLocal);
+            auto vx_and_req = reorder_tensor_request(
+                px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm, co,
+                power > 1 /* force copy when power > 1 */, doCacheAlloc, force_local);
             Components_tmpl<Nx, T, XPU0, XPU1> vx_ = vx_and_req.first;
 
             // Scale the output vector if beta isn't 0 or 1
             if (std::norm(beta) != 0 && beta != T{1})
                 copy<Ny, Ny, T>(beta, py, {{}}, dimy, dimy, oy, toConst(vy), py, {{}}, dimy, oy, vy,
-                                comm, EWOp::Copy{}, co);
+                                comm, EWOp::Copy{}, co, force_local);
 
             Request bsr_req = [=] {
                 tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
@@ -2180,18 +2210,21 @@ namespace superbblas {
                     if (p > 0) fromyi[power_pos] += p;
                     if (std::norm(beta) == 0)
                         copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
-                                        py, fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co);
+                                        py, fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co,
+                                        force_local);
                     else
                         copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
-                                        py, fromyi, dimy, oy, vy, comm, EWOp::Add{}, co);
+                                        py, fromyi, dimy, oy, vy, comm, EWOp::Add{}, co,
+                                        force_local);
 
                     // Copy the result into x for doing the next power
                     if (p == power - 1) break;
                     copy<Nx, Nx, T>(T{0}, px_, {{}}, sug_dimx, sug_dimx, sug_ox, toConst(vx_), px_,
-                                    {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co);
+                                    {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co,
+                                    force_local);
                     copy<Ny, Nx, T>(T{1}, py_, {{}}, sug_sizey, sug_sizey, sug_oy_trans,
                                     toConst(vy_), px_, {{}}, sug_dimx, sug_ox, vx_, comm,
-                                    EWOp::Copy{}, co);
+                                    EWOp::Copy{}, co, force_local);
                 }
             };
 
@@ -2207,7 +2240,7 @@ namespace superbblas {
             if (getDebugLevel() >= 1) {
                 for (const auto &i : bsr.c.first) sync(i.v.it.ctx());
                 for (const auto &i : bsr.c.second) sync(i.v.it.ctx());
-                barrier(comm);
+                if (!just_local) barrier(comm);
             }
 
             return r;
@@ -2295,6 +2328,7 @@ namespace superbblas {
     /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
     /// \param vy: data for the output tensor
     /// \param ctxy: context for each data pointer in vy
+    /// \param just_local: compute the local part of the product only
 
     template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T>
     void bsr_krylov(T alpha, BSR_handle *bsrh, const char *oim, const char *odm,
@@ -2303,7 +2337,7 @@ namespace superbblas {
                     const T **vx, T beta, const PartitionItem<Ny> *py, const char *oy,
                     const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
                     T **vy, const Context *ctx, MPI_Comm mpicomm, CoorOrder co,
-                    Request *request = nullptr, Session session = 0) {
+                    Request *request = nullptr, bool just_local = false, Session session = 0) {
 
         Order<Ni> oim_ = detail::toArray<Ni>(oim, "oim");
         Order<Nd> odm_ = detail::toArray<Nd>(odm, "odm");
@@ -2321,7 +2355,7 @@ namespace superbblas {
             detail::get_components<Nx>((T **)vx, nullptr, ctx, ncomponents, px, comm, session),
             beta, detail::get_from_size(py, ncomponents * comm.nprocs, comm), oy_, fromy, sizey,
             dimy, okr, detail::get_components<Ny>(vy, nullptr, ctx, ncomponents, py, comm, session),
-            comm, co);
+            comm, co, just_local);
 
         if (request)
             *request = r;

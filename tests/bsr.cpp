@@ -93,8 +93,12 @@ unsigned int max_neighbors(const Coor<6> &op_dim) {
     return neighbors;
 }
 
-template <typename T> struct real_type { using type = T; };
-template <typename T> struct real_type<std::complex<T>> { using type = T; };
+template <typename T> struct real_type {
+    using type = T;
+};
+template <typename T> struct real_type<std::complex<T>> {
+    using type = T;
+};
 
 template <typename T>
 void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int dir,

@@ -98,6 +98,8 @@ namespace superbblas {
             static constexpr bool value = false;
         };
 
+        enum ForceLocal { dontForceLocal, doForceLocal };
+
         //
         // Auxiliary functions
         //
@@ -587,6 +589,53 @@ namespace superbblas {
             return r;
         }
 
+        /// Return whether p1 - p0 is empty
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param o1: dimension labels for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        bool has_full_support(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+                              const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                              const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
+                              const Coor<Nd1> &dim1, const Order<Nd1> &o1) {
+
+            // Compute r0 = (from, size) - p0
+            From_size<Nd0> r0(1, {from0, size0});
+            From_size<Nd0> aux;
+            for (const auto &pi : p0) {
+                for (const auto fs_p : pi) {
+                    aux.resize(0);
+                    for (const auto &fs_r : r0) {
+                        auto left = make_hole(fs_r[0], fs_r[1], fs_p[0], fs_p[1], dim0);
+                        aux.insert(aux.end(), left.begin(), left.end());
+                    }
+                    std::swap(r0, aux);
+                }
+            }
+
+            // Shortcut when the remaining list is empty
+            if (volume(r0) == 0) return true;
+
+            // Translate the restricted range to the destination lattice
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            From_size<Nd1> r1 = translate_range(r0, from0, dim0, from1, dim1, perm0);
+
+            for (const auto &pi : p1) {
+                for (const auto &fs_p : pi) {
+                    if (volume(intersection(r1, fs_p[0], fs_p[1], dim1)) > 0) return false;
+                }
+            }
+
+            return true;
+        }
+
         /// Throw an error if not all processes give the same value
         /// \param t: value to test
         /// \param comm: communicator
@@ -595,6 +644,19 @@ namespace superbblas {
 
         template <typename T, typename H = Hash<T>>
         void check_consistency(const T &, const SelfComm &) {}
+
+        template <std::size_t N, std::size_t Nv, typename T, typename Comm, typename XPU0,
+                  typename XPU1>
+        void check_components(const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v,
+                              const Comm &comm) {
+            if (p.size() != comm.nprocs || p[comm.rank].size() != v.first.size() + v.second.size())
+                throw std::runtime_error("wtf");
+        }
+
+        template <std::size_t N, typename Comm>
+        void check_components(const Proc_ranges<N> &p, const Comm &comm) {
+            if (p.size() != comm.nprocs) throw std::runtime_error("wtf");
+        }
 
 #ifdef SUPERBBLAS_USE_MPI
         /// Communication barrier
@@ -1966,7 +2028,7 @@ namespace superbblas {
 
                 // Copy the indices
                 copy(1, p0, from0, size0, dim0, o0, v0_, p1, from1, dim1, o1, v1_, comm, EWOP{}, co,
-                     false);
+                     dontForceLocal, false /* don't do test */);
 
                 // Check that the modified elements on v1_ are what they should be
                 for (const Component<Nd1, std::size_t, XPU0> &c : v1_.first) {
@@ -2137,44 +2199,91 @@ namespace superbblas {
             if (!check_isomorphic<Nd, Nd>(o0, size0, dim0, o1, dim1))
                 throw std::runtime_error("Invalid copy operation");
 
-            // Find precomputed pieces on cache
             constexpr std::size_t Nd0 = Nd;
             constexpr std::size_t Nd1 = Nd;
-            using Key =
-                std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Proc_ranges<Nd1>,
-                           Coor<Nd1>, Coor<Nd1>, PairPerms<Nd0, Nd1>, int>;
-            struct Value {
-                Range_proc_range_ranges<Nd0> toSend;
-                Range_proc_range_ranges<Nd1> toReceive;
-                bool need_comms;
-            };
-            struct cache_tag {};
-            auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(Cpu{});
-            Key key{p0, from0, size0, dim0, p1, from1, dim1, get_perms(o0, o1), comm.rank};
-            auto it = cache.find(key);
 
-            // Generate the list of subranges to send and receive
             Range_proc_range_ranges<Nd0> toSend;
             Range_proc_range_ranges<Nd1> toReceive;
-            bool need_comms;
-            if (it == cache.end()) {
-                toSend =
-                    get_indices_to_send(p0[comm.rank], o0, from0, size0, dim0, p1, o1, from1, dim1);
-                toReceive = get_indices_to_receive(p0, o0, from0, size0, dim0, p1[comm.rank], o1,
-                                                   from1, dim1);
+            bool need_comms, zeroout_v1;
 
-                // Check whether communications can be avoided
-                need_comms = (comm.nprocs <= 1 ? false
-                                               : may_need_communications(p0, from0, dim0, o0, p1,
-                                                                         from1, dim1, o1, EWOP{}));
+            if (std::norm(alpha) != 0) {
+                // Find precomputed pieces on cache
+                using Key =
+                    std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Proc_ranges<Nd1>,
+                               Coor<Nd1>, Coor<Nd1>, PairPerms<Nd0, Nd1>, int>;
+                struct Value {
+                    Range_proc_range_ranges<Nd0> toSend;
+                    Range_proc_range_ranges<Nd1> toReceive;
+                    bool need_comms;
+                    bool zeroout_v1;
+                };
+                struct cache_tag {};
+                auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(Cpu{});
+                Key key{p0, from0, size0, dim0, p1, from1, dim1, get_perms(o0, o1), comm.rank};
+                auto it = cache.find(key);
 
-                // Save the results
-                cache.insert(key, {toSend, toReceive, need_comms}, 0);
+                // Generate the list of subranges to send and receive
+                if (it == cache.end()) {
+                    toSend = get_indices_to_send(p0[comm.rank], o0, from0, size0, dim0, p1, o1,
+                                                 from1, dim1);
+                    toReceive = get_indices_to_receive(p0, o0, from0, size0, dim0, p1[comm.rank],
+                                                       o1, from1, dim1);
+
+                    // Check whether communications can be avoided
+                    need_comms =
+                        (comm.nprocs <= 1 ? false
+                                          : may_need_communications(p0, from0, dim0, o0, p1, from1,
+                                                                    dim1, o1, EWOP{}));
+
+                    // Check whether the destination tensor should be zero out because the origin
+                    // tensor hasn't full support and some elements aren't going to be _touched_ on the
+                    // destination tensor
+                    zeroout_v1 =
+                        (std::is_same<EWOP, EWOp::Copy>::value &&
+                         !has_full_support(p0, from0, size0, dim0, o0, p1, from1, dim1, o1));
+
+                    // Save the results
+                    cache.insert(key, {toSend, toReceive, need_comms, zeroout_v1}, 0);
+                } else {
+                    toSend = it->second.value.toSend;
+                    toReceive = it->second.value.toReceive;
+                    need_comms = it->second.value.need_comms;
+                    zeroout_v1 = it->second.value.zeroout_v1;
+                }
             } else {
-                toSend = it->second.value.toSend;
-                toReceive = it->second.value.toReceive;
-                need_comms = it->second.value.need_comms;
+                need_comms = false;
+                zeroout_v1 = std::is_same<EWOP, EWOp::Copy>::value;
             }
+
+            // Zero out v1 if needed
+            if (zeroout_v1) {
+                Coor<Nd1> size1 = reorder_coor(size0, find_permutation(o0, o1), 1);
+                for (const Component<Nd1, Q, XPU0> &c1 : v1.first) {
+                    const auto &fsi = p1[comm.rank][c1.componentId];
+                    const auto tozero =
+                        shift_ranges(intersection(fsi[0], fsi[1], from1, size1, dim1), fsi[0],
+                                     Coor<Nd1>{{}}, fsi[1]);
+                    for (unsigned int i = 0, i1 = tozero.size(); i < i1; ++i) {
+                        local_copy<Nd1, Nd1, Q, Q>(Q{0}, o1, tozero[i][0], tozero[i][1], c1.dim,
+                                                   vector<const Q, XPU0>(c1.it), c1.mask_it, o1,
+                                                   tozero[i][0], c1.dim, c1.it, c1.mask_it,
+                                                   EWOp::Copy{}, co);
+                    }
+                }
+                for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
+                    const auto &fsi = p1[comm.rank][c1.componentId];
+                    const auto tozero =
+                        shift_ranges(intersection(fsi[0], fsi[1], from1, size1, dim1), fsi[0],
+                                     Coor<Nd1>{{}}, fsi[1]);
+                    for (unsigned int i = 0, i1 = tozero.size(); i < i1; ++i) {
+                        local_copy<Nd1, Nd1, Q, Q>(Q{0}, o1, tozero[i][0], tozero[i][1], c1.dim,
+                                                   vector<const Q, XPU1>(c1.it), c1.mask_it, o1,
+                                                   tozero[i][0], c1.dim, c1.it, c1.mask_it,
+                                                   EWOp::Copy{}, co);
+                    }
+                }
+            }
+            if (std::norm(alpha) == 0) return Request{};
 
             // Do the sending and receiving
             Request mpi_req;
@@ -2339,28 +2448,41 @@ namespace superbblas {
         /// \param comm: communicator context
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
+        /// \param force_local: whether to avoid communications
         ///
         /// NOTE: this function makes the origin and the destination tensor of the same number of dimensions
         /// to reduce the compilation time
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOP>
-        Request copy_request_normalized(typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0,
-                                        const Coor<Nd0> &from0, const Coor<Nd0> &size0,
-                                        const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                                        const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
-                                        const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
-                                        const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                                        const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm,
-                                        EWOP ewop, CoorOrder co, bool do_test = true) {
+        Request copy_request_normalized(
+            typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+            const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
+            const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
+            const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
+            ForceLocal force_local = dontForceLocal, bool do_test = true) {
+
+            Proc_ranges<Nd0> new_p0 =
+                (force_local == dontForceLocal
+                     ? p0
+                     : Proc_ranges<Nd0>(p0.begin() + comm.rank, p0.begin() + comm.rank + 1));
+            Proc_ranges<Nd1> new_p1 =
+                (force_local == dontForceLocal
+                     ? p1
+                     : Proc_ranges<Nd1>(p1.begin() + comm.rank, p1.begin() + comm.rank + 1));
             auto m = get_labels_mask();
             update_label_mask(o0, m);
             update_label_mask(o1, m);
             constexpr std::size_t Nd = std::max(Nd0, Nd1);
-            auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
-            auto t1 = dummy_normalize_copy<Nd>(p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
-            return copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p, t1.from,
-                                t1.dim, t1.o, t1.v, comm, ewop, co, do_test);
+            auto t0 = dummy_normalize_copy<Nd>(new_p0, from0, size0, dim0, o0, v0, m);
+            auto t1 = dummy_normalize_copy<Nd>(new_p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
+            return force_local == dontForceLocal
+                       ? copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p,
+                                      t1.from, t1.dim, t1.o, t1.v, comm, ewop, co, do_test)
+                       : copy_request(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, t0.v, t1.p,
+                                      t1.from, t1.dim, t1.o, t1.v, detail::get_comm(), ewop, co,
+                                      do_test);
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2378,6 +2500,7 @@ namespace superbblas {
         /// \param comm: communicator context
         /// \param ewop: either to copy or to add the origin values into the destination values
         /// \param co: coordinate linearization order
+        /// \param force_local: whether to avoid communications
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1, typename EWOp>
@@ -2386,10 +2509,10 @@ namespace superbblas {
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
                   const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
                   const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOp ewop, CoorOrder co,
-                  bool do_test = true) {
+                  ForceLocal force_local = dontForceLocal, bool do_test = true) {
 
             wait(copy_request_normalized(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
-                                         v1, comm, ewop, co, do_test));
+                                         v1, comm, ewop, co, force_local, do_test));
         }
 
         /// Copy the content of plural tensor v0 into v1
@@ -2520,30 +2643,37 @@ namespace superbblas {
             return fsr;
         }
 
-        /// Return a new components based on a partition
+        enum ZeroInit { dontZeroInit, doZeroInit };
+
+        /// Return a new components based on a partition taking the contexts from given components
         /// \param p: partitioning
         /// \param v: tensor components
-        /// \param co: coordinate linearization order
+        /// \param comm: communicator
+        /// \param cacheAlloc: whether to use cache the allocation
+        /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, std::size_t Nv, typename T, typename Comm, typename XPU0,
                   typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
         like_this_components(const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v,
-                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc) {
+                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc,
+                             ZeroInit zero_init = dontZeroInit) {
 
-            assert(p[comm.rank].size() == v.first.size() + v.second.size());
+            check_components(p, v, comm);
 
             // Allocate the tensor
             Components_tmpl<N, T, XPU0, XPU1> v1;
             for (unsigned int i = 0; i < v.first.size(); ++i) {
                 const Coor<N> &dimi = p[comm.rank][v.first[i].componentId][1];
                 vector<T, XPU0> v1i(volume(dimi), v.first[i].it.ctx(), cacheAlloc);
+                if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                 v1.first.push_back(
                     Component<N, T, XPU0>{v1i, dimi, v.first[i].componentId, Mask<XPU0>{}});
             }
             for (unsigned int i = 0; i < v.second.size(); ++i) {
                 const Coor<N> &dimi = p[comm.rank][v.second[i].componentId][1];
                 vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
+                if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                 v1.second.push_back(
                     Component<N, T, XPU1>{v1i, dimi, v.second[i].componentId, Mask<XPU1>{}});
             }
@@ -2551,28 +2681,40 @@ namespace superbblas {
             return v1;
         }
 
-        /// Return a new components based on a partition
+        /// Return a new components based on a partition selecting the context from the component
+        /// with more overlap over the given components
         /// \param p: partitioning
+        /// \param from: first element to consider
+        /// \param dim: dimensions of the tensor
         /// \param v: tensor components
         /// \param p1: new partitioning
-        /// \param co: coordinate linearization order
+        /// \param comm: communicator
+        /// \param cacheAlloc: whether to use cache the allocation
+        /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
-        like_this_components(const Proc_ranges<N> &p, const Coor<N> &from, const Coor<N> &dim,
-                             const Components_tmpl<N, T, XPU0, XPU1> &v, const Proc_ranges<N> &p1,
-                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc) {
+        like_this_components(const Proc_ranges<N> &p, const Order<N> &o0, const Coor<N> &from,
+                             const Coor<N> &dim, const Components_tmpl<N, T, XPU0, XPU1> &v,
+                             const Proc_ranges<N> &p1, const Order<N> &o1, Comm comm,
+                             CacheAlloc cacheAlloc = dontCacheAlloc,
+                             ZeroInit zero_init = dontZeroInit) {
+
+            check_components(p, v, comm);
+            check_components(p1, comm);
 
             // Deciding the device for each new component
             // NOTE: maximize the overlap with the original devices
+            Coor<N> perm1 = find_permutation(o1, o0);
             std::vector<unsigned int> device(p1[comm.rank].size());
             for (unsigned int i = 0; i < p1[comm.rank].size(); ++i) {
                 std::size_t max_vol = 0;
                 unsigned int max_idx = 0;
                 for (unsigned int j = 0; j < p[comm.rank].size(); ++j) {
-                    std::size_t vol = volume(intersection(
-                        normalize_coor(p[comm.rank][j][0] + from, dim), p[comm.rank][j][1],
-                        p1[comm.rank][i][0], p1[comm.rank][i][1], dim));
+                    std::size_t vol = volume(
+                        intersection(normalize_coor(p[comm.rank][j][0] + from, dim),
+                                     p[comm.rank][j][1], reorder_coor(p1[comm.rank][i][0], perm1),
+                                     reorder_coor(p1[comm.rank][i][1], perm1), dim));
                     if (vol > max_vol) {
                         max_vol = vol;
                         max_idx = j;
@@ -2588,12 +2730,14 @@ namespace superbblas {
                     if (v.first[j].componentId != device[i]) continue;
                     const Coor<N> &dimi = p1[comm.rank][i][1];
                     vector<T, XPU0> v1i(volume(dimi), v.first[j].it.ctx(), cacheAlloc);
+                    if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                     v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, i, Mask<XPU0>{}});
                 }
                 for (unsigned int j = 0; j < v.second.size(); ++j) {
                     if (v.second[j].componentId != device[i]) continue;
                     const Coor<N> &dimi = p1[comm.rank][i][1];
                     vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
+                    if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                     v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, i, Mask<XPU1>{}});
                 }
             }
@@ -2610,26 +2754,28 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param force_copy: whether to NOT avoid copy if the partition is the same
         /// \param cacheAlloc: whether to cache the allocation
+        /// \param zero_init: whether to zeroed the new allocation
 
-        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
-        Components_tmpl<N, T, XPU0, XPU1>
-        reorder_tensor(const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
-                       const Coor<N> &size0, const Coor<N> &dim0,
-                       const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
-                       const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
-                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc) {
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1,
+                  std::size_t N1, typename Q>
+        std::pair<Components_tmpl<N, T, XPU0, XPU1>, Request> reorder_tensor_request(
+            const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
+            const Coor<N> &size0, const Coor<N> &dim0, const Components_tmpl<N, T, XPU0, XPU1> &v0,
+            const Proc_ranges<N> &p1, const Coor<N> &dim1, const Order<N> &o1,
+            const Components_tmpl<N1, Q, XPU0, XPU1> &v1_sample, Comm comm, CoorOrder co,
+            bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+            ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
+            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request{}};
 
             // Allocate the tensor
-            auto v1 = like_this_components(p0, from0, dim0, v0, p1, comm, cacheAlloc);
+            auto v1 = like_this_components(p1, v1_sample, comm, cacheAlloc, zero_init);
 
             // Copy the content of v0 into v1
-            copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {{}}, dim1, o1, v1,
-                          comm, EWOp::Copy{}, co);
-
-            return v1;
+            return {v1, copy_request_normalized<N, N, T>(T{1}, p0, from0, size0, dim0, o0,
+                                                         toConst(v0), p1, {{}}, dim1, o1, v1, comm,
+                                                         EWOp::Copy{}, co, force_local)};
         }
 
         /// Return a tensor with a given partitioning and ordering
@@ -2641,6 +2787,7 @@ namespace superbblas {
         /// \param co: coordinate linearization order
         /// \param force_copy: whether to NOT avoid copy if the partition is the same
         /// \param cacheAlloc: whether to cache the allocation
+        /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1,
                   std::size_t N1, typename Q>
@@ -2650,19 +2797,14 @@ namespace superbblas {
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1,
                        const Components_tmpl<N1, Q, XPU0, XPU1> &v1_sample, Comm comm, CoorOrder co,
-                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc) {
+                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+                       ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
-            // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
-
-            // Allocate the tensor
-            auto v1 = like_this_components(p1, v1_sample, comm, cacheAlloc);
-
-            // Copy the content of v0 into v1
-            copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {{}}, dim1, o1, v1,
-                          comm, EWOp::Copy{}, co);
-
-            return v1;
+            const auto t =
+                reorder_tensor_request(p0, o0, from0, size0, dim0, v0, p1, dim1, o1, v1_sample,
+                                       comm, co, force_copy, cacheAlloc, force_local, zero_init);
+            wait(t.second);
+            return t.first;
         }
 
         /// Return a tensor with a given partitioning and ordering
@@ -2673,24 +2815,57 @@ namespace superbblas {
         /// \param o1: dimension labels for the output tensor
         /// \param co: coordinate linearization order
         /// \param force_copy: whether to NOT avoid copy if the partition is the same
+        /// \param cacheAlloc: whether to cache the allocation
+        /// \param force_local: whether to avoid communications
+        /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         std::pair<Components_tmpl<N, T, XPU0, XPU1>, Request> reorder_tensor_request(
             const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
             const Coor<N> &size0, const Coor<N> &dim0, const Components_tmpl<N, T, XPU0, XPU1> &v0,
             const Proc_ranges<N> &p1, const Coor<N> &dim1, const Order<N> &o1, Comm comm,
-            CoorOrder co, CacheAlloc cacheAlloc = dontCacheAlloc, bool force_copy = false) {
+            CoorOrder co, bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+            ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
             if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request()};
 
             // Allocate the tensor
-            auto v1 = like_this_components(p1, v0, comm, cacheAlloc);
+            auto v1 =
+                like_this_components(p0, o0, from0, dim0, v0, p1, o1, comm, cacheAlloc, zero_init);
 
             // Copy the content of v0 into v1
             return {v1, copy_request_normalized<N, N, T>(T{1}, p0, from0, size0, dim0, o0,
                                                          toConst(v0), p1, {{}}, dim1, o1, v1, comm,
-                                                         EWOp::Copy{}, co, true /* do test */)};
+                                                         EWOp::Copy{}, co, force_local)};
+        }
+
+        /// Return a tensor with a given partitioning and ordering
+        /// \param p0: partitioning of the input tensor
+        /// \param o0: dimension labels for the input tensor
+        /// \param v0: input tensor components
+        /// \param p1: partitioning of the output tensor in consecutive ranges
+        /// \param o1: dimension labels for the output tensor
+        /// \param co: coordinate linearization order
+        /// \param force_copy: whether to NOT avoid copy if the partition is the same
+        /// \param cacheAlloc: whether to cache the allocation
+        /// \param force_local: whether to avoid communications
+        /// \param zero_init: whether to zeroed the new allocation
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        Components_tmpl<N, T, XPU0, XPU1>
+        reorder_tensor(const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
+                       const Coor<N> &size0, const Coor<N> &dim0,
+                       const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
+                       const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
+                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+                       ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
+
+            const auto t =
+                reorder_tensor_request(p0, o0, from0, size0, dim0, v0, p1, dim1, o1, comm, co,
+                                       force_copy, cacheAlloc, force_local, zero_init);
+            wait(t.second);
+            return t.first;
         }
 
         /// Check that the given components are compatible
@@ -2813,7 +2988,7 @@ namespace superbblas {
         }
 
         template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1>
-        void
+        Request
         contraction_normalized(T alpha, const Proc_ranges<Nd> &p0, const Coor<Nd> &from0,
                                const Coor<Nd> &size0, const Coor<Nd> &dim0, const Order<Nd> &o0,
                                bool conj0, const Components_tmpl<Nd, T, XPU0, XPU1> &v0,
@@ -2859,10 +3034,9 @@ namespace superbblas {
             suggested_orders_for_contraction(Nd0, o0, size0, conj0, Nd1, o1, size1, conj1, Ndo, o_r,
                                              sizer, sug_o0, sug_o1, sug_or, swap_operands, co);
             if (swap_operands) {
-                contraction_normalized(alpha, p1, from1, size1, dim1, o1, conj1, v1, Nd1, p0, from0,
-                                       size0, dim0, o0, conj0, v0, Nd0, beta, pr, fromr, sizer,
-                                       dimr, o_r, vr, Ndo, comm, co);
-                return;
+                return contraction_normalized(alpha, p1, from1, size1, dim1, o1, conj1, v1, Nd1, p0,
+                                              from0, size0, dim0, o0, conj0, v0, Nd0, beta, pr,
+                                              fromr, sizer, dimr, o_r, vr, Ndo, comm, co);
             }
 
             tracker<Cpu> _t("distributed contraction", Cpu{});
@@ -2870,6 +3044,10 @@ namespace superbblas {
             Coor<Nd> sug_size0 = reorder_coor(size0, find_permutation(o0, sug_o0));
             Coor<Nd> sug_size1 = reorder_coor(size1, find_permutation(o1, sug_o1));
             Coor<Nd> sug_sizer = reorder_coor(sizer, find_permutation(o_r, sug_or));
+
+            // Scale the output tensor by beta
+            copy<Nd, Nd, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr, o_r,
+                            vr, comm, EWOp::Copy{}, co);
 
             // Change the partition of the input tensors so that the local portions to contract
             // are local
@@ -2906,13 +3084,10 @@ namespace superbblas {
                     Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.second[i].it, Ndo, co);
             }
 
-            // Scale the output tensor by beta
-            copy<Nd, Nd, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr, o_r,
-                            vr, comm, EWOp::Copy{}, co);
-
             // Scale the output tensor by beta and reduce all the subtensors to the final tensor
-            copy<Nd, Nd, T>(1, pr_, {{}}, sug_sizer, sug_sizer, sug_or, toConst(vr_), pr, fromr,
-                            dimr, o_r, vr, comm, EWOp::Add{}, co);
+            Request req = copy_request_normalized<Nd, Nd, T>(1, pr_, {{}}, sug_sizer, sug_sizer,
+                                                             sug_or, toConst(vr_), pr, fromr, dimr,
+                                                             o_r, vr, comm, EWOp::Add{}, co);
 
             _t.stop();
             if (getDebugLevel() >= 1) {
@@ -2920,6 +3095,8 @@ namespace superbblas {
                 for (const auto &i : vr.second) sync(i.it.ctx());
                 barrier(comm);
             }
+
+            return req;
         }
 
         /// Contract two tensors: vr = alpha * contraction(v0, v1) + beta * vr
@@ -2946,7 +3123,7 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        void
+        Request
         contraction(T alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0, bool conj0,
                     const Components_tmpl<Nd0, T, XPU0, XPU1> &v0, const Proc_ranges<Nd1> &p1,
@@ -2964,9 +3141,10 @@ namespace superbblas {
             auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
             auto t1 = dummy_normalize_copy<Nd>(p1, from1, size1, dim1, o1, v1, m);
             auto tr = dummy_normalize_copy<Nd>(pr, fromr, sizer, dimr, o_r, vr, m);
-            contraction_normalized(alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, conj0, t0.v, Nd0, //
-                                   t1.p, t1.from, t1.size, t1.dim, t1.o, conj1, t1.v, Nd1,        //
-                                   beta, tr.p, tr.from, tr.size, tr.dim, tr.o, tr.v, Ndo, comm, co);
+            return contraction_normalized(
+                alpha, t0.p, t0.from, t0.size, t0.dim, t0.o, conj0, t0.v, Nd0, //
+                t1.p, t1.from, t1.size, t1.dim, t1.o, conj1, t1.v, Nd1,        //
+                beta, tr.p, tr.from, tr.size, tr.dim, tr.o, tr.v, Ndo, comm, co);
         }
 
         /// Return a From_size from a partition that can be hashed and stored
@@ -3142,6 +3320,7 @@ namespace superbblas {
                 const auto &it = std::find(dist_labels, dist_labels + n, order[i]);
                 if (it == dist_labels + n) perm[dist_n++] = i;
             }
+            if (dist_n != Nd) throw std::runtime_error("wtf");
         } else {
             for (unsigned int i = 0; i < Nd; ++i) perm[i] = i;
         }
@@ -3360,7 +3539,8 @@ namespace superbblas {
                      const T **v1, const Context *ctx1, T beta, const PartitionItem<Ndo> *pr,
                      const Coor<Ndo> &fromr, const Coor<Ndo> &sizer, const Coor<Ndo> &dimr,
                      int ncomponentsr, const char *o_r, T **vr, const Context *ctxr,
-                     MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
+                     MPI_Comm mpicomm, CoorOrder co, Request *request = nullptr,
+                     Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -3368,7 +3548,7 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::contraction<Nd0, Nd1, Ndo>(
+        Request r = detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm), from0, size0, dim0,
             o0_, conj0,
             detail::get_components<Nd0>((T **)v0, nullptr, ctx0, ncomponents0, p0, comm, session),
@@ -3378,6 +3558,10 @@ namespace superbblas {
             beta, detail::get_from_size(pr, ncomponentsr * comm.nprocs, comm), fromr, sizer, dimr,
             o_r_, detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session),
             comm, co);
+        if (request)
+            *request = r;
+        else
+            wait(r);
     }
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
@@ -3389,7 +3573,7 @@ namespace superbblas {
                      const Coor<Nd1> &, int, const char *, bool, const T **, const Context *, T,
                      const PartitionItem<Ndo> *, const Coor<Ndo> &, const Coor<Ndo> &,
                      const Coor<Ndo> &, int, const char, T **, const Context *, MPI_Comm, CoorOrder,
-                     Session = 0) {
+                     Request * = nullptr, Session = 0) {
         throw std::runtime_error("contraction: unsupported type");
     }
 #endif // SUPERBBLAS_USE_MPI
@@ -3428,7 +3612,7 @@ namespace superbblas {
                      const Context *ctx1, T beta, const PartitionItem<Ndo> *pr,
                      const Coor<Ndo> &fromr, const Coor<Ndo> &sizer, const Coor<Ndo> &dimr,
                      int ncomponentsr, const char *o_r, T **vr, const Context *ctxr, CoorOrder co,
-                     Session session = 0) {
+                     Request *request = nullptr, Session session = 0) {
 
         Order<Nd0> o0_ = detail::toArray<Nd0>(o0, "o0");
         Order<Nd1> o1_ = detail::toArray<Nd1>(o1, "o1");
@@ -3436,7 +3620,7 @@ namespace superbblas {
 
         detail::SelfComm comm = detail::get_comm();
 
-        detail::contraction<Nd0, Nd1, Ndo>(
+        wait(detail::contraction<Nd0, Nd1, Ndo>(
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm), from0, size0, dim0,
             o0_, conj0,
             detail::get_components<Nd0>((T **)v0, nullptr, ctx0, ncomponents0, p0, comm, session),
@@ -3445,7 +3629,8 @@ namespace superbblas {
             detail::get_components<Nd1>((T **)v1, nullptr, ctx1, ncomponents1, p1, comm, session),
             beta, detail::get_from_size(pr, ncomponentsr * comm.nprocs, comm), fromr, sizer, dimr,
             o_r_, detail::get_components<Ndo>(vr, nullptr, ctxr, ncomponentsr, pr, comm, session),
-            comm, co);
+            comm, co));
+        if (request) *request = Request{};
     }
 
     template <std::size_t Nd0, std::size_t Nd1, std::size_t Ndo, typename T,
@@ -3455,7 +3640,7 @@ namespace superbblas {
                      const T **, const Context *, const PartitionItem<Nd1> *, const Coor<Nd1> &,
                      int, const char *, bool, const T **, const Context *, T,
                      const PartitionItem<Ndo> *, const Coor<Ndo> &, int, const char, T **,
-                     const Context *, CoorOrder, Session = 0) {
+                     const Context *, CoorOrder, Request * = nullptr, Session = 0) {
         throw std::runtime_error("contraction: unsupported type");
     }
 

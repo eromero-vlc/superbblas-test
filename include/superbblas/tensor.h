@@ -78,7 +78,9 @@ namespace superbblas {
             tarray<T, size_right> right;
         };
         template <typename T> struct tarray<T, 0ul> {};
-        template <typename T> struct tarray<T, 1ul> { T leaf; };
+        template <typename T> struct tarray<T, 1ul> {
+            T leaf;
+        };
 
         /// Return the I-th element on a tarray
         /// \tparam I: index of the element to return
@@ -1345,6 +1347,16 @@ namespace superbblas {
             // Check that o_r is made of the pieces T, C and B
             if (Ndo != nT + nB + nC) throw std::runtime_error("o_r has unmatched dimensions");
 
+            // If oT, oB, or oC aren't found as either oT+oC+oB or oC+oT+oB, then reorder the labels appropriately
+            auto sTr = std::search(o_r.begin(), o_r.end(), oT.begin(), oT.begin() + nT);
+            auto sBr = std::search(o_r.begin(), o_r.end(), oB.begin(), oB.begin() + nB);
+            auto sCr = std::search(o_r.begin(), o_r.end(), oC.begin(), oC.begin() + nC);
+            swap_operands = false;
+            if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
+                (nT > 0 && nB > 0 && sBr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
+                swap_operands = (nB > 0 && nC > 0 && sBr < sCr);
+            }
+
             // If oT, oA, or oB aren't found as either oT+oA+oB or oA+oT+oB or oT+oB+oA or oB+oT+oA for !conj,
             // and oT+oB+oA or oB+oT+oA for conj, then reorder the labels appropriately
             auto sT0 = std::search(o0.begin(), o0.end(), oT.begin(), oT.begin() + nT);
@@ -1352,13 +1364,19 @@ namespace superbblas {
             auto sB0 = std::search(o0.begin(), o0.end(), oB.begin(), oB.begin() + nB);
             if (sT0 == o0.end() || sA0 == o0.end() || sB0 == o0.end() ||
                 (!conj0 && nT > 0 && nA > 0 && nB > 0 && sA0 < sT0 && sB0 < sT0) ||
-                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0)))) {
+                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0))) ||
+                (volC >= 1024 * 1024 && volA < 64 && volB < 64 && swap_operands && sA0 < sB0)) {
+                // Avoid non-transpose x non-transpose and non-transpose x transposed when contracting
+                // rectangular matrices
+                if (volB < 64 && volC < 64 && volA > 1024 * 1024 && !swap_operands) conj0 = true;
+                // Avoid the second matrix to be transposed when contracting rectangular and small square matrix
+                if (volC >= 1024 * 1024 && volA < 64 && volB < 64 && swap_operands) conj0 = true;
                 std::copy_n(oT.begin(), nT, sug_o0.begin());
                 std::copy_n(oA.begin(), nA, sug_o0.begin() + nT + (!conj0 ? 0 : nB));
                 std::copy_n(oB.begin(), nB, sug_o0.begin() + nT + (!conj0 ? nA : 0));
                 std::copy_n(o0.begin() + nT + nA + nB, o0.size() - nT - nA - nB,
                             sug_o0.begin() + nT + nA + nB);
-                norm_o0 = Order<3>{{'t', 'a', 'b'}};
+                norm_o0 = Order<3>{{'t', !conj0 ? 'a' : 'b', !conj0 ? 'b' : 'a'}};
             } else {
                 sug_o0 = o0;
                 norm_o0 = order_from_pos(sT0, 't', sA0, 'a', sB0, 'b');
@@ -1371,26 +1389,27 @@ namespace superbblas {
             auto sC1 = std::search(o1.begin(), o1.end(), oC.begin(), oC.begin() + nC);
             if (sT1 == o1.end() || sA1 == o1.end() || sC1 == o1.end() ||
                 (!conj1 && nT > 0 && nA > 0 && nC > 0 && sA1 < sT1 && sC1 < sT1) ||
-                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1)))) {
+                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1))) ||
+                (volB >= 1024 * 1024 && volA < 64 && volC < 64 && !swap_operands && sA1 < sC1)) {
+                // Avoid non-transpose x non-transpose and non-transpose x transposed when contracting
+                // rectangular matrices
+                if (volB < 64 && volC < 64 && volA > 1024 * 1024 && swap_operands) conj1 = true;
+                // Avoid the second matrix to be transposed when contracting rectangular and small square matrix
+                if (volB >= 1024 * 1024 && volA < 64 && volC < 64 && !swap_operands) conj1 = false;
                 std::copy_n(oT.begin(), nT, sug_o1.begin());
                 std::copy_n(oC.begin(), nC, sug_o1.begin() + nT + (!conj1 ? 0 : nA));
                 std::copy_n(oA.begin(), nA, sug_o1.begin() + nT + (!conj1 ? nC : 0));
                 std::copy_n(o1.begin() + nT + nC + nA, o1.size() - nT - nC - nA,
                             sug_o1.begin() + nT + nC + nA);
-                norm_o1 = Order<3>{{'t', 'c', 'a'}};
+                norm_o1 = Order<3>{{'t', !conj1 ? 'c' : 'a', !conj1 ? 'a' : 'c'}};
             } else {
                 sug_o1 = o1;
                 norm_o1 = order_from_pos(sT1, 't', sA1, 'a', sC1, 'c');
             }
 
             // If oT, oB, or oC aren't found as either oT+oC+oB or oC+oT+oB, then reorder the labels appropriately
-            auto sTr = std::search(o_r.begin(), o_r.end(), oT.begin(), oT.begin() + nT);
-            auto sBr = std::search(o_r.begin(), o_r.end(), oB.begin(), oB.begin() + nB);
-            auto sCr = std::search(o_r.begin(), o_r.end(), oC.begin(), oC.begin() + nC);
-            swap_operands = false;
             if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
                 (nT > 0 && nB > 0 && sBr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
-                swap_operands = (nB > 0 && nC > 0 && sBr < sCr);
                 std::copy_n(oT.begin(), nT, sug_or.begin());
                 std::copy_n(oC.begin(), nC, sug_or.begin() + nT);
                 std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
