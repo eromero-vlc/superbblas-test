@@ -163,6 +163,7 @@ namespace superbblas {
                         ii[imat * nrows + i + 1] = idx;
                     }
                     if (is_identity) {
+                        if (nrows != ncols) is_identity = false;
                         for (IndexType i = 0; i < nrows; ++i) {
                             T mij = m[ncols * nrows * imat +
                                       (layout == ColumnMajor ? i + i * nrows : i * ncols + i)];
@@ -201,9 +202,10 @@ namespace superbblas {
         /// CSR-dense matrix multiplication
 
         template <typename IndexType, typename T>
-        inline void xgemm_csr_mat(T alpha, const CSRs<IndexType, T> &a, int ai, const T *b,
-                                  IndexType bm, IndexType bn, MatrixLayout blayout, IndexType ldb,
-                                  T beta, T *c, IndexType ldc) {
+        inline void xgemm_csr_mat(T alpha, const CSRs<IndexType, T> &a, int ai,
+                                  const T *SB_RESTRICT b, IndexType bm, IndexType bn,
+                                  MatrixLayout blayout, IndexType ldb, T beta, T *SB_RESTRICT c,
+                                  IndexType ldc) {
             assert(a.ncols == bm);
             assert(ai < a.nmats);
             if (a.nrows == 0 || bn == 0) return;
@@ -217,19 +219,29 @@ namespace superbblas {
 
             if (beta != T{0} || blayout != ColumnMajor) throw std::runtime_error("wtf");
 
+            using Tc = typename ccomplex<T>::type;
+            const Tc *SB_RESTRICT bc = (const Tc *)b;
+            Tc *SB_RESTRICT cc = (Tc *)c;
+            const Tc alphac = *(const Tc *)&alpha;
+            const Tc *SB_RESTRICT valsc = (const Tc *)a.vals.data();
+
             bool a_is_all_ones = a.is_all_ones(ai);
             for (IndexType i = 0, m = a.nrows; i < m; ++i) {
-                for (IndexType jidx = a.ii[a.nrows * ai + i], jidx1 = a.ii[a.nrows * ai + i + 1],
-                               j0 = 0;
-                     jidx < jidx1; ++jidx, ++j0) {
+                bool first = true;
+                for (IndexType jidx = a.ii[m * ai + i], jidx1 = a.ii[m * ai + i + 1]; jidx < jidx1;
+                     ++jidx) {
                     IndexType s = a.jj[jidx];
-                    T a_is = (a_is_all_ones ? alpha : alpha * a.vals[jidx]);
-                    if (j0 == 0) {
-                        for (IndexType j = 0; j < bn; ++j) c[i + ldc * j] = a_is * b[s + ldb * j];
+                    Tc a_is = (a_is_all_ones ? alphac : alphac * valsc[jidx]);
+                    if (first) {
+                        for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = a_is * bc[s + ldb * j];
+                        first = false;
                     } else {
-                        for (IndexType j = 0; j < bn; ++j) c[i + ldc * j] += a_is * b[s + ldb * j];
+                        for (IndexType j = 0; j < bn; ++j)
+                            cc[i + ldc * j] += a_is * bc[s + ldb * j];
                     }
                 }
+                if (first)
+                    for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
             }
         }
 
@@ -587,7 +599,7 @@ namespace superbblas {
                                     if (kron.is_identity(j0)) {
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
                                         xgemm('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                              x + jj[j], ki * ncols, nonzeros + j * bi * bd,
+                                              x + jj[j] * ncols, ki * ncols, nonzeros + j * bi * bd,
                                               !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
                                               ki * ncols, Cpu{});
                                     } else {
