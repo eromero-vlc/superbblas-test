@@ -2286,12 +2286,14 @@ namespace superbblas {
     /// \param oim: dimension labels for the RSB operator image space
     /// \param odm: dimension labels for the RSB operator domain space
     /// \param px: partitioning of the right tensor in consecutive ranges
+    /// \param fx: coordinate of the first active element and local dimensions for `vx`
     /// \param ox: dimension labels for the right operator
     /// \param fromx: first coordinate to operate from the origin tensor
     /// \param sizex: number of elements to operate in each dimension
     /// \param dimx: dimension size for the origin tensor
     /// \param vx: data for the second operator
     /// \param py: partitioning of the resulting tensor in consecutive ranges
+    /// \param fx: coordinate of the first active element and local dimensions for `vy`
     /// \param oy: dimension labels for the output tensor
     /// \param fromy: first coordinate to copy the result from the destination tensor
     /// \param sizey: number of elements to copy in each dimension
@@ -2302,11 +2304,12 @@ namespace superbblas {
 
     template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T>
     void bsr_krylov(T alpha, BSR_handle *bsrh, const char *oim, const char *odm,
-                    const PartitionItem<Nx> *px, int ncomponents, const char *ox,
-                    const Coor<Nx> &fromx, const Coor<Nx> &sizex, const Coor<Nx> &dimx,
-                    const T **vx, T beta, const PartitionItem<Ny> *py, const char *oy,
-                    const Coor<Ny> &fromy, const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr,
-                    T **vy, const Context *ctx, CoorOrder co, Request *request = nullptr,
+                    const PartitionItem<Nx> *px, const PartitionItem<Nx> *fx, int ncomponents,
+                    const char *ox, const Coor<Nx> &fromx, const Coor<Nx> &sizex,
+                    const Coor<Nx> &dimx, const T **vx, T beta, const PartitionItem<Ny> *py,
+                    const PartitionItem<Ny> *fy, const char *oy, const Coor<Ny> &fromy,
+                    const Coor<Ny> &sizey, const Coor<Ny> &dimy, char okr, T **vy,
+                    const Context *ctx, CoorOrder co, Request *request = nullptr,
                     Session session = 0) {
 
         Order<Ni> oim_ = detail::toArray<Ni>(oim, "oim");

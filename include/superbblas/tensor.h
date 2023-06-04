@@ -503,6 +503,79 @@ namespace superbblas {
             return all_less_or_equal(size1, dim1);
         }
 
+        /// Return whether two tensors have the same layout
+        /// \param o0: dimension labels for the origin tensor
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        bool is_same_layout(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                            const Coor<Nd1> dim1) {
+
+            // If both have different volume, return false
+            if (volume(dim0) != volume(dim1)) return false;
+
+            // If both are empty tensors, then return true
+            if (volume(dim0) == 0) return true;
+
+            // Check that the non-singular dimensions have the same labels in the same order
+            std::size_t i = 0, j = 0;
+            while (i < Nd0 && j < Nd1) {
+                if (dim0[i] == 1) {
+                    ++i;
+                    continue;
+                }
+                if (dim1[j] == 1) {
+                    ++j;
+                    continue;
+                }
+                if (o0[i] != o1[j] || dim0[i] != dim1[j]) return false;
+                ++i;
+                ++j;
+            }
+            while (i < Nd0)
+                if (dim0[i++] != 1) return false;
+            while (j < Nd1)
+                if (dim1[j++] != 1) return false;
+            return true;
+        }
+
+        /// Return whether the two tensors can be subsets of a common tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        bool have_common_tensor(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                            const Coor<Nd1> dim1) {
+
+            // If any of the tensors is empty, return true
+            if (volume(dim0) == 0 || volume(dim1) == 0) return true;
+
+            // Check that the non-singular dimensions have the same labels in the same order
+            std::size_t i = 0, j = 0;
+            while (i < Nd0 && j < Nd1) {
+                if (dim0[i] == 1) {
+                    ++i;
+                    continue;
+                }
+                if (dim1[j] == 1) {
+                    ++j;
+                    continue;
+                }
+                if (o0[i] != o1[j] || dim0[i] != dim1[j]) return false;
+                ++i;
+                ++j;
+            }
+            while (i < Nd0)
+                if (dim0[i++] != 1) return false;
+            while (j < Nd1)
+                if (dim1[j++] != 1) return false;
+            return true;
+        }
+
         //
         // Hash for tuples and arrays
         //

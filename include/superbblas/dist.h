@@ -152,17 +152,19 @@ namespace superbblas {
 
         /// Component of a tensor
         template <std::size_t Nd, typename T, typename XPU> struct Component {
-            vector<T, XPU> it;        ///< data
-            Coor<Nd> dim;             ///< dimension of the tensor
-            unsigned int componentId; ///< Component Id
-            Mask<XPU> mask_it;        ///< Mask
+            vector<T, XPU> it;         ///< data
+            Coor<Nd> from;             ///< first active element
+            Coor<Nd> size;             ///< dimension of the active range
+            Coor<Nd> dim;              ///< local dimension of the tensor
+            unsigned int componentId;  ///< Component Id
+            Mask<XPU> mask_it;         ///< Mask
 
             template <
                 typename Q = T,
                 typename std::enable_if<std::is_same<Q, typename std::remove_const<Q>::type>::value,
                                         bool>::type = true>
             operator Component<Nd, const Q, XPU>() const {
-                return {it, dim, componentId, mask_it};
+                return {it, from, size, dim, componentId, mask_it};
             }
 
             template <typename Q = T,
@@ -170,11 +172,12 @@ namespace superbblas {
                           !std::is_same<Q, typename std::remove_const<Q>::type>::value,
                           bool>::type = true>
             operator Component<Nd, typename std::remove_const<Q>::type, XPU>() const {
-                return {it, dim, componentId, mask_it};
+                return {it, from ,size, dim, componentId, mask_it};
             }
 
             Component withNewContext(const XPU &xpu) const {
-                return {it.withNewContext(xpu), dim, componentId, mask_it.withNewContext(xpu)};
+                return {it.withNewContext(xpu),     from, size, dim, componentId,
+                        mask_it.withNewContext(xpu)};
             }
         };
 
@@ -194,7 +197,8 @@ namespace superbblas {
         template <std::size_t Nd, typename T, typename Comm>
         Components<Nd, T> get_components(T **v, const MaskType **mask, const Context *ctx,
                                          unsigned int ncomponents, From_size_iterator<Nd> p,
-                                         const Comm &comm, Session session) {
+                                         From_size_iterator<Nd> r, const Comm &comm,
+                                         Session session) {
             // Get components on the local process
             From_size_iterator<Nd> fs = p + comm.rank * ncomponents;
 
@@ -205,20 +209,20 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_GPU
                 case CPU:
                     r.second.push_back(Component<Nd, T, Cpu>{
-                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i,
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), r[i][0], fs[i][1], r[i][1], i,
                         to_vector(maski, volume(fs[i][1]), ctx[i].toCpu(session))});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
                 case GPU:
                     r.first.push_back(Component<Nd, T, Gpu>{
-                        to_vector(v[i], volume(fs[i][1]), ctx[i].toGpu(session)), fs[i][1], i,
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toGpu(session)), r[i][0], fs[i][1], r[i][1], i,
                         to_vector(maski, volume(fs[i][1]), ctx[i].toGpu(session))});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
                     break;
 #else // SUPERBBLAS_USE_GPU
                 case CPU:
                     r.first.push_back(Component<Nd, T, Cpu>{
-                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), fs[i][1], i,
+                        to_vector(v[i], volume(fs[i][1]), ctx[i].toCpu(session)), r[i][0], fs[i][1],r[i][1], i,
                         to_vector(maski, volume(fs[i][1]), ctx[i].toCpu(session))});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
                     break;
@@ -742,6 +746,7 @@ namespace superbblas {
         /// Pack a list of subtensors contiguously in memory
         /// \param o0: dimension labels for the origin tensor
         /// \param fs: a From_size iterator
+        /// \param from0: coordinates of the first active element
         /// \param dim0: dimension size for the origin tensor
         /// \param v0: data for the origin tensor
         /// \param o1: dimension labels for the destination tensor
@@ -753,20 +758,22 @@ namespace superbblas {
                   typename XPU0, typename XPUbuff>
         void pack_component(const Order<Nd0> &o0,
                             const typename Range_proc_range_ranges<Nd0>::value_type &fs,
-                            const Coor<Nd0> &dim0, vector<const T, XPU0> v0, Mask<XPU0> mask0,
-                            const Order<Nd1> &o1, Indices<Cpu> &disp1, vector<Q, XPUbuff> &v1,
-                            MpiComm comm, CoorOrder co) {
+                            const Coor<Nd0> &from0, const Coor<Nd0> &dim0, vector<const T, XPU0> v0,
+                            Mask<XPU0> mask0, const Order<Nd1> &o1, Indices<Cpu> &disp1,
+                            vector<Q, XPUbuff> &v1, MpiComm comm, CoorOrder co) {
 
             assert(fs.size() == comm.nprocs);
 
             // Find indices on cache
-            using Key = std::tuple<typename Range_proc_range_ranges<Nd0>::value_type, Coor<Nd0>,
-                                   PairPerms<Nd0, Nd1>, Indices<Cpu>, int, int, int, CoorOrder>;
+            using Key =
+                std::tuple<typename Range_proc_range_ranges<Nd0>::value_type, Coor<Nd0>, Coor<Nd0>,
+                           PairPerms<Nd0, Nd1>, Indices<Cpu>, int, int, int, CoorOrder>;
             using Value = std::tuple<IndicesT<IndexType, XPU0>, IndicesT<IndexType, XPUbuff>,
                                      size_t, Indices<Cpu>>;
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(v0.ctx());
             Key key{fs,
+                    from0,
                     dim0,
                     get_perms(o0, o1),
                     clone(disp1),
@@ -809,7 +816,7 @@ namespace superbblas {
                             // Compute the permutation so that the subtensors are packed on the natural
                             // order on the destination; in other words, apply the permutation before
                             // doing the MPI call
-                            Coor<Nd0> fromi = fsi[0], sizei = fsi[1];
+                            Coor<Nd0> fromi = from0 + fsi[0], sizei = fsi[1];
                             Coor<Nd1> sizei1 = reorder_coor<Nd0, Nd1>(sizei, perm0, 1);
                             auto indices0i = get_permutation_origin<IndexType>(
                                 o0, fromi, sizei, dim0, o1, {{}}, sizei1,
@@ -910,12 +917,12 @@ namespace superbblas {
             for (unsigned int componentId0 = 0; componentId0 < toSend.size(); ++componentId0) {
                 for (const Component<Nd0, const T, XPU0> &c : v.first)
                     if (c.componentId == componentId0)
-                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
-                                                  o1, buf_disp, r.buf, comm, co);
+                        pack_component<IndexType>(o0, toSend[componentId0], c.from, c.dim, c.it,
+                                                  c.mask_it, o1, buf_disp, r.buf, comm, co);
                 for (const Component<Nd0, const T, XPU1> &c : v.second)
                     if (c.componentId == componentId0)
-                        pack_component<IndexType>(o0, toSend[componentId0], c.dim, c.it, c.mask_it,
-                                                  o1, buf_disp, r.buf, comm, co);
+                        pack_component<IndexType>(o0, toSend[componentId0], c.from, c.dim, c.it,
+                                                  c.mask_it, o1, buf_disp, r.buf, comm, co);
             }
 
             // Update the counts when using mask
@@ -1082,8 +1089,9 @@ namespace superbblas {
             tracker<Cpu> _t("prepare unpack", Cpu{});
 
             // Find indices on cache
-            using Key = std::tuple<Range_proc_range_ranges<Nd>, std::vector<Coor<Nd>>, int, int,
-                                   int, std::vector<int>, CoorOrder>;
+            using Key =
+                std::tuple<Range_proc_range_ranges<Nd>, std::vector<Coor<Nd>>,
+                           std::vector<Coor<Nd>>, int, int, int, std::vector<int>, CoorOrder>;
             using Value =
                 std::tuple<vector<MpiInt, Cpu>,                        // counts
                            vector<MpiInt, Cpu>,                        // displ
@@ -1097,11 +1105,14 @@ namespace superbblas {
             std::vector<int> deviceIds(num_components(v));
             for (const auto &it : v.first) deviceIds[it.componentId] = deviceId(it.it.ctx());
             for (const auto &it : v.second) deviceIds[it.componentId] = deviceId(it.it.ctx());
+            std::vector<Coor<Nd>> component_froms(toReceive.size());
+            for (const auto &it : v.first) component_froms[it.componentId] = it.from;
+            for (const auto &it : v.second) component_froms[it.componentId] = it.from;
             std::vector<Coor<Nd>> component_dims(toReceive.size());
             for (const auto &it : v.first) component_dims[it.componentId] = it.dim;
             for (const auto &it : v.second) component_dims[it.componentId] = it.dim;
-            Key key{toReceive,     component_dims, comm.nprocs, comm.rank,
-                    deviceId(xpu), deviceIds,      co};
+            Key key{toReceive, components_froms, component_dims, comm.nprocs,
+                    comm.rank, deviceId(xpu),   deviceIds,      co};
 
             bool using_mask = false;
             for (const auto &it : v.first)
@@ -1151,7 +1162,7 @@ namespace superbblas {
                     for (std::size_t srcrange = 0; srcrange < srcrange1; ++srcrange) {
                         for (std::size_t dstrange = 0; dstrange < toReceive.size(); ++dstrange) {
                             for (const auto &fsi : toReceive[dstrange][rank][srcrange]) {
-                                Coor<Nd> fromi = fsi[0], sizei = fsi[1];
+                                Coor<Nd> fromi = components_froms[dstrange] + fsi[0], sizei = fsi[1];
                                 auto indices1_pair = get_permutation_destination<IndexType>(
                                     o, {{}}, sizei, sizei, o, fromi, component_dims[dstrange],
                                     DontAllowImplicitPermutation, Cpu{}, co, nblock[dstrange]);
@@ -1909,13 +1920,13 @@ namespace superbblas {
                 Components_tmpl<Nd, mockIndexType<T>, XPU0, XPU1> r;
                 for (const Component<Nd, T, XPU0> &c : v.first) {
                     r.first.push_back(Component<Nd, std::size_t, XPU0>{
-                        get_mock_components(p[c.componentId][0], c.dim, dim, c.it.ctx(), co, mf),
-                        c.dim, c.componentId, c.mask_it});
+                        get_mock_components(p[c.componentId][0], c.size, dim, c.it.ctx(), co, mf),
+                        Coor<Nd>{{}}, c.size, c.size, c.componentId, c.mask_it});
                 }
                 for (const Component<Nd, T, XPU1> &c : v.second) {
                     r.second.push_back(Component<Nd, std::size_t, XPU1>{
-                        get_mock_components(p[c.componentId][0], c.dim, dim, c.it.ctx(), co, mf),
-                        c.dim, c.componentId, c.mask_it});
+                        get_mock_components(p[c.componentId][0], c.size, dim, c.it.ctx(), co, mf),
+                        Coor<Nd>{{}}, c.size, c.size, c.componentId, c.mask_it});
                 }
                 return r;
             }
@@ -2283,9 +2294,10 @@ namespace superbblas {
                     const auto &toReceive0 = toReceive[c1.componentId][comm.rank][c0.componentId];
                     assert(toSend0.size() == toReceive0.size());
                     for (unsigned int i = 0, i1 = toSend0.size(); i < i1; ++i) {
-                        local_copy<Nd0, Nd1, T, Q>(alpha, o0, toSend0[i][0], toSend0[i][1], c0.dim,
-                                                   c0.it, c0.mask_it, o1, toReceive0[i][0], c1.dim,
-                                                   c1.it, c1.mask_it, ewop, co);
+                        local_copy<Nd0, Nd1, T, Q>(alpha, o0, c0.from + toSend0[i][0],
+                                                   toSend0[i][1], c0.dim, c0.it, c0.mask_it, o1,
+                                                   c1.from + toReceive0[i][0], c1.dim, c1.it,
+                                                   c1.mask_it, ewop, co);
                     }
                 }
                 for (const Component<Nd1, Q, XPU1> &c1 : v1.second) {
@@ -2293,9 +2305,10 @@ namespace superbblas {
                     const auto &toReceive0 = toReceive[c1.componentId][comm.rank][c0.componentId];
                     assert(toSend0.size() == toReceive0.size());
                     for (unsigned int i = 0, i1 = toSend0.size(); i < i1; ++i) {
-                        local_copy<Nd0, Nd1, T, Q>(alpha, o0, toSend0[i][0], toSend0[i][1], c0.dim,
-                                                   c0.it, c0.mask_it, o1, toReceive0[i][0], c1.dim,
-                                                   c1.it, c1.mask_it, ewop, co);
+                        local_copy<Nd0, Nd1, T, Q>(alpha, o0, c0.from + toSend0[i][0],
+                                                   toSend0[i][1], c0.dim, c0.it, c0.mask_it, o1,
+                                                   c1.from + toReceive0[i][0], c1.dim, c1.it,
+                                                   c1.mask_it, ewop, co);
                     }
                 }
             }
@@ -2393,18 +2406,24 @@ namespace superbblas {
 
             Components_tmpl<Nd, T, XPU0, XPU1> new_v;
             for (const auto &c0 : v0.first) {
-                Coor<Nd> new_dim;
+                Coor<Nd> new_from, new_size, new_dim;
+                std::copy_n(c0.from.begin(), Nd0, new_from.begin());
+                std::copy_n(c0.size.begin(), Nd0, new_size.begin());
                 std::copy_n(c0.dim.begin(), Nd0, new_dim.begin());
-                for (std::size_t j = Nd0; j < Nd; ++j) new_dim[j] = 1;
+                for (std::size_t j = Nd0; j < Nd; ++j) new_from[j] = 0;
+                for (std::size_t j = Nd0; j < Nd; ++j) new_size[j] = new_dim[j] = 1;
                 new_v.first.push_back(
-                    Component<Nd, T, XPU0>{c0.it, new_dim, c0.componentId, c0.mask_it});
+                    Component<Nd, T, XPU0>{c0.it, new_from, new_size, new_dim, c0.componentId, c0.mask_it});
             }
             for (const auto &c0 : v0.second) {
-                Coor<Nd> new_dim;
+                Coor<Nd> new_from, new_size, new_dim;
+                std::copy_n(c0.from.begin(), Nd0, new_from.begin());
+                std::copy_n(c0.size.begin(), Nd0, new_size.begin());
                 std::copy_n(c0.dim.begin(), Nd0, new_dim.begin());
-                for (std::size_t j = Nd0; j < Nd; ++j) new_dim[j] = 1;
+                for (std::size_t j = Nd0; j < Nd; ++j) new_from[j] = 0;
+                for (std::size_t j = Nd0; j < Nd; ++j) new_size[j] = new_dim[j] = 1;
                 new_v.second.push_back(
-                    Component<Nd, T, XPU1>{c0.it, new_dim, c0.componentId, c0.mask_it});
+                    Component<Nd, T, XPU1>{c0.it, new_from, new_size, new_dim, c0.componentId, c0.mask_it});
             }
 
             return {new_p, new_from, new_size, new_dim, new_o, new_v};
@@ -2639,40 +2658,43 @@ namespace superbblas {
                 vector<T, XPU0> v1i(volume(dimi), v.first[i].it.ctx(), cacheAlloc);
                 if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                 v1.first.push_back(
-                    Component<N, T, XPU0>{v1i, dimi, v.first[i].componentId, Mask<XPU0>{}});
+                    Component<N, T, XPU0>{v1i, Coor<N>{{}}, dimi, dimi, v.first[i].componentId, Mask<XPU0>{}});
             }
             for (unsigned int i = 0; i < v.second.size(); ++i) {
                 const Coor<N> &dimi = p[comm.rank][v.second[i].componentId][1];
                 vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
                 if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                 v1.second.push_back(
-                    Component<N, T, XPU1>{v1i, dimi, v.second[i].componentId, Mask<XPU1>{}});
+                    Component<N, T, XPU1>{v1i, Coor<N>{{}}, dimi, dimi, v.second[i].componentId, Mask<XPU1>{}});
             }
 
             return v1;
         }
 
-        /// Return a new components based on a partition selecting the context from the component
-        /// with more overlap over the given components
-        /// \param p: partitioning
-        /// \param from: first element to consider
-        /// \param dim: dimensions of the tensor
-        /// \param v: tensor components
+        enum ForceCopy { dontForceCopy, doForceCopy };
+
+        /// Return a new components based on a partition
+        /// \param p: original partitioning
+        /// \param from: first element to consider at the origin tensor
+        /// \param dim: dimensions of the origin tensor
+        /// \param v: original tensor components
         /// \param p1: new partitioning
         /// \param comm: communicator
-        /// \param cacheAlloc: whether to use cache the allocation
+        /// \param force_copy: whether to consider to the same allocation as the original tensor
+	/// \param cacheAlloc: whether use cache allocations for new allocations
         /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         Components_tmpl<N, T, XPU0, XPU1>
         like_this_components(const Proc_ranges<N> &p, const Coor<N> &from, const Coor<N> &dim,
                              const Components_tmpl<N, T, XPU0, XPU1> &v, const Proc_ranges<N> &p1,
-                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc,
+                             Comm comm, ForceCopy force_copy = doForceCopy,
+                             CacheAlloc cacheAlloc = dontCacheAlloc,
                              ZeroInit zero_init = dontZeroInit) {
 
             // Deciding the device for each new component
             // NOTE: maximize the overlap with the original devices
-            std::vector<unsigned int> device(p1[comm.rank].size());
+            std::vector<unsigned int> component(p1[comm.rank].size());
             for (unsigned int i = 0; i < p1[comm.rank].size(); ++i) {
                 std::size_t max_vol = 0;
                 unsigned int max_idx = 0;
@@ -2685,26 +2707,99 @@ namespace superbblas {
                         max_idx = j;
                     }
                 }
-                device[i] = max_idx;
+                component[i] = max_idx;
             }
 
             // Allocate the tensor
             Components_tmpl<N, T, XPU0, XPU1> v1;
             for (unsigned int i = 0; i < p1[comm.rank].size(); ++i) {
                 for (unsigned int j = 0; j < v.first.size(); ++j) {
-                    if (v.first[j].componentId != device[i]) continue;
-                    const Coor<N> &dimi = p1[comm.rank][i][1];
-                    vector<T, XPU0> v1i(volume(dimi), v.first[j].it.ctx(), cacheAlloc);
-                    if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
-                    v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, i, Mask<XPU0>{}});
+                    if (v.first[j].componentId != component[i]) continue;
+                    if (force_copy == dontForceCopy && v.first[j].from == Coor<N>{{}} &&
+                        p[comm.rank][j] == p1[comm.rank][i]) {
+                        v1.first.push_back(v.first[j]);
+                    } else {
+                        const Coor<N> &dimi = p1[comm.rank][i][1];
+                        vector<T, XPU1> v1i(volume(dimi), v.first[j].it.ctx(), cacheAlloc);
+                        v1.first.push_back(
+                            Component<N, T, XPU0>{v1i, Coor<Nd>{{}}, dimi, dimi, i, Mask<XPU0>{}});
+                    }
                 }
                 for (unsigned int j = 0; j < v.second.size(); ++j) {
-                    if (v.second[j].componentId != device[i]) continue;
-                    const Coor<N> &dimi = p1[comm.rank][i][1];
-                    vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
-                    if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
-                    v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, i, Mask<XPU1>{}});
+                    if (v.second[j].componentId != component[i]) continue;
+                    if (force_copy == dontForceCopy && v.second[j].from == Coor<N>{{}} &&
+                        p[comm.rank][j] == p1[comm.rank][i]) {
+                        v1.second.push_back(v.second[j]);
+                    } else {
+                        const Coor<N> &dimi = p1[comm.rank][i][1];
+                        vector<T, XPU0> v1i(volume(dimi), v.second[j].it.ctx(), cacheAlloc);
+                        v1.second.push_back(
+                            Component<N, T, XPU0>{v1i, Coor<Nd>{{}}, dimi, dimi, i, Mask<XPU0>{}});
+                    }
                 }
+            }
+
+            return v1;
+        }
+
+        /// Return a new components based on a partition
+        /// \param p: original partitioning
+        /// \param from: first element to consider at the origin tensor
+        /// \param dim: dimensions of the origin tensor
+        /// \param v: original tensor components
+        /// \param p1: new partitioning
+        /// \param comm: communicator
+        /// \param force_copy: whether to consider to the same allocation as the original tensor
+	/// \param cacheAlloc: whether use cache allocations for new allocations
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
+        Components_tmpl<N, T, XPU0, XPU1>
+        like_this_components(const Proc_ranges<N> &p, const Coor<N> &from, const Coor<N> &dim,
+                             const Components_tmpl<N, T, XPU0, XPU1> &v, const Proc_ranges<N> &p1,
+                             const Components_tmpl<N, T, XPU0, XPU1> &v1_sample, Comm comm,
+                             ForceCopy force_copy = doForceCopy,
+                             CacheAlloc cacheAlloc = dontCacheAlloc) {
+
+            assert(p1[comm.rank].size() == v1_sample.first.size() + v1_sample.second.size());
+
+            if (force_copy == doForceCopy)
+                return like_this_components(p1, v1_sample, comm, cacheAlloc);
+
+            // Allocate the tensor
+            Components_tmpl<N, T, XPU0, XPU1> v1;
+            for (unsigned int i = 0; i < v1_sample.first.size(); ++i) {
+                const Coor<N> &dimi = p1[comm.rank][v1_sample.first[i].componentId][1];
+                vector<T, XPU0> v1i;
+                for (unsigned int j = 0; j < v.first.size(); ++j) {
+                    if (p[comm.rank][v.first[j].componentId] ==
+                            p1[comm.rank][v1_sample.first[i].componentId] &&
+                        v.first[j].from == Coor<N>{{}} &&
+                        deviceId(v1_sample.first[i].it) == deviceId(v.first[j].it)) {
+                        v1i = v.first[j].it;
+                        break;
+                    }
+                }
+                if (v1i.size() == 0 && volume(dimi) > 0)
+                    v1i = vector<T, XPU0>(volume(dimi), v1_sample.first[i].it.ctx(), cacheAlloc);
+                v1.first.push_back(Component<N, T, XPU0>{
+                    v1i, Coor<N>{{}}, dimi, dimi, v1_sample.first[i].componentId, Mask<XPU0>{}});
+            }
+            for (unsigned int i = 0; i < v1_sample.second.size(); ++i) {
+                const Coor<N> &dimi = p1[comm.rank][v1_sample.second[i].componentId][1];
+                vector<T, XPU0> v1i;
+                for (unsigned int j = 0; j < v.second.size(); ++j) {
+                    if (p[comm.rank][v.second[j].componentId] ==
+                            p1[comm.rank][v1_sample.second[i].componentId] &&
+                        v.second[j].from == Coor<N>{{}} &&
+                        deviceId(v1_sample.second[i].it) == deviceId(v.second[j].it)) {
+                        v1i = v.second[j].it;
+                        break;
+                    }
+                }
+                if (v1i.size() == 0 && volume(dimi) > 0)
+                    v1i = vector<T, XPU0>(volume(dimi), v1_sample.second[i].it.ctx(), cacheAlloc);
+                v1.second.push_back(Component<N, T, XPU0>{
+                    v1i, Coor<N>{{}}, dimi, dimi, v1_sample.second[i].componentId, Mask<XPU0>{}});
             }
 
             return v1;
@@ -2727,11 +2822,11 @@ namespace superbblas {
                        const Coor<N> &size0, const Coor<N> &dim0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
-                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+                       ForceCopy force_copy = doForceCopy, CacheAlloc cacheAlloc = dontCacheAlloc,
                        ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
+            if (force_copy == dontForceCopy && o0 != o1) force_copy = doForceCopy;
 
             // Allocate the tensor
             auto v1 = like_this_components(p0, from0, dim0, v0, p1, comm, cacheAlloc, zero_init);
@@ -2766,10 +2861,11 @@ namespace superbblas {
                        ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return v0;
+            if (force_copy == dontForceCopy && o0 != o1) force_copy = doForceCopy;
 
             // Allocate the tensor
-            auto v1 = like_this_components(p1, v1_sample, comm, cacheAlloc, zero_init);
+            auto v1 = like_this_components(p0, from0, dim0, v0, p1, v1_sample, comm, cacheAlloc,
+                                           zero_init);
 
             // Copy the content of v0 into v1
             copy<N, N, T>(T{1}, p0, from0, size0, dim0, o0, toConst(v0), p1, {{}}, dim1, o1, v1,
@@ -2995,10 +3091,10 @@ namespace superbblas {
             const auto &p1_ = std::get<1>(p01);
             Components_tmpl<Nd, T, XPU0, XPU1> v0_ =
                 reorder_tensor(p0, o0, from0, size0, dim0, v0, p0_, sug_size0, sug_o0, comm, co,
-                               false /* don't force copy */, doCacheAlloc);
+                               dontForceCopy, doCacheAlloc);
             Components_tmpl<Nd, T, XPU0, XPU1> v1_ =
                 reorder_tensor(p1, o1, from1, size1, dim1, v1, p1_, sug_size1, sug_o1, v0_, comm,
-                               co, false /* don't force copy */, doCacheAlloc);
+                               co, dontForceCopy, doCacheAlloc);
 
             // Generate the partitioning and the storage for the output tensor
             const auto &pr_ = std::get<2>(p01);
