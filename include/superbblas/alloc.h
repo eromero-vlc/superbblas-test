@@ -12,7 +12,9 @@ namespace superbblas {
         /// is_complex<T>::value is true if T is std::complex
         /// \tparam T: type to inspect
 
-        template <typename T> struct is_complex { static const bool value = false; };
+        template <typename T> struct is_complex {
+            static const bool value = false;
+        };
         template <typename T> struct is_complex<std::complex<T>> {
             static const bool value = true;
         };

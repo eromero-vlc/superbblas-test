@@ -39,6 +39,7 @@ namespace superbblas {
 
 #    define REAL ARITH(, , float, float, double, double, , )
 #    define SCALAR ARITH(, , float, std::complex<float>, double, std::complex<double>, , )
+#    define CONJ(X) ARITH(, , X, std::conj(X), X, std::conj(X), , )
 
         //
         // Basic BLAS
@@ -279,7 +280,8 @@ namespace superbblas {
 #    endif
         }
 
-        inline SCALAR xdot(BLASINT n, SCALAR *x, BLASINT incx, SCALAR *y, BLASINT incy, Cpu) {
+        inline SCALAR xdot(BLASINT n, SCALAR *SB_RESTRICT x, BLASINT incx, SCALAR *SB_RESTRICT y,
+                           BLASINT incy, Cpu) {
             if (n == 0) return (SCALAR)0;
 #    ifndef __SUPERBBLAS_USE_COMPLEX
 #        ifndef SUPERBBLAS_USE_CBLAS
@@ -289,15 +291,12 @@ namespace superbblas {
 #        endif
 #    else
             SCALAR r = (SCALAR)0.0;
-#        ifdef _OPENMP
-#            pragma omp parallel for schedule(static)
-#        endif
             for (int i = 0; i < n; i++) r += std::conj(x[i * incx]) * y[i * incy];
             return r;
 #    endif // __SUPERBBLAS_USE_COMPLEX
         }
 
-        inline void xscal(BLASINT n, SCALAR alpha, SCALAR *x, BLASINT incx, Cpu) {
+        inline void xscal(BLASINT n, SCALAR alpha, SCALAR *SB_RESTRICT x, BLASINT incx, Cpu) {
             if (n == 0) return;
             if (std::fabs(alpha) == SCALAR{0.0}) {
 #    ifdef _OPENMP
@@ -374,12 +373,12 @@ namespace superbblas {
         // Batched GEMM
         //
 
-#    ifdef SUPERBBLAS_USE_MKL
-
         inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
-                                        const SCALAR *a, int lda, int stridea, const SCALAR *b,
-                                        int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
-                                        int stridec, int batch_size, Cpu) {
+                                        const SCALAR *SB_RESTRICT a, int lda, int stridea,
+                                        const SCALAR *SB_RESTRICT b, int ldb, int strideb,
+                                        SCALAR beta, SCALAR *SB_RESTRICT c, int ldc, int stridec,
+                                        int batch_size, Cpu) {
+#    ifdef SUPERBBLAS_USE_MKL
 #        if INTEL_MKL_VERSION >= 20210000
             if (lda <= stridea && ldb <= strideb && ldc <= stridec) {
                 CONCAT(cblas_, CONCAT(ARITH(, , s, c, d, z, , ), gemm_batch_strided))
@@ -400,25 +399,83 @@ namespace superbblas {
             (CblasColMajor, &transa_, &transb_, &m, &n, &k, &alpha, PASS_SCALARcpp(av.data()), &lda,
              PASS_SCALARcpp(bv.data()), &ldb, &beta, PASS_SCALARpp(cv.data()), &ldc, 1,
              &batch_size);
-        }
 
 #    else // SUPERBBLAS_USE_MKL
 
-        inline void xgemm_batch_strided(char transa, char transb, int m, int n, int k, SCALAR alpha,
-                                        const SCALAR *a, int lda, int stridea, const SCALAR *b,
-                                        int ldb, int strideb, SCALAR beta, SCALAR *c, int ldc,
-                                        int stridec, int batch_size, Cpu cpu) {
-
+            bool ca = (transa == 'c' || transa == 'C');
+            bool cb = (transb == 'c' || transb == 'C');
+            bool ta = (transa != 'n' && transa != 'N');
+            bool tb = (transb != 'n' && transb != 'N');
+            if (m == 1 && n == 1) {
 #        ifdef _OPENMP
 #            pragma omp parallel for schedule(static)
 #        endif
-            for (int i = 0; i < batch_size; ++i) {
-                xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i, ldb,
-                      beta, c + stridec * i, ldc, cpu);
+                for (int i = 0; i < batch_size; ++i) {
+                    SCALAR r{0.0};
+                    // n n
+                    if (!ta && !tb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j * lda] * b[strideb * i + j];
+                    // n t
+                    else if (!ta && tb && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j * lda] * b[strideb * i + j * ldb];
+                    // n c
+                    else if (!ta && tb && cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j * lda] * CONJ(b[strideb * i + j * ldb]);
+                    // t n
+                    else if (ta && !ca && !tb)
+                        for (int j = 0; j < k; j++) r += a[stridea * i + j] * b[strideb * i + j];
+                    // c n
+                    else if (ta && ca && !tb)
+                        for (int j = 0; j < k; j++)
+                            r += CONJ(a[stridea * i + j]) * b[strideb * i + j];
+                    // t t
+                    else if (ta && !ca && tb && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j] * b[strideb * i + j * ldb];
+                    // c t
+                    else if (ta && ca && tb && !cb)
+                        for (int j = 0; j < k; j++)
+                            r += CONJ(a[stridea * i + j]) * b[strideb * i + j * ldb];
+                    // t c
+                    else if (ta && !ca && tb && cb)
+                        for (int j = 0; j < k; j++)
+                            r += a[stridea * i + j] * CONJ(b[strideb * i + j * ldb]);
+                    // c c
+                    else if (ta && ca && tb && cb)
+                        for (int j = 0; j < k; j++)
+                            r += CONJ(a[stridea * i + j]) * CONJ(b[strideb * i + j * ldb]);
+                    c[stridec * i] =
+                        alpha * r + (std::norm(beta) == 0 ? SCALAR{0} : beta * c[stridec * i]);
+                }
+            } else if (n == 1
+#        ifdef __SUPERBBLAS_USE_COMPLEX
+                       && !cb
+#        endif
+            ) {
+                int mA = !ta ? m : k;
+                int nA = !ta ? k : m;
+                int incb = !tb ? 1 : ldb;
+#        ifdef _OPENMP
+#            pragma omp parallel for schedule(static)
+#        endif
+                for (int i = 0; i < batch_size; ++i) {
+                    xgemv(transa, mA, nA, alpha, a + stridea * i, lda, b + strideb * i, incb, beta,
+                          c + stridec * i, 1, Cpu{});
+                }
+            } else {
+#        ifdef _OPENMP
+#            pragma omp parallel for schedule(static)
+#        endif
+                for (int i = 0; i < batch_size; ++i) {
+                    xgemm(transa, transb, m, n, k, alpha, a + stridea * i, lda, b + strideb * i,
+                          ldb, beta, c + stridec * i, ldc, Cpu{});
+                }
             }
-        }
-
 #    endif // SUPERBBLAS_USE_MKL
+        }
 
 #    ifdef SUPERBBLAS_USE_CBLAS
 #        undef PASS_SCALAR
@@ -469,6 +526,26 @@ namespace superbblas {
 #        undef MKL_SP_FUNCTION
 
 #    endif // SUPERBBLAS_USE_MKL
+
+#    ifndef __SUPERBBLAS_BLAS_CPU_GPU_PRIVATE
+#        define __SUPERBBLAS_BLAS_CPU_GPU_PRIVATE
+#        ifdef SUPERBBLAS_USE_GPU
+        inline SUPERBBLAS_GPU_SELECT(XXX, cublasOperation_t, rocblas_operation)
+            toCublasTrans(char trans) {
+            switch (trans) {
+            case 'n':
+            case 'N': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_N, rocblas_operation_none);
+            case 't':
+            case 'T': return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_T, rocblas_operation_transpose);
+            case 'c':
+            case 'C':
+                return SUPERBBLAS_GPU_SELECT(xxx, CUBLAS_OP_C,
+                                             rocblas_operation_conjugate_transpose);
+            default: throw std::runtime_error("Not valid value of trans");
+            }
+        }
+#        endif
+#    endif // __SUPERBBLAS_BLAS_CPU_GPU_PRIVATE
 
 #    if defined(SUPERBBLAS_USE_CUDA)
 
@@ -542,7 +619,30 @@ namespace superbblas {
 #    elif defined(SUPERBBLAS_USE_HIP)
 
 #        define HIPSPARSE_SCALAR ARITH(, , float, hipComplex, double, hipDoubleComplex, , )
-#        define HIPBLAS_SCALAR ARITH(, , float, hipblasComplex, double, hipblasDoubleComplex, , )
+#        define ROCBLAS_SCALAR                                                                     \
+            ARITH(, , float, rocblas_float_complex, double, rocblas_double_complex, , )
+
+        inline void xgemv_batched_strided(char transa, BLASINT m, BLASINT n, SCALAR alpha,
+                                          const SCALAR *a, BLASINT lda, BLASINT stridea,
+                                          const SCALAR *x, BLASINT incx, BLASINT stridex,
+                                          SCALAR beta, SCALAR *y, BLASINT incy, BLASINT stridey,
+                                          BLASINT batch_count, const Gpu &xpu) {
+            if (batch_count == 1) {
+                gpuBlasCheck(ARITH(, , rocblas_sgemv, rocblas_cgemv, rocblas_dgemv, rocblas_zgemv,
+                                   , )(getGpuBlasHandle(xpu), toCublasTrans(transa), m, n,
+                                       (const ROCBLAS_SCALAR *)&alpha, (const ROCBLAS_SCALAR *)a,
+                                       lda, (const ROCBLAS_SCALAR *)x, incx,
+                                       (const ROCBLAS_SCALAR *)&beta, (ROCBLAS_SCALAR *)y, incy));
+            } else {
+                gpuBlasCheck(ARITH(, , rocblas_sgemv_strided_batched, rocblas_cgemv_strided_batched,
+                                   rocblas_dgemv_strided_batched, rocblas_zgemv_strided_batched,
+                                   , )(getGpuBlasHandle(xpu), toCublasTrans(transa), m, n,
+                                       (const ROCBLAS_SCALAR *)&alpha, (const ROCBLAS_SCALAR *)a,
+                                       lda, stridea, (const ROCBLAS_SCALAR *)x, incx, stridex,
+                                       (const ROCBLAS_SCALAR *)&beta, (ROCBLAS_SCALAR *)y, incy,
+                                       stridey, batch_count));
+            }
+        }
 
         inline hipsparseStatus_t
         hipsparseXbsrmm(hipsparseHandle_t handle, hipsparseDirection_t dirA,
@@ -558,54 +658,45 @@ namespace superbblas {
                              (HIPSPARSE_SCALAR *)C, ldc);
         }
 
-        inline hipblasStatus_t hipblasXtrsmStridedBatched(
-            hipblasHandle_t handle, hipblasSideMode_t side, hipblasFillMode_t uplo,
-            hipblasOperation_t trans, hipblasDiagType_t diag, int m, int n, SCALAR alpha, SCALAR *A,
-            int lda, int strideA, SCALAR *B, int ldb, int strideB, int batchCount) {
-            return ARITH(, , hipblasStrsmStridedBatched, hipblasCtrsmStridedBatched,
-                         hipblasDtrsmStridedBatched, hipblasZtrsmStridedBatched, , )(
-                handle, side, uplo, trans, diag, m, n, (const HIPBLAS_SCALAR *)&alpha,
-                (HIPBLAS_SCALAR *)A, lda, strideA, (HIPBLAS_SCALAR *)B, ldb, strideB, batchCount);
+        inline void rocblasXgetrfStridedBatched(int n, SCALAR *A, int lda, int strideA,
+                                                int *PivotArray, int stridePivotArray,
+                                                int *infoArray, int batchSize, const Gpu &xpu) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgetrf_strided_batched,
+                                 rocsolver_cgetrf_strided_batched, rocsolver_dgetrf_strided_batched,
+                                 rocsolver_zgetrf_strided_batched,
+                                 , )(getGpuSolverHandle(xpu), n, n, (ROCBLAS_SCALAR *)A, lda,
+                                     strideA, PivotArray, stridePivotArray, infoArray, batchSize));
         }
 
-        inline hipblasStatus_t hipblasXgetrfStridedBatched(hipblasHandle_t handle, int n, SCALAR *A,
-                                                           int lda, int strideA, int *PivotArray,
-                                                           int stridePivotArray, int *infoArray,
-                                                           int batchSize) {
-            return ARITH(, , hipblasSgetrfStridedBatched, hipblasCgetrfStridedBatched,
-                         hipblasDgetrfStridedBatched, hipblasZgetrfStridedBatched,
-                         , )(handle, n, (HIPBLAS_SCALAR *)A, lda, strideA, PivotArray,
-                             stridePivotArray, infoArray, batchSize);
+        inline void rocblasXgetrsStridedBatched(char trans, int n, int nrhs, SCALAR *A, int lda,
+                                                int strideA, const int *devIpiv, int strideDevIpiv,
+                                                SCALAR *B, int ldb, int strideB, int batchSize,
+                                                const Gpu &xpu) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgetrs_strided_batched,
+                                 rocsolver_cgetrs_strided_batched, rocsolver_dgetrs_strided_batched,
+                                 rocsolver_zgetrs_strided_batched, , )(
+                getGpuSolverHandle(xpu), toCublasTrans(trans), n, nrhs, (ROCBLAS_SCALAR *)A, lda,
+                strideA, devIpiv, strideDevIpiv, (ROCBLAS_SCALAR *)B, ldb, strideB, batchSize));
         }
 
-        inline hipblasStatus_t hipblasXgetrsStridedBatched(hipblasHandle_t handle,
-                                                           hipblasOperation_t trans, int n,
-                                                           int nrhs, SCALAR *A, int lda,
-                                                           int strideA, const int *devIpiv,
-                                                           int strideDevIpiv, SCALAR *B, int ldb,
-                                                           int strideB, int *info, int batchSize) {
-            return ARITH(, , hipblasSgetrsStridedBatched, hipblasCgetrsStridedBatched,
-                         hipblasDgetrsStridedBatched, hipblasZgetrsStridedBatched,
-                         , )(handle, trans, n, nrhs, (HIPBLAS_SCALAR *)A, lda, strideA, devIpiv,
-                             strideDevIpiv, (HIPBLAS_SCALAR *)B, ldb, strideB, info, batchSize);
+        inline void rocblasXgetriStridedBatched(int n, SCALAR *A, int lda, int strideA,
+                                                int *devIpiv, int strideDevIpriv, int *info,
+                                                int batchSize, const Gpu &xpu) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgetri_strided_batched,
+                                 rocsolver_cgetri_strided_batched, rocsolver_dgetri_strided_batched,
+                                 rocsolver_zgetri_strided_batched,
+                                 , )(getGpuSolverHandle(xpu), n, (ROCBLAS_SCALAR *)A, lda, strideA,
+                                     devIpiv, strideDevIpriv, info, batchSize));
         }
 
-        inline hipblasStatus_t hipblasXgetriBatched(hipblasHandle_t handle, int n, SCALAR **A,
-                                                    int lda, int *devIpiv, SCALAR **B, int ldb,
-                                                    int *info, int batchSize) {
-            return ARITH(, , hipblasSgetriBatched, hipblasCgetriBatched, hipblasDgetriBatched,
-                         hipblasZgetriBatched, , )(handle, n, (HIPBLAS_SCALAR *const *)A, lda,
-                                                   devIpiv, (HIPBLAS_SCALAR *const *)B, ldb, info,
-                                                   batchSize);
-        }
-
-        inline hipsolverStatus_t hipsolverDnXpotrfBatched(hipsolverDnHandle_t handle,
-                                                          hipsolverFillMode_t uplo, int n,
-                                                          SCALAR **Aarray, int lda, int *infoArray,
-                                                          int batchSize) {
-            return ARITH(, , hipsolverDnSpotrfBatched, hipsolverDnCpotrfBatched,
-                         hipsolverDnDpotrfBatched, hipsolverDnZpotrfBatched, , )(
-                handle, uplo, n, (HIPSPARSE_SCALAR **)Aarray, lda, infoArray, batchSize);
+        inline void rocsolverXpotrfStridedBatched(rocblas_fill uplo, int n, SCALAR *A, int lda,
+                                                  int strideA, int *info, int batchSize,
+                                                  const Gpu &ctx) {
+            gpuSolverCheck(ARITH(, , rocsolver_spotrf_strided_batched,
+                                 rocsolver_cpotrf_strided_batched, rocsolver_dpotrf_strided_batched,
+                                 rocsolver_zpotrf_strided_batched,
+                                 , )(getGpuSolverHandle(ctx), uplo, n, (ROCBLAS_SCALAR *)A, lda,
+                                     strideA, info, batchSize));
         }
 
 #        undef HIPSPARSE_SCALAR
@@ -615,6 +706,7 @@ namespace superbblas {
 #    undef BLASINT
 #    undef REAL
 #    undef SCALAR
+#    undef CONJ
     }
 }
 #endif // !defined(__SUPERBBLAS_USE_HALF) && !defined(__SUPERBBLAS_USE_HALFCOMPLEX)

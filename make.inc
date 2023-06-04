@@ -39,8 +39,8 @@ PRIM ?=
 THRUST ?= 
 HIP ?= $(shell which hipcc)
 ROCMDIR ?= $(shell hipconfig -R)
-HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/hipblas/include -I$(ROCMDIR)/hipsparse/include -I$(ROCMDIR)/hipsolver/include -I$(PRIM) -I$(THRUST) -std=c++14
-HIPLDFLAGS ?= -L$(ROCMDIR)/lib -L$(ROCMDIR)/hipsolver/lib -lhipsolver -lhipsparse -lhipblas -lamdhip64
+HIPFLAGS ?= $(shell hipconfig -C) -I$(ROCMDIR)/include -I$(PRIM) -I$(THRUST) -std=c++14
+HIPLDFLAGS ?= -L$(ROCMDIR)/lib -lrocsolver -lhipsparse -lhipblas -lrocblas -lamdhip64
 
 #
 # Building directory

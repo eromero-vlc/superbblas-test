@@ -36,9 +36,15 @@ namespace superbblas {
         /// \tparam T: one of float, double, std::complex<T>
         /// \return ccomplex<T>::type has the new type
 
-        template <typename T> struct ccomplex { using type = T; };
-        template <> struct ccomplex<std::complex<float>> { using type = _Complex float; };
-        template <> struct ccomplex<std::complex<double>> { using type = _Complex double; };
+        template <typename T> struct ccomplex {
+            using type = T;
+        };
+        template <> struct ccomplex<std::complex<float>> {
+            using type = _Complex float;
+        };
+        template <> struct ccomplex<std::complex<double>> {
+            using type = _Complex double;
+        };
 
         //template <typename T> struct ccomplex<const T> {
         //    using type = const typename ccomplex<T>::type;
@@ -353,14 +359,17 @@ namespace superbblas {
         /// \param xpu: device context
 
         template <typename IndexType, typename T>
-        void zero_n_thrust(T *v, const IndexType *indices, IndexType n, Gpu xpu) {
+        void zero_n_thrust(T *SB_RESTRICT v, const IndexType *SB_RESTRICT indices, IndexType n,
+                           Gpu xpu) {
             if (indices == nullptr) {
                 zero_n(v, n, xpu);
             } else if (deviceId(xpu) == CPU_DEVICE_ID) {
                 launchHostKernel(
                     [=] {
+                        using Tc = typename ccomplex<T>::type;
+                        Tc *SB_RESTRICT vc = (Tc *)v;
                         // No openmp: we avoid spawning threads inside a host kernel, they may not run on multiple cores
-                        for (IndexType i = 0; i < n; ++i) v[indices[i]] = T{0};
+                        for (IndexType i = 0; i < n; ++i) vc[indices[i]] = 0;
                     },
                     xpu);
             } else {
@@ -380,14 +389,17 @@ namespace superbblas {
         /// \param cpu: device context
 
         template <typename IndexType, typename T>
-        void zero_n(T *v, Cpu, const IndexType *indices, Cpu, std::size_t n) {
+        void zero_n(T *SB_RESTRICT v, Cpu, const IndexType *SB_RESTRICT indices, Cpu,
+                    std::size_t n) {
             if (indices == nullptr) {
                 zero_n(v, n, Cpu{});
             } else {
+                using Tc = typename ccomplex<T>::type;
+                Tc *SB_RESTRICT vc = (Tc *)v;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
-                for (std::size_t i = 0; i < n; ++i) v[indices[i]] = T{0};
+                for (std::size_t i = 0; i < n; ++i) vc[indices[i]] = 0;
             }
         }
 

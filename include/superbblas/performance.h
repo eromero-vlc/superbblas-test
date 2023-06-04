@@ -28,15 +28,21 @@ namespace superbblas {
         /// \tparam T: type to consider
         template <typename T>
         struct multiplication_cost; // { constexpr static double value = 0.0; };
-        template <> struct multiplication_cost<float> { constexpr static double value = 1.0; };
-        template <> struct multiplication_cost<double> { constexpr static double value = 2.0; };
+        template <> struct multiplication_cost<float> {
+            constexpr static double value = 1.0;
+        };
+        template <> struct multiplication_cost<double> {
+            constexpr static double value = 2.0;
+        };
         template <> struct multiplication_cost<std::complex<float>> {
             constexpr static double value = 4.0;
         };
         template <> struct multiplication_cost<std::complex<double>> {
             constexpr static double value = 8.0;
         };
-        template <> struct multiplication_cost<int> { constexpr static double value = 1.0; };
+        template <> struct multiplication_cost<int> {
+            constexpr static double value = 1.0;
+        };
         template <> struct multiplication_cost<std::size_t> {
             constexpr static double value = 2.0;
         };
@@ -408,7 +414,7 @@ namespace superbblas {
             double time = (gpu_time > 0 ? gpu_time : cpu_time);
             double gflops_per_sec = (time > 0 ? flops / time : 0) / 1000.0 / 1000.0 / 1000.0;
             double gmemops_per_sec = (time > 0 ? memops / time : 0) / 1024.0 / 1024.0 / 1024.0;
-            double intensity = (memops > 0 ? flops / memops : 0.0);
+            double intensity = (memops > 0 ? flops / (memops / sizeof(float)) : 0.0);
             s << name << " : " << std::fixed << std::setprecision(3) << cpu_time << " s ("
 #ifdef SUPERBBLAS_USE_GPU
               << "gpu_time: " << gpu_time << " "

@@ -38,6 +38,8 @@ template <std::size_t N, typename T, typename XPU> struct tensor {
     /// Constructor for a tensor with support only on the root process
     tensor(const Coor<N> &dim, int nprocs, int rank, XPU xpu)
         : tensor(dim, dist_tensor_on_root(dim, nprocs), rank, xpu) {}
+
+    void release() { v.clear(); }
 };
 
 // Dummy initialization of a tensor
@@ -256,6 +258,54 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
         sync(xpu);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in contracting xyzs " << t / nrep << std::endl;
+    }
+
+    // Create tensor t3 of 5 dims
+    {
+        tensor<Nd, Scalar, XPU> t1(dim1, procs1, nprocs, rank, xpu);
+        tensor<Nd, Scalar, XPU> t2(dim1, procs1, nprocs, rank, xpu);
+        dummyFill(t0);
+        dummyFill(t1);
+        const Coor<5> dimc = {dim[T], dim[N], dim[S], dim[N], dim[S]}; // tnsns
+        tensor<5, Scalar, XPU> tc(dimc, nprocs, rank, xpu);
+
+        double t = 0;
+        std::vector<Request> reqs;
+        for (unsigned int rep = 0; rep <= nrep; ++rep) {
+            if (rep == 1) {
+                sync(xpu);
+                t = w_time();
+            }
+            Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
+            Request req;
+            contraction(Scalar{1.0}, t1.p.data(), {{}}, dim1, dim1, 1, "tnsxyzc", false,
+                        (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, dim1, dim1, 1, "tNSxyzc",
+                        false, (const Scalar **)&ptr1, &ctx, Scalar{0.0}, tc.p.data(), {{}}, dimc,
+                        dimc, 1, "tNSns", &ptrc, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                        MPI_COMM_WORLD,
+#endif
+                        SlowToFast, &req);
+            reqs.push_back(req);
+        }
+        for (const auto &req : reqs) wait(req);
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in contracting xyzs " << t / nrep << std::endl;
+
+        Request req;
+        Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
+        contraction(Scalar{1.0}, t1.p.data(), {{}}, dim1, dim1, 1, "tnsxyzc", false,
+                    (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, dim1, dim1, 1, "tNSxyzc",
+                    false, (const Scalar **)&ptr1, &ctx, Scalar{0.0}, tc.p.data(), {{}}, dimc, dimc,
+                    1, "tNSns", &ptrc, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                    MPI_COMM_WORLD,
+#endif
+                    SlowToFast, &req);
+        t1.release();
+        t2.release();
+        wait(req);
     }
 
     // Copy halos
