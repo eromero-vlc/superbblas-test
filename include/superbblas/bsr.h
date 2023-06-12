@@ -2,6 +2,7 @@
 #define __SUPERBBLAS_BSR__
 
 #include "dist.h"
+#include "tenfucks.h"
 #include <numeric>
 #include <stdexcept>
 
@@ -243,6 +244,19 @@ namespace superbblas {
                 if (first)
                     for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
             }
+        }
+
+        template <typename SCALAR>
+        inline void xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha,
+                              const SCALAR *a, int lda, const SCALAR *b, int ldb, SCALAR beta,
+                              SCALAR *c, int ldc, Cpu) {
+            if (m == 0 || n == 0) return;
+
+            bool ta = (transa != 'n' && transa != 'N');
+            bool tb = (transb != 'n' && transb != 'N');
+            gemm_blk_kij_nobuffer<1, 4, 3, unsigned int>(m, n, k, alpha, a, !ta ? 1 : lda,
+                                                         !ta ? lda : 1, b, !tb ? 1 : ldb,
+                                                         !tb ? ldb : 1, beta, c, 1, ldc);
         }
 
         ///
@@ -598,7 +612,7 @@ namespace superbblas {
                                     if (jj[j] == -1) continue;
                                     if (kron.is_identity(j0)) {
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
+                                        xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
                                               x + jj[j] * ncols, ki * ncols, nonzeros + j * bi * bd,
                                               !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
                                               ki * ncols, Cpu{});
@@ -608,7 +622,7 @@ namespace superbblas {
                                                       ncols * bd, ColumnMajor, kd, T{0}, aux.data(),
                                                       ki);
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
+                                        xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
                                               aux.data(), ki * ncols, nonzeros + j * bi * bd,
                                               !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
                                               ki * ncols, Cpu{});

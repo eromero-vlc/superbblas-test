@@ -17,7 +17,7 @@ SB_LDFLAGS ?=
 
 include ../make.inc
 
-SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp bsr_hist.cpp
+SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp bsr_hist.cpp tenfucks.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
