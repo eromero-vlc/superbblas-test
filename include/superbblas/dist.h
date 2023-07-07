@@ -349,38 +349,48 @@ namespace superbblas {
             if (sizer == dim) fromr = from0;
         }
 
+        /// When intersecting full support intervals, indicates which interval to return
+
+        enum IntersectionDominant { FirstIntervalIsDominant, SecondIntervalIsDominant };
+
         /// Return the intersection between two ranges in a periodic lattice
         /// \param from0: first coordinate of the first range
         /// \param size0: size of the first range
         /// \param from1: first coordinate of the second range
         /// \param size1: size of the second range
         /// \param dim: size of lattice
-        /// \param fromr0: first coordinate of the first resulting range
-        /// \param sizer0: size of the first resulting range
-        /// \param fromr1: first coordinate of the second resulting range
-        /// \param sizer1: size of the second resulting range
+        /// \param intersect_dominant: which interval to return when both have full support
 
         template <std::size_t Nd>
         std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>
         intersection_aux(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
-                         const Coor<Nd> &size1, const Coor<Nd> &dim) {
+                         const Coor<Nd> &size1, const Coor<Nd> &dim,
+                         IntersectionDominant intersect_dominant = FirstIntervalIsDominant) {
 
             std::array<From_size_item<Nd>, 2> grid;
             Coor<Nd> grid_n{};
             for (std::size_t i = 0; i < Nd; ++i) {
+                if (size0[i] > dim[i] || size1[i] > dim[i])
+                    throw std::runtime_error("intersection_aux: invalid input arguments");
+
                 //
                 // Compute the subintervals for the dimension ith
                 //
                 IndexType fromr0 = 0, sizer0 = 0, fromr1 = 0, sizer1 = 0, fromr2 = 0, sizer2 = 0;
 
                 // Proceed with easy cases: if one of the ranges in the whole lattice
-                if (size1[i] == dim[i]) {
-                    fromr0 = from0[i], sizer0 = size0[i];
+                if (size0[i] == dim[i] && size1[i] == dim[i]) {
+                    fromr0 = intersect_dominant == FirstIntervalIsDominant ? from0[i] : from1[i];
+                    sizer0 = intersect_dominant == FirstIntervalIsDominant ? size0[i] : size1[i];
+                } else if (size1[i] == dim[i]) {
+                    fromr0 = from0[i];
+                    sizer0 = size0[i];
                 } else if (size0[i] == dim[i]) {
-                    fromr0 = from1[i], sizer0 = size1[i];
-
-                    // Proceed with the general case
-                } else {
+                    fromr0 = from1[i];
+                    sizer0 = size1[i];
+                }
+                // Proceed with the general case
+                else {
                     intersection(from0[i], size0[i], from1[i], size1[i], dim[i], fromr0, sizer0);
                     intersection(from0[i], size0[i], from1[i] + dim[i], size1[i], dim[i], fromr1,
                                  sizer1);
@@ -411,12 +421,14 @@ namespace superbblas {
         /// \param dim: size of lattice
         /// \param fromr: first coordinate of the first resulting range
         /// \param sizer: size of the first resulting range
+        /// \param intersect_dominant: which interval to return when both have full support
 
         template <std::size_t Nd>
         void intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
                           const Coor<Nd> &size1, const Coor<Nd> &dim, Coor<Nd> &fromr,
-                          Coor<Nd> &sizer) {
-            auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
+                          Coor<Nd> &sizer,
+                          IntersectionDominant intersect_dominant = FirstIntervalIsDominant) {
+            auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim, intersect_dominant);
             std::size_t vol = volume(p.second);
             if (vol == 0) {
                 fromr = Coor<Nd>{{}};
@@ -435,12 +447,14 @@ namespace superbblas {
         /// \param from1: first coordinate of the second range
         /// \param size1: size of the second range
         /// \param dim: size of lattice
+        /// \param intersect_dominant: which interval to return when both have full support
 
         template <std::size_t Nd>
-        From_size<Nd> intersection(const Coor<Nd> &from0, const Coor<Nd> &size0,
-                                   const Coor<Nd> &from1, const Coor<Nd> &size1,
-                                   const Coor<Nd> &dim) {
-            auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim);
+        From_size<Nd>
+        intersection(const Coor<Nd> &from0, const Coor<Nd> &size0, const Coor<Nd> &from1,
+                     const Coor<Nd> &size1, const Coor<Nd> &dim,
+                     IntersectionDominant intersect_dominant = FirstIntervalIsDominant) {
+            auto p = intersection_aux<Nd>(from0, size0, from1, size1, dim, intersect_dominant);
             IndexType vol = volume(p.second);
             if (vol == 0) {
                 return {};
@@ -467,20 +481,60 @@ namespace superbblas {
         /// \param from1: first coordinate of the second range
         /// \param size1: size of the second range
         /// \param dim: size of lattice
+        /// \param intersect_dominant: which interval to return when both have full support
 
         template <std::size_t Nd>
-        From_size<Nd> intersection(const From_size<Nd> &fs0, const Coor<Nd> &from1,
-                                   const Coor<Nd> &size1, const Coor<Nd> &dim) {
+        From_size<Nd>
+        intersection(const From_size<Nd> &fs0, const Coor<Nd> &from1, const Coor<Nd> &size1,
+                     const Coor<Nd> &dim,
+                     IntersectionDominant intersect_dominant = FirstIntervalIsDominant) {
             vector<std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>, Cpu> p(fs0.size(),
                                                                                   Cpu{});
             std::size_t vol = 0;
             for (std::size_t i = 0; i < fs0.size(); ++i) {
-                p[i] = intersection_aux<Nd>(fs0[i][0], fs0[i][1], from1, size1, dim);
+                p[i] = intersection_aux<Nd>(fs0[i][0], fs0[i][1], from1, size1, dim,
+                                            intersect_dominant);
                 vol += volume(p[i].second);
             }
             From_size<Nd> r(vol);
             std::size_t ri = 0;
             for (std::size_t i = 0; i < fs0.size(); ++i) {
+                Coor<Nd> stride = get_strides<IndexType>(p[i].second, FastToSlow);
+                for (IndexType j = 0, j1 = volume(p[i].second); j < j1; ++j) {
+                    Coor<Nd> c = index2coor(j, p[i].second, stride);
+                    for (std::size_t k = 0; k < Nd; ++k) {
+                        r[ri][0][k] = p[i].first[c[k]][0][k];
+                        r[ri][1][k] = p[i].first[c[k]][1][k];
+                    }
+                    ++ri;
+                }
+            }
+            return r;
+        }
+
+        /// Return all ranges resulting from intersecting ranges from each list in a periodic lattice
+        /// \param fs0: first vector of ranges (first coordinate and size)
+        /// \param fs1: second vector of ranges (first coordinate and size)
+        /// \param dim: lattice size
+        /// \param intersect_dominant: which interval to return when both have full support
+
+        template <std::size_t Nd>
+        From_size<Nd>
+        intersection(const From_size<Nd> &fs0, const From_size<Nd> fs1, const Coor<Nd> &dim,
+                     IntersectionDominant intersect_dominant = FirstIntervalIsDominant) {
+            vector<std::pair<std::array<From_size_item<Nd>, 2>, Coor<Nd>>, Cpu> p(
+                fs0.size() * fs1.size(), Cpu{});
+            std::size_t vol = 0;
+            for (std::size_t i = 0; i < fs0.size(); ++i) {
+                for (std::size_t j = 0; j < fs1.size(); ++j) {
+                    p[j + i * fs1.size()] = intersection_aux<Nd>(
+                        fs0[i][0], fs0[i][1], fs1[j][0], fs1[j][1], dim, intersect_dominant);
+                    vol += volume(p[j + i * fs1.size()].second);
+                }
+            }
+            From_size<Nd> r(vol);
+            std::size_t ri = 0;
+            for (std::size_t i = 0; i < p.size(); ++i) {
                 Coor<Nd> stride = get_strides<IndexType>(p[i].second, FastToSlow);
                 for (IndexType j = 0, j1 = volume(p[i].second); j < j1; ++j) {
                     Coor<Nd> c = index2coor(j, p[i].second, stride);
@@ -1732,20 +1786,19 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd0> perm1 = find_permutation(o1, o0);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1); // size in the destination
+
             Range_proc_range_ranges<Nd0> rr(ranges.size());
             for (unsigned int irange = 0; irange < ranges.size(); ++irange) {
                 // Restrict the local source range to the range from0, size0
                 Coor<Nd0> local_from0 = ranges[irange][0];
                 Coor<Nd0> local_size0 = ranges[irange][1];
-                From_size<Nd0> rlocal0 = intersection(from0, size0, local_from0, local_size0, dim0);
-
-                // Translate the restricted range to the destination lattice
-                Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-                From_size<Nd1> rfs1 =
-                    translate_range<Nd0, Nd1>(rlocal0, from0, dim0, from1, dim1, perm0);
+                From_size<Nd0> rlocal0 = intersection(from0, size0, local_from0, local_size0, dim0,
+                                                      FirstIntervalIsDominant);
 
                 // Compute the indices
-                Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
                 Coor<Nd1, std::size_t> stride1 = get_strides<std::size_t>(dim1, FastToSlow);
                 std::vector<Proc_ranges<Nd0>> r(p1.size());
                 for (unsigned int i = 0; i < p1.size(); ++i) {
@@ -1753,9 +1806,15 @@ namespace superbblas {
                     for (unsigned int j = 0; j < p1[i].size(); ++j) {
                         const Coor<Nd1> &local_from1 = p1[i][j][0];
                         const Coor<Nd1> &local_size1 = p1[i][j][1];
+                        From_size<Nd1> rlocal1 = intersection(
+                            from1, size1, local_from1, local_size1, dim1, FirstIntervalIsDominant);
+                        From_size<Nd0> rfs0 =
+                            translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
                         r[i][j] = shift_ranges(
                             translate_range(
-                                sort_ranges(intersection<Nd1>(rfs1, local_from1, local_size1, dim1),
+                                sort_ranges(translate_range(intersection(rfs0, rlocal0, dim0,
+                                                                         FirstIntervalIsDominant),
+                                                            from0, dim0, from1, dim1, perm0),
                                             dim1, stride1),
                                 from1, dim1, from0, dim0, perm1),
                             local_from0, {{}}, dim0);
@@ -1790,19 +1849,19 @@ namespace superbblas {
             // Check the compatibility of the tensors
             assert((check_isomorphic<Nd0, Nd1>(o0, size0, dim0, o1, dim1)));
 
-            Range_proc_range_ranges<Nd0> rr(ranges.size());
+            Coor<Nd1> perm0 = find_permutation(o0, o1);
+            Coor<Nd1> size1 = reorder_coor(size0, perm0, 1); // size in the destination
+
+            Range_proc_range_ranges<Nd1> rr(ranges.size());
             for (unsigned int irange = 0; irange < ranges.size(); ++irange) {
                 // Restrict the local range in v1 to the range from1, size1
-                Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
-                Coor<Nd1> size1 =
-                    reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
                 Coor<Nd1> local_from1 = ranges[irange][0];
                 Coor<Nd1> local_size1 = ranges[irange][1];
-                From_size<Nd1> rlocal1 =
-                    intersection<Nd1>(from1, size1, local_from1, local_size1, dim1);
+                From_size<Nd1> rlocal1 = intersection(from1, size1, local_from1, local_size1, dim1,
+                                                      FirstIntervalIsDominant);
 
                 // Translate the restricted range to the origin lattice
-                Coor<Nd0> perm1 = find_permutation<Nd1, Nd0>(o1, o0);
+                Coor<Nd0> perm1 = find_permutation(o1, o0);
                 From_size<Nd0> rfs0 = translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
 
                 // Compute the indices
@@ -1813,10 +1872,12 @@ namespace superbblas {
                     for (unsigned int j = 0; j < p0[i].size(); ++j) {
                         const Coor<Nd0> &local_from0 = p0[i][j][0];
                         const Coor<Nd0> &local_size0 = p0[i][j][1];
+                        From_size<Nd0> rlocal0 = intersection(
+                            from0, size0, local_from0, local_size0, dim0, FirstIntervalIsDominant);
                         r[i][j] = shift_ranges(
-                            sort_ranges(translate_range(
-                                            intersection<Nd0>(rfs0, local_from0, local_size0, dim0),
-                                            from0, dim0, from1, dim1, perm0),
+                            sort_ranges(translate_range(intersection(rfs0, rlocal0, dim0,
+                                                                     FirstIntervalIsDominant),
+                                                        from0, dim0, from1, dim1, perm0),
                                         dim1, stride1),
                             local_from1, {{}}, dim1);
                     }
@@ -2080,22 +2141,25 @@ namespace superbblas {
         /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
 
-        template <std::size_t Nd0, std::size_t Nd1, typename EWOP>
+        template <std::size_t Nd0, std::size_t Nd1>
         bool may_need_communications(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
-                                     const Coor<Nd0> &dim0, const Order<Nd0> &o0,
-                                     const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
-                                     const Coor<Nd1> &dim1, const Order<Nd1> &o1, EWOP) {
+                                     const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                                     const Order<Nd0> &o0, const Proc_ranges<Nd1> &p1,
+                                     const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                                     const Order<Nd1> &o1) {
 
             assert(p0.size() == p1.size());
             tracker<Cpu> _t("avoid communications", Cpu{});
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
             for (unsigned int irank = 0; irank < p0.size(); ++irank) {
-                auto fs01 = translate_range(p0[irank], from0, dim0, from1, dim1, perm0);
-                for (const auto fs : fs01) {
-                    for (unsigned int jrank = 0; jrank < p0.size(); ++jrank) {
-                        if (irank == jrank) continue;
-                        if (volume(intersection(p1[jrank], fs[0], fs[1], dim1)) > 0) return true;
-                    }
+                auto fs01 = translate_range(intersection(p0[irank], from0, size0, dim0), from0,
+                                            dim0, from1, dim1, perm0);
+                for (unsigned int jrank = 0; jrank < p0.size(); ++jrank) {
+                    if (irank == jrank) continue;
+                    if (volume(intersection(intersection(p1[jrank], from1, size1, dim1), fs01,
+                                            dim1)) > 0)
+                        return true;
                 }
             }
             return false;
@@ -2189,11 +2253,8 @@ namespace superbblas {
 
             tracker<Cpu> _t("distributed copy", Cpu{});
 
-            if (p0.size() != comm.nprocs)
-                throw std::runtime_error("Invalid number of elements in the tensor distribution");
-
-            if (p1.size() != comm.nprocs)
-                throw std::runtime_error("Invalid number of elements in the tensor distribution");
+            check_components(p0, v0, comm);
+            check_components(p1, v1, comm);
 
             // Check the compatibility of the tensors
             if (!check_isomorphic<Nd, Nd>(o0, size0, dim0, o1, dim1))
@@ -2232,8 +2293,8 @@ namespace superbblas {
                     // Check whether communications can be avoided
                     need_comms =
                         (comm.nprocs <= 1 ? false
-                                          : may_need_communications(p0, from0, dim0, o0, p1, from1,
-                                                                    dim1, o1, EWOP{}));
+                                          : may_need_communications(p0, from0, size0, dim0, o0, p1,
+                                                                    from1, dim1, o1));
 
                     // Check whether the destination tensor should be zero out because the origin
                     // tensor hasn't full support and some elements aren't going to be _touched_ on the
@@ -2462,6 +2523,9 @@ namespace superbblas {
             const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Order<Nd1> &o1,
             const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, Comm comm, EWOP ewop, CoorOrder co,
             ForceLocal force_local = dontForceLocal, bool do_test = true) {
+
+            check_components(p0, v0, comm);
+            check_components(p1, v1, comm);
 
             Proc_ranges<Nd0> new_p0 =
                 (force_local == dontForceLocal
