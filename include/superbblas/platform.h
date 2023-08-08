@@ -37,14 +37,24 @@
 #endif
 
 #ifdef SUPERBBLAS_CREATING_FLAGS
-#    ifdef SUPERBBLAS_USE_CUDA
+#    if defined(SUPERBBLAS_USE_CUDA)
 EMIT_define(SUPERBBLAS_USE_CUDA)
-#    endif
-#    ifdef SUPERBBLAS_USE_HIP
+#    elif defined(SUPERBBLAS_USE_HIP)
 EMIT_define(SUPERBBLAS_USE_HIP)
+#    else
+EMIT_define(SUPERBBLAS_NOT_USE_GPU)
 #    endif
 #    ifdef SUPERBBLAS_USE_MKL
 EMIT_define(SUPERBBLAS_USE_MKL)
+#    endif
+#endif
+
+#ifdef SUPERBBLAS_NOT_USE_GPU
+#    ifdef SUPERBBLAS_USE_CUDA
+#        undef SUPERBBLAS_USE_CUDA
+#    endif
+#    ifdef SUPERBBLAS_USE_HIP
+#        undef SUPERBBLAS_USE_HIP
 #    endif
 #endif
 
