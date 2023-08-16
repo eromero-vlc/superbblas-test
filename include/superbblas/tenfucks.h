@@ -4,112 +4,99 @@
 #define __SUPERBBLAS_TENFUCKS__
 
 #include "platform.h"
+#include "xsimd/xsimd.hpp"
+#include <algorithm>
+#include <numeric>
+#include <execution>
 
-template <typename Idx, typename T>
-void gemm_basic(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar, Idx ldac,
-                const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta, T *SB_RESTRICT c,
-                Idx ldcr, Idx ldcc) {
+namespace superbblas {
+namespace detail_xp {
+
+using T = double;
+using cT = std::complex<T>;
+using vc4 = xsimd::make_sized_batch<T, 4>::type;
+using vc8 = xsimd::make_sized_batch<T, 8>::type;
+using vi4 = xsimd::batch<uint64_t, vc4::arch_type>;
+using vi8 = xsimd::batch<uint64_t, vc8::arch_type>;
+using Idx = int;
+
+inline vc8 flip_ri(const vc8 &b) {
+    return xsimd::swizzle(b, xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>());
+}
+
+inline vc8 scalar_mult(cT s, const vc8 &b) {
+	//if (s == cT{1}) return b;
+    T r = *(T*)&s;
+    T i = ((T*)&s)[1];
+    return s == cT{1} ? b : xsimd::fma(vc8(r), b, vc8(-i, i, -i, i, -i, i, i, i) * flip_ri(b));
+}
+
+constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool the_real) {
+    return i * 2 * ldr + j * 2 * ldc + (the_real ? 0 : 1);
+}
+
+constexpr bool the_real = true;
+constexpr bool the_imag = false;
+inline std::array<vc8, 2> get_col_intr(const T *a, Idx ldr, Idx ldc, Idx d) {
+    auto va = vc8::gather(a,
+                          vi8(                                                  //
+                              get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
+                              get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
+                              get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_real), //
+                              get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_imag), //
+                              get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_real), //
+                              get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
+                              get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
+                              get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
+    return {
+        xsimd::shuffle(va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>()),
+        xsimd::shuffle(xsimd::neg(va), va,
+                       xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>())};
+}
+
+inline void gemm_basic_3x3c_intr(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar, Idx ldac, const cT *SB_RESTRICT b_,
+                          Idx ldbr, Idx ldbc, cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+    //constexpr Idx M = 3;
+    //constexpr Idx K = 3;
+    const T *SB_RESTRICT a = (const T *)(a_);
+    const T *SB_RESTRICT b = (const T *)(b_);
+    const T *SB_RESTRICT c = (const T *)(c_);
+    T *SB_RESTRICT d = (T *)(d_);
+    //using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
+    using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+
     // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-    bool beta_is_one = (beta == T{1});
-    bool beta_is_zero = (beta == T{0});
-    for (Idx i = 0; i < M; ++i) {
-        for (Idx j = 0; j < N; ++j) {
-            T r{0};
-            for (Idx k = 0; k < K; ++k) r += a[ldar * i + ldac * k] * b[ldbr * k + ldbc * j];
-            if (beta_is_one)
-                c[ldcr * i + ldcc * j] += alpha * r;
-            else
-                c[ldcr * i + ldcc * j] =
-                    (!beta_is_zero ? beta * c[ldcr * i + ldcc * j] : T{0}) + alpha * r;
-        }
+    for (Idx j = 0; j < N; ++j) {
+        auto b0 = vc8::gather(b + ldbc * 2 * j, vi8(ldbr*2*0, ldbr*2*0+1, ldbr*2*1, ldbr*2*1+1, ldbr*2*2, ldbr*2*2+1, ldbr*2*2+1, ldbr*2*2+1));
+        auto c0 = beta == T{0}
+                      ? vc8(0)
+                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, vi8(ldcr*2*0, ldcr*2*0+1, ldcr*2*1, ldcr*2*1+1, ldcr*2*2, ldcr*2*2+1, ldcr*2*2+1, ldcr*2*2+1)));
+        auto a01 = get_col_intr(a, ldar, ldac, 0);
+        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+
+        b0 = flip_ri(b0);
+        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+
+        a01 = get_col_intr(a, ldar, ldac, 1);
+        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+
+        b0 = flip_ri(b0);
+        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+
+        a01 = get_col_intr(a, ldar, ldac, 2);
+        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+
+        b0 = flip_ri(b0);
+        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+
+        if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+        c0.scatter(d + lddc * 2 * j, vi8(lddr*2*0, lddr*2*0+1, lddr*2*1, lddr*2*1+1, lddr*2*2, lddr*2*2+1, lddr*2*2+1, lddr*2*2+1));
     }
 }
 
-template <unsigned int MM, unsigned int NN, unsigned int KK, typename Idx, typename T>
-void gemm_blk_ijk_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar, Idx ldac,
-              const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta, T *SB_RESTRICT c, Idx ldcr,
-              Idx ldcc) {
-    // c[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-    if (beta != T{1})
-        for (Idx i = 0; i < i; ++i)
-            for (Idx j = 0; j < j; ++j)
-                c[ldcr * i + ldcc * j] = (beta != T{0} ? beta * c[ldcr * i + ldcc * j] : T{0});
-    for (Idx i = 0, ii = std::min(M, MM); i < M; i += ii, ii = std::min(M - i, MM)) {
-        for (Idx j = 0, jj = std::min(N, NN); j < N; j += jj, jj = std::min(N - j, NN)) {
-            for (Idx k = 0, kk = std::min(K, KK); k < K; k += kk, kk = std::min(K - k, KK)) {
-                if (ii == MM && jj == NN && kk == KK)
-                    gemm_basic<Idx>(MM, NN, KK, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-                else if (ii == MM && kk == KK)
-                    gemm_basic<Idx>(MM, jj, KK, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-                else
-                    gemm_basic<Idx>(ii, jj, kk, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-            }
-        }
-    }
 }
-
-template <unsigned int MM, unsigned int NN, unsigned int KK, typename Idx, typename T>
-void gemm_blk_ikj_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar, Idx ldac,
-              const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta, T *SB_RESTRICT c, Idx ldcr,
-              Idx ldcc) {
-    // c[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-    if (beta != T{1})
-        for (Idx i = 0; i < i; ++i)
-            for (Idx j = 0; j < j; ++j)
-                c[ldcr * i + ldcc * j] = (beta != T{0} ? beta * c[ldcr * i + ldcc * j] : T{0});
-    for (Idx i = 0, ii = std::min(M, MM); i < M; i += ii, ii = std::min(M - i, MM)) {
-        for (Idx k = 0, kk = std::min(K, KK); k < K; k += kk, kk = std::min(K - k, KK)) {
-            for (Idx j = 0, jj = std::min(N, NN); j < N; j += jj, jj = std::min(N - j, NN)) {
-                if (ii == MM && jj == NN && kk == KK)
-                    gemm_basic<Idx>(MM, NN, KK, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-                else if (ii == MM && kk == KK)
-                    gemm_basic<Idx>(MM, jj, KK, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-                 else
-                    gemm_basic<Idx>(ii, jj, kk, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-            }
-        }
-    }
 }
-
-template <unsigned int MM, unsigned int NN, unsigned int KK, typename Idx, typename T>
-void gemm_blk_kij_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar, Idx ldac,
-                  const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta, T *SB_RESTRICT c,
-                  Idx ldcr, Idx ldcc) {
-    // c[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-    if (beta != T{1})
-        for (Idx i = 0; i < i; ++i)
-            for (Idx j = 0; j < j; ++j)
-                c[ldcr * i + ldcc * j] = (beta != T{0} ? beta * c[ldcr * i + ldcc * j] : T{0});
-    for (Idx k = 0, kk = std::min(K, KK); k < K; k += kk, kk = std::min(K - k, KK)) {
-        for (Idx i = 0, ii = std::min(M, MM); i < M; i += ii, ii = std::min(M - i, MM)) {
-            for (Idx j = 0, jj = std::min(N, NN); j < N; j += jj, jj = std::min(N - j, NN)) {
-                if (ii == MM && jj == NN && kk == KK)
-                    gemm_basic<Idx>(MM, NN, KK, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-                else if (ii == MM && kk == KK)
-                    gemm_basic<Idx>(MM, jj, KK, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-                else
-                    gemm_basic<Idx>(ii, jj, kk, alpha, a + ldar * i + ldac * k, ldar, ldac,
-                                    b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
-                                    c + ldcr * i + ldcc * j, ldcr, ldcc);
-            }
-        }
-    }
-}
-
 #endif // __SUPERBBLAS_TENFUCKS__
