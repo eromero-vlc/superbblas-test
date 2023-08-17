@@ -88,6 +88,10 @@ inline void gemm_basic_3x3c_intr(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx 
     }
 }
 
+inline vi8 get_8_ri(Idx ld) {
+	return vi8(ld*2*0, ld*2*0+1, ld*2*1, ld*2*1+1, ld*2*2, ld*2*2+1, ld*2*2+1, ld*2*2+1);
+}
+
 inline void gemm_basic_3x3c_intr2(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar, Idx ldac, const cT *SB_RESTRICT b_,
                           Idx ldbr, Idx ldbc, cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
                           cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
@@ -107,16 +111,16 @@ gemm_basic_3x3c_intr(N%2, alpha, a_, ldar, ldac, b_, ldbr, ldbc, beta, c_, ldcr,
 j =N%2;
     }
 
-    for (; j < N; j+=3) {
+    for (; j < N; j+=2) {
 	int j0=j, j1=j+1;
-        auto b0 = vc8::gather(b + ldbc * 2 * j0, vi8(ldbr*2*0, ldbr*2*0+1, ldbr*2*1, ldbr*2*1+1, ldbr*2*2, ldbr*2*2+1, ldbr*2*2+1, ldbr*2*2+1));
-        auto b1 = vc8::gather(b + ldbc * 2 * j1, vi8(ldbr*2*0, ldbr*2*0+1, ldbr*2*1, ldbr*2*1+1, ldbr*2*2, ldbr*2*2+1, ldbr*2*2+1, ldbr*2*2+1));
+        auto b0 = vc8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
+        auto b1 = vc8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
         auto c0 = beta == T{0}
                       ? vc8(0)
-                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j0, vi8(ldcr*2*0, ldcr*2*0+1, ldcr*2*1, ldcr*2*1+1, ldcr*2*2, ldcr*2*2+1, ldcr*2*2+1, ldcr*2*2+1)));
+                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
         auto c1 = beta == T{0}
                       ? vc8(0)
-                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j1, vi8(ldcr*2*0, ldcr*2*0+1, ldcr*2*1, ldcr*2*1+1, ldcr*2*2, ldcr*2*2+1, ldcr*2*2+1, ldcr*2*2+1)));
+                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
 
 	for (int disp=0; disp<3; ++disp) {
         	auto a01 = get_col_intr(a, ldar, ldac, disp);
@@ -135,10 +139,12 @@ j =N%2;
 
         if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
         if (alpha != T{1}) c1 = scalar_mult(alpha, c1);
-        c0.scatter(d + lddc * 2 * j0, vi8(lddr*2*0, lddr*2*0+1, lddr*2*1, lddr*2*1+1, lddr*2*2, lddr*2*2+1, lddr*2*2+1, lddr*2*2+1));
-        c1.scatter(d + lddc * 2 * j1, vi8(lddr*2*0, lddr*2*0+1, lddr*2*1, lddr*2*1+1, lddr*2*2, lddr*2*2+1, lddr*2*2+1, lddr*2*2+1));
+        c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
+        c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
     }
 }
+
+
 //
 ////inline void gemm_basic_3x3c_intr_pf(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar, Idx ldac, const cT *SB_RESTRICT b_,
 ////                          Idx ldbr, Idx ldbc, cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
