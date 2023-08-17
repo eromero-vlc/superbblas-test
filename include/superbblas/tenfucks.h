@@ -72,30 +72,161 @@ inline void gemm_basic_3x3c_intr(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx 
         auto c0 = beta == T{0}
                       ? vc8(0)
                       : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, vi8(ldcr*2*0, ldcr*2*0+1, ldcr*2*1, ldcr*2*1+1, ldcr*2*2, ldcr*2*2+1, ldcr*2*2+1, ldcr*2*2+1)));
-        auto a01 = get_col_intr(a, ldar, ldac, 0);
-        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+	for (int disp=0; disp<3; ++disp) {
+        	auto a01 = get_col_intr(a, ldar, ldac, disp);
+		if (disp > 0) {
+        		b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+		}
+        	c0 = xsimd::fma(std::get<0>(a01), b0, c0);
 
-        b0 = flip_ri(b0);
-        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
-
-        a01 = get_col_intr(a, ldar, ldac, 1);
-        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
-
-        b0 = flip_ri(b0);
-        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
-
-        a01 = get_col_intr(a, ldar, ldac, 2);
-        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
-
-        b0 = flip_ri(b0);
-        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+        	b0 = flip_ri(b0);
+        	c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+	}
 
         if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
         c0.scatter(d + lddc * 2 * j, vi8(lddr*2*0, lddr*2*0+1, lddr*2*1, lddr*2*1+1, lddr*2*2, lddr*2*2+1, lddr*2*2+1, lddr*2*2+1));
     }
 }
+
+inline void gemm_basic_3x3c_intr2(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar, Idx ldac, const cT *SB_RESTRICT b_,
+                          Idx ldbr, Idx ldbc, cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+    //constexpr Idx M = 3;
+    //constexpr Idx K = 3;
+    const T *SB_RESTRICT a = (const T *)(a_);
+    const T *SB_RESTRICT b = (const T *)(b_);
+    const T *SB_RESTRICT c = (const T *)(c_);
+    T *SB_RESTRICT d = (T *)(d_);
+    //using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
+    using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+
+    // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+Idx j = 0;
+    if (N%2 != 0) {
+gemm_basic_3x3c_intr(N%2, alpha, a_, ldar, ldac, b_, ldbr, ldbc, beta, c_, ldcr, ldcc, d_, lddr, lddc);
+j =N%2;
+    }
+
+    for (; j < N; j+=3) {
+	int j0=j, j1=j+1;
+        auto b0 = vc8::gather(b + ldbc * 2 * j0, vi8(ldbr*2*0, ldbr*2*0+1, ldbr*2*1, ldbr*2*1+1, ldbr*2*2, ldbr*2*2+1, ldbr*2*2+1, ldbr*2*2+1));
+        auto b1 = vc8::gather(b + ldbc * 2 * j1, vi8(ldbr*2*0, ldbr*2*0+1, ldbr*2*1, ldbr*2*1+1, ldbr*2*2, ldbr*2*2+1, ldbr*2*2+1, ldbr*2*2+1));
+        auto c0 = beta == T{0}
+                      ? vc8(0)
+                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j0, vi8(ldcr*2*0, ldcr*2*0+1, ldcr*2*1, ldcr*2*1+1, ldcr*2*2, ldcr*2*2+1, ldcr*2*2+1, ldcr*2*2+1)));
+        auto c1 = beta == T{0}
+                      ? vc8(0)
+                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j1, vi8(ldcr*2*0, ldcr*2*0+1, ldcr*2*1, ldcr*2*1+1, ldcr*2*2, ldcr*2*2+1, ldcr*2*2+1, ldcr*2*2+1)));
+
+	for (int disp=0; disp<3; ++disp) {
+        	auto a01 = get_col_intr(a, ldar, ldac, disp);
+		if (disp > 0) {
+        		b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+        		b1 = xsimd::swizzle(b1, vi8_flip_and_plus_1());
+		}
+        	c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+        	c1 = xsimd::fma(std::get<0>(a01), b1, c1);
+
+        	b0 = flip_ri(b0);
+        	b1 = flip_ri(b1);
+        	c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+        	c1 = xsimd::fma(std::get<1>(a01), b1, c1);
+	}
+
+        if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+        if (alpha != T{1}) c1 = scalar_mult(alpha, c1);
+        c0.scatter(d + lddc * 2 * j0, vi8(lddr*2*0, lddr*2*0+1, lddr*2*1, lddr*2*1+1, lddr*2*2, lddr*2*2+1, lddr*2*2+1, lddr*2*2+1));
+        c1.scatter(d + lddc * 2 * j1, vi8(lddr*2*0, lddr*2*0+1, lddr*2*1, lddr*2*1+1, lddr*2*2, lddr*2*2+1, lddr*2*2+1, lddr*2*2+1));
+    }
+}
+//
+////inline void gemm_basic_3x3c_intr_pf(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar, Idx ldac, const cT *SB_RESTRICT b_,
+////                          Idx ldbr, Idx ldbc, cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+////                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+////    //constexpr Idx M = 3;
+////    //constexpr Idx K = 3;
+////    const T *SB_RESTRICT a = (const T *)(a_);
+////    const T *SB_RESTRICT b = (const T *)(b_);
+////    const T *SB_RESTRICT c = (const T *)(c_);
+////    T *SB_RESTRICT d = (T *)(d_);
+////    using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
+////    using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+////
+////    // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+////    std::for_each(std::execution::unseq, (char*)0, (char*)0+N, [&](const char& j_) {
+////	int j = &j_ - (const char*)0;
+////        auto b0 = vc8::gather(b + ldbc * 2 * j, vi8(ldbr) * vi8_seq());
+////        auto c0 = beta == T{0}
+////                      ? vc8(0)
+////                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, vi8(ldcr) * vi8_seq()));
+////        auto a01 = get_col_intr(a, ldar, ldac, 0);
+////        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+////
+////        b0 = flip_ri(b0);
+////        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+////
+////        a01 = get_col_intr(a, ldar, ldac, 1);
+////        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+////        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+////
+////        b0 = flip_ri(b0);
+////        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+////
+////        a01 = get_col_intr(a, ldar, ldac, 2);
+////        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+////        c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+////
+////        b0 = flip_ri(b0);
+////        c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+////
+////        if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+////        c0.scatter(d + lddc * 2 * j, vi8(lddr) * vi8_seq());
+////    });
+////}
+//
+//template<Idx N>
+//inline void gemm_basic_3x3c_intr2(cT alpha, const cT *SB_RESTRICT a_, Idx ldar, Idx ldac, const cT *SB_RESTRICT b_,
+//                          Idx ldbr, Idx ldbc, cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+//                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+//    //constexpr Idx M = 3;
+//    //constexpr Idx K = 3;
+//    const T *SB_RESTRICT a = (const T *)(a_);
+//    const T *SB_RESTRICT b = (const T *)(b_);
+//    const T *SB_RESTRICT c = (const T *)(c_);
+//    T *SB_RESTRICT d = (T *)(d_);
+//    using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
+//    using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+//
+//    // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+//        std::array<vc8, N> b0, c0;
+//	for (Idx j = 0; j < N; ++j) b0[j] = vc8::gather(b + ldbc * 2 * j, vi8(ldbr) * vi8_seq());
+//        for (Idx j = 0; j < N; ++j) c0[j] = beta == T{0}
+//                      ? vc8(0)
+//                      : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, vi8(ldcr) * vi8_seq()));
+//        auto a01 = get_col_intr(a, ldar, ldac, 0);
+//        for (Idx j = 0; j < N; ++j) c0[j] = xsimd::fma(std::get<0>(a01), b0[j], c0[j]);
+//
+//        for (Idx j = 0; j < N; ++j) b0[j] = flip_ri(b0[j]);
+//        for (Idx j = 0; j < N; ++j) c0[j] = xsimd::fma(std::get<1>(a01), b0[j], c0[j]);
+//
+//        a01 = get_col_intr(a, ldar, ldac, 1);
+//	auto flip_and_plus_1 = vi8_flip_and_plus_1();
+//        for (Idx j = 0; j < N; ++j) b0[j] = xsimd::swizzle(b0[j], flip_and_plus_1);
+//        for (Idx j = 0; j < N; ++j) c0[j] = xsimd::fma(std::get<0>(a01), b0[j], c0[j]);
+//
+//        for (Idx j = 0; j < N; ++j) b0[j] = flip_ri(b0[j]);
+//        for (Idx j = 0; j < N; ++j) c0[j] = xsimd::fma(std::get<1>(a01), b0[j], c0[j]);
+//
+//        for (Idx j = 0; j < N; ++j) a01 = get_col_intr(a, ldar, ldac, 2);
+//        for (Idx j = 0; j < N; ++j) b0[j] = xsimd::swizzle(b0[j], flip_and_plus_1);
+//        for (Idx j = 0; j < N; ++j) c0[j] = xsimd::fma(std::get<0>(a01), b0[j], c0[j]);
+//
+//        for (Idx j = 0; j < N; ++j) b0[j] = flip_ri(b0[j]);
+//        for (Idx j = 0; j < N; ++j) c0[j] = xsimd::fma(std::get<1>(a01), b0[j], c0[j]);
+//
+//        if (alpha != T{1}) for (Idx j = 0; j < N; ++j) c0[j] = scalar_mult(alpha, c0[j]);
+//        for (Idx j = 0; j < N; ++j) c0[j].scatter(d + lddc * 2 * j, vi8(lddr) * vi8_seq());
+//}
 
 }
 }
