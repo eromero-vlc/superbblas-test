@@ -251,26 +251,20 @@ namespace superbblas {
                               const SCALAR *a, int lda, const SCALAR *b, int ldb, SCALAR beta,
                               SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
-		(void)k;
-		assert(k == 3 && (m == 3 || n ==3));
+            (void)k;
+            assert(k == 3 && (m == 3 || n == 3));
 
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
-		if (m == 3) {
-			superbblas::detail_xp::gemm_basic_3x3c_intr2(n, alpha, a, !ta?1:lda, !ta?lda:1, b, !tb?1:ldb,!tb?ldb:1, beta, c, 1, ldc, c, 1, ldc);
-		} else if (n == 3) {
-			superbblas::detail_xp::gemm_basic_3x3c_intr2(m, alpha, b, tb?1:ldb,tb?ldb:1, a, ta?1:lda, ta?lda:1, beta, c, ldc, 1, c, ldc, 1);
-			//if (!tb)
-			//superbblas::detail_xp::gemm_basic_3x3c_intr(m, alpha, b, 3, 1, a, ta?1:lda, ta?lda:1, beta, c, ldc, 1, c, ldc, 1);
-			//else
-			//superbblas::detail_xp::gemm_basic_3x3c_intr(m, alpha, b, 1, 3, a, ta?1:lda, ta?lda:1, beta, c, ldc, 1, c, ldc, 1);
-			//constexpr int N = 1;
-			//int j=0;
-			//for (; j+N<=m; j+=N)
-			//	superbblas::detail_xp::gemm_basic_3x3c_intr2<N>(alpha, b, tb?1:ldb,tb?ldb:1, a+lda*j, ta?1:lda, ta?lda:1, beta, c+ldc*j, ldc, 1, c+ldc*j, ldc, 1);
-			//if (N > 1)
-			//superbblas::detail_xp::gemm_basic_3x3c_intr(m-j, alpha, b, tb?1:ldb,tb?ldb:1, a+lda*j, ta?1:lda, ta?lda:1, beta, c+ldc*j, ldc, 1, c+ldc*j, ldc, 1);
-		}
+            if (m == 3) {
+                superbblas::detail_xp::gemm_basic_3x3c_intr3(
+                    n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
+                    beta, c, 1, ldc, c, 1, ldc);
+            } else if (n == 3) {
+                superbblas::detail_xp::gemm_basic_3x3c_intr3(
+                    m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, beta, c,
+                    ldc, 1, c, ldc, 1);
+            }
         }
 
         ///
