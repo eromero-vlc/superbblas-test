@@ -26,7 +26,7 @@ CPU_LIB_TARGETS := $(patsubst %.cpp,%_cpu_lib,$(SOURCES))
 CUDA_LIB_TARGETS := $(patsubst %.cpp,%_cuda_lib,$(SOURCES))
 HIP_LIB_TARGETS := $(patsubst %.cpp,%_hip_lib,$(SOURCES))
 
-SB_INCLUDE ?= -I$(BUILDDIR)/include
+SB_INCLUDE ?= -I$(BUILDDIR)/include -I$(BUILDDIR)/include/xsimd/include
 MPISBFLAG ?= $(if $(findstring mpi,${CXX}),-DSUPERBBLAS_USE_MPI,)
 
 comma := ,
