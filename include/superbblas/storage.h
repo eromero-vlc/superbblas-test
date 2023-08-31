@@ -467,6 +467,8 @@ namespace superbblas {
             std::vector<From_size_item<N>> blocks;
             /// Values associated to each block
             std::vector<Key> values;
+            /// Index of the next block to insert into the grid
+            BlockIndex next_block_to_grid;
 
             /// Ordered list
             template <typename T> using ordered_list = std::set<T>;
@@ -480,7 +482,7 @@ namespace superbblas {
             /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
             std::unordered_multimap<std::size_t, BlockIndex> gridToBlocks;
 
-            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks{16} {
+            GridHash(Coor<N> dim) : dim{dim}, next_block_to_grid(0), grid{{}}, gridToBlocks{16} {
                 assert(check_positive(dim));
             }
 
@@ -492,43 +494,64 @@ namespace superbblas {
                 // Normalize from when being the whole dimension
                 from = normalize_from(from, size);
 
-                // Check if the block has overlaps with other blocks in this tensor
-                std::size_t vol_overlaps = get_overlap_volume(from, size);
-                if (vol == vol_overlaps) return;
-                if (vol_overlaps != 0)
-                    throw std::runtime_error(
-                        "Ups! Unsupported the addition of blocks with partial support "
-                        "on the sparse tensor");
-
-                // Add the faces of the given range as hyperplanes on the grid
-                for (std::size_t i = 0; i < N; ++i) {
-                    add_hyperplane(from[i], i);
-                    add_hyperplane(from[i] + size[i], i);
-                }
-
                 // Add the new block
-                BlockIndex new_block_index = blocks.size();
                 blocks.push_back({from, size});
                 values.push_back(key);
+            }
 
-                // Add new block on the grid
-                Unsorted_Grid g = grid_intersection(from, size);
-                Grid_range<N, std::vector<IndexType>> git(&g[0]);
-                Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
-                for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
-                    Coor<N> g_coor;
-                    for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
-                    std::size_t new_grid_index = coor2index(g_coor, dim, dim_strides);
-                    gridToBlocks.insert(std::make_pair(new_grid_index, new_block_index));
+            void insert_pending_blocks() {
+                for (BlockIndex iblock = next_block_to_grid; iblock < blocks.size(); ++iblock) {
+                    auto from = blocks[iblock][0];
+                    auto size = blocks[iblock][1];
+
+                    // Add the faces of the given range as hyperplanes on the grid
+                    for (std::size_t i = 0; i < N; ++i) {
+                        add_hyperplane(from[i], i);
+                        if (from[i] + size[i] >= dim[i]) {
+                            add_hyperplane(dim[i] - 1, i);
+                            add_hyperplane(0, i);
+                        }
+                        add_hyperplane(from[i] + size[i], i);
+                    }
+                }
+
+                for (; next_block_to_grid < blocks.size(); ++next_block_to_grid) {
+                    auto from = blocks[next_block_to_grid][0];
+                    auto size = blocks[next_block_to_grid][1];
+
+                    // Check if the block has overlaps with other blocks in this tensor
+                    std::size_t vol = volume(size);
+                    std::size_t vol_overlaps =
+                        get_overlap_volume(from, size, false /* don't check for pending blocks */);
+                    if (vol == vol_overlaps) continue;
+                    if (vol_overlaps != 0)
+                        throw std::runtime_error(
+                            "Ups! Unsupported the addition of blocks with partial support "
+                            "on the sparse tensor");
+
+                    // Add new block on the grid
+                    Unsorted_Grid g = grid_intersection(from, size);
+                    Grid_range<N, std::vector<IndexType>> git(&g[0]);
+                    Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
+                    for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
+                        Coor<N> g_coor;
+                        for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
+                        std::size_t new_grid_index = coor2index(g_coor, dim, dim_strides);
+                        gridToBlocks.insert(std::make_pair(new_grid_index, next_block_to_grid));
+                    }
                 }
             }
 
             /// Return a list of the blocks, the intersection relative to the blocks, and the
             /// associated keys of blocks with non-empty overlap with the given range.
             std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>>
-            intersection(Coor<N> from, Coor<N> size) const {
+            intersection(Coor<N> from, Coor<N> size, bool check_for_pending_blocks = true) const {
                 // Shortcut for empty ranges
                 if (volume(size) == 0) return {};
+
+                // Check that there is no pending blocks
+                if (check_for_pending_blocks && next_block_to_grid != blocks.size())
+                    throw std::runtime_error("wtf");
 
                 // Compute the intersections between the given range the grid
                 Unsorted_Grid g = grid_intersection(from, size);
@@ -566,8 +589,9 @@ namespace superbblas {
             }
 
             /// Return the overlap volume of the given range on this tensor
-            std::size_t get_overlap_volume(Coor<N> from, Coor<N> size) {
-                auto overlaps = intersection(from, size);
+            std::size_t get_overlap_volume(Coor<N> from, Coor<N> size,
+                                           bool check_for_pending_blocks = true) {
+                auto overlaps = intersection(from, size, check_for_pending_blocks);
                 std::size_t vol_overlaps = 0;
                 for (const auto &i : overlaps) vol_overlaps += volume(i.first[1][1]);
                 return vol_overlaps;
@@ -1543,6 +1567,7 @@ namespace superbblas {
                 sto.disp_values.push_back(values_start);
                 values_start += num_values[i] * sizeof(Q);
             }
+            sto.blocks.insert_pending_blocks();
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
@@ -1679,6 +1704,10 @@ namespace superbblas {
                 // Store checksum on sto
                 if (sto.checksum == GlobalChecksum) sto.checksum_val = d;
             }
+
+            // For files with many blocks, this operation may take a lot of time, so
+            // do it at the opening
+            sto.blocks.insert_pending_blocks();
         }
 
         /// Open a storage for reading and writing
