@@ -271,17 +271,27 @@ namespace superbblas {
         // struct Gpuamd {int device; };
 
         /// Return if `T` is a supported type
-        template <typename T> struct supported_type { static constexpr bool value = false; };
-        template <> struct supported_type<float> { static constexpr bool value = true; };
-        template <> struct supported_type<double> { static constexpr bool value = true; };
+        template <typename T> struct supported_type {
+            static constexpr bool value = false;
+        };
+        template <> struct supported_type<float> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<double> {
+            static constexpr bool value = true;
+        };
         template <> struct supported_type<std::complex<float>> {
             static constexpr bool value = true;
         };
         template <> struct supported_type<std::complex<double>> {
             static constexpr bool value = true;
         };
-        template <> struct supported_type<_Complex float> { static constexpr bool value = true; };
-        template <> struct supported_type<_Complex double> { static constexpr bool value = true; };
+        template <> struct supported_type<_Complex float> {
+            static constexpr bool value = true;
+        };
+        template <> struct supported_type<_Complex double> {
+            static constexpr bool value = true;
+        };
         template <typename T> struct supported_type<const T> {
             static constexpr bool value = supported_type<T>::value;
         };

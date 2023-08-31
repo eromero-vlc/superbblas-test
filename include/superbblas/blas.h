@@ -96,7 +96,9 @@ namespace superbblas {
 
     /// elem<T>::type is T::value_type if T is an array; otherwise it is T
 
-    template <typename T> struct elem { using type = T; };
+    template <typename T> struct elem {
+        using type = T;
+    };
     template <typename T, std::size_t N> struct elem<std::array<T, N>> {
         using type = typename elem<T>::type;
     };
@@ -150,7 +152,9 @@ namespace superbblas {
                 throw std::runtime_error("Ups! Unaligned pointer");
         }
 
-        template <typename T> struct is_complex { static const bool value = false; };
+        template <typename T> struct is_complex {
+            static const bool value = false;
+        };
         template <typename T> struct is_complex<std::complex<T>> {
             static const bool value = true;
         };
@@ -326,7 +330,9 @@ namespace superbblas {
         /// \tparam T: one of float, double, std::complex<T>, std::array<T,N>
         /// \return cuda_complex<T>::type has the new type
 
-        template <typename T> struct cuda_complex { using type = T; };
+        template <typename T> struct cuda_complex {
+            using type = T;
+        };
         template <typename T> struct cuda_complex<std::complex<T>> {
             using type = thrust::complex<T>;
         };
