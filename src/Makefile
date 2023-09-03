@@ -20,6 +20,7 @@ OTHER_HEADERS := \
   ../include/superbblas/template.h \
   ../include/superbblas/template_types.h \
   ../include/superbblas/template_undef.h \
+  ../include/superbblas/tenfucks.h \
   ../include/superbblas/tensor.h
 TESTS := \
   ../tests/blas.cpp \
@@ -29,7 +30,8 @@ TESTS := \
   ../tests/dense.cpp \
   ../tests/dist.cpp \
   ../tests/storage.cpp \
-  ../tests/storage_details.cpp
+  ../tests/storage_details.cpp \
+  ../tests/tenfucks.cpp
 
 SOURCE := $(MAIN_HEADER) $(OTHER_HEADERS)
 

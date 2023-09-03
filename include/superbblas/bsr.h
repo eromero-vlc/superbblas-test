@@ -257,11 +257,11 @@ namespace superbblas {
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
             if (m == 3) {
-                superbblas::detail_xp::gemm_basic_3x3c_intr3(
+                superbblas::detail_xp::gemm_basic_3x3c_intr4(
                     n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
                     beta, c, 1, ldc, c, 1, ldc);
             } else if (n == 3) {
-                superbblas::detail_xp::gemm_basic_3x3c_intr3(
+                superbblas::detail_xp::gemm_basic_3x3c_intr4(
                     m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, beta, c,
                     ldc, 1, c, ldc, 1);
             }
@@ -621,9 +621,9 @@ namespace superbblas {
                                     if (kron.is_identity(j0)) {
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
                                         xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                              x + jj[j] * ncols, ki * ncols, nonzeros + j * bi * bd,
-                                              !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
-                                              ki * ncols, Cpu{});
+                                                  x + jj[j] * ncols, ki * ncols,
+                                                  nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
+                                                  y + i * ki * ncols * bi, ki * ncols, Cpu{});
                                     } else {
                                         // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
                                         xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd,
@@ -631,9 +631,9 @@ namespace superbblas {
                                                       ki);
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
                                         xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                              aux.data(), ki * ncols, nonzeros + j * bi * bd,
-                                              !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
-                                              ki * ncols, Cpu{});
+                                                  aux.data(), ki * ncols, nonzeros + j * bi * bd,
+                                                  !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
+                                                  ki * ncols, Cpu{});
                                     }
                                 }
                             }
