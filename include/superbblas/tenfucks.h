@@ -379,15 +379,15 @@ namespace superbblas {
         namespace stdx = std::experimental;
         using vc8 = stdx::fixed_size_simd<double, 8>;
 
-        constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool the_real) {
-            return i * 2 * ldr + j * 2 * ldc + (the_real ? 0 : 1);
+        constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, Idx reality) {
+            return i * 2 * ldr + j * 2 * ldc + reality;
         }
 
         inline vc8 get_A_cols_aux(const T *SB_RESTRICT a, Idx ldr, Idx ldc, Idx d) {
             return vc8([=](auto i) {
-                return a[i < 6 ? get_disp_3x3(i / 2, (d + i / 2) % 3, ldr, ldc,
-                                              i % 2 == 0 /* is real? */)
-                               : get_disp_3x3(5 / 2, (d + 5 / 2) % 3, ldr, ldc, 5 % 2 == 0)];
+                return a[i < 6 ? get_disp_3x3(i / 2, (d + i / 2) % 3, ldr, ldc, i % 2)
+                               : (i == 6 ? get_disp_3x3(4 / 2, (d + 4 / 2) % 3, ldr, ldc, 4 % 2)
+                                         : get_disp_3x3(5 / 2, (d + 5 / 2) % 3, ldr, ldc, 5 % 2))];
             });
         }
 
@@ -402,8 +402,7 @@ namespace superbblas {
 
         template <bool is_real> inline vc8 get_A_col(vc8 va) {
             return is_real ? vc8([=](auto i) { return va[i / 2 * 2]; }) : vc8([=](auto i) {
-                return i < 6 ? (i % 2 == 0 ? -va[i / 2 * 2 + 1] : va[i / 2 * 2 + 1])
-                             : va[5 / 2 * 2 + 1];
+                return (i % 2 == 0 ? -va[i / 2 * 2 + 1] : va[i / 2 * 2 + 1]);
             });
         }
 
@@ -416,11 +415,13 @@ namespace superbblas {
         }
 
         inline void set_B_col(vc8 x, T *SB_RESTRICT b, Idx j, Idx ldr, Idx ldc) {
-            for (std::size_t i = 0; i < 6; ++i) b[ldc * 2 * j + get_8_ri(i, ldr)] = x[i];
+            for (std::size_t i = 0; i < vc8::size(); ++i) b[ldc * 2 * j + get_8_ri(i, ldr)] = x[i];
         }
 
         inline vc8 flip_ri(vc8 x) {
-            return vc8([=](auto i) { return x[i / 2 * 2 + (i + 1) % 2]; });
+            return vc8([=](auto i) {
+                return x[i < 6 ? i / 2 * 2 + (i + 1) % 2 : 5 / 2 * 2 + (5 + 1) % 2];
+            });
         }
 
         inline vc8 scalar_mult(cT s, vc8 b) {
@@ -433,7 +434,10 @@ namespace superbblas {
         }
         /// It should return: x[{3, 2, 5, 4, 1, 0, 0, 0}]
         inline vc8 flip_ri_plus_1(vc8 x) {
-            return vc8([=](auto i) { return x[i < 6 ? ((i / 2 + 1) % 3) * 2 + (i + 1) % 2 : 0]; });
+            return vc8([=](auto i) {
+                return x[i < 6 ? ((i / 2 + 1) % 3) * 2 + (i + 1) % 2
+                               : ((5 / 2 + 1) % 3) * 2 + (5 + 1) % 2];
+            });
         }
 
         inline void gemm_basic_3x3c_intr4(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
