@@ -18,26 +18,25 @@
 namespace superbblas {
     namespace detail_xp {
 
-        using T = double;
-        using cT = std::complex<T>;
+        using zT = std::complex<double>;
         using Idx = int;
 
 #ifdef SUPERBBLAS_USE_XSIMD
-        using vc4 = xsimd::make_sized_batch<T, 4>::type;
-        using vc8 = xsimd::make_sized_batch<T, 8>::type;
-        using vi4 = xsimd::batch<uint64_t, vc4::arch_type>;
-        using vi8 = xsimd::batch<uint64_t, vc8::arch_type>;
+        using vc16 = xsimd::make_sized_batch<float, 16>::type;
+        using vi16 = xsimd::batch<unsigned int, vc16::arch_type>;
+        using vz8 = xsimd::make_sized_batch<double, 8>::type;
+        using vi8 = xsimd::batch<uint64_t, vz8::arch_type>;
 
-        inline vc8 flip_ri(const vc8 &b) {
+        inline vz8 flip_ri(const vz8 &b) {
             return xsimd::swizzle(b, xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>());
         }
 
-        inline vc8 scalar_mult(cT s, const vc8 &b) {
-            //if (s == cT{1}) return b;
-            T r = *(T *)&s;
-            T i = ((T *)&s)[1];
-            return s == cT{1} ? b
-                              : xsimd::fma(vc8(r), b, vc8(-i, i, -i, i, -i, i, i, i) * flip_ri(b));
+        inline vz8 scalar_mult(zT s, const vz8 &b) {
+            //if (s == zT{1}) return b;
+            double r = *(double *)&s;
+            double i = ((double *)&s)[1];
+            return s == zT{1} ? b
+                              : xsimd::fma(vz8(r), b, vz8(-i, i, -i, i, -i, i, i, i) * flip_ri(b));
         }
 
         constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool the_real) {
@@ -46,8 +45,8 @@ namespace superbblas {
 
         constexpr bool the_real = true;
         constexpr bool the_imag = false;
-        inline std::array<vc8, 2> get_col_intr(const T *a, Idx ldr, Idx ldc, Idx d) {
-            auto va = vc8::gather(a,
+        inline std::array<vz8, 2> get_col_intr(const double *a, Idx ldr, Idx ldc, Idx d) {
+            auto va = vz8::gather(a,
                                   vi8(                                                  //
                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
@@ -68,25 +67,25 @@ namespace superbblas {
                        ld * 2 * 2 + 1, ld * 2 * 2 + 1, ld * 2 * 2 + 1);
         }
 
-        inline void gemm_basic_3x3c_intr(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
-                                         Idx ldac, const cT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                         cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                         cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        inline void gemm_basic_3x3c_intr(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
+                                         Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                         zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                                         zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
-            const T *SB_RESTRICT a = (const T *)(a_);
-            const T *SB_RESTRICT b = (const T *)(b_);
-            const T *SB_RESTRICT c = (const T *)(c_);
-            T *SB_RESTRICT d = (T *)(d_);
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
             using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
 
             // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
             for (Idx j = 0; j < N; ++j) {
-                auto b0 = vc8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
+                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
                 auto c0 =
-                    beta == T{0}
-                        ? vc8(0)
-                        : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, vi8(get_8_ri(ldcr))));
+                    beta == zT{0}
+                        ? vz8(0)
+                        : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, vi8(get_8_ri(ldcr))));
                 for (int disp = 0; disp < 3; ++disp) {
                     auto a01 = get_col_intr(a, ldar, ldac, disp);
                     if (disp > 0) { b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1()); }
@@ -96,21 +95,21 @@ namespace superbblas {
                     c0 = xsimd::fma(std::get<1>(a01), b0, c0);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+                c0 = scalar_mult(alpha, c0);
                 c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
             }
         }
 
-        inline void gemm_basic_3x3c_intr2(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const cT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        inline void gemm_basic_3x3c_intr2(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
+                                          Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                          zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                                          zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
-            const T *SB_RESTRICT a = (const T *)(a_);
-            const T *SB_RESTRICT b = (const T *)(b_);
-            const T *SB_RESTRICT c = (const T *)(c_);
-            T *SB_RESTRICT d = (T *)(d_);
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
             //using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
             using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
 
@@ -124,14 +123,14 @@ namespace superbblas {
 
             for (; j < N; j += 2) {
                 int j0 = j, j1 = j + 1;
-                auto b0 = vc8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
-                auto b1 = vc8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
-                auto c0 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
-                auto c1 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
+                auto b0 = vz8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
+                auto b1 = vz8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
+                auto c1 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
 
                 for (int disp = 0; disp < 3; ++disp) {
                     auto a01 = get_col_intr(a, ldar, ldac, disp);
@@ -148,18 +147,18 @@ namespace superbblas {
                     c1 = xsimd::fma(std::get<1>(a01), b1, c1);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
-                if (alpha != T{1}) c1 = scalar_mult(alpha, c1);
+                c0 = scalar_mult(alpha, c0);
+                c1 = scalar_mult(alpha, c1);
                 c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
                 c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
             }
         }
 
-        inline std::array<vc8, 2> get_col_intr(const T *a, Idx ldr, Idx ldc, Idx d, bool first_time,
-                                               T v[3 * 8]) {
-            vc8 va;
+        inline std::array<vz8, 2> get_col_intr(const double *a, Idx ldr, Idx ldc, Idx d,
+                                               bool first_time, double v[3 * 8]) {
+            vz8 va;
             if (first_time) {
-                va = vc8::gather(a,
+                va = vz8::gather(a,
                                  vi8(                                                  //
                                      get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
                                      get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
@@ -171,7 +170,7 @@ namespace superbblas {
                                      get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
                 va.store_aligned(&v[8 * d]);
             } else {
-                va = vc8::load_aligned(&v[8 * d]);
+                va = vz8::load_aligned(&v[8 * d]);
             }
             return {xsimd::shuffle(va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>()),
                     xsimd::shuffle(
@@ -179,16 +178,16 @@ namespace superbblas {
                         xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>())};
         }
 
-        inline void gemm_basic_3x3c_intr3(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const cT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        inline void gemm_basic_3x3c_intr3(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
+                                          Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                          zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                                          zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
-            const T *SB_RESTRICT a = (const T *)(a_);
-            const T *SB_RESTRICT b = (const T *)(b_);
-            const T *SB_RESTRICT c = (const T *)(c_);
-            T *SB_RESTRICT d = (T *)(d_);
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
             //using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
             using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
 
@@ -198,19 +197,19 @@ namespace superbblas {
             //j =N%2;
             //    }
 
-            alignas(vc8::arch_type::alignment()) T a_aux[3 * 8];
+            alignas(vz8::arch_type::alignment()) double a_aux[3 * 8];
 
             Idx j = 0;
             for (; j + 2 <= N; j += 2) {
                 int j0 = j, j1 = j + 1;
-                auto b0 = vc8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
-                auto b1 = vc8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
-                auto c0 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
-                auto c1 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
+                auto b0 = vz8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
+                auto b1 = vz8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
+                auto c1 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
 
                 for (int disp = 0; disp < 3; ++disp) {
                     auto a01 = get_col_intr(a, ldar, ldac, disp, j == 0, a_aux);
@@ -227,16 +226,16 @@ namespace superbblas {
                     c1 = xsimd::fma(std::get<1>(a01), b1, c1);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
-                if (alpha != T{1}) c1 = scalar_mult(alpha, c1);
+                c0 = scalar_mult(alpha, c0);
+                c1 = scalar_mult(alpha, c1);
                 c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
                 c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
             }
             if (j < N) {
-                auto b0 = vc8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
+                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
 
                 for (int disp = 0; disp < 3; ++disp) {
                     auto a01 = get_col_intr(a, ldar, ldac, disp, j == 0, a_aux);
@@ -247,13 +246,13 @@ namespace superbblas {
                     c0 = xsimd::fma(std::get<1>(a01), b0, c0);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+                c0 = scalar_mult(alpha, c0);
                 c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
             }
         }
 
-        inline vc8 get_cols_aux(const T *a, Idx ldr, Idx ldc, Idx d) {
-            return vc8::gather(a,
+        inline vz8 get_cols_aux(const double *a, Idx ldr, Idx ldc, Idx d) {
+            return vz8::gather(a,
                                vi8(                                                  //
                                    get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
                                    get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
@@ -265,13 +264,13 @@ namespace superbblas {
                                    get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
         }
 
-        inline std::array<vc8, 3> get_cols(const T *a, Idx ldr, Idx ldc) {
+        inline std::array<vz8, 3> get_cols(const double *a, Idx ldr, Idx ldc) {
             return {get_cols_aux(a, ldr, ldc, 0), //
                     get_cols_aux(a, ldr, ldc, 1), //
                     get_cols_aux(a, ldr, ldc, 2)};
         }
 
-        template <bool the_real> inline vc8 get_col(vc8 va) {
+        template <bool the_real> inline vz8 get_col(vz8 va) {
             return the_real ? xsimd::shuffle(va, va,
                                              xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
                             : xsimd::shuffle(xsimd::neg(va), va,
@@ -279,25 +278,26 @@ namespace superbblas {
                                                                    8 + 5, 8 + 5, 8 + 5>());
         }
 
-        inline void gemm_basic_3x3c_intr4(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const cT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        __attribute__((always_inline)) inline void
+        gemm_basic_3x3c_intr4(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                              const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc, zT beta,
+                              const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc, zT *SB_RESTRICT d_,
+                              Idx lddr, Idx lddc) {
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
-            const T *SB_RESTRICT a = (const T *)(a_);
-            const T *SB_RESTRICT b = (const T *)(b_);
-            const T *SB_RESTRICT c = (const T *)(c_);
-            T *SB_RESTRICT d = (T *)(d_);
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
             using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
 
             // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
             auto a012 = get_cols(a, ldar, ldac);
             for (Idx j = 0; j < N; ++j) {
-                auto b0 = vc8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
+                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
                 for (int disp = 0; disp < 3; ++disp) {
                     if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
                     c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
@@ -306,31 +306,68 @@ namespace superbblas {
                     c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+                c0 = scalar_mult(alpha, c0);
                 c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
             }
         }
 
-        inline void gemm_basic_3x3c_intr5(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const cT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        __attribute__((always_inline)) inline void
+        gemm_basic_3x3c_intr4_perm(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                   const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                   const Idx *SB_RESTRICT b_cols_perm, Idx b_cols_modulus,
+                                   const zT *SB_RESTRICT alphas, zT beta, const zT *SB_RESTRICT c_,
+                                   Idx ldcr, Idx ldcc, zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
-            const T *SB_RESTRICT a = (const T *)(a_);
-            const T *SB_RESTRICT b = (const T *)(b_);
-            const T *SB_RESTRICT c = (const T *)(c_);
-            T *SB_RESTRICT d = (T *)(d_);
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
+            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+
+            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+            auto a012 = get_cols(a, ldar, ldac);
+            for (Idx j = 0; j < N; ++j) {
+                auto b0 = vz8::gather(
+                    b + ldbc * 2 *
+                            (j / b_cols_modulus * b_cols_modulus + b_cols_perm[j % b_cols_modulus]),
+                    get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
+                for (int disp = 0; disp < 3; ++disp) {
+                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
+
+                    b0 = flip_ri(b0);
+                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
+                }
+
+                c0 = scalar_mult(alpha * alphas[j % b_cols_modulus], c0);
+                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
+            }
+        }
+
+        inline void gemm_basic_3x3c_intr5(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
+                                          Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                          zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                                          zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+            //constexpr Idx M = 3;
+            //constexpr Idx K = 3;
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
             using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
 
             // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
             auto a012 = get_cols(a, ldar, ldac);
             Idx j = 0;
             if (j % 2 != 0) {
-                auto b0 = vc8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
+                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
                 for (int disp = 0; disp < 3; ++disp) {
                     if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
                     c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
@@ -339,20 +376,20 @@ namespace superbblas {
                     c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
+                c0 = scalar_mult(alpha, c0);
                 c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
                 j++;
             }
             for (; j + 2 <= N; j += 2) {
                 Idx j0 = j, j1 = j + 1;
-                auto b0 = vc8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
-                auto b1 = vc8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
-                auto c0 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
-                auto c1 = beta == T{0}
-                              ? vc8(0)
-                              : scalar_mult(beta, vc8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
+                auto b0 = vz8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
+                auto b1 = vz8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
+                auto c0 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
+                auto c1 = beta == zT{0}
+                              ? vz8(0)
+                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
                 for (int disp = 0; disp < 3; ++disp) {
                     if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
                     if (disp > 0) b1 = xsimd::swizzle(b1, vi8_flip_and_plus_1());
@@ -365,8 +402,8 @@ namespace superbblas {
                     c1 = xsimd::fma(get_col<the_imag>(a012[disp]), b1, c1);
                 }
 
-                if (alpha != T{1}) c0 = scalar_mult(alpha, c0);
-                if (alpha != T{1}) c1 = scalar_mult(alpha, c1);
+                c0 = scalar_mult(alpha, c0);
+                c1 = scalar_mult(alpha, c1);
                 c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
                 c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
             }
@@ -383,7 +420,7 @@ namespace superbblas {
             return i * 2 * ldr + j * 2 * ldc + reality;
         }
 
-        inline vc8 get_A_cols_aux(const T *SB_RESTRICT a, Idx ldr, Idx ldc, Idx d) {
+        inline vc8 get_A_cols_aux(const double *SB_RESTRICT a, Idx ldr, Idx ldc, Idx d) {
             return vc8([=](auto i) {
                 return a[i < 6 ? get_disp_3x3(i / 2, (d + i / 2) % 3, ldr, ldc, i % 2)
                                : (i == 6 ? get_disp_3x3(4 / 2, (d + 4 / 2) % 3, ldr, ldc, 4 % 2)
@@ -391,7 +428,7 @@ namespace superbblas {
             });
         }
 
-        inline std::array<vc8, 3> get_A_cols(const T *SB_RESTRICT a, Idx ldr, Idx ldc) {
+        inline std::array<vc8, 3> get_A_cols(const double *SB_RESTRICT a, Idx ldr, Idx ldc) {
             return {get_A_cols_aux(a, ldr, ldc, 0), //
                     get_A_cols_aux(a, ldr, ldc, 1), //
                     get_A_cols_aux(a, ldr, ldc, 2)};
@@ -410,11 +447,11 @@ namespace superbblas {
             return i < 6 ? ld * 2 * (i / 2) + i % 2 : ld * 2 * (5 / 2) + 5 % 2;
         }
 
-        inline vc8 get_B_col(const T *SB_RESTRICT b, Idx j, Idx ldr, Idx ldc) {
+        inline vc8 get_B_col(const double *SB_RESTRICT b, Idx j, Idx ldr, Idx ldc) {
             return vc8([=](auto i) { return b[ldc * 2 * j + get_8_ri(i, ldr)]; });
         }
 
-        inline void set_B_col(vc8 x, T *SB_RESTRICT b, Idx j, Idx ldr, Idx ldc) {
+        inline void set_B_col(vc8 x, double *SB_RESTRICT b, Idx j, Idx ldr, Idx ldc) {
             for (std::size_t i = 0; i < vc8::size(); ++i) b[ldc * 2 * j + get_8_ri(i, ldr)] = x[i];
         }
 
@@ -424,14 +461,15 @@ namespace superbblas {
             });
         }
 
-        inline vc8 scalar_mult(cT s, vc8 b) {
-            T r = *(T *)&s;
-            T i = ((T *)&s)[1];
-            return s == cT{1} ? b : stdx::fma(vc8(r), b, vc8([=](auto j) {
+        inline vc8 scalar_mult(zT s, vc8 b) {
+            double r = *(double *)&s;
+            double i = ((double *)&s)[1];
+            return s == zT{1} ? b : stdx::fma(vc8(r), b, vc8([=](auto j) {
                                                              return j < 6 ? (j % 2 == 0 ? -i : i)
                                                                           : i;
                                                          }) * flip_ri(b));
         }
+
         /// It should return: x[{3, 2, 5, 4, 1, 0, 0, 0}]
         inline vc8 flip_ri_plus_1(vc8 x) {
             return vc8([=](auto i) {
@@ -440,22 +478,23 @@ namespace superbblas {
             });
         }
 
-        inline void gemm_basic_3x3c_intr4(Idx N, cT alpha, const cT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const cT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          cT beta, const cT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          cT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        __attribute__((always_inline)) inline void
+        gemm_basic_3x3c_intr4(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                              const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc, zT beta,
+                              const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc, zT *SB_RESTRICT d_,
+                              Idx lddr, Idx lddc) {
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
-            const T *SB_RESTRICT a = (const T *)(a_);
-            const T *SB_RESTRICT b = (const T *)(b_);
-            const T *SB_RESTRICT c = (const T *)(c_);
-            T *SB_RESTRICT d = (T *)(d_);
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
 
             // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
             auto a012 = get_A_cols(a, ldar, ldac);
             for (Idx j = 0; j < N; ++j) {
                 vc8 b0 = get_B_col(b, j, ldbr, ldbc);
-                auto c0 = beta == T{0} ? vc8(0) : scalar_mult(beta, get_B_col(c, j, ldcr, ldcc));
+                auto c0 = beta == zT{0} ? vc8(0) : scalar_mult(beta, get_B_col(c, j, ldcr, ldcc));
                 for (int disp = 0; disp < 3; ++disp) {
                     if (disp > 0) b0 = flip_ri_plus_1(b0);
                     c0 = stdx::fma(get_A_col<the_real>(a012[disp]), b0, c0);

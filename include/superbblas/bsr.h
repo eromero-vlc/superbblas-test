@@ -108,9 +108,12 @@ namespace superbblas {
             Indices<Cpu> ii, jj;
             vector<T, Cpu> vals;
             IndexType nrows, ncols, nmats;
-            enum Type { Dense, Identity, SparseAllOnes, Sparse };
+            enum Type { Dense, Identity, Permutation, SparseAllOnes, Sparse };
             std::vector<Type> type;
-            MatrixLayout layout; // matrix layout for a dense type
+            std::vector<T> scalar;                    ///< used by Identity, SparseAllOnes
+            std::vector<std::vector<IndexType>> perm; ///< permutation
+            std::vector<std::vector<T>> scalars;      ///< permutation
+            MatrixLayout layout;                      ///< matrix layout for a dense type
 
             /// Empty constructor
 
@@ -144,21 +147,29 @@ namespace superbblas {
                 jj = Indices<Cpu>(std::ceil(m.size() * 0.4), Cpu{});
                 vals = vector<T, Cpu>(jj.size(), Cpu{});
                 type = std::vector<Type>(nmats, Dense);
+                scalar = std::vector<T>(nmats, T{1});
+                perm = std::vector<std::vector<IndexType>>(nmats, std::vector<IndexType>(nrows));
+                scalars = std::vector<std::vector<T>>(nmats, std::vector<T>(nrows));
                 for (IndexType imat = 0; imat < nmats; ++imat) {
                     bool is_identity = (nrows == ncols);
                     bool is_all_ones = true;
+                    bool is_perm = true;
+                    scalar[imat] = m[ncols * nrows * imat];
                     for (IndexType i = 0; i < nrows; ++i) {
-                        IndexType idx = ii[imat * nrows + i];
+                        IndexType idx = ii[imat * nrows + i], idx0 = idx;
                         for (IndexType j = 0; j < ncols; ++j) {
                             T mij = m[ncols * nrows * imat +
                                       (layout == ColumnMajor ? i + j * nrows : i * ncols + j)];
                             if (mij == T{0} || mij == -T{0}) continue;
-                            if (mij != T{1})
+                            if (mij != scalar[imat])
                                 is_all_ones = is_identity = false;
                             else if (i != j)
                                 is_identity = false;
+                            else if (idx != idx0)
+                                is_perm = false;
                             jj[idx] = j;
-                            vals[idx] = mij;
+                            scalars[imat][i] = vals[idx] = mij;
+                            perm[imat][i] = j;
                             ++idx;
                         }
                         ii[imat * nrows + i + 1] = idx;
@@ -171,7 +182,9 @@ namespace superbblas {
                             if (mij != T{1}) is_identity = false;
                         }
                     }
-                    type[imat] = (is_identity ? Identity : (is_all_ones ? SparseAllOnes : Sparse));
+                    type[imat] = (is_identity ? Identity
+                                              : (is_perm ? Permutation
+                                                         : (is_all_ones ? SparseAllOnes : Sparse)));
                 }
             }
 
@@ -184,6 +197,13 @@ namespace superbblas {
 
             bool is_identity(IndexType imat) const {
                 return is_sparse() ? type[imat] == Identity : false;
+            }
+
+            /// Return whether the imat-th matrices is treated as a permutation matrix
+            /// \param imat: matrix index to inspect
+
+            bool is_permutation(IndexType imat) const {
+                return is_sparse() ? type[imat] == Permutation : false;
             }
 
             /// Return whether the imat-th matrices is treated as as sparse matrix with all nonzero elements being ones
@@ -247,9 +267,9 @@ namespace superbblas {
         }
 
         template <typename SCALAR>
-        inline void xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha,
-                              const SCALAR *a, int lda, const SCALAR *b, int ldb, SCALAR beta,
-                              SCALAR *c, int ldc, Cpu) {
+        __attribute__((always_inline)) inline void
+        xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
+                  int lda, const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
             (void)k;
             assert(k == 3 && (m == 3 || n == 3));
@@ -265,6 +285,22 @@ namespace superbblas {
                     m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, beta, c,
                     ldc, 1, c, ldc, 1);
             }
+        }
+
+        template <typename SCALAR>
+        __attribute__((always_inline)) inline void
+        xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
+                  const int *a_cols_perm, int a_cols_modulus, const SCALAR *alphas, int lda,
+                  const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
+            if (m == 0 || n == 0) return;
+            (void)k;
+            assert(k == 3 && n == 3);
+
+            bool ta = (transa != 'n' && transa != 'N');
+            bool tb = (transb != 'n' && transb != 'N');
+            superbblas::detail_xp::gemm_basic_3x3c_intr4_perm(
+                m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, a_cols_perm,
+                a_cols_modulus, alphas, beta, c, ldc, 1, c, ldc, 1);
         }
 
         ///
@@ -610,7 +646,12 @@ namespace superbblas {
 #        pragma omp parallel
 #    endif
                         {
-                            std::vector<T> aux(ki * ncols * bd);
+                            bool general_case = false;
+                            for (int i = 0; i < kron.nmats; ++i)
+                                if (!kron.is_identity(i) && !(kron.is_permutation(i) && bi == 3))
+                                    general_case = true;
+                            //general_case = true; ///! TEMP!!!
+                            std::vector<T> aux(ki * ncols * bd * (general_case ? 1 : 0));
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
@@ -622,6 +663,14 @@ namespace superbblas {
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
                                         xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
                                                   x + jj[j] * ncols, ki * ncols,
+                                                  nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
+                                                  y + i * ki * ncols * bi, ki * ncols, Cpu{});
+                                    } else if (kron.is_permutation(j0) && bi == 3 /* &&
+                                               false TEMP! */) {
+                                        // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                        xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
+                                                  x + jj[j] * ncols, kron.perm[j0].data(), ki,
+                                                  kron.scalars[j0].data(), ki * ncols,
                                                   nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
                                                   y + i * ki * ncols * bi, ki * ncols, Cpu{});
                                     } else {
