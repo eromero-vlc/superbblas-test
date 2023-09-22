@@ -17,7 +17,8 @@ OTHER_HEADERS := \
   ../include/superbblas/template.h \
   ../include/superbblas/template_types.h \
   ../include/superbblas/template_undef.h \
-  ../include/superbblas/tensor.h
+  ../include/superbblas/tensor.h \
+  ../include/superbblas/version.h
 
 SOURCE := $(MAIN_HEADER) $(OTHER_HEADERS)
 
