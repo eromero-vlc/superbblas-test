@@ -1005,14 +1005,17 @@ namespace superbblas {
             }
 
             // Get the permutation vectors
+            // NOTE: our convention is that the destination permutation is the one more continuous;
+            // so we reversed origin/destination to make the reading from file as continuous as possible
             Indices<Cpu> indices0;
             Indices<XPU1> indices1;
             IndexType disp0, disp1;
             Cpu cpu = v1.ctx().toCpu();
-            get_permutation_origin_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1, cpu,
-                                                   indices0, disp0, co);
-            get_permutation_destination_cache<Nd0, Nd1>(o0, from0, size0, dim0, o1, from1, dim1,
-                                                        v1.ctx(), indices1, disp1, co);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, find_permutation<Nd0, Nd1>(o0, o1), 1);
+            get_permutation_destination_cache<Nd1, Nd0>(o1, from1, size1, dim1, o0, from0, dim0,
+                                                        cpu, indices0, disp0, co);
+            get_permutation_origin_cache<Nd1, Nd0>(o1, from1, size1, dim1, o0, from0, dim0,
+                                                   v1.ctx(), indices1, disp1, co);
 
             // Do the reading
             vector<T, Cpu> v0(indices0.size(), cpu);
