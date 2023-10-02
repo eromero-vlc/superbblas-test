@@ -888,6 +888,59 @@ namespace superbblas {
             return r;
         }
 
+        /// Return the number of dimensions that are contiguous
+        /// \param from: first coordinate to copy
+        /// \param size: number of coordinates to copy in each direction
+        /// \param dim: dimension size for the tensor
+        /// \param co: coordinate linearization order
+        /// \return: {displacement, blocking, permutation}
+
+        template <typename IndexType, std::size_t Nd>
+        std::tuple<std::size_t, IndexType, IndicesT<IndexType, Cpu>>
+        get_normalize_permutation(Coor<Nd> from, Coor<Nd> size, Coor<Nd> dim, CoorOrder co,
+                                  Cpu cpu) {
+
+            // Work with FastToSlow because `get_permutation` works in that way
+            if (co != FastToSlow) {
+                from = reverse(from);
+                size = reverse(size);
+                dim = reverse(dim);
+                co = FastToSlow;
+            }
+
+            // Going from least to most significant, the last contiguous dimension is the one
+            // that the range's size is smaller than the dimension or the range does not start
+            // at the origin.
+            std::size_t nblock = 0, blocking = 1;
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (from[i] + size[i] > dim[i]) break;
+                nblock++;
+                blocking *= size[i];
+                if (from[i] != 0 || size[i] < dim[i]) break;
+            }
+
+            // Normalize from
+            auto new_from = from;
+            IndexType disp = 0;
+            auto strides = get_strides<IndexType>(dim, co);
+            for (std::size_t i = 0; i < Nd; ++i) {
+                if (from[i] + size[i] <= dim[i]) {
+                    new_from[i] = 0;
+                    disp += from[i] * strides[i];
+                }
+            }
+
+            // Normalize size to use blocking
+            Coor<Nd> new_size = size;
+            for (std::size_t i = 0; i < nblock; ++i) new_size[i] = 1;
+
+            // Get permutation
+            auto v =
+                get_permutation(new_from, new_size, dim, strides, AllowImplicitPermutation, cpu);
+
+            return {disp, blocking, v};
+        }
+
         /// Copy the content of tensor v0 into the storage
         /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
@@ -917,7 +970,8 @@ namespace superbblas {
             tracker<XPU0> _t("local save", v0.ctx());
 
             // Shortcut for an empty range
-            if (volume(size0) == 0) return;
+            std::size_t vol = volume(size0);
+            if (vol == 0) return;
 
             // Make agree in ordering source and destination
             if (co != SlowToFast) {
@@ -928,35 +982,27 @@ namespace superbblas {
                 co = SlowToFast;
             }
 
-            // Get the permutation vectors
-            Cpu cpu = v0.ctx().toCpu();
-            auto indices0_pair = get_permutation_origin<IndexType>(
-                o0, from0, size0, dim0, o1, from1, dim1, AllowImplicitPermutation, v0.ctx(), co);
-            auto indices1_pair = get_permutation_destination<IndexType>(
-                o0, from0, size0, dim0, o1, from1, dim1, DontAllowImplicitPermutation, cpu, co);
-            IndicesT<IndexType, XPU0> indices0 = indices0_pair.first;
-            IndicesT<IndexType, Cpu> indices1 = indices1_pair.first;
-            IndexType disp0 = indices0_pair.second, disp1 = indices1_pair.second;
-
             // Write the values of v0 contiguously
-            vector<Q, Cpu> v0_host(indices0.size(), cpu);
-            copy_n<IndexType, T, Q>(alpha, v0.data() + disp0, v0.ctx(), indices0.begin(),
-                                    indices0.ctx(), indices0.size(), v0_host.data(), cpu, nullptr,
-                                    cpu, EWOp::Copy{});
+            Cpu cpu = v0.ctx().toCpu();
+            vector<Q, Cpu> v0_host(vol, cpu);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, find_permutation<Nd0, Nd1>(o0, o1), 1);
+            local_copy<Nd0, Nd1, T, Q>(alpha, o0, from0, size0, dim0, v0, {}, o1, {{}}, size1,
+                                       v0_host, {}, EWOp::Copy{}, co);
 
             // Change endianness
             if (do_change_endianness) change_endianness(v0_host.data(), v0_host.size());
 
-            // Do the copy
-            _t.memops = (double)indices0.size() * sizeof(Q);
+            // Do the saving
+            _t.memops = (double)vol * sizeof(Q);
             std::size_t disp = sto.disp_values[blockIndex];
-            for (std::size_t i = 0; i < indices1.size();) {
-                std::size_t n = 1;
-                for (; i + n < indices1.size() && indices1[i + n - 1] + 1 == indices1[i + n]; ++n)
-                    ;
-                seek(sto.fh, disp + (disp1 + indices1[i]) * sizeof(Q));
-                iwrite(sto.fh, v0_host.data() + i, n, v0_host);
-                i += n;
+            auto t = get_normalize_permutation<IndexType>(from1, size1, dim1, co, cpu);
+            auto disp1 = std::get<0>(t);
+            auto blk1 = std::get<1>(t);
+            IndicesT<IndexType, Cpu> indices1 = std::get<2>(t);
+            for (std::size_t i = 0; i < indices1.size(); ++i) {
+                seek(sto.fh,
+                     disp + (disp1 + (indices1.data() == nullptr ? i : indices1[i])) * sizeof(Q));
+                iwrite(sto.fh, v0_host.data() + i * blk1, blk1, v0_host);
             }
 
             // Compute the checksum if the block is going to be completely overwritten
@@ -1036,7 +1082,8 @@ namespace superbblas {
             tracker<XPU1> _t("local load", v1.ctx());
 
             // Shortcut for an empty range
-            if (volume(size0) == 0) return;
+            std::size_t vol = volume(size0);
+            if (vol == 0) return;
 
             // Make agree in ordering source and destination
             if (co != SlowToFast) {
@@ -1046,38 +1093,26 @@ namespace superbblas {
                 co = SlowToFast;
             }
 
-            // Get the permutation vectors
-            // NOTE: our convention is that the destination permutation is the one more continuous;
-            // so we reversed origin/destination to make the reading from file as continuous as possible
-            Cpu cpu = v1.ctx().toCpu();
-            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, find_permutation<Nd0, Nd1>(o0, o1), 1);
-            auto indices0_pair = get_permutation_destination<IndexType>(
-                o1, from1, size1, dim1, o0, from0, dim0, DontAllowImplicitPermutation, cpu, co);
-            auto indices1_pair = get_permutation_origin<IndexType>(
-                o1, from1, size1, dim1, o0, from0, dim0, AllowImplicitPermutation, v1.ctx(), co);
-            IndicesT<IndexType, Cpu> indices0 = indices0_pair.first;
-            IndicesT<IndexType, XPU1> indices1 = indices1_pair.first;
-            IndexType disp0 = indices0_pair.second, disp1 = indices1_pair.second;
-
             // Do the reading
-            _t.memops = (double)indices0.size() * sizeof(T);
-            vector<T, Cpu> v0(indices0.size(), cpu);
-            for (std::size_t i = 0; i < indices0.size();) {
-                std::size_t n = 1;
-                for (; i + n < indices0.size() && indices0[i + n - 1] + 1 == indices0[i + n]; ++n)
-                    ;
-                seek(fh, disp + (disp0 + indices0[i]) * sizeof(T));
-                read(fh, v0.data() + i, n);
-                i += n;
+            _t.memops = (double)vol * sizeof(T);
+            Cpu cpu = v1.ctx().toCpu();
+            vector<T, Cpu> v0(vol, cpu);
+            auto t = get_normalize_permutation<IndexType>(from0, size0, dim0, co, cpu);
+            auto disp0 = std::get<0>(t);
+            auto blk0 = std::get<1>(t);
+            IndicesT<IndexType, Cpu> indices0 = std::get<2>(t);
+            for (std::size_t i = 0; i < indices0.size(); ++i) {
+                seek(fh,
+                     disp + (disp0 + (indices0.data() == nullptr ? i : indices0[i])) * sizeof(T));
+                read(fh, v0.data() + i * blk0, blk0);
             }
 
             // Change endianness
             if (do_change_endianness) change_endianness(v0.data(), v0.size());
 
             // Write the values of v0 into v1
-            copy_n<IndexType, T, Q>(alpha, v0.data(), v0.ctx(), nullptr, v0.ctx(), indices0.size(),
-                                    v1.data() + disp1, v1.ctx(), indices1.data(), indices1.ctx(),
-                                    EWOP{});
+            local_copy<Nd0, Nd1, T, Q>(alpha, o0, {{}}, size0, size0, (vector<const T, Cpu>)v0, {},
+                                       o1, from1, dim1, v1, {}, EWOp::Copy{}, co);
         }
 
         /// Copy from a storage into the tensor v1
