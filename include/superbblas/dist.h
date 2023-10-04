@@ -3084,12 +3084,6 @@ namespace superbblas {
             if (!check_dimensions(o0, size0, o1, size1, o_r, sizer))
                 throw std::runtime_error("some dimension does not match");
 
-            // Check that v0 and v1 have the same components and on the same device
-            if (!check_components_compatibility(v0, v1))
-                throw std::runtime_error(
-                    "contraction: the two input tensors don't have the same number of components "
-                    "or they don't follow the same order on the devices");
-
             // Get the optimal ordering for the output tensor pr_
             Order<Nd> sug_o0;
             Order<Nd> sug_o1;
