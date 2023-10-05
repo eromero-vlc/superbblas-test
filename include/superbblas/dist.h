@@ -2831,7 +2831,9 @@ namespace superbblas {
             ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request{}};
+            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1 &&
+                check_components_compatibility(v0, v1_sample))
+                return {v0, Request{}};
 
             // Allocate the tensor
             auto v1 = like_this_components(p1, v1_sample, comm, cacheAlloc, zero_init);

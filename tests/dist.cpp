@@ -365,6 +365,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
         tensor<Nd, Scalar, XPU> t2(Labels<Nd>{T, N, S, X, Y, Z, C}, dim, procs, nprocs, rank, xpu);
         tensor<5, Scalar, XPU> tc({T, N, S, N, S}, dim, nprocs, rank, xpu);
         dummyFill(t1);
+        dummyFill(t2);
 
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
@@ -417,6 +418,41 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
         t = w_time() - t;
         if (rank == 0)
             std::cout << "Time in contracting xyz in row major " << t / nrep << std::endl;
+        if (rank == 0) reportTimings(std::cout);
+    }
+    // Contraction gpu and cpu
+    if (!std::is_same<Cpu, XPU>::value) {
+        // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
+        Context ctx_cpu = createCpuContext();
+        Cpu cpu = ctx_cpu.toCpu(0);
+        tensor<Nd, Scalar, XPU> t1(Labels<Nd>{T, N, S, X, Y, Z, C}, dim, procs, nprocs, rank, xpu);
+        tensor<Nd, Scalar, Cpu> t2(Labels<Nd>{T, N, S, X, Y, Z, C}, dim, procs, nprocs, rank, cpu);
+        tensor<5, Scalar, XPU> tc({T, N, S, N, S}, dim, nprocs, rank, xpu);
+        dummyFill(t1);
+        dummyFill(t2);
+
+        double t = 0;
+        for (unsigned int rep = 0; rep <= nrep; ++rep) {
+            if (rep == 1) {
+                resetTimings();
+                sync(xpu);
+                t = w_time();
+            }
+            Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
+            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, 1, t1.order.data(), false,
+                        (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, t2.dim, t2.dim, 1,
+                        "tNSxyzc", false, (const Scalar **)&ptr1, &ctx_cpu, Scalar{0.0},
+                        tc.p.data(), {{}}, tc.dim, tc.dim, 1, "tNSns", &ptrc, &ctx,
+#ifdef SUPERBBLAS_USE_MPI
+                        MPI_COMM_WORLD,
+#endif
+                        SlowToFast);
+        }
+        sync(xpu);
+        t = w_time() - t;
+        if (rank == 0)
+            std::cout << "Time in contracting xyz in column major (gpu x cpu -> gpu) " << t / nrep
+                      << std::endl;
         if (rank == 0) reportTimings(std::cout);
     }
 
