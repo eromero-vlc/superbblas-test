@@ -983,6 +983,7 @@ int main(int argc, char **argv) {
         for (const auto &i : ctx) xpus.push_back(i.toCpu(0));
         test<std::complex<double>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
@@ -995,6 +996,7 @@ int main(int argc, char **argv) {
         test<std::complex<double>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         clearCaches();
         clearHandles();
+        checkForMemoryLeaks(std::cout);
     }
 #endif
 
