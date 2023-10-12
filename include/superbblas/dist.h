@@ -2134,32 +2134,55 @@ namespace superbblas {
 
         /// Return whether the copy operation may need communications
         /// \param p0: partitioning of the origin tensor in consecutive ranges
-        /// \param ncomponents: length of p0
-        /// \param o0: dimension labels for the origin tensor
         /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o0: dimension labels for the origin tensor
         /// \param p1: partitioning of the destination tensor in consecutive ranges
-        /// \param o1: dimension labels for the destination tensor
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param consider_local_copy: whether to exclude the local copies from the origin to the destination
+        ///        tensor in each process from all the transfers to do
 
         template <std::size_t Nd0, std::size_t Nd1>
         bool may_need_communications(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
                                      const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                      const Order<Nd0> &o0, const Proc_ranges<Nd1> &p1,
                                      const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                                     const Order<Nd1> &o1) {
+                                     const Order<Nd1> &o1, bool consider_local_copy) {
 
             assert(p0.size() == p1.size());
             tracker<Cpu> _t("avoid communications", Cpu{});
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
-            for (unsigned int irank = 0; irank < p0.size(); ++irank) {
-                auto fs01 = translate_range(intersection(p0[irank], from0, size0, dim0), from0,
-                                            dim0, from1, dim1, perm0);
-                for (unsigned int jrank = 0; jrank < p0.size(); ++jrank) {
-                    if (irank == jrank) continue;
-                    if (volume(intersection(intersection(p1[jrank], from1, size1, dim1), fs01,
-                                            dim1)) > 0)
-                        return true;
+            Proc_ranges<Nd1> p1_(p1.size());
+            for (unsigned int irank = 0; irank < p1.size(); ++irank)
+                p1_[irank] = intersection(p1[irank], from1, size1, dim1);
+            if (!consider_local_copy) {
+                for (unsigned int irank = 0; irank < p0.size(); ++irank) {
+                    auto fs01 = translate_range(intersection(p0[irank], from0, size0, dim0), from0,
+                                                dim0, from1, dim1, perm0);
+                    for (unsigned int jrank = 0; jrank < p0.size(); ++jrank) {
+                        if (irank == jrank) continue;
+                        if (volume(intersection(p1_[jrank], fs01, dim1)) > 0) return true;
+                    }
+                }
+            } else {
+                Proc_ranges<Nd0> p0_(p0.size());
+                for (unsigned int irank = 0; irank < p0.size(); ++irank)
+                    p0_[irank] = translate_range(intersection(p0[irank], from0, size0, dim0), from0,
+                                                 dim0, from1, dim1, perm0);
+                for (unsigned int jrank = 0; jrank < p1.size(); ++jrank) {
+                    // Local components to copy in rank `jrank`
+                    auto fsj = intersection(p1_[jrank], p0_[jrank], dim1);
+                    for (unsigned int irank = 0; irank < p0.size(); ++irank) {
+                        if (irank == jrank) continue;
+                        // Ranges copied from irank to jrank
+                        auto fsij = intersection(p1_[jrank], p0_[irank], dim1);
+                        // Return true if the elements to copy are more than locally copied
+                        if (volume(fsij) > volume(intersection(fsij, fsj, dim1))) return true;
+                    }
                 }
             }
             return false;
@@ -2291,10 +2314,13 @@ namespace superbblas {
                                                        o1, from1, dim1);
 
                     // Check whether communications can be avoided
+                    // NOTE: when doing copy, avoid doing copy if the destination pieces can be get from
+                    //       the local origin
                     need_comms =
-                        (comm.nprocs <= 1 ? false
-                                          : may_need_communications(p0, from0, size0, dim0, o0, p1,
-                                                                    from1, dim1, o1));
+                        (comm.nprocs <= 1
+                             ? false
+                             : may_need_communications(p0, from0, size0, dim0, o0, p1, from1, dim1,
+                                                       o1, std::is_same<EWOP, EWOp::Copy>::value));
 
                     // Check whether the destination tensor should be zero out because the origin
                     // tensor hasn't full support and some elements aren't going to be _touched_ on the
