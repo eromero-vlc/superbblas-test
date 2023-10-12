@@ -71,16 +71,16 @@ $(HIP_LIB_TARGETS): %_hip_lib: %.cpp
 	       ${SB_LDFLAGS} ${HIPLDFLAGS} ${MPILDFLAGS} ${LDFLAGS} $< -o $@
 
 all_cpu all_cpu_lib all_cuda all_cuda_lib all_hip all_hip_lib: all_%:
-	./blas_$*
-	./storage_$*
-	SB_DEBUG=5 ./bsr_$* --dim='2 2 2 2 2 2'
+	SB_TRACK_MEM=1 ./blas_$*
+	SB_TRACK_MEM=1 ./storage_$*
+	SB_TRACK_MEM=1 SB_DEBUG=5 ./bsr_$* --dim='2 2 2 2 2 2'
 ifeq ($(SUPERBBLAS_WITH_MPI), yes)
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./dist_$*  --procs='1 1 2 3' --dim='4 4 4 4 64'
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 3 --oversubscribe ./dist_$*  --procs='1 1 1 3' --dim='4 4 4 2 64'
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=0 mpirun -np 6 --oversubscribe ./contract_$*
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
-	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4' --components=2
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_TRACK_MEM=1 SB_DEBUG=5 mpirun -np 6 --oversubscribe ./dist_$*  --procs='1 1 2 3' --dim='4 4 4 4 64'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_TRACK_MEM=1 SB_DEBUG=5 mpirun -np 3 --oversubscribe ./dist_$*  --procs='1 1 1 3' --dim='4 4 4 2 64'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_TRACK_MEM=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./dense_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_TRACK_MEM=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4'
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_TRACK_MEM=1 SB_DEBUG=5 mpirun -np 4 --oversubscribe ./bsr_$*  --procs='1 1 2 2' --dim='4 4 4 4 4 4' --components=2
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 SB_TRACK_MEM=1 SB_DEBUG=0 mpirun -np 6 --oversubscribe ./contract_$*
 endif
 
 test_dist_cpu test_dist_cuda test_dist_hip test_dist_cpu_lib test_dist_cuda_lib test_dist_hip_lib: test_dist_%:
