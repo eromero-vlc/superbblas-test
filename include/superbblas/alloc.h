@@ -111,7 +111,8 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
                         gpuCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
 #    elif defined(SUPERBBLAS_USE_HIP)
-                        gpuCheck(hipHostMalloc(&r, sizeof(T) * n, 0));
+                        gpuCheck(hipHostMalloc(&r, sizeof(T) * n,
+                                               hipHostMallocPortable | hipHostMallocNonCoherent));
 #    endif
                     } else {
 #    ifdef SUPERBBLAS_USE_CUDA
