@@ -197,7 +197,7 @@ namespace superbblas {
                 // One pointer is on device and the other on host
 
                 // Perform the operation on the first context stream if it is a gpu (disguised cpu or not)
-                constexpr bool op_on_first = !std::is_same<XPU0, Cpu>::value;
+                bool op_on_first = !v_is_on_cpu;
                 GpuStream stream;
                 if (op_on_first) {
                     causalConnectTo(xpu1, xpu0);
