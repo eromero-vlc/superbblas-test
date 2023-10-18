@@ -501,6 +501,14 @@ namespace superbblas {
         bool some_alloc = false;
         for (Session i = 0; i < 256; ++i)
             if (detail::getAllocations(i).size() > 0) some_alloc = true;
+
+        // Check if the counters are also zero
+        double total_cpu_used = 0, total_gpu_used = 0;
+        for (Session s = 0; s < 256; s++) total_cpu_used += getCpuMemUsed(s);
+        for (Session s = 0; s < 256; s++) total_gpu_used += getGpuMemUsed(s);
+        if (!some_alloc && (total_cpu_used > 0 || total_gpu_used > 0))
+            throw std::runtime_error("checkForMemoryLeaks: memory counters are not consistent");
+
         if (!some_alloc) return;
 
         // Print the allocations

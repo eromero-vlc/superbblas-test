@@ -7,8 +7,10 @@
 #include <unordered_set>
 
 namespace superbblas {
-    namespace detail {
 
+    inline void clearCaches();
+
+    namespace detail {
         /// is_complex<T>::value is true if T is std::complex
         /// \tparam T: type to inspect
 
@@ -272,12 +274,23 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-        inline std::unordered_set<char *> &getAllocatedBuffers(const Gpu &xpu) {
+        inline std::vector<std::unordered_set<char *>> &getAllocatedBuffersGpu() {
             static std::vector<std::unordered_set<char *>> allocs(getGpuDevicesCount() + 1,
                                                                   std::unordered_set<char *>(16));
-            return allocs.at(deviceId(xpu) + 1);
+            return allocs;
+        }
+
+        inline std::unordered_set<char *> &getAllocatedBuffers(const Gpu &xpu) {
+            return getAllocatedBuffersGpu().at(deviceId(xpu) + 1);
         }
 #endif
+
+        inline void clearAllocatedBuffers() {
+            getAllocatedBuffers(Cpu{0}).clear();
+#ifdef SUPERBBLAS_USE_GPU
+            for (auto &it : getAllocatedBuffersGpu()) it.clear();
+#endif
+        }
 
         /// Tag class for all `allocateBufferResouce`
         struct allocate_buffer_t {};
@@ -408,6 +421,12 @@ namespace superbblas {
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }
+    }
+
+    /// Clear all internal caches
+    inline void clearCaches() {
+        detail::clearInternalCaches();
+        detail::clearAllocatedBuffers();
     }
 }
 

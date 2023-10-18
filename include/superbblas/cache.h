@@ -303,12 +303,12 @@ namespace superbblas {
                 throw std::runtime_error("Invalid device");
             return cacheHelper<K, V, H, T>{caches[device + 1]};
         }
-    }
 
-    /// Clear all internal caches
-    inline void clearCaches() {
-        auto &caches = detail::getCaches();
-        for (auto &i : caches) i.resize(0);
+        /// Clear all internal caches
+        inline void clearInternalCaches() {
+            auto &caches = detail::getCaches();
+            for (auto &i : caches) i.resize(0);
+        }
     }
 }
 
