@@ -196,27 +196,22 @@ namespace superbblas {
             } else if (v_is_on_cpu != w_is_on_cpu) {
                 // One pointer is on device and the other on host
 
-                // Perform the operation on the first context stream if it is a gpu (disguised cpu or not)
-                bool op_on_first = !v_is_on_cpu;
-                GpuStream stream;
-                if (op_on_first) {
+                // Perform the operation on the first context stream if it has one (disguised cpu or gpu)
+                if (!std::is_same<XPU0, Cpu>::value) {
                     causalConnectTo(xpu1, xpu0);
                     setDevice(xpu0);
-                    stream = getStream(xpu0);
                 } else {
-                    causalConnectTo(xpu0, xpu1);
                     setDevice(xpu1);
-                    stream = getStream(xpu1);
                 }
                 gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemcpyAsync)(
                     w, v, sizeof(T) * n,
                     !v_is_on_cpu ? SUPERBBLAS_GPU_SYMBOL(MemcpyDeviceToHost)
                                  : SUPERBBLAS_GPU_SYMBOL(MemcpyHostToDevice),
-                    stream));
-                if (op_on_first) {
+                    !std::is_same<XPU0, Cpu>::value ? getStream(xpu0) : getStream(xpu1)));
+                if (!std::is_same<XPU0, Cpu>::value) {
                     causalConnectTo(xpu0, xpu1);
                 } else {
-                    causalConnectTo(xpu1, xpu0);
+                    sync(xpu1);
                 }
             } else {
                 // Both pointers are on device
