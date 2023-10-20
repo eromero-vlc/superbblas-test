@@ -104,6 +104,15 @@ namespace superbblas {
         // Auxiliary functions
         //
 
+        /// Return the given number if it is multiple of the second number or the next multiple
+        /// \param n: number to try
+        /// \param base: multiple to try
+        /// \return: ceil(n/base)*base
+
+        template <typename T> constexpr T multiple_of(T n, T base) {
+            return (n + base - 1) / base * base;
+        }
+
         /// Return the permutations associated to two order
 
         template <std::size_t Nd0, std::size_t Nd1>
@@ -757,8 +766,9 @@ namespace superbblas {
                     for (unsigned int irange = 0; irange < toSend.size(); ++irange)
                         for (const auto &ranges : toSend[irange][rank]) n_rank += volume(ranges);
                 }
-                n += (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize * MpiTypeSize / sizeof(T);
-                counts[rank] = (n_rank * sizeof(T) + MpiTypeSize - 1) / MpiTypeSize;
+                std::size_t new_size = multiple_of(n_rank * sizeof(T), MpiTypeSize);
+                n += new_size / sizeof(T);
+                counts[rank] = new_size / MpiTypeSize;
                 displ[rank] = d;
                 d += counts[rank];
             }
@@ -1248,7 +1258,7 @@ namespace superbblas {
                         }
                     }
 
-                    disp_buf = (disp_buf + num_T - 1) / num_T * num_T;
+                    disp_buf = multiple_of(disp_buf, num_T);
                 }
 
                 // Compute the counts
@@ -2564,7 +2574,7 @@ namespace superbblas {
             auto m = get_labels_mask();
             update_label_mask(o0, m);
             update_label_mask(o1, m);
-            constexpr std::size_t Nd = std::max(Nd0, Nd1);
+            constexpr std::size_t Nd = multiple_of(std::max(Nd0, Nd1), (std::size_t)4);
             auto t0 = dummy_normalize_copy<Nd>(new_p0, from0, size0, dim0, o0, v0, m);
             auto t1 = dummy_normalize_copy<Nd>(new_p1, from1, Coor<Nd1>{{}}, dim1, o1, v1, m);
             return force_local == dontForceLocal
@@ -3223,7 +3233,8 @@ namespace superbblas {
             update_label_mask(o0, m);
             update_label_mask(o1, m);
             update_label_mask(o_r, m);
-            constexpr std::size_t Nd = std::max(std::max(Nd0, Nd1), Ndo);
+            constexpr std::size_t Nd =
+                multiple_of(std::max(std::max(Nd0, Nd1), Ndo), (std::size_t)4);
             auto t0 = dummy_normalize_copy<Nd>(p0, from0, size0, dim0, o0, v0, m);
             auto t1 = dummy_normalize_copy<Nd>(p1, from1, size1, dim1, o1, v1, m);
             auto tr = dummy_normalize_copy<Nd>(pr, fromr, sizer, dimr, o_r, vr, m);
