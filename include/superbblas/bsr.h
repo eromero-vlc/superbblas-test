@@ -1003,10 +1003,10 @@ namespace superbblas {
                             IndexType ncols) const {
 
                 bool is_kron = v.kron_it.size() > 0;
-                check_same_device(vx.ctx(), vy.ctx());
-                check_same_device(vx.ctx(), ii.ctx());
-                causalConnectTo(vy.ctx(), vx.ctx());
-                causalConnectTo(vx.ctx(), ii.ctx());
+                check_same_device(vx_.ctx(), vy_.ctx());
+                check_same_device(vx_.ctx(), ii.ctx());
+                causalConnectTo(vy_.ctx(), vx_.ctx());
+                causalConnectTo(vx_.ctx(), ii.ctx());
                 auto vx = vx_.withNewContext(ii.ctx());
                 auto vy = vy_.withNewContext(ii.ctx());
                 const T *x = vx.data();
