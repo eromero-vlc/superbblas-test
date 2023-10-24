@@ -73,6 +73,16 @@ namespace superbblas {
             align<T>(default_alignment<T>::alignment, sizeof(T), (T *)ptr, sizeof(T));
         }
 
+        /// Macro SUPERBBLAS_HIP_USE_ASYNC_ALLOC controls the use of the asynchronous memory allocation API.
+        /// The API is available since ROCM 5.3 but we noticed problems in 5.4 and the ROCM doc
+        /// still says it is in beta in version 5.7.
+
+#if defined(SUPERBBLAS_USE_HIP)
+#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 8)
+#        define SUPERBBLAS_HIP_USE_ASYNC_ALLOC
+#    endif
+#endif
+
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param xpu: context
@@ -91,6 +101,7 @@ namespace superbblas {
 
             // Do the allocation
             setDevice(xpu);
+            causalConnectTo(getStream(xpu), getAllocStream(xpu));
             T *r = nullptr;
             for (int attempt = 0; attempt < 2; ++attempt) {
                 try {
@@ -127,9 +138,8 @@ namespace superbblas {
                             gpuCheck(cudaMalloc(&r, sizeof(T) * n));
                         }
 #    elif defined(SUPERBBLAS_USE_HIP)
-#        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+#        ifdef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
                         if (!external_use) {
-
                             gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
                         } else
 #        endif
@@ -230,7 +240,7 @@ namespace superbblas {
                     gpuCheck(cudaFree((void *)ptr));
                 }
 #    elif defined(SUPERBBLAS_USE_HIP)
-#        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+#        ifdef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
                 if (!external_use) {
                     gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
                 } else
@@ -243,6 +253,10 @@ namespace superbblas {
             }
 #endif // SUPERBBLAS_USE_GPU
         }
+
+#ifdef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
+#    undef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
+#endif
 
         /// Return a memory allocation with at least n elements of type T
         /// \param n: number of elements of the allocation
