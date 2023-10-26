@@ -225,7 +225,7 @@ namespace superbblas {
         /// Return all caches
         inline std::array<std::vector<cache>, 256> &getCaches() {
             // 2D array of caches, caches[session][deviceId]
-            static std::array<std::vector<cache>, 256> caches{};
+            static std::array<std::vector<cache>, 256> caches{{}};
             return caches;
         }
 
