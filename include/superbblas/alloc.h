@@ -309,6 +309,13 @@ namespace superbblas {
         /// Tag class for all `allocateBufferResouce`
         struct allocate_buffer_t {};
 
+        struct AllocationEntry {
+            std::size_t size;          // allocation size
+            std::shared_ptr<char> res; // allocation resource
+            int device;                // allocStream device
+            bool external_use;         // whether is going to be used for third-party library
+        };
+
         /// Return a memory allocation with at least n elements of type T
         /// \param n: number of elements of the allocation
         /// \param xpu: context
@@ -334,12 +341,6 @@ namespace superbblas {
             // We take extra care for the fake gpu allocations (the ones with device == CPU_DEVICE_ID):
             // we avoid sharing allocations for different backup devices. It should work without this hack,
             // but it avoids correlation between different devices.
-            struct AllocationEntry {
-                std::size_t size;          // allocation size
-                std::shared_ptr<char> res; // allocation resource
-                int device;                // allocStream device
-                bool external_use;         // whether is going to be used for third-party library
-            };
             auto cache =
                 getCache<char *, AllocationEntry, std::hash<char *>, allocate_buffer_t>(xpu);
             auto &all_buffers = getAllocatedBuffers(xpu);
