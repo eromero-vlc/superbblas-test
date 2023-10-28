@@ -8,8 +8,6 @@
 
 namespace superbblas {
 
-    inline void clearCaches();
-
     namespace detail {
         /// is_complex<T>::value is true if T is std::complex
         /// \tparam T: type to inspect
@@ -153,7 +151,7 @@ namespace superbblas {
                     break;
                 } catch (...) {
                     if (attempt == 0) {
-                        clearCaches();
+                        clearInternalCaches(xpu);
                     } else {
                         if (getLogLevel() > 0) {
                             std::cerr << "superbblas::detail::allocate: error allocating "
@@ -440,7 +438,7 @@ namespace superbblas {
 
     /// Clear all internal caches
     inline void clearCaches() {
-        detail::clearInternalCaches();
+        detail::destroyInternalCaches();
         detail::clearAllocatedBuffers();
     }
 }
