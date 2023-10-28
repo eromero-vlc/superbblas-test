@@ -755,7 +755,7 @@ namespace superbblas {
                     gpuSparseCheck(cusparseSetMatIndexBase(*descrA_bsr, CUSPARSE_INDEX_BASE_ZERO));
                     gpuSparseCheck(cusparseSetMatType(*descrA_bsr, CUSPARSE_MATRIX_TYPE_GENERAL));
                 } else {
-                    static_assert(sizeof(IndexType) == 4);
+                    static_assert(sizeof(IndexType) == 4, "unsupported integer other than 32 bits");
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
                     IndexType ki = volume(v.kroni);
