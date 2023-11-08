@@ -428,6 +428,7 @@ int main(int argc, char **argv) {
         test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
         test_copy<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 
 #ifdef SUPERBBLAS_USE_GPU
@@ -444,6 +445,7 @@ int main(int argc, char **argv) {
         test_copy<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
         reportTimings(std::cout);
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 #endif
 
@@ -460,6 +462,7 @@ int main(int argc, char **argv) {
         test_copy_blocking<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Copy{}, nrep);
         test_copy_blocking<std::complex<double>, Cpu>(size, ctx.toCpu(0), EWOp::Add{}, nrep);
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 
 #ifdef SUPERBBLAS_USE_GPU
@@ -476,6 +479,7 @@ int main(int argc, char **argv) {
         test_copy_blocking<std::complex<double>, Gpu>(size, ctx.toGpu(0), EWOp::Add{}, nrep);
         reportTimings(std::cout);
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 #endif
 

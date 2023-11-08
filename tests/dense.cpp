@@ -287,12 +287,14 @@ int main(int argc, char **argv) {
         Context ctx = createCpuContext();
         test<std::complex<float>, Cpu>(dim, procs, rank, ctx, ctx.toCpu(0));
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
         test<std::complex<float>, Gpu>(dim, procs, rank, ctx, ctx.toGpu(0));
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 #endif
 

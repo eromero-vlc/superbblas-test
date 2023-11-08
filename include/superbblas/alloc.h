@@ -7,8 +7,8 @@
 #include <unordered_set>
 
 namespace superbblas {
-    namespace detail {
 
+    namespace detail {
         /// is_complex<T>::value is true if T is std::complex
         /// \tparam T: type to inspect
 
@@ -71,6 +71,16 @@ namespace superbblas {
             align<T>(default_alignment<T>::alignment, sizeof(T), (T *)ptr, sizeof(T));
         }
 
+        /// Macro SUPERBBLAS_HIP_USE_ASYNC_ALLOC controls the use of the asynchronous memory allocation API.
+        /// The API is available since ROCM 5.3 but we noticed problems in 5.4 and the ROCM doc
+        /// still says it is in beta in version 5.7.
+
+#if defined(SUPERBBLAS_USE_HIP)
+#    if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 8)
+#        define SUPERBBLAS_HIP_USE_ASYNC_ALLOC
+#    endif
+#endif
+
         /// Allocate memory on a device
         /// \param n: number of element of type `T` to allocate
         /// \param xpu: context
@@ -89,6 +99,7 @@ namespace superbblas {
 
             // Do the allocation
             setDevice(xpu);
+            causalConnectTo(getStream(xpu), getAllocStream(xpu));
             T *r = nullptr;
             for (int attempt = 0; attempt < 2; ++attempt) {
                 try {
@@ -111,7 +122,8 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_CUDA
                         gpuCheck(cudaHostAlloc(&r, sizeof(T) * n, cudaHostAllocPortable));
 #    elif defined(SUPERBBLAS_USE_HIP)
-                        gpuCheck(hipHostMalloc(&r, sizeof(T) * n, 0));
+                        gpuCheck(hipHostMalloc(&r, sizeof(T) * n,
+                                               hipHostMallocPortable | hipHostMallocNonCoherent));
 #    endif
                     } else {
 #    ifdef SUPERBBLAS_USE_CUDA
@@ -124,9 +136,8 @@ namespace superbblas {
                             gpuCheck(cudaMalloc(&r, sizeof(T) * n));
                         }
 #    elif defined(SUPERBBLAS_USE_HIP)
-#        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+#        ifdef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
                         if (!external_use) {
-
                             gpuCheck(hipMallocAsync(&r, sizeof(T) * n, getAllocStream(xpu)));
                         } else
 #        endif
@@ -140,7 +151,7 @@ namespace superbblas {
                     break;
                 } catch (...) {
                     if (attempt == 0) {
-                        clearCaches();
+                        clearInternalCaches(xpu);
                     } else {
                         if (getLogLevel() > 0) {
                             std::cerr << "superbblas::detail::allocate: error allocating "
@@ -227,7 +238,7 @@ namespace superbblas {
                     gpuCheck(cudaFree((void *)ptr));
                 }
 #    elif defined(SUPERBBLAS_USE_HIP)
-#        if (HIP_VERSION_MAJOR > 5) || (HIP_VERSION_MAJOR == 5 && HIP_VERSION_MINOR >= 3)
+#        ifdef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
                 if (!external_use) {
                     gpuCheck(hipFreeAsync((void *)ptr, getAllocStream(xpu)));
                 } else
@@ -240,6 +251,10 @@ namespace superbblas {
             }
 #endif // SUPERBBLAS_USE_GPU
         }
+
+#ifdef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
+#    undef SUPERBBLAS_HIP_USE_ASYNC_ALLOC
+#endif
 
         /// Return a memory allocation with at least n elements of type T
         /// \param n: number of elements of the allocation
@@ -271,15 +286,33 @@ namespace superbblas {
         }
 
 #ifdef SUPERBBLAS_USE_GPU
-        inline std::unordered_set<char *> &getAllocatedBuffers(const Gpu &xpu) {
+        inline std::vector<std::unordered_set<char *>> &getAllocatedBuffersGpu() {
             static std::vector<std::unordered_set<char *>> allocs(getGpuDevicesCount() + 1,
                                                                   std::unordered_set<char *>(16));
-            return allocs.at(deviceId(xpu) + 1);
+            return allocs;
+        }
+
+        inline std::unordered_set<char *> &getAllocatedBuffers(const Gpu &xpu) {
+            return getAllocatedBuffersGpu().at(deviceId(xpu) + 1);
         }
 #endif
 
+        inline void clearAllocatedBuffers() {
+            getAllocatedBuffers(Cpu{0}).clear();
+#ifdef SUPERBBLAS_USE_GPU
+            for (auto &it : getAllocatedBuffersGpu()) it.clear();
+#endif
+        }
+
         /// Tag class for all `allocateBufferResouce`
         struct allocate_buffer_t {};
+
+        struct AllocationEntry {
+            std::size_t size;          // allocation size
+            std::shared_ptr<char> res; // allocation resource
+            int device;                // allocStream device
+            bool external_use;         // whether is going to be used for third-party library
+        };
 
         /// Return a memory allocation with at least n elements of type T
         /// \param n: number of elements of the allocation
@@ -306,12 +339,6 @@ namespace superbblas {
             // We take extra care for the fake gpu allocations (the ones with device == CPU_DEVICE_ID):
             // we avoid sharing allocations for different backup devices. It should work without this hack,
             // but it avoids correlation between different devices.
-            struct AllocationEntry {
-                std::size_t size;          // allocation size
-                std::shared_ptr<char> res; // allocation resource
-                int device;                // allocStream device
-                bool external_use;         // whether is going to be used for third-party library
-            };
             auto cache =
                 getCache<char *, AllocationEntry, std::hash<char *>, allocate_buffer_t>(xpu);
             auto &all_buffers = getAllocatedBuffers(xpu);
@@ -407,6 +434,12 @@ namespace superbblas {
 #endif
         default: throw std::runtime_error("Unsupported platform");
         }
+    }
+
+    /// Clear all internal caches
+    inline void clearCaches() {
+        detail::destroyInternalCaches();
+        detail::clearAllocatedBuffers();
     }
 }
 

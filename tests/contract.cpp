@@ -465,6 +465,7 @@ int main(int argc, char **argv) {
         test<double>(ctx, xpus);
         test<std::complex<double>>(ctx, xpus);
         clearCaches();
+        checkForMemoryLeaks(std::cout);
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
@@ -478,6 +479,7 @@ int main(int argc, char **argv) {
         test<std::complex<double>>(ctx, xpus);
         clearCaches();
         clearHandles();
+        checkForMemoryLeaks(std::cout);
     }
 #endif
 

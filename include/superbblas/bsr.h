@@ -431,7 +431,7 @@ namespace superbblas {
 
             void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
                             MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
-                            IndexType ncols, T beta = T{0}) const {
+                            IndexType ncols) const {
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
                 IndexType block_size = volume(v.blocki);
                 IndexType ki = volume(v.kroni);
@@ -441,6 +441,7 @@ namespace superbblas {
                 const T *x = vx.data();
                 T *y = vy.data();
                 bool is_kron = v.kron_it.size() > 0;
+                const T beta{0};
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 if (!is_kron) {
                     checkMKLSparse(mkl_sparse_mm(
@@ -591,7 +592,7 @@ namespace superbblas {
 
             void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
                             MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
-                            IndexType ncols, T beta = T{0}) const {
+                            IndexType ncols) const {
                 if (conjA) throw std::runtime_error("Not implemented");
                 if (v.kron_it.size() > 0 && lx != ly) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
@@ -602,6 +603,7 @@ namespace superbblas {
                 IndexType block_rows = volume(v.dimi) / bi / ki;
                 const T *x = vx.data();
                 T *y = vy.data();
+                const T beta{0};
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
                 const bool tx = lx == RowMajor;
@@ -749,6 +751,7 @@ namespace superbblas {
             BSR(BSRComponent<Nd, Ni, T, Gpu> v) : v(v) {
                 if (deviceId(v.it.ctx()) == CPU_DEVICE_ID)
                     throw std::runtime_error("BSR: unsupported a cpu device");
+                setDevice(deviceId(v.it.ctx()));
                 allowLayout = ColumnMajorForY; // Default setting for empty tensor
                 preferredLayout = ColumnMajor; // Default setting for empty tensor
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
@@ -823,7 +826,7 @@ namespace superbblas {
                     gpuSparseCheck(cusparseSetMatIndexBase(*descrA_bsr, CUSPARSE_INDEX_BASE_ZERO));
                     gpuSparseCheck(cusparseSetMatType(*descrA_bsr, CUSPARSE_MATRIX_TYPE_GENERAL));
                 } else {
-                    static_assert(sizeof(IndexType) == 4);
+                    static_assert(sizeof(IndexType) == 4, "unsupported integer other than 32 bits");
                     IndexType num_cols = volume(v.dimd);
                     IndexType num_rows = volume(v.dimi);
                     IndexType ki = volume(v.kroni);
@@ -1066,29 +1069,33 @@ namespace superbblas {
             }
 
         public:
-            void operator()(T alpha, bool conjA, const vector<T, Gpu> &vx, IndexType ldx,
-                            MatrixLayout lx, vector<T, Gpu> &vy, IndexType ldy, MatrixLayout ly,
-                            IndexType ncols, T beta = T{0}) const {
+            void operator()(T alpha, bool conjA, const vector<T, Gpu> &vx_, IndexType ldx,
+                            MatrixLayout lx, vector<T, Gpu> &vy_, IndexType ldy, MatrixLayout ly,
+                            IndexType ncols) const {
 
                 bool is_kron = v.kron_it.size() > 0;
-                check_same_device(vx.ctx(), vy.ctx());
-                check_same_device(vx.ctx(), ii.ctx());
-                causalConnectTo(vy.ctx(), vx.ctx());
-                causalConnectTo(vx.ctx(), ii.ctx());
+                check_same_device(vx_.ctx(), vy_.ctx());
+                check_same_device(vx_.ctx(), ii.ctx());
+                causalConnectTo(vy_.ctx(), vx_.ctx());
+                causalConnectTo(vx_.ctx(), ii.ctx());
+                auto vx = vx_.withNewContext(ii.ctx());
+                auto vy = vy_.withNewContext(ii.ctx());
                 const T *x = vx.data();
                 T *y = vy.data();
+                const T beta{0};
 
                 IndexType num_cols = volume(v.dimd);
                 IndexType num_rows = volume(v.dimi);
                 if (num_cols == 0 || num_rows == 0 || ncols == 0) return;
 
-                if (deviceId(vx.ctx()) == CPU_DEVICE_ID || deviceId(vy.ctx()) == CPU_DEVICE_ID)
+                if (deviceId(vx_.ctx()) == CPU_DEVICE_ID || deviceId(vy_.ctx()) == CPU_DEVICE_ID)
                     throw std::runtime_error("BSR::operator: gpu implementation does not support "
                                              "cpu input/output tensors");
 
                 if (!is_kron) {
+                    xscal(vy.size(), beta, y, 1, vy.ctx());
                     matvec(alpha, conjA, x, ldx, lx, y, ldy, ly, ncols, beta);
-                    causalConnectTo(ii.ctx(), vy.ctx());
+                    causalConnectTo(ii.ctx(), vy_.ctx());
                     return;
                 }
 
@@ -1119,7 +1126,7 @@ namespace superbblas {
 
                     // Pre-apply the beta if the computation is going to break in chunks
                     if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
-                        xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+                        xscal(num_rows * ncols, beta, y, 1, ii.ctx());
 
                     // Process up to `max_ncols` at a time
                     for (IndexType i0 = 0, ncols0 = std::min(ncols, max_ncols); i0 < ncols;
@@ -1130,7 +1137,7 @@ namespace superbblas {
                         if (ncols0 != ncols) {
                             auxx =
                                 vector<T, Gpu>((std::size_t)kd * ncols0 * block_size * block_cols,
-                                               v.it.ctx(), doCacheAlloc);
+                                               ii.ctx(), doCacheAlloc);
                             x0 = auxx.data();
                             Coor<3> dimx{kd, ncols, block_size * block_cols};
                             Coor<3> dimx0{kd, ncols0, block_size * block_cols};
@@ -1143,7 +1150,7 @@ namespace superbblas {
                         // Contract the Kronecker part: for each direction mu do:
                         //  (ki,kd)[mu] x (kd,ncols,bd,rows) -> (ki,ncols,bd,rows,mu)
                         vector<T, Gpu> aux(ki * ncols0 * block_size * block_cols * num_nnz_per_row,
-                                           v.it.ctx(), doCacheAlloc);
+                                           ii.ctx(), doCacheAlloc);
                         zero_n(aux.data(), aux.size(), aux.ctx());
                         const bool tb = !v.blockImFast;
                         xgemm_batch_strided(
@@ -1197,7 +1204,7 @@ namespace superbblas {
 
                     // Pre-apply the beta if the computation is going to break in chunks
                     if (std::norm(beta) != 0 && beta != T{1} && max_ncols != ncols)
-                        xscal(num_rows * ncols, beta, y, 1, v.it.ctx());
+                        xscal(num_rows * ncols, beta, y, 1, ii.ctx());
 
                     // Process up to `max_ncols` at a time
                     for (IndexType i0 = 0, ncols0 = std::min(ncols, max_ncols); i0 < ncols;
@@ -1246,7 +1253,7 @@ namespace superbblas {
                 } else
                     throw std::runtime_error(
                         "BSR operator(): unsupported input/output tensor layout");
-                causalConnectTo(ii.ctx(), vy.ctx());
+                causalConnectTo(ii.ctx(), vy_.ctx());
             }
 
             ~BSR() {}
@@ -1310,6 +1317,25 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T>
         using BSRComponents = BSRComponents_tmpl<Nd, Ni, T, Cpu, Cpu>;
 #endif // SUPERBBLAS_USE_GPU
+
+        /// Return a components based on the nonzeros of a BSR operator
+        /// \param bsr: BSR operator
+
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU0, typename XPU1>
+        Components_tmpl<Ni, T, XPU0, XPU1>
+        get_mock_components(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr) {
+            Components_tmpl<Ni, T, XPU0, XPU1> r;
+            for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
+                r.first.push_back(Component<Ni, T, XPU0>{
+                    bsr.c.first[i].v.it, {{}}, bsr.c.first[i].v.componentId, Mask<XPU0>{}});
+            }
+            for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
+                r.second.push_back(Component<Ni, T, XPU1>{
+                    bsr.c.second[i].v.it, {{}}, bsr.c.second[i].v.componentId, Mask<XPU1>{}});
+            }
+
+            return r;
+        }
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm>
         BSRComponents<Nd, Ni, T>
@@ -2036,10 +2062,6 @@ namespace superbblas {
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
 
-            // Set zero
-            local_copy<Ny, Ny, T, T>(0, oy, {{}}, dimy, dimy, (vector<const T, XPU>)vy, Mask<XPU>{},
-                                     oy, {{}}, dimy, vy, Mask<XPU>{}, EWOp::Copy{}, bsr.v.co);
-
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
             IndexType ki = volume(bsr.v.kroni);
             IndexType kd = volume(bsr.v.krond);
@@ -2186,21 +2208,6 @@ namespace superbblas {
                 throw std::runtime_error("Unsupported to use a different coordinate ordering that "
                                          "one used to create the matrix");
 
-            // Check that vm and vx have the same components and on the same device
-            if (bsr.c.first.size() != vx.first.size() || bsr.c.second.size() != vx.second.size())
-                throw std::runtime_error(
-                    "the two input tensors should have the same number of components");
-            bool unmatch_dev = false;
-            for (unsigned int i = 0; i < bsr.c.first.size(); ++i)
-                if (deviceId(bsr.c.first[i].v.it.ctx()) != deviceId(vx.first[i].it.ctx()))
-                    unmatch_dev = true;
-            for (unsigned int i = 0; i < bsr.c.second.size(); ++i)
-                if (deviceId(bsr.c.second[i].v.it.ctx()) != deviceId(vx.second[i].it.ctx()))
-                    unmatch_dev = true;
-            if (unmatch_dev)
-                throw std::runtime_error(
-                    "Each component of the input tensors should be on the same device");
-
             /// Get power and bring pieces of BSR operator to do powers without extra communications
             unsigned int power = 1;
             unsigned int power_pos = 0;
@@ -2251,8 +2258,8 @@ namespace superbblas {
             Proc_ranges<Nx> px_ = pxy_.first;
             ForceLocal force_local = (just_local ? doForceLocal : dontForceLocal);
             auto vx_and_req = reorder_tensor_request(
-                px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, comm, co,
-                power > 1 /* force copy when power > 1 */, doCacheAlloc, force_local);
+                px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, get_mock_components(bsr),
+                comm, co, power > 1 /* force copy when power > 1 */, doCacheAlloc, force_local);
             Components_tmpl<Nx, T, XPU0, XPU1> vx_ = vx_and_req.first;
 
             // Scale the output vector if beta isn't 0 or 1

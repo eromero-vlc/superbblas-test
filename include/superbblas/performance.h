@@ -475,6 +475,53 @@ namespace superbblas {
             return allocs[session];
         }
     }
+
+    /// Report current memory allocations
+    /// \param s: stream to write the report
+
+    template <typename OStream> void reportCurrentMemoryAllocations(OStream &s) {
+        if (!getTrackingMemory()) return;
+
+        // Check if there is some memory allocation
+        bool some_alloc = false;
+        for (Session i = 0; i < 256; ++i)
+            if (detail::getAllocations(i).size() > 0) some_alloc = true;
+        if (!some_alloc) return;
+
+        // Print current allocations
+        s << "Current memory allocation from superbblas:" << std::endl;
+        s << "-----------------------------" << std::endl;
+        for (Session i = 0; i < 256; ++i)
+            for (const auto &it : detail::getAllocations(i))
+                s << it.first << ": " << (double)it.second / 1024 / 1024 / 1024 << " GiB"
+                  << std::endl;
+    }
+
+    /// Throw an exception after reporting the current memory allocations if there is any
+    /// \param s: stream to write the report
+
+    template <typename OStream> void checkForMemoryLeaks(OStream &s) {
+        if (!getTrackingMemory()) return;
+
+        // Check if there is some memory allocation
+        bool some_alloc = false;
+        for (Session i = 0; i < 256; ++i)
+            if (detail::getAllocations(i).size() > 0) some_alloc = true;
+
+        // Check if the counters are also zero
+        double total_cpu_used = 0, total_gpu_used = 0;
+        for (Session s = 0; s < 256; s++) total_cpu_used += getCpuMemUsed(s);
+        for (Session s = 0; s < 256; s++) total_gpu_used += getGpuMemUsed(s);
+        if (!some_alloc && (total_cpu_used > 0 || total_gpu_used > 0))
+            throw std::runtime_error("checkForMemoryLeaks: memory counters are not consistent");
+
+        if (!some_alloc) return;
+
+        // Print the allocations
+        reportCurrentMemoryAllocations(s);
+
+        throw std::runtime_error("checkForMemoryLeaks: some allocations are still around");
+    }
 }
 
 #endif // __SUPERBBLAS_PERFORMANCE__

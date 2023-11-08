@@ -21,7 +21,8 @@ OTHER_HEADERS := \
   ../include/superbblas/template_types.h \
   ../include/superbblas/template_undef.h \
   ../include/superbblas/tenfucks.h \
-  ../include/superbblas/tensor.h
+  ../include/superbblas/tensor.h \
+  ../include/superbblas/version.h
 TESTS := \
   ../tests/blas.cpp \
   ../tests/bsr.cpp \

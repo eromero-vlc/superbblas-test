@@ -82,7 +82,9 @@ namespace superbblas {
             cache(std::size_t maxCacheSize = 0)
                 : maxCacheSize(maxCacheSize), currentSize(0), timestamp(0) {}
 
-            ~cache() { clear(); }
+            ~cache() {
+                for (const auto &it : caches) delete it.second;
+            }
 
             /// Get the maximum storage for all objects allocated on the this cache
 
@@ -107,8 +109,11 @@ namespace superbblas {
         public:
             /// Remove all entries in the cache and start over
             void clear() {
-                for (const auto &it : caches) delete it.second;
-                timestamps.clear();
+                while (!timestamps.empty()) {
+                    auto it = timestamps.begin();
+                    currentSize -= it->second->deleteTs(it->first);
+                    timestamps.erase(it);
+                }
                 timestamp = 0;
             }
 
@@ -223,9 +228,9 @@ namespace superbblas {
         };
 
         /// Return all caches
-        inline std::array<std::vector<cache>, 256> &getCaches() {
-            // 2D array of caches, caches[session][deviceId]
-            static std::array<std::vector<cache>, 256> caches{};
+        inline std::vector<cache> &getCaches() {
+            // Array of caches, caches[deviceId]
+            static std::vector<cache> caches;
             return caches;
         }
 
@@ -261,40 +266,35 @@ namespace superbblas {
 
         /// Return the caches associated to the devices
         inline std::vector<cache> &getCaches(Session session) {
+            if (session != 0) throw std::runtime_error("superbblas does not support sessions");
             auto &caches = getCaches();
-            static std::mutex m;
 
             // Initialize caches
-            if (caches[255].size() == 0) {
-                std::lock_guard<std::mutex> g(m);
+            if (caches.size() == 0) {
+                // Get maximum memory use for CPU cache
+                std::size_t cacheMaxSizeCpu = getMaxCpuCacheSize();
 
-                if (caches[255].size() == 0) {
-                    for (Session s = 0; s < 256; ++s) {
-                        // Get maximum memory use for CPU cache
-                        std::size_t cacheMaxSizeCpu = getMaxCpuCacheSize();
-
-                        // Create the cache for the cpu objects and set the maximum size
-                        std::vector<cache> cache_s(1);
-                        cache_s[0].setMaxCacheSize(cacheMaxSizeCpu);
+                // Create the cache for the cpu objects and set the maximum size
+                std::vector<cache> cache_s(1);
+                cache_s[0].setMaxCacheSize(cacheMaxSizeCpu);
 
 #ifdef SUPERBBLAS_USE_GPU
-                        // Get maximum memory use for GPU cache
-                        std::size_t cacheMaxSizeGpu = getMaxGpuCacheSize();
+                // Get maximum memory use for GPU cache
+                std::size_t cacheMaxSizeGpu = getMaxGpuCacheSize();
 
-                        // Create the caches for the gpu objects and set the maximum size
-                        int numDevices = getGpuDevicesCount();
-                        cache_s.resize(numDevices + 1);
-                        for (int d = 0; d < numDevices; ++d)
-                            cache_s[d + 1].setMaxCacheSize(cacheMaxSizeGpu);
+                // Create the caches for the gpu objects and set the maximum size
+                int numDevices = getGpuDevicesCount();
+                cache_s.resize(numDevices + 1);
+                for (int d = 0; d < numDevices; ++d)
+                    cache_s[d + 1].setMaxCacheSize(cacheMaxSizeGpu);
 #endif
-                        std::swap(caches[s], cache_s);
-                    }
-                }
+                caches = cache_s;
             }
-            return caches[session];
+            return caches;
         }
 
         /// Return the cache to store objects on the device
+        /// \param xpu: context
         template <typename K, typename V, typename H, typename T = std::tuple<K, V>, typename XPU>
         inline cacheHelper<K, V, H, T> getCache(XPU xpu) {
             auto &caches = getCaches(xpu.session);
@@ -303,12 +303,19 @@ namespace superbblas {
                 throw std::runtime_error("Invalid device");
             return cacheHelper<K, V, H, T>{caches[device + 1]};
         }
-    }
 
-    /// Clear all internal caches
-    inline void clearCaches() {
-        auto &caches = detail::getCaches();
-        for (auto &i : caches) i.resize(0);
+        /// Clear all internal caches for a device
+        /// \param xpu: context
+        /// NOTE: this function can be called anytime
+
+        template <typename XPU> inline void clearInternalCaches(XPU xpu) {
+            detail::getCaches().at(deviceId(xpu) + 1).clear();
+        }
+
+        /// Destroy all internal caches
+        /// NOTE: this function can not be called while operating with the cache
+
+        inline void destroyInternalCaches() { detail::getCaches().resize(0); }
     }
 }
 

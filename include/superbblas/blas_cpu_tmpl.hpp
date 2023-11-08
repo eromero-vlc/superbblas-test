@@ -506,7 +506,7 @@ namespace superbblas {
                                                      BLASINT cols, BLASINT block_size,
                                                      BLASINT *rows_start, BLASINT *rows_end,
                                                      BLASINT *col_indx, SCALAR *values) {
-            static_assert(sizeof(SCALAR) == sizeof(MKL_SCALAR));
+            static_assert(sizeof(SCALAR) == sizeof(MKL_SCALAR), "wtf");
             return XSPCREATEBSR(A, indexing, block_layout, rows, cols, block_size, rows_start,
                                 rows_end, col_indx, (MKL_SCALAR *)values);
         }
@@ -516,7 +516,7 @@ namespace superbblas {
                                              sparse_layout_t layout, const SCALAR *B,
                                              BLASINT columns, BLASINT ldb, SCALAR beta, SCALAR *C,
                                              BLASINT ldc) {
-            static_assert(sizeof(SCALAR) == sizeof(MKL_SCALAR));
+            static_assert(sizeof(SCALAR) == sizeof(MKL_SCALAR), "wtf");
             return XSPMM(operation, PASS_SCALAR(alpha), A, descr, layout, (MKL_SCALAR *)B, columns,
                          ldb, PASS_SCALAR(beta), (MKL_SCALAR *)C, ldc);
         }
