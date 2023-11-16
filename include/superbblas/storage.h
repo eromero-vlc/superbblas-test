@@ -407,56 +407,6 @@ namespace superbblas {
 
 #endif // SUPERBBLAS_USE_MPI
 
-        /// Range begin, end, and current state
-        template <std::size_t N, typename GRID> struct Grid_range {
-            // Current iterators
-            std ::array<typename GRID::const_iterator, N> it;
-            // List of N grids
-            const GRID *const grid;
-            /// Don't iterate on this dimension
-            std::size_t const excepting;
-
-            Grid_range(const GRID *grid, std::size_t excepting = N)
-                : grid(grid), excepting(excepting) {
-                for (std::size_t i = 0; i < N; ++i) {
-                    if (i == excepting) continue;
-                    it[i] = grid[i].begin();
-                }
-            }
-
-            std::size_t volume() const {
-                if (N == 0 || (N == 1 && excepting == 0)) return 0;
-                std::size_t vol = 1;
-                for (std::size_t i = 0; i < N; ++i) {
-                    if (i == excepting) continue;
-                    vol *= grid[i].size();
-                }
-                return vol;
-            }
-
-            Grid_range<N, GRID> &operator++() {
-                for (std::size_t i = 0; i < N; ++i) {
-                    if (i == excepting) continue;
-                    ++it[i];
-                    if (it[i] != grid[i].end()) return *this;
-                    it[i] = grid[i].begin();
-                }
-                return *this;
-            }
-
-            Grid_range<N, GRID> &operator--() {
-                for (std::size_t i = 0; i < N; ++i) {
-                    if (i == excepting) continue;
-                    if (it[i] != grid[i].begin()) {
-                        --it[i];
-                        return *this;
-                    }
-                    it[i] = --grid[i].end();
-                }
-                return *this;
-            }
-        };
-
         /// Data-structure to accelerate the intersection of sparse tensors
         template <std::size_t N, typename Key = void> struct GridHash {
             /// Index element in `blocks` and `values`
@@ -467,22 +417,13 @@ namespace superbblas {
             std::vector<From_size_item<N>> blocks;
             /// Values associated to each block
             std::vector<Key> values;
-            /// Index of the next block to insert into the grid
-            BlockIndex next_block_to_grid;
 
-            /// Ordered list
-            template <typename T> using ordered_list = std::set<T>;
             /// Set of hyperplanes forming a non-regular grid
-            using Grid = std::array<ordered_list<IndexType>, N>;
-            /// Unordered hyperplanes
-            using Unsorted_Grid = std::array<std::vector<IndexType>, N>;
-
-            /// Set of hyperplanes containing the faces of each nonzero subtensor
-            Grid grid;
+            std::array<From_size<1>, N> grid;
             /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
-            std::unordered_multimap<std::size_t, BlockIndex> gridToBlocks;
+            std::unordered_multimap<Coor<N>, BlockIndex, TupleHash<Coor<N>>> gridToBlocks;
 
-            GridHash(Coor<N> dim) : dim{dim}, next_block_to_grid(0), grid{{}}, gridToBlocks{16} {
+            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks{16} {
                 assert(check_positive(dim));
             }
 
@@ -497,76 +438,38 @@ namespace superbblas {
                 // Add the new block
                 blocks.push_back({from, size});
                 values.push_back(key);
-            }
 
-            void insert_pending_blocks() {
-                for (BlockIndex iblock = next_block_to_grid; iblock < blocks.size(); ++iblock) {
-                    auto from = blocks[iblock][0];
-                    auto size = blocks[iblock][1];
-
-                    // Add the faces of the given range as hyperplanes on the grid
-                    for (std::size_t i = 0; i < N; ++i) {
-                        add_hyperplane(from[i], i);
-                        if (from[i] + size[i] >= dim[i]) {
-                            add_hyperplane(dim[i] - 1, i);
-                            add_hyperplane(0, i);
-                        }
-                        add_hyperplane(from[i] + size[i], i);
-                    }
+                // Append the new intervals
+                for (unsigned int i = 0; i < N; ++i) {
+                    From_size<1> fs(1, {from[i], size[i]});
+                    for (const auto &j : grid[i])
+                        fs = detail::intersection(
+                            fs, Coor<1>{normalize_coor(j[0][0] + j[1][0], dim[i])},
+                            Coor<1>{dim[i] - j[1][0]}, Coor<1>{dim[i]});
+                    grid[i].insert(grid[i].end(), fs.begin(), fs.end());
                 }
 
-                for (; next_block_to_grid < blocks.size(); ++next_block_to_grid) {
-                    auto from = blocks[next_block_to_grid][0];
-                    auto size = blocks[next_block_to_grid][1];
-
-                    // Check if the block has overlaps with other blocks in this tensor
-                    std::size_t vol = volume(size);
-                    std::size_t vol_overlaps =
-                        get_overlap_volume(from, size, false /* don't check for pending blocks */);
-                    if (vol == vol_overlaps) continue;
-                    if (vol_overlaps != 0)
-                        throw std::runtime_error(
-                            "Ups! Unsupported the addition of blocks with partial support "
-                            "on the sparse tensor");
-
-                    // Add new block on the grid
-                    Unsorted_Grid g = grid_intersection(from, size);
-                    Grid_range<N, std::vector<IndexType>> git(&g[0]);
-                    Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
-                    for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
-                        Coor<N> g_coor;
-                        for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
-                        std::size_t new_grid_index = coor2index(g_coor, dim, dim_strides);
-                        gridToBlocks.insert(std::make_pair(new_grid_index, next_block_to_grid));
-                    }
-                }
+                // Inserting the key into the grid
+                for (const auto &gi : grid_intersection(from, size))
+                    gridToBlocks.insert({gi, blocks.size() - 1});
             }
 
             /// Return a list of the blocks, the intersection relative to the blocks, and the
             /// associated keys of blocks with non-empty overlap with the given range.
             std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>>
-            intersection(Coor<N> from, Coor<N> size, bool check_for_pending_blocks = true) const {
+            intersection(Coor<N> from, Coor<N> size) const {
                 // Shortcut for empty ranges
                 if (volume(size) == 0) return {};
 
-                // Check that there is no pending blocks
-                if (check_for_pending_blocks && next_block_to_grid != blocks.size())
-                    throw std::runtime_error("wtf");
-
-                // Compute the intersections between the given range the grid
-                Unsorted_Grid g = grid_intersection(from, size);
+                // Normalize from when being the whole dimension
+                from = normalize_from(from, size);
 
                 // Compute the return
                 std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>> r;
-                Grid_range<N, std::vector<IndexType>> git(&g[0]);
-                Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
-                std::set<BlockIndex> visited;
-                for (std::size_t g_i = 0, g_vol = git.volume(); g_i < g_vol; ++g_i, ++git) {
-                    Coor<N> g_coor;
-                    for (std::size_t i = 0; i < N; ++i) g_coor[i] = *git.it[i];
-                    std::size_t grid_index = coor2index(g_coor, dim, dim_strides);
-                    auto range = gridToBlocks.equal_range(grid_index);
-                    for (auto it = range.first; it != range.second; ++it) {
+                std::unordered_set<BlockIndex> visited(16);
+                for (const auto &gi : grid_intersection(from, size)) {
+                    const auto ranges = gridToBlocks.equal_range(gi);
+                    for (auto it = ranges.first; it != ranges.second; ++it) {
                         BlockIndex bidx = it->second;
 
                         // Skip if already visited
@@ -589,103 +492,40 @@ namespace superbblas {
             }
 
             /// Return the overlap volume of the given range on this tensor
-            std::size_t get_overlap_volume(Coor<N> from, Coor<N> size,
-                                           bool check_for_pending_blocks = true) {
-                auto overlaps = intersection(from, size, check_for_pending_blocks);
+            std::size_t get_overlap_volume(Coor<N> from, Coor<N> size) {
+                auto overlaps = intersection(from, size);
                 std::size_t vol_overlaps = 0;
                 for (const auto &i : overlaps) vol_overlaps += volume(i.first[1][1]);
                 return vol_overlaps;
             }
 
         private:
-            /// Return the first hyperplane whose slice contains the point
-            ordered_list<IndexType>::iterator get_hyperslice(IndexType from, std::size_t n) const {
-                if (grid[n].size() == 0) return grid[n].end();
-
-                Grid_range<1, std::set<IndexType>> git(&grid[n]);
-                git.it[0] = grid[n].lower_bound(from);
-                if (git.it[0] == grid[n].end()) return --grid[n].end();
-                if (*git.it[0] != from) --git;
-                return git.it[0];
-            }
-
             /// Return the subgrid with overlaps with the given range
-            Unsorted_Grid grid_intersection(Coor<N> from, Coor<N> size) const {
-                // Normalize from when being the whole dimension
-                from = normalize_from(from, size);
+            std::vector<Coor<N>> grid_intersection(Coor<N> from, Coor<N> size) const {
+                // Find all the intersections with the intervals in each direction
+                std::array<std::vector<IndexType>, N> intervals{{}};
+                for (std::size_t i = 0; i < N; ++i)
+                    for (unsigned int fs_index = 0; fs_index < grid[i].size(); ++fs_index)
+                        if (volume(detail::intersection(grid[i][fs_index][0], grid[i][fs_index][1],
+                                                        Coor<1>{from[i]}, Coor<1>{size[i]},
+                                                        Coor<1>{dim[i]})) > 0)
+                            intervals[i].push_back(fs_index);
 
-                Unsorted_Grid r{};
-                for (std::size_t i = 0; i < N; ++i) {
-                    if (grid[i].size() == 0) continue;
-                    if (grid[i].size() == 1) {
-                        r[i].push_back(*grid[i].begin());
-                        continue;
-                    }
-
-                    Grid_range<1, std::set<IndexType>> git(&grid[i]);
-                    git.it[0] = get_hyperslice(from[i], i);
-                    IndexType gFrom = *git.it[0];
-                    ++git;
-                    for (std::size_t j = 0, vol = git.volume();
-                         j < vol && has_overlap(from[i], size[i], gFrom,
-                                                normalize_coor(*git.it[0] - gFrom, dim[i]), dim[i]);
-                         gFrom = *git.it[0], ++git, ++j)
-                        r[i].push_back(gFrom);
+                // Produce all the Cartesian combinations
+                Coor<N> subgrid_dim;
+                for (std::size_t i = 0; i < N; ++i) subgrid_dim[i] = intervals[i].size();
+                Coor<N> subgrid_stride = get_strides<IndexType>(subgrid_dim, FastToSlow);
+                std::vector<Coor<N>> r;
+                IndexType vol = volume(subgrid_dim);
+                r.reserve(vol);
+                for (IndexType subgrid_index = 0; subgrid_index < vol; ++subgrid_index) {
+                    auto c = index2coor(subgrid_index, subgrid_dim, subgrid_stride);
+                    Coor<N> gi;
+                    for (std::size_t i = 0; i < N; ++i) gi[i] = intervals[i][c[i]];
+                    r.push_back(gi);
                 }
+
                 return r;
-            }
-
-            void add_hyperplane(IndexType from, std::size_t n) {
-                // Normalize
-                from = detail::normalize_coor(from, dim[n]);
-
-                // Skip if the hyperplane is already in the grid
-                if (grid[n].count(from) > 0) return;
-
-                if (grid[n].size() > 0) {
-                    // Figure out the hyperplanes that contain `from`
-                    IndexType gFrom = *get_hyperslice(from, n);
-
-                    // Insert the new hyperplanes
-                    Coor<N, std::size_t> dim_strides = get_strides<std::size_t>(dim, SlowToFast);
-                    Grid_range<N, std::set<IndexType>> git(&grid[0], n);
-                    std::vector<BlockIndex> affected_blocks;
-                    for (std::size_t i = 0, vol = git.volume(); i < vol; ++git, ++i) {
-                        // Get the coordinates of an old cell
-                        Coor<N> g_coor;
-                        for (std::size_t j = 0; j < N; ++j)
-                            if (j != n) g_coor[j] = *git.it[j];
-                        g_coor[n] = gFrom;
-                        std::size_t grid_index = coor2index(g_coor, dim, dim_strides);
-
-                        // Get the coordinates of the new cell
-                        g_coor[n] = from;
-                        std::size_t new_grid_index = coor2index(g_coor, dim, dim_strides);
-
-                        // Insert all subtensors on the old cell also on the new cell
-                        auto range = gridToBlocks.equal_range(grid_index);
-                        affected_blocks.resize(0);
-                        for (auto it = range.first; it != range.second; ++it)
-                            affected_blocks.push_back(it->second);
-                        for (BlockIndex b : affected_blocks)
-                            gridToBlocks.insert(std::make_pair(new_grid_index, b));
-                    }
-                }
-
-                // Add hyperplanes
-                grid[n].insert(from);
-            }
-
-            /// Return whether the given ranges overlap
-            /// NOTE: the first range can refer to a periodic lattice, but not the second
-            static bool has_overlap(IndexType from0, IndexType size0, IndexType from1,
-                                    IndexType size1, IndexType dim) {
-
-                if (size0 <= 0 || size1 <= 0) throw std::runtime_error("This shouldn't happen");
-                if (from0 + size0 > from1 && from0 < from1 + size1) return true;
-                from1 += dim;
-                if (from0 + size0 > from1 && from0 < from1 + size1) return true;
-                return false;
             }
 
             // Normalize from when being the whole dimension
@@ -1605,7 +1445,6 @@ namespace superbblas {
                 sto.disp_values.push_back(values_start);
                 values_start += num_values[i] * sizeof(Q);
             }
-            sto.blocks.insert_pending_blocks();
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
@@ -1742,10 +1581,6 @@ namespace superbblas {
                 // Store checksum on sto
                 if (sto.checksum == GlobalChecksum) sto.checksum_val = d;
             }
-
-            // For files with many blocks, this operation may take a lot of time, so
-            // do it at the opening
-            sto.blocks.insert_pending_blocks();
         }
 
         /// Open a storage for reading and writing
