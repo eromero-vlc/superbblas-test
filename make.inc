@@ -20,7 +20,8 @@ else
 endif
 
 #CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
-CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+#CXXFLAGS ?= -Ofast -march=native -fsanitize=address,leak,undefined -fno-omit-frame-pointer -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+CXXFLAGS ?= -Ofast -march=native -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
 LDFLAGS ?= $(BLAS_LDFLAGS)
 
 #

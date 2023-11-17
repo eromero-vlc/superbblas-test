@@ -418,7 +418,7 @@ namespace superbblas {
             /// Values associated to each block
             std::vector<Key> values;
 
-            /// Set of hyperplanes forming a non-regular grid
+            /// List of hyperplanes forming a non-regular grid
             std::array<From_size<1>, N> grid;
             /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
             std::unordered_multimap<Coor<N>, BlockIndex, TupleHash<Coor<N>>> gridToBlocks;
@@ -427,7 +427,12 @@ namespace superbblas {
                 assert(check_positive(dim));
             }
 
-            void append_block(Coor<N> from, Coor<N> size, Key key) {
+            /// Insert a key associated to a range
+            /// \param from: coordinates of the first element in the range
+            /// \param size: dimensions of the range
+            /// \param key: key associate to the range
+
+            void append_block(Coor<N> from, const Coor<N> &size, const Key &key) {
                 // Shortcut for empty ranges
                 std::size_t vol = volume(size);
                 if (vol == 0) return;
@@ -441,11 +446,14 @@ namespace superbblas {
 
                 // Append the new intervals
                 for (unsigned int i = 0; i < N; ++i) {
+                    // fs = {from, size} - \sum_j grid[i]_j
                     From_size<1> fs(1, {from[i], size[i]});
                     for (const auto &j : grid[i])
                         fs = detail::intersection(
                             fs, Coor<1>{normalize_coor(j[0][0] + j[1][0], dim[i])},
                             Coor<1>{dim[i] - j[1][0]}, Coor<1>{dim[i]});
+
+                    // Insert the remaining at the end of the list of ranges in that direction
                     grid[i].insert(grid[i].end(), fs.begin(), fs.end());
                 }
 
@@ -456,8 +464,11 @@ namespace superbblas {
 
             /// Return a list of the blocks, the intersection relative to the blocks, and the
             /// associated keys of blocks with non-empty overlap with the given range.
+            /// \param from: coordinates of the first element in the range
+            /// \param size: dimensions of the range
+
             std::vector<std::pair<std::array<From_size_item<N>, 2>, Key>>
-            intersection(Coor<N> from, Coor<N> size) const {
+            intersection(Coor<N> from, const Coor<N> &size) const {
                 // Shortcut for empty ranges
                 if (volume(size) == 0) return {};
 
@@ -492,7 +503,7 @@ namespace superbblas {
             }
 
             /// Return the overlap volume of the given range on this tensor
-            std::size_t get_overlap_volume(Coor<N> from, Coor<N> size) {
+            std::size_t get_overlap_volume(const Coor<N> &from, const Coor<N> &size) {
                 auto overlaps = intersection(from, size);
                 std::size_t vol_overlaps = 0;
                 for (const auto &i : overlaps) vol_overlaps += volume(i.first[1][1]);
