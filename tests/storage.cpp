@@ -73,7 +73,12 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     }
 
     if (rank == 0)
-        std::cout << "Maximum number of elements in a tested tensor per process: "
+        std::cout << "Testing "
+                  << (checksum == NoChecksum
+                          ? "without checksum"
+                          : (checksum == BlockChecksum ? "block checksum" : "global checksum"))
+                  << std::endl
+                  << "Maximum number of elements in a tested tensor per process: "
                   << detail::volume(local_size0) << " ( "
                   << detail::volume(local_size0) * 1.0 * sizeof(Scalar) / 1024 / 1024
                   << " MiB)   Expected file size: " << vol * 1.0 * sizeof(Scalar) / 1024 / 1024
@@ -519,7 +524,6 @@ int main(int argc, char **argv) {
 
     // Get options
     bool procs_was_set = false;
-    checksum_type checksum = NoChecksum;
     for (int i = 1; i < argc; ++i) {
         if (std::strncmp("--dim=", argv[i], 6) == 0) {
             if (sscanf(argv[i] + 6,
@@ -545,16 +549,6 @@ int main(int argc, char **argv) {
                 return -1;
             }
             procs_was_set = true;
-        } else if (std::strncmp("--checksum=", argv[i], 11) == 0) {
-            int checksum_d = 0;
-            if (sscanf(argv[i] + 11, "%d", &checksum_d) != 1 || checksum_d < 0 || checksum_d > 2) {
-                std::cerr << "--checksum= should follow 0, 1, or 2, for instance --checksum=1"
-                          << std::endl;
-                return -1;
-            }
-            checksum =
-                (checksum_d == 0 ? NoChecksum : (checksum_d == 1 ? GlobalChecksum : BlockChecksum));
-            dim[N1] = dim[N0];
         } else if (std::strncmp("--help", argv[i], 6) == 0) {
             std::cout << "Commandline option:\n  " << argv[0]
                       << " [--dim='m d t g n'] [--procs=t] [--help]" << std::endl;
@@ -584,14 +578,16 @@ int main(int argc, char **argv) {
 
     {
         Context ctx = createCpuContext();
-        test(dim, checksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
         Context ctx = createGpuContext();
-        test(dim, checksum, procs, nprocs, rank, ctx, ctx.toGpu(0), nrep);
+        test(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toGpu(0), nrep);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }
