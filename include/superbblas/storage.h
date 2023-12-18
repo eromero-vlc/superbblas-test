@@ -423,7 +423,7 @@ namespace superbblas {
             /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
             std::unordered_multimap<Coor<N>, BlockIndex, TupleHash<Coor<N>>> gridToBlocks;
 
-            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks{16} {
+            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks(16) {
                 assert(check_positive(dim));
             }
 
@@ -566,6 +566,9 @@ namespace superbblas {
         template <typename T>
         checksum_t do_checksum(const T *str, std::size_t size = 1,
                                std::size_t checksum_blocksize = 0, checksum_t prev_checksum = 0) {
+            Cpu cpu{0};
+            tracker<Cpu> _t("do checksums", cpu);
+
             // Update size to bytes
             size *= sizeof(T);
 
@@ -859,7 +862,7 @@ namespace superbblas {
             // Compute the checksum if the block is going to be completely overwritten
             if (sto.checksum == BlockChecksum) {
                 double checksum = -1; // invalid checksum
-                if (v0_host.size() == volume(dim1)) {
+                if (from1 == Coor<Nd1>{{}} && size1 == dim1) {
                     // Compute checksum
                     checksum = do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
                 }
@@ -1669,6 +1672,9 @@ namespace superbblas {
             // Quick exit
             if (do_write && sto.modified_for_checksum == false) return;
 
+            Cpu cpu{0};
+            tracker<Cpu> _t("checksums (closing/checking)", cpu);
+
             // Synchronize the content of the storage before reading from it
             if (sto.modified_for_flush) {
                 flush(sto.fh);
@@ -1775,7 +1781,7 @@ namespace superbblas {
 
                         // Compare checksums
                         if (checksum != checksum_on_disk)
-                            throw std::runtime_error("Checksum failed");
+                            throw std::runtime_error("Checksum failed: block checksum failed");
                     }
                 }
 
@@ -1793,7 +1799,7 @@ namespace superbblas {
                         read(sto.fh, &checksum_headers, 1);
                         if (sto.change_endianness) change_endianness(&checksum_headers, 1);
                         if (checksum_headers != sto.checksum_val)
-                            throw std::runtime_error("Checksum failed");
+                            throw std::runtime_error("Checksum failed: header checksum failed (postcheck)");
                     }
                 }
 
@@ -2032,7 +2038,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false /* don't write checksums */);
     }
 
     /// Close storage
@@ -2046,7 +2052,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true /* do write checksums */);
 
         delete stoh;
     }
@@ -2124,7 +2130,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false /* don't write checksums */);
     }
 
     /// Close storage
@@ -2136,7 +2142,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true /* do write checksums */);
 
         delete stoh;
     }
