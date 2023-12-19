@@ -353,6 +353,13 @@ namespace superbblas {
         };
 
         inline File_Comm file_open(MpiComm comm, const char *filename, Mode mode) {
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                check_consistency(
+                    std::make_tuple(std::string("file_open"), std::string(filename), (int)mode),
+                    comm);
+            }
+
             std::FILE *f = nullptr;
             // Avoid all processes to create the file at the same time; so root process create the file, and the rest open it
             if (comm.rank == 0) {
@@ -367,11 +374,19 @@ namespace superbblas {
         }
 
         inline void preallocate(File_Comm f, std::size_t n) {
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_preallocate"), n), f.comm);
+            }
+
             if (f.comm.rank == 0) preallocate(f.f, n);
             barrier(f.comm);
         }
 
         inline void truncate(File_Comm f, std::size_t n) {
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_truncate"), n), f.comm);
+            }
+
             if (f.comm.rank == 0) truncate(f.f, n);
             barrier(f.comm);
         }
@@ -393,6 +408,10 @@ namespace superbblas {
         template <typename T> void read(File_Comm f, T *v, std::size_t n) { read(f.f, v, n); }
 
         inline void flush(File_Comm f) {
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_flush")), f.comm);
+            }
+
             flush(f.f);
             barrier(f.comm);
         }
@@ -400,6 +419,11 @@ namespace superbblas {
         inline void check_pending_requests(File_Comm) {}
 
         inline void close(File_Comm &f) {
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("close_file")), f.comm);
+            }
+
             close(f.f);
             barrier(f.comm);
         }
@@ -1019,7 +1043,19 @@ namespace superbblas {
         void save(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, Order<Nd1> o1,
-                  Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, CoorOrder co) {
+                  Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, CoorOrder co,
+                  const Comm &comm) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                for (const auto &i : v0.first) sync(i.it.ctx());
+                for (const auto &i : v0.second) sync(i.it.ctx());
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("save"), alpha, p0, from0, size0,
+                                                  dim0, o0, o1, from1, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             tracker<XPU1> _t("save", Cpu{});
 
@@ -1077,7 +1113,19 @@ namespace superbblas {
         void load(typename elem<T>::type alpha, Storage_context<Nd0, Comm> &sto, Coor<Nd0> from0,
                   Coor<Nd0> size0, Order<Nd0> o0, const From_size<Nd1> &p1, const Coor<Nd1> &from1,
                   const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, EWOP, CoorOrder co) {
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, EWOP, CoorOrder co,
+                  const Comm &comm) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                for (const auto &i : v1.first) sync(i.it.ctx());
+                for (const auto &i : v1.second) sync(i.it.ctx());
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("load"), alpha, from0, size0, o0, p1,
+                                                  from1, dim1, o1, typeid(EWOP).hash_code(), co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             tracker<XPU1> _t("load", Cpu{});
 
@@ -1170,6 +1218,16 @@ namespace superbblas {
         Storage_context<Nd, Comm> *create_storage(Coor<Nd> dim, CoorOrder co, const char *filename,
                                                   const char *metadata, int metadata_length,
                                                   checksum_type checksum, Comm comm) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("create_storage"), dim, co,
+                                                  std::string(filename),
+                                                  std::string(metadata, metadata_length),
+                                                  (int)checksum, typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             if (co == FastToSlow) dim = detail::reverse(dim);
 
@@ -1272,6 +1330,14 @@ namespace superbblas {
                           bool &do_change_endianness, checksum_type &checksum,
                           std::size_t &checksum_blocksize, checksum_t &checksum_val, Comm comm,
                           typename File<Comm>::type &fh) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("open_storage"), allow_writing, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             // Check that int has a size of 4
             if (sizeof(int) != 4) throw std::runtime_error("Expected int to have size 4");
@@ -1411,6 +1477,16 @@ namespace superbblas {
                            const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                            const Order<Nd0> &o0, Order<Nd1> o1, Storage_context<Nd1, Comm> &sto,
                            Coor<Nd1> from1, Comm comm, CoorOrder co) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                auto p0_ = to_vector(p0, num_blocks, Cpu{0});
+                check_consistency(std::make_tuple(std::string("append_blocks"), p0_, from0, size0,
+                                                  dim0, o0, o1, from1, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             tracker<Cpu> _t("append blocks", Cpu{0});
 
@@ -1648,20 +1724,28 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_MPI
         template <typename T>
-        inline void gather(const T *sendbuf, std::size_t sendcount, T *recvbuf,
-                           std::size_t recvcount, MpiComm comm) {
+        inline void gatherv(const T *sendbuf, std::size_t sendcount, int *counts, T *recvbuf,
+                            MpiComm comm) {
+            std::size_t recvcount = 0;
+            for (unsigned int i = 0; i < comm.nprocs; ++i) recvcount += counts[i];
             if (recvcount * sizeof(T) > (std::size_t)std::numeric_limits<int>::max())
                 throw std::runtime_error("Too many elements to gather");
-            MPI_check(MPI_Gather(sendbuf, sendcount * sizeof(T), MPI_CHAR, recvbuf,
-                                 recvcount * sizeof(T), MPI_CHAR, 0, comm.comm));
+            std::vector<int> recvcounts(comm.nprocs);
+            std::vector<int> displs(comm.nprocs);
+            for (unsigned int i = 0; i < comm.nprocs; ++i) {
+                recvcounts[i] = counts[i] * sizeof(T);
+                displs[i] = (i == 0 ? 0 : displs[i - 1] + counts[i - 1]) * sizeof(T);
+            }
+            MPI_check(MPI_Gatherv(sendbuf, sendcount * sizeof(T), MPI_CHAR, recvbuf,
+                                  recvcounts.data(), displs.data(), MPI_CHAR, 0, comm.comm));
         }
 #endif // SUPERBBLAS_USE_MPI
 
         template <typename T>
-        inline void gather(const T *sendbuf, std::size_t sendcount, T *recvbuf,
-                           std::size_t recvcount, SelfComm) {
-            if (sendcount != recvcount) throw std::runtime_error("gather: Invalid arguments");
-            std::copy_n(sendbuf, sendcount, recvbuf);
+        inline void gatherv(const T *sendbuf, std::size_t sendcount, int *counts, T *recvbuf,
+                            SelfComm) {
+            if (sendcount != counts[0]) throw std::runtime_error("gather: Invalid arguments");
+            std::copy_n(sendbuf, counts[0], recvbuf);
         }
 
         /// Compute all checksums in a storage
@@ -1669,6 +1753,14 @@ namespace superbblas {
 
         template <std::size_t Nd, typename T, typename Comm>
         void check_or_write_checksums(Storage_context<Nd, Comm> &sto, Comm comm, bool do_write) {
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("check_or_write_checksums"), do_write,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
             // Quick exit
             if (do_write && sto.modified_for_checksum == false) return;
 
@@ -1697,6 +1789,9 @@ namespace superbblas {
                     basic_partitioning(Coor<1>{num_blocks}, Coor<1>{IndexType(comm.nprocs)});
                 std::size_t first_block_to_process = p[comm.rank][0][0];
                 std::size_t num_blocks_to_process = p[comm.rank][1][0];
+                std::vector<int> num_blocks_to_process_v;
+                num_blocks_to_process_v.reserve(comm.nprocs);
+                for (const auto &pi : p) num_blocks_to_process_v.push_back(pi[1][0]);
 
                 // Compute the checksum for each block
                 std::vector<unsigned char> buffer(sto.checksum_blocksize);
@@ -1716,7 +1811,8 @@ namespace superbblas {
 
                 // Compute the checksum of the checksums
                 std::vector<checksum_t> all_checksums(comm.rank == 0 ? num_blocks : 0);
-                gather(checksums.data(), checksums.size(), all_checksums.data(), num_blocks, comm);
+                gatherv(checksums.data(), checksums.size(), num_blocks_to_process_v.data(),
+                        all_checksums.data(), comm);
 
                 if (comm.rank == 0) {
                     checksum_t checksum = do_checksum(all_checksums.data(), all_checksums.size());
@@ -1799,7 +1895,8 @@ namespace superbblas {
                         read(sto.fh, &checksum_headers, 1);
                         if (sto.change_endianness) change_endianness(&checksum_headers, 1);
                         if (checksum_headers != sto.checksum_val)
-                            throw std::runtime_error("Checksum failed: header checksum failed (postcheck)");
+                            throw std::runtime_error(
+                                "Checksum failed: header checksum failed (postcheck)");
                     }
                 }
 
@@ -1959,7 +2056,7 @@ namespace superbblas {
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
             size0, dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), sto, from1, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, co, comm);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -1993,14 +2090,14 @@ namespace superbblas {
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co, comm);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Add{}, co);
+                detail::EWOp::Add{}, co, comm);
     }
 
     /// Return the nonzero blocks stored
@@ -2238,7 +2335,7 @@ namespace superbblas {
             alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
             size0, dim0, detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), sto, from1, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, co, comm);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -2272,14 +2369,14 @@ namespace superbblas {
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co, comm);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Add{}, co);
+                detail::EWOp::Add{}, co, comm);
     }
 
     /// Return the nonzero blocks stored
