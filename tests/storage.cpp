@@ -398,6 +398,27 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 #endif
         );
 
+        open_storage<Nd, Scalar>(filename, false /* don't allow writing */,
+#ifdef SUPERBBLAS_USE_MPI
+                                 MPI_COMM_WORLD,
+#endif
+                                 &stoh);
+
+        // Check storage
+        check_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
+
+        close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
+
         create_storage<Nd, Scalar>(dim, co, filename_sp, metadata.c_str(), metadata.size(),
                                    checksum,
 #ifdef SUPERBBLAS_USE_MPI
@@ -490,6 +511,27 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 }
             }
         }
+
+        close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
+
+        open_storage<Nd, Scalar>(filename, true /* allow writing */,
+#ifdef SUPERBBLAS_USE_MPI
+                                 MPI_COMM_WORLD,
+#endif
+                                 &stoh);
+
+        // Check storage
+        check_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
 
         close_storage<Nd, Scalar>(stoh
 #ifdef SUPERBBLAS_USE_MPI
