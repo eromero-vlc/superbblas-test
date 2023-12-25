@@ -600,6 +600,11 @@ namespace superbblas {
             std::size_t operator()(type const &t) const noexcept { return Hash<type>::hash(t); }
         };
 
+        template <typename T, std::size_t N> struct TupleHash<std::array<T, N>> {
+            using type = std::array<T, N>;
+            std::size_t operator()(type const &t) const noexcept { return Hash<type>::hash(t); }
+        };
+
         /// Return the memory footprint of an object
         /// \param v: input object
 
