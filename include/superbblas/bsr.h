@@ -289,18 +289,18 @@ namespace superbblas {
 
         template <typename SCALAR>
         __attribute__((always_inline)) inline void
-        xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
+        xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR, const SCALAR *a,
                   const int *a_cols_perm, int a_cols_modulus, const SCALAR *alphas, int lda,
-                  const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
+                  const SCALAR *b, int ldb, SCALAR, SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
             (void)k;
             assert(k == 3 && n == 3);
 
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
-            superbblas::detail_xp::gemm_basic_3x3c_intr4_perm(
-                m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, a_cols_perm,
-                a_cols_modulus, alphas, beta, c, ldc, 1, c, ldc, 1);
+            superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1_perm(
+                m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, a_cols_perm,
+                a_cols_modulus, alphas, c, ldc, 1, c, ldc, 1);
         }
 
         ///
@@ -2033,7 +2033,7 @@ namespace superbblas {
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
                   typename XPU>
-        void local_bsr_krylov(T alpha, const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
+        void local_bsr_krylov(const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
                               const Order<Nd> &odm, const Coor<Nx> &dimx, const Order<Nx> &ox,
                               vector<T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
                               char okr, vector<T, XPU> vy) {
@@ -2077,7 +2077,7 @@ namespace superbblas {
             _t.flops = bsr.getFlopsPerMatvec(volC, lx);
             _t.memops = bsr.getMemopsPerMatvec(volC, lx);
             _t.arity = volC;
-            bsr(alpha, transSp, vx, ldx, lx, vy, ldy, ly, volC);
+            bsr(T{1}, transSp, vx, ldx, lx, vy, ldy, ly, volC);
         }
 
         /// Get the partitions for the dense input and output tensors
@@ -2283,29 +2283,29 @@ namespace superbblas {
                     for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
                         const unsigned int componentId = bsr.c.first[i].v.componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm,
-                            px_[comm.rank][componentId][1], sug_ox, vx_.first[i].it,
-                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.first[i].it);
+                            bsr.c.first[i], oim, odm, px_[comm.rank][componentId][1], sug_ox,
+                            vx_.first[i].it, py_[comm.rank][componentId][1], sug_oy, okr,
+                            vy_.first[i].it);
                     }
                     for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                         const unsigned int componentId = bsr.c.second[i].v.componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm,
-                            px_[comm.rank][componentId][1], sug_ox, vx_.second[i].it,
-                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.second[i].it);
+                            bsr.c.second[i], oim, odm, px_[comm.rank][componentId][1], sug_ox,
+                            vx_.second[i].it, py_[comm.rank][componentId][1], sug_oy, okr,
+                            vy_.second[i].it);
                     }
 
                     // Copy the result to final tensor
                     Coor<Ny> fromyi = fromy;
                     if (p > 0) fromyi[power_pos] += p;
                     if (std::norm(beta) == 0)
-                        copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
-                                        py, fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co,
-                                        force_local);
+                        copy<Ny, Ny, T>(p == 0 ? alpha : T{1}, py_, {{}}, sug_sizey, sug_sizey,
+                                        sug_oy, toConst(vy_), py, fromyi, dimy, oy, vy, comm,
+                                        EWOp::Copy{}, co, force_local);
                     else
-                        copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
-                                        py, fromyi, dimy, oy, vy, comm, EWOp::Add{}, co,
-                                        force_local);
+                        copy<Ny, Ny, T>(p == 0 ? alpha : T{1}, py_, {{}}, sug_sizey, sug_sizey,
+                                        sug_oy, toConst(vy_), py, fromyi, dimy, oy, vy, comm,
+                                        EWOp::Add{}, co, force_local);
 
                     // Copy the result into x for doing the next power
                     if (p == power - 1) break;

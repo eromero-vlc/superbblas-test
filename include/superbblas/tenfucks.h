@@ -311,12 +311,12 @@ namespace superbblas {
             }
         }
 
-        __attribute__((always_inline)) inline void
-        gemm_basic_3x3c_intr4_perm(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                                   const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                   const Idx *SB_RESTRICT b_cols_perm, Idx b_cols_modulus,
-                                   const zT *SB_RESTRICT alphas, zT beta, const zT *SB_RESTRICT c_,
-                                   Idx ldcr, Idx ldcc, zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+        __attribute__((always_inline)) inline void gemm_basic_3x3c_intr4_alpha1_beta1_perm(
+            Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr,
+            Idx ldbc, const Idx *SB_RESTRICT b_cols_perm, Idx b_cols_modulus,
+            const zT *SB_RESTRICT alphas, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+            zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+
             //constexpr Idx M = 3;
             //constexpr Idx K = 3;
             const double *SB_RESTRICT a = (const double *)(a_);
@@ -332,9 +332,8 @@ namespace superbblas {
                     b + ldbc * 2 *
                             (j / b_cols_modulus * b_cols_modulus + b_cols_perm[j % b_cols_modulus]),
                     get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
+                vz8 c0{0};
+                auto c1 = vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr));
                 for (int disp = 0; disp < 3; ++disp) {
                     if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
                     c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
@@ -343,7 +342,7 @@ namespace superbblas {
                     c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
                 }
 
-                c0 = scalar_mult(alpha * alphas[j % b_cols_modulus], c0);
+                c0 = scalar_mult(alphas[j % b_cols_modulus], c0) + c1;
                 c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
             }
         }
