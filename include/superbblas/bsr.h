@@ -271,20 +271,23 @@ namespace superbblas {
         xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
                   int lda, const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
-            (void)k;
-            assert(k == 3 && (m == 3 || n == 3));
 
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
-            if (m == 3) {
-                superbblas::detail_xp::gemm_basic_3x3c_intr4(
-                    n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
-                    beta, c, 1, ldc, c, 1, ldc);
-            } else if (n == 3) {
-                superbblas::detail_xp::gemm_basic_3x3c_intr4(
-                    m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, beta, c,
-                    ldc, 1, c, ldc, 1);
+            if (k == 3) {
+                if (m == 3) {
+                    superbblas::detail_xp::gemm_basic_3x3c_intr4(
+                        n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
+                        beta, c, 1, ldc, c, 1, ldc);
+                    return;
+                } else if (n == 3) {
+                    superbblas::detail_xp::gemm_basic_3x3c_intr4(
+                        m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1,
+                        beta, c, ldc, 1, c, ldc, 1);
+                    return;
+                }
             }
+            xgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc, Cpu{});
         }
 
         template <typename SCALAR>
@@ -1979,22 +1982,28 @@ namespace superbblas {
                 // Check that ox should (okr,D,d,C,kd) or (okr,I,i,C,ki) for row major,
                 // and (okr,kd,C,D,d) or (okr,ki,C,I,i) for column major.
 
-                lx = ly = preferred_layout;
+                Order<Nx> sug_ox_row_major, sug_ox_col_major;
+                Order<Ny> sug_oy_row_major, sug_oy_col_major;
                 if (kindx == ContractWithDomain) {
-                    sug_ox = lx == RowMajor
-                                 ? concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
-                                 : concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
-                    sug_oy = ly == RowMajor
-                                 ? concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
-                                 : concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
+                    sug_ox_row_major = concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds);
+                    sug_ox_col_major = concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
+                    sug_oy_row_major = concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis);
+                    sug_oy_col_major = concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
                 } else {
-                    sug_ox = lx == RowMajor
-                                 ? concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
-                                 : concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
-                    sug_oy = ly == RowMajor
-                                 ? concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
-                                 : concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
+                    sug_ox_row_major = concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis);
+                    sug_ox_col_major = concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
+                    sug_oy_row_major = concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds);
+                    sug_oy_col_major = concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
                 }
+                if (ox == sug_ox_row_major && oy == sug_oy_row_major) {
+                    ly = lx = RowMajor;
+                } else if (ox == sug_ox_col_major && oy == sug_oy_col_major) {
+                    ly = lx = ColumnMajor;
+                } else {
+                    ly = lx = preferred_layout;
+                }
+                sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
+                sug_oy = ly == ColumnMajor ? sug_oy_row_major : sug_oy_col_major;
             }
 
             if (okr != 0 && power > 1) {
