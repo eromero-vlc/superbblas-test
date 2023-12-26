@@ -244,25 +244,35 @@ namespace superbblas {
             const Tc *SB_RESTRICT bc = (const Tc *)b;
             Tc *SB_RESTRICT cc = (Tc *)c;
             const Tc alphac = *(const Tc *)&alpha;
-            const Tc *SB_RESTRICT valsc = (const Tc *)a.vals.data();
-
             bool a_is_all_ones = a.is_all_ones(ai);
-            for (IndexType i = 0, m = a.nrows; i < m; ++i) {
-                bool first = true;
-                for (IndexType jidx = a.ii[m * ai + i], jidx1 = a.ii[m * ai + i + 1]; jidx < jidx1;
-                     ++jidx) {
-                    IndexType s = a.jj[jidx];
-                    Tc a_is = (a_is_all_ones ? alphac : alphac * valsc[jidx]);
-                    if (first) {
-                        for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = a_is * bc[s + ldb * j];
-                        first = false;
-                    } else {
-                        for (IndexType j = 0; j < bn; ++j)
-                            cc[i + ldc * j] += a_is * bc[s + ldb * j];
-                    }
+
+            if (a.is_permutation(ai)) {
+                const Tc *SB_RESTRICT scalars = (const Tc *)a.scalars[ai].data();
+                for (IndexType i = 0, m = a.nrows; i < m; ++i) {
+                    IndexType s = a.perm[ai][i];
+                    Tc a_is = (a_is_all_ones ? alphac : alphac * scalars[i]);
+                    for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = a_is * bc[s + ldb * j];
                 }
-                if (first)
-                    for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
+            } else {
+                const Tc *SB_RESTRICT valsc = (const Tc *)a.vals.data();
+                for (IndexType i = 0, m = a.nrows; i < m; ++i) {
+                    bool first = true;
+                    for (IndexType jidx = a.ii[m * ai + i], jidx1 = a.ii[m * ai + i + 1];
+                         jidx < jidx1; ++jidx) {
+                        IndexType s = a.jj[jidx];
+                        Tc a_is = (a_is_all_ones ? alphac : alphac * valsc[jidx]);
+                        if (first) {
+                            for (IndexType j = 0; j < bn; ++j)
+                                cc[i + ldc * j] = a_is * bc[s + ldb * j];
+                            first = false;
+                        } else {
+                            for (IndexType j = 0; j < bn; ++j)
+                                cc[i + ldc * j] += a_is * bc[s + ldb * j];
+                        }
+                    }
+                    if (first)
+                        for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
+                }
             }
         }
 
@@ -292,19 +302,43 @@ namespace superbblas {
 
         template <typename SCALAR>
         __attribute__((always_inline)) inline void
-        xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR, const SCALAR *a,
-                  const int *a_cols_perm, int a_cols_modulus, const SCALAR *alphas, int lda,
-                  const SCALAR *b, int ldb, SCALAR, SCALAR *c, int ldc, Cpu) {
+        xgemm_alt_alpha1_beta1(char transa, char transb, int m, int n, int k, const SCALAR *a,
+                               int lda, const SCALAR *b, int ldb, SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
-            (void)k;
-            assert(k == 3 && n == 3);
 
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
-            superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1_perm(
-                m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, a_cols_perm,
-                a_cols_modulus, alphas, c, ldc, 1, c, ldc, 1);
+            if (k == 3) {
+                if (m == 3) {
+                    superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1(
+                        n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c, 1,
+                        ldc, c, 1, ldc);
+                    return;
+                } else if (n == 3) {
+                    superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1(
+                        m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc, 1,
+                        c, ldc, 1);
+                    return;
+                }
+            }
+            xgemm(transa, transb, m, n, k, SCALAR{1}, a, lda, b, ldb, SCALAR{1}, c, ldc, Cpu{});
         }
+
+        //template <typename SCALAR>
+        //__attribute__((always_inline)) inline void
+        //xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR, const SCALAR *a,
+        //          const int *a_cols_perm, int a_cols_modulus, const SCALAR *alphas, int lda,
+        //          const SCALAR *b, int ldb, SCALAR, SCALAR *c, int ldc, Cpu) {
+        //    if (m == 0 || n == 0) return;
+        //    (void)k;
+        //    assert(k == 3 && n == 3);
+
+        //    bool ta = (transa != 'n' && transa != 'N');
+        //    bool tb = (transb != 'n' && transb != 'N');
+        //    superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1_perm(
+        //        m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, a_cols_perm,
+        //        a_cols_modulus, alphas, c, ldc, 1, c, ldc, 1);
+        //}
 
         ///
         /// Implementation of operations for each platform
@@ -432,9 +466,10 @@ namespace superbblas {
                 return (volume(v.dimi) * rhs + (b * b + b * rhs) * jj.size()) * sizeof(T);
             }
 
-            void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
-                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const vector<T, Cpu> &vx, IndexType ldx, MatrixLayout lx,
+                            vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
+                const T alpha{1};
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
                 IndexType block_size = volume(v.blocki);
                 IndexType ki = volume(v.kroni);
@@ -593,9 +628,10 @@ namespace superbblas {
                 return (volume(v.dimi) * rhs + (bi * bd + bd * rhs) * jj.size()) * sizeof(T);
             }
 
-            void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
-                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const vector<T, Cpu> &vx, IndexType ldx, MatrixLayout lx,
+                            vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
+                const T alpha{1};
                 if (conjA) throw std::runtime_error("Not implemented");
                 if (v.kron_it.size() > 0 && lx != ly) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
@@ -653,8 +689,7 @@ namespace superbblas {
                         {
                             bool general_case = false;
                             for (int i = 0; i < kron.nmats; ++i)
-                                if (!kron.is_identity(i) && !(kron.is_permutation(i) && bi == 3))
-                                    general_case = true;
+                                if (!kron.is_identity(i)) general_case = true;
                             //general_case = true; ///! TEMP!!!
                             std::vector<T> aux(ki * ncols * bd * (general_case ? 1 : 0));
 #    ifdef _OPENMP
@@ -666,28 +701,29 @@ namespace superbblas {
                                     if (jj[j] == -1) continue;
                                     if (kron.is_identity(j0)) {
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                                  x + jj[j] * ncols, ki * ncols,
-                                                  nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
-                                                  y + i * ki * ncols * bi, ki * ncols, Cpu{});
-                                    } else if (kron.is_permutation(j0) && bi == 3 /* &&
-                                               false TEMP! */) {
-                                        // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                                  x + jj[j] * ncols, kron.perm[j0].data(), ki,
-                                                  kron.scalars[j0].data(), ki * ncols,
-                                                  nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
-                                                  y + i * ki * ncols * bi, ki * ncols, Cpu{});
+                                        xgemm_alt_alpha1_beta1(
+                                            'N', !tb ? 'T' : 'N', ki * ncols, bi, bd,
+                                            x + jj[j] * ncols, ki * ncols, nonzeros + j * bi * bd,
+                                            !tb ? bi : bd, y + i * ki * ncols * bi, ki * ncols,
+                                            Cpu{});
+                                        // } else if (kron.is_permutation(j0) && bi == 3 /* &&
+                                        //            false TEMP! */) {
+                                        //     // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                        //     xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
+                                        //               x + jj[j] * ncols, kron.perm[j0].data(), ki,
+                                        //               kron.scalars[j0].data(), ki * ncols,
+                                        //               nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
+                                        //               y + i * ki * ncols * bi, ki * ncols, Cpu{});
                                     } else {
                                         // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
                                         xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd,
                                                       ncols * bd, ColumnMajor, kd, T{0}, aux.data(),
                                                       ki);
                                         // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                                  aux.data(), ki * ncols, nonzeros + j * bi * bd,
-                                                  !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
-                                                  ki * ncols, Cpu{});
+                                        xgemm_alt_alpha1_beta1(
+                                            'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, aux.data(),
+                                            ki * ncols, nonzeros + j * bi * bd, !tb ? bi : bd,
+                                            y + i * ki * ncols * bi, ki * ncols, Cpu{});
                                     }
                                 }
                             }
@@ -1072,10 +1108,11 @@ namespace superbblas {
             }
 
         public:
-            void operator()(T alpha, bool conjA, const vector<T, Gpu> &vx_, IndexType ldx,
-                            MatrixLayout lx, vector<T, Gpu> &vy_, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const vector<T, Gpu> &vx_, IndexType ldx, MatrixLayout lx,
+                            vector<T, Gpu> &vy_, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
 
+                const T alpha{1};
                 bool is_kron = v.kron_it.size() > 0;
                 check_same_device(vx_.ctx(), vy_.ctx());
                 check_same_device(vx_.ctx(), ii.ctx());
@@ -2086,7 +2123,7 @@ namespace superbblas {
             _t.flops = bsr.getFlopsPerMatvec(volC, lx);
             _t.memops = bsr.getMemopsPerMatvec(volC, lx);
             _t.arity = volC;
-            bsr(T{1}, transSp, vx, ldx, lx, vy, ldy, ly, volC);
+            bsr(transSp, vx, ldx, lx, vy, ldy, ly, volC);
         }
 
         /// Get the partitions for the dense input and output tensors

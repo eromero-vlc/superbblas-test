@@ -278,6 +278,27 @@ namespace superbblas {
                                                                    8 + 5, 8 + 5, 8 + 5>());
         }
 
+        /// Matrix-matrix multiplication, D = alpha*A*B + beta*C, where
+        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
+        ///
+        /// \param N: number of columns of B
+        /// \param alpha: scale on the matrix multiplication
+        /// \param a_: pointer to the first element of matrix A
+        /// \param ldar: row leading dimension for matrix A
+        /// \param ldac: column leading dimension for matrix A
+        /// \param b_: pointer to the first leading dimension for the matrix B
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param beta: scale of the addition on matrix C
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param c_: pointer to the first element of matrix C
+        /// \param ldcr: row leading dimension for matrix C
+        /// \param ldcc: column leading dimension for matrix C
+        /// \param d_: pointer to the first element of matrix C
+        /// \param lddr: row leading dimension for matrix D
+        /// \param lddc: column leading dimension for matrix D
+
         __attribute__((always_inline)) inline void
         gemm_basic_3x3c_intr4(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
                               const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc, zT beta,
@@ -295,7 +316,8 @@ namespace superbblas {
             auto a012 = get_cols(a, ldar, ldac);
             for (Idx j = 0; j < N; ++j) {
                 auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
+                vz8 c0{0};
+                auto c1 = beta == zT{0}
                               ? vz8(0)
                               : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
                 for (int disp = 0; disp < 3; ++disp) {
@@ -306,7 +328,55 @@ namespace superbblas {
                     c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
                 }
 
-                c0 = scalar_mult(alpha, c0);
+                c0 = scalar_mult(alpha, c0) + c1;
+                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
+            }
+        }
+
+        /// Matrix-matrix multiplication, D = A*B + C, where
+        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
+        ///
+        /// \param N: number of columns of B
+        /// \param a_: pointer to the first element of matrix A
+        /// \param ldar: row leading dimension for matrix A
+        /// \param ldac: column leading dimension for matrix A
+        /// \param b_: pointer to the first leading dimension for the matrix B
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param c_: pointer to the first element of matrix C
+        /// \param ldcr: row leading dimension for matrix C
+        /// \param ldcc: column leading dimension for matrix C
+        /// \param d_: pointer to the first element of matrix C
+        /// \param lddr: row leading dimension for matrix D
+        /// \param lddc: column leading dimension for matrix D
+
+        __attribute__((always_inline)) inline void
+        gemm_basic_3x3c_intr4_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                           const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                           const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                                           zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+            //constexpr Idx M = 3;
+            //constexpr Idx K = 3;
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
+            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+
+            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+            auto a012 = get_cols(a, ldar, ldac);
+            for (Idx j = 0; j < N; ++j) {
+                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
+                auto c0 = vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr));
+                for (int disp = 0; disp < 3; ++disp) {
+                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
+
+                    b0 = flip_ri(b0);
+                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
+                }
                 c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
             }
         }
@@ -477,6 +547,27 @@ namespace superbblas {
             });
         }
 
+        /// Matrix-matrix multiplication, D = alpha*A*B + beta*C, where
+        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
+        ///
+        /// \param N: number of columns of B
+        /// \param alpha: scale on the matrix multiplication
+        /// \param a_: pointer to the first element of matrix A
+        /// \param ldar: row leading dimension for matrix A
+        /// \param ldac: column leading dimension for matrix A
+        /// \param b_: pointer to the first leading dimension for the matrix B
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param beta: scale of the addition on matrix C
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param c_: pointer to the first element of matrix C
+        /// \param ldcr: row leading dimension for matrix C
+        /// \param ldcc: column leading dimension for matrix C
+        /// \param d_: pointer to the first element of matrix C
+        /// \param lddr: row leading dimension for matrix D
+        /// \param lddc: column leading dimension for matrix D
+
         __attribute__((always_inline)) inline void
         gemm_basic_3x3c_intr4(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
                               const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc, zT beta,
@@ -493,7 +584,8 @@ namespace superbblas {
             auto a012 = get_A_cols(a, ldar, ldac);
             for (Idx j = 0; j < N; ++j) {
                 vc8 b0 = get_B_col(b, j, ldbr, ldbc);
-                auto c0 = beta == zT{0} ? vc8(0) : scalar_mult(beta, get_B_col(c, j, ldcr, ldcc));
+                vc8 c0(0);
+                auto c1 = beta == zT{0} ? vc8(0) : scalar_mult(beta, get_B_col(c, j, ldcr, ldcc));
                 for (int disp = 0; disp < 3; ++disp) {
                     if (disp > 0) b0 = flip_ri_plus_1(b0);
                     c0 = stdx::fma(get_A_col<the_real>(a012[disp]), b0, c0);
@@ -501,7 +593,55 @@ namespace superbblas {
                     b0 = flip_ri(b0);
                     c0 = stdx::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
                 }
-                set_B_col(scalar_mult(alpha, c0), d, j, lddr, lddc);
+                set_B_col(scalar_mult(alpha, c0) + c1, d, j, lddr, lddc);
+            }
+        }
+
+        /// Matrix-matrix multiplication, D = A*B + C, where
+        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
+        ///
+        /// \param N: number of columns of B
+        /// \param a_: pointer to the first element of matrix A
+        /// \param ldar: row leading dimension for matrix A
+        /// \param ldac: column leading dimension for matrix A
+        /// \param b_: pointer to the first leading dimension for the matrix B
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param ldbr: row leading dimension for matrix B
+        /// \param ldbc: column leading dimension for matrix B
+        /// \param c_: pointer to the first element of matrix C
+        /// \param ldcr: row leading dimension for matrix C
+        /// \param ldcc: column leading dimension for matrix C
+        /// \param d_: pointer to the first element of matrix C
+        /// \param lddr: row leading dimension for matrix D
+        /// \param lddc: column leading dimension for matrix D
+
+        __attribute__((always_inline)) inline void
+        gemm_basic_3x3c_intr4_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                           const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                           const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
+                                           zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+            //constexpr Idx M = 3;
+            //constexpr Idx K = 3;
+            const double *SB_RESTRICT a = (const double *)(a_);
+            const double *SB_RESTRICT b = (const double *)(b_);
+            const double *SB_RESTRICT c = (const double *)(c_);
+            double *SB_RESTRICT d = (double *)(d_);
+
+            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+            auto a012 = get_A_cols(a, ldar, ldac);
+            for (Idx j = 0; j < N; ++j) {
+                vc8 b0 = get_B_col(b, j, ldbr, ldbc);
+                vc8 c0{0};
+                auto c1 = get_B_col(c, j, ldcr, ldcc);
+                for (int disp = 0; disp < 3; ++disp) {
+                    if (disp > 0) b0 = flip_ri_plus_1(b0);
+                    c0 = stdx::fma(get_A_col<the_real>(a012[disp]), b0, c0);
+
+                    b0 = flip_ri(b0);
+                    c0 = stdx::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
+                }
+                set_B_col(c0 + c1, d, j, lddr, lddc);
             }
         }
 #endif // SUPERBBLAS_USE_XSIMD
