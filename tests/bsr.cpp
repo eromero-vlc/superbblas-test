@@ -58,6 +58,27 @@ vector<T, XPU> eyes(std::size_t n, std::size_t k, const T &scale, XPU xpu) {
     return makeSure(r, xpu);
 }
 
+// Return a vector of vectorizing identity matrices
+template <typename T, typename XPU>
+vector<T, XPU> anti_eyes(std::size_t n, std::size_t k, const T &scale, XPU xpu) {
+    vector<T, Cpu> r(n * n * k, Cpu{});
+    zero_n(r.data(), r.size(), r.ctx());
+    for (std::size_t i = 0; i < k; ++i)
+        for (std::size_t j = 0; j < n; ++j) r[i * n * n + j * n + n - 1 - j] = scale;
+    return makeSure(r, xpu);
+}
+
+// Return a vector of vectorizing identity matrices
+template <typename T, typename XPU>
+vector<T, XPU> random_sparse(std::size_t n, std::size_t k, const T &scale, XPU xpu) {
+    vector<T, Cpu> r(n * n * k, Cpu{});
+    zero_n(r.data(), r.size(), r.ctx());
+    for (std::size_t i = 0; i < k; ++i)
+        for (std::size_t j = 0; j < n; ++j)
+            r[i * n * n + j * n + n - 1 - j] = scale * (n % 2 ? T{1} : T{-1});
+    return makeSure(r, xpu);
+}
+
 /// Extend the region one element in each direction
 std::array<Coor<6>, 2> extend(std::array<Coor<6>, 2> fs, const Coor<6> &dim) {
     for (int i = 0; i < 4; ++i) {
@@ -544,11 +565,14 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
     return {bsrh_s, data_s};
 }
 
+enum KronSparsity { Dense = 0, Identity = 1, Perm = 2, PermScale = 3 };
+
 /// Create a 4D lattice with dimensions tzyxsc and Kronecker products
 template <typename T, typename XPU>
 std::pair<BSR_handle *, std::array<vectors<T, XPU>, 2>>
-create_lattice_kron(const PartitionStored<6> &pi, int rank, bool sparse_kron, const Coor<6> op_dim,
-                    const std::vector<Context> &ctx, const std::vector<XPU> &xpu) {
+create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_kron,
+                    const Coor<6> op_dim, const std::vector<Context> &ctx,
+                    const std::vector<XPU> &xpu) {
 
     bool check_results = getDebugLevel() > 0;
 
@@ -616,8 +640,15 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, bool sparse_kron, co
             kron_xpu = makeSure(kron_cpu, xpu[component]);
         } else {
             data_xpu = ones<T>(vol_data, xpu[component]);
-            kron_xpu = (sparse_kron ? eyes<T>(op_dim[4], neighbors, (T)op_dim[4], xpu[component])
-                                    : ones<T>(vol_kron, xpu[component]));
+            kron_xpu =
+                sparse_kron == Dense
+                    ? ones<T>(vol_kron, xpu[component])
+                    : (sparse_kron == Identity
+                           ? eyes<T>(op_dim[4], neighbors, (T)op_dim[4], xpu[component])
+                           : (sparse_kron == Perm
+                                  ? anti_eyes<T>(op_dim[4], neighbors, (T)op_dim[4], xpu[component])
+                                  : random_sparse<T>(op_dim[4], neighbors, (T)op_dim[4],
+                                                     xpu[component])));
         }
 
         ii_xpus.push_back(makeSure(ii, xpu[component]));
@@ -753,72 +784,72 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
 
     // Copy tensor t0 into each of the c components of tensor 1
     resetTimings();
-//    try {
-//        double t = w_time();
-//        for (unsigned int rep = 0; rep < nrep; ++rep) {
-//            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-//                Q{1}, op, "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn", {{}}, dim0, dim0,
-//                (const Q **)t0.data(), Q{0}, p1.data(), o1, {{}}, dim1, dim1, 'p', t1.data(),
-//                ctx.data(),
-//#ifdef SUPERBBLAS_USE_MPI
-//                MPI_COMM_WORLD,
-//#endif
-//                SlowToFast);
-//        }
-//        for (const auto &xpui : xpu) sync(xpui);
-//        t = w_time() - t;
-//        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
-//        test_contraction(p1, rank, o1, t1, dimo, true, ctx);
-//    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
-//
-//    destroy_bsr(op);
-//
-//    if (rank == 0) reportTimings(std::cout);
-//    if (rank == 0) reportCacheUsage(std::cout);
-//
-//    // Create split tensor
-//    auto op_pair_s = create_lattice_split<Q>(po, rank, dimo, ctx, xpu);
-//
-//    // Copy tensor t0 into each of the c components of tensor 1
-//    resetTimings();
-//    try {
-//        double t = w_time();
-//        for (unsigned int rep = 0; rep < nrep; ++rep) {
-//            // Set the output tensor to zero
-//            copy(0, p1.data(), ctx.size(), o1, {{}}, dim1, dim1, (const Q **)t0.data(), nullptr,
-//                 ctx.data(), p1.data(), ctx.size(), o1, {{}}, dim1, t1.data(), nullptr, ctx.data(),
-//#ifdef SUPERBBLAS_USE_MPI
-//                 MPI_COMM_WORLD,
-//#endif
-//                 SlowToFast, Copy);
-//
-//            // Do the contractions on each part
-//            std::vector<Request> r(op_pair_s.first.size());
-//            for (unsigned int p = 0; p < op_pair_s.first.size(); ++p) {
-//                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-//                    Q{1}, op_pair_s.first[p], "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn",
-//                    {{}}, dim0, dim0, (const Q **)t0.data(), Q{1}, p1.data(), o1, {{}}, dim1, dim1,
-//                    'p', t1.data(), ctx.data(),
-//#ifdef SUPERBBLAS_USE_MPI
-//                    MPI_COMM_WORLD,
-//#endif
-//                    SlowToFast, &r[p]);
-//            }
-//            for (const auto &ri : r) wait(ri);
-//        }
-//
-//        for (const auto &xpui : xpu) sync(xpui);
-//        t = w_time() - t;
-//        if (rank == 0)
-//            std::cout << "Time in mavec per rhs (split): " << t / nrep / dim[N] << std::endl;
-//        test_contraction(p1, rank, o1, t1, dimo, false /* Don't do quick check, it isn't correct */,
-//                         ctx);
-//    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
-//
-//    for (const auto op : op_pair_s.first) destroy_bsr(op);
-//
-//    if (rank == 0) reportTimings(std::cout);
-//    if (rank == 0) reportCacheUsage(std::cout);
+    //    try {
+    //        double t = w_time();
+    //        for (unsigned int rep = 0; rep < nrep; ++rep) {
+    //            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+    //                Q{1}, op, "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn", {{}}, dim0, dim0,
+    //                (const Q **)t0.data(), Q{0}, p1.data(), o1, {{}}, dim1, dim1, 'p', t1.data(),
+    //                ctx.data(),
+    //#ifdef SUPERBBLAS_USE_MPI
+    //                MPI_COMM_WORLD,
+    //#endif
+    //                SlowToFast);
+    //        }
+    //        for (const auto &xpui : xpu) sync(xpui);
+    //        t = w_time() - t;
+    //        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
+    //        test_contraction(p1, rank, o1, t1, dimo, true, ctx);
+    //    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+    //
+    //    destroy_bsr(op);
+    //
+    //    if (rank == 0) reportTimings(std::cout);
+    //    if (rank == 0) reportCacheUsage(std::cout);
+    //
+    //    // Create split tensor
+    //    auto op_pair_s = create_lattice_split<Q>(po, rank, dimo, ctx, xpu);
+    //
+    //    // Copy tensor t0 into each of the c components of tensor 1
+    //    resetTimings();
+    //    try {
+    //        double t = w_time();
+    //        for (unsigned int rep = 0; rep < nrep; ++rep) {
+    //            // Set the output tensor to zero
+    //            copy(0, p1.data(), ctx.size(), o1, {{}}, dim1, dim1, (const Q **)t0.data(), nullptr,
+    //                 ctx.data(), p1.data(), ctx.size(), o1, {{}}, dim1, t1.data(), nullptr, ctx.data(),
+    //#ifdef SUPERBBLAS_USE_MPI
+    //                 MPI_COMM_WORLD,
+    //#endif
+    //                 SlowToFast, Copy);
+    //
+    //            // Do the contractions on each part
+    //            std::vector<Request> r(op_pair_s.first.size());
+    //            for (unsigned int p = 0; p < op_pair_s.first.size(); ++p) {
+    //                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+    //                    Q{1}, op_pair_s.first[p], "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn",
+    //                    {{}}, dim0, dim0, (const Q **)t0.data(), Q{1}, p1.data(), o1, {{}}, dim1, dim1,
+    //                    'p', t1.data(), ctx.data(),
+    //#ifdef SUPERBBLAS_USE_MPI
+    //                    MPI_COMM_WORLD,
+    //#endif
+    //                    SlowToFast, &r[p]);
+    //            }
+    //            for (const auto &ri : r) wait(ri);
+    //        }
+    //
+    //        for (const auto &xpui : xpu) sync(xpui);
+    //        t = w_time() - t;
+    //        if (rank == 0)
+    //            std::cout << "Time in mavec per rhs (split): " << t / nrep / dim[N] << std::endl;
+    //        test_contraction(p1, rank, o1, t1, dimo, false /* Don't do quick check, it isn't correct */,
+    //                         ctx);
+    //    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+    //
+    //    for (const auto op : op_pair_s.first) destroy_bsr(op);
+    //
+    //    if (rank == 0) reportTimings(std::cout);
+    //    if (rank == 0) reportCacheUsage(std::cout);
 
     const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
                                 dim[T], dim[C], dim[N], dim[S]}; // pxyztcns
@@ -832,10 +863,12 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     PartitionStored<Nd + 1> kp1 =
         basic_partitioning("pxyztcns", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
 
-    for (int kron_sparse = 1; kron_sparse < 2; kron_sparse++) {
+    const std::vector<std::string> kron_sparse_str{"dense", "identity", "permutation",
+                                                   "general-sparse"};
+    for (int kron_sparse = 0; kron_sparse < 4; kron_sparse++) {
         // Create the Kronecker operator
-        auto op_kron_s = create_lattice_kron<Q>(po, rank, kron_sparse == 1 /* is kron sparse? */,
-                                                dimo, ctx, xpu);
+        auto op_kron_s =
+            create_lattice_kron<Q>(po, rank, (KronSparsity)kron_sparse, dimo, ctx, xpu);
 
         // Copy tensor t0 into each of the c components of tensor 1
         resetTimings();
@@ -854,9 +887,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
             for (const auto &xpui : xpu) sync(xpui);
             t = w_time() - t;
             if (rank == 0)
-                std::cout << "Time in mavec per rhs (kron "
-                          << (kron_sparse == 0 ? "dense" : "sparse") << "): " << t / nrep / dim[N]
-                          << std::endl;
+                std::cout << "Time in mavec per rhs (kron " << kron_sparse_str[kron_sparse]
+                          << "): " << t / nrep / dim[N] << std::endl;
             test_contraction(kp1, rank, "pxyztcns", t1, dimo, true, ctx);
         } catch (const std::exception &e) {
             std::cout << "Caught error: " << e.what() << std::endl;
