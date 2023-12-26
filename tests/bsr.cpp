@@ -571,7 +571,7 @@ enum KronSparsity { Dense = 0, Identity = 1, Perm = 2, PermScale = 3 };
 template <typename T, typename XPU>
 std::pair<BSR_handle *, std::array<vectors<T, XPU>, 2>>
 create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_kron,
-                    const Coor<6> op_dim, const std::vector<Context> &ctx,
+                    const Coor<6> op_dim, bool show_size, const std::vector<Context> &ctx,
                     const std::vector<XPU> &xpu) {
 
     bool check_results = getDebugLevel() > 0;
@@ -616,7 +616,7 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_
 
         // Number of nonzeros
         std::size_t vol_data = voli * neighbors * op_dim[5] * op_dim[5];
-        if (rank_comp == 0)
+        if (show_size && rank_comp == 0)
             std::cout << "Size of the sparse tensor per process: "
                       << vol_data * 1.0 * sizeof(T) / 1024 / 1024 << " MiB" << std::endl;
         std::size_t vol_kron = neighbors * op_dim[4] * op_dim[4];
@@ -867,8 +867,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
                                                    "general-sparse"};
     for (int kron_sparse = 0; kron_sparse < 4; kron_sparse++) {
         // Create the Kronecker operator
-        auto op_kron_s =
-            create_lattice_kron<Q>(po, rank, (KronSparsity)kron_sparse, dimo, ctx, xpu);
+        auto op_kron_s = create_lattice_kron<Q>(po, rank, (KronSparsity)kron_sparse, dimo,
+                                                kron_sparse == 0 /* show size */, ctx, xpu);
 
         // Copy tensor t0 into each of the c components of tensor 1
         resetTimings();
