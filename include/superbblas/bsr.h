@@ -276,29 +276,29 @@ namespace superbblas {
             }
         }
 
-        template <typename SCALAR>
-        __attribute__((always_inline)) inline void
-        xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
-                  int lda, const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
-            if (m == 0 || n == 0) return;
+        // template <typename SCALAR>
+        // __attribute__((always_inline)) inline void
+        // xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
+        //           int lda, const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
+        //     if (m == 0 || n == 0) return;
 
-            bool ta = (transa != 'n' && transa != 'N');
-            bool tb = (transb != 'n' && transb != 'N');
-            if (k == 3) {
-                if (m == 3) {
-                    superbblas::detail_xp::gemm_basic_3x3c_intr4(
-                        n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
-                        beta, c, 1, ldc, c, 1, ldc);
-                    return;
-                } else if (n == 3) {
-                    superbblas::detail_xp::gemm_basic_3x3c_intr4(
-                        m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1,
-                        beta, c, ldc, 1, c, ldc, 1);
-                    return;
-                }
-            }
-            xgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc, Cpu{});
-        }
+        //     bool ta = (transa != 'n' && transa != 'N');
+        //     bool tb = (transb != 'n' && transb != 'N');
+        //     if (k == 3) {
+        //         if (m == 3) {
+        //             superbblas::detail_xp::gemm_basic_3x3c_intr4(
+        //                 n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
+        //                 beta, c, 1, ldc, c, 1, ldc);
+        //             return;
+        //         } else if (n == 3) {
+        //             superbblas::detail_xp::gemm_basic_3x3c_intr4(
+        //                 m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1,
+        //                 beta, c, ldc, 1, c, ldc, 1);
+        //             return;
+        //         }
+        //     }
+        //     xgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc, Cpu{});
+        // }
 
         template <typename SCALAR>
         __attribute__((always_inline)) inline void
