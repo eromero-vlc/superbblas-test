@@ -238,7 +238,7 @@ namespace superbblas {
                 return;
             }
 
-            if (beta != T{0} || blayout != ColumnMajor) throw std::runtime_error("wtf");
+            if (beta != T{0} || blayout != ColumnMajor || alpha != T{1}) throw std::runtime_error("wtf");
 
             using Tc = typename ccomplex<T>::type;
             const Tc *SB_RESTRICT bc = (const Tc *)b;
@@ -246,7 +246,10 @@ namespace superbblas {
             const Tc alphac = *(const Tc *)&alpha;
             bool a_is_all_ones = a.is_all_ones(ai);
 
-            if (a.is_permutation(ai)) {
+            if (a.is_identity(ai)) {
+                for (IndexType j = 0; j < bn; ++j)
+                    for (IndexType i = 0; i < bm; ++i) c[i + ldc * j] = b[i + ldb * j];
+            } else if (a.is_permutation(ai)) {
                 const Tc *SB_RESTRICT scalars = (const Tc *)a.scalars[ai].data();
                 for (IndexType i = 0, m = a.nrows; i < m; ++i) {
                     IndexType s = a.perm[ai][i];
@@ -276,69 +279,33 @@ namespace superbblas {
             }
         }
 
-        // template <typename SCALAR>
-        // __attribute__((always_inline)) inline void
-        // xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
-        //           int lda, const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
-        //     if (m == 0 || n == 0) return;
-
-        //     bool ta = (transa != 'n' && transa != 'N');
-        //     bool tb = (transb != 'n' && transb != 'N');
-        //     if (k == 3) {
-        //         if (m == 3) {
-        //             superbblas::detail_xp::gemm_basic_3x3c_intr4(
-        //                 n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1,
-        //                 beta, c, 1, ldc, c, 1, ldc);
-        //             return;
-        //         } else if (n == 3) {
-        //             superbblas::detail_xp::gemm_basic_3x3c_intr4(
-        //                 m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1,
-        //                 beta, c, ldc, 1, c, ldc, 1);
-        //             return;
-        //         }
-        //     }
-        //     xgemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc, Cpu{});
-        // }
-
-        template <typename SCALAR>
-        __attribute__((always_inline)) inline void
-        xgemm_alt_alpha1_beta1(char transa, char transb, int m, int n, int k, const SCALAR *a,
-                               int lda, const SCALAR *b, int ldb, SCALAR *c, int ldc, Cpu) {
+        template <typename SCALAR, std::size_t K>
+        inline void xgemm_alt_alpha1_beta1(char transa, char transb, int m, int n, int k,
+                                           const SCALAR *a[K], int lda, const SCALAR *b[K], int ldb,
+                                           SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
 
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
             if (k == 3) {
-                if (m == 3) {
-                    superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1(
-                        n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c, 1,
-                        ldc, c, 1, ldc);
-                    return;
-                } else if (n == 3) {
-                    superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1(
-                        m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc, 1,
-                        c, ldc, 1);
-                    return;
+                if constexpr (K == detail_xp::gemm_3x3c_max_matrices<SCALAR>) {
+                    if (m == 3) {
+                        superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
+                            n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c,
+                            1, ldc);
+                        return;
+                    } else if (n == 3) {
+                        superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
+                            m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc,
+                            1);
+                        return;
+                    }
                 }
             }
-            xgemm(transa, transb, m, n, k, SCALAR{1}, a, lda, b, ldb, SCALAR{1}, c, ldc, Cpu{});
+            for (std::size_t K0 = 0; K0 < K; ++K0)
+                xgemm(transa, transb, m, n, k, SCALAR{1}, a[K0], lda, b[K0], ldb, SCALAR{1}, c, ldc,
+                      Cpu{});
         }
-
-        //template <typename SCALAR>
-        //__attribute__((always_inline)) inline void
-        //xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR, const SCALAR *a,
-        //          const int *a_cols_perm, int a_cols_modulus, const SCALAR *alphas, int lda,
-        //          const SCALAR *b, int ldb, SCALAR, SCALAR *c, int ldc, Cpu) {
-        //    if (m == 0 || n == 0) return;
-        //    (void)k;
-        //    assert(k == 3 && n == 3);
-
-        //    bool ta = (transa != 'n' && transa != 'N');
-        //    bool tb = (transb != 'n' && transb != 'N');
-        //    superbblas::detail_xp::gemm_basic_3x3c_intr4_alpha1_beta1_perm(
-        //        m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, a_cols_perm,
-        //        a_cols_modulus, alphas, c, ldc, 1, c, ldc, 1);
-        //}
 
         ///
         /// Implementation of operations for each platform
@@ -687,43 +654,36 @@ namespace superbblas {
 #        pragma omp parallel
 #    endif
                         {
-                            bool general_case = false;
-                            for (int i = 0; i < kron.nmats; ++i)
-                                if (!kron.is_identity(i)) general_case = true;
-                            //general_case = true; ///! TEMP!!!
-                            std::vector<T> aux(ki * ncols * bd * (general_case ? 1 : 0));
+                            constexpr std::size_t TN =
+                                std::max(std::size_t{1}, detail_xp::gemm_3x3c_max_matrices<T>);
+                            std::vector<T> aux(ki * ncols * bd * TN);
+                            std::vector<T> zero_a(bi * bd), zero_b(ki * bd * ncols);
+                            const T *a[TN] = {};
+                            const T *b[TN] = {};
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
                             for (IndexType i = 0; i < block_rows; ++i) {
-                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
+                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0, tn = 0; j < j1;
                                      ++j, ++j0) {
-                                    if (jj[j] == -1) continue;
-                                    if (kron.is_identity(j0)) {
-                                        // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm_alt_alpha1_beta1(
-                                            'N', !tb ? 'T' : 'N', ki * ncols, bi, bd,
-                                            x + jj[j] * ncols, ki * ncols, nonzeros + j * bi * bd,
-                                            !tb ? bi : bd, y + i * ki * ncols * bi, ki * ncols,
-                                            Cpu{});
-                                        // } else if (kron.is_permutation(j0) && bi == 3 /* &&
-                                        //            false TEMP! */) {
-                                        //     // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        //     xgemm_alt('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                        //               x + jj[j] * ncols, kron.perm[j0].data(), ki,
-                                        //               kron.scalars[j0].data(), ki * ncols,
-                                        //               nonzeros + j * bi * bd, !tb ? bi : bd, T{1},
-                                        //               y + i * ki * ncols * bi, ki * ncols, Cpu{});
-                                    } else {
+                                    if (jj[j] != -1) {
                                         // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
                                         xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd,
-                                                      ncols * bd, ColumnMajor, kd, T{0}, aux.data(),
-                                                      ki);
-                                        // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm_alt_alpha1_beta1(
-                                            'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, aux.data(),
-                                            ki * ncols, nonzeros + j * bi * bd, !tb ? bi : bd,
-                                            y + i * ki * ncols * bi, ki * ncols, Cpu{});
+                                                      ncols * bd, ColumnMajor, kd, T{0},
+                                                      aux.data() + tn * ki * ncols * bd, ki);
+                                        // Annotate the contraction Kronecker blocking
+                                        a[tn] = nonzeros + j * bi * bd;
+                                        b[tn] = aux.data() + tn * ki * ncols * bd;
+                                        ++tn;
+                                    }
+                                    // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                    if (tn == TN || (tn > 0 && j == j1 - 1)) {
+                                        for (std::size_t k = std::size_t(tn); k < TN; ++k)
+                                            a[k] = zero_a.data(), b[k] = zero_b.data();
+                                        xgemm_alt_alpha1_beta1<T, TN>(
+                                            'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, b, ki * ncols,
+                                            a, !tb ? bi : bd, y + i * ki * ncols * bi, ki * ncols,
+                                            Cpu{});
                                     }
                                 }
                             }

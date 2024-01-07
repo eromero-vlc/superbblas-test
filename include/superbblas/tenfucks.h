@@ -542,16 +542,6 @@ namespace superbblas {
                 });
             }
 
-            static inline vc8 scalar_mult(zT s, vc8 b) {
-                T r = *(T *)&s;
-                T i = ((T *)&s)[1];
-                return s == zT{1} ? b : stdx::fma(vc8(r), b, vc8([=](auto j) {
-                                                                 return j < 6
-                                                                            ? (j % 2 == 0 ? -i : i)
-                                                                            : i;
-                                                             }) * flip_ri(b));
-            }
-
             /// It should return: x[{3, 2, 5, 4, 1, 0, 0, 0}]
             static inline vc8 flip_ri_plus_1(vc8 x) {
                 return vc8([=](auto i) {
@@ -560,17 +550,16 @@ namespace superbblas {
                 });
             }
 
-            static inline void
-            gemm_basic_3x3c_intr4_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                                               const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                               const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                               zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
+            static inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_,
+                                                            Idx ldar, Idx ldac,
+                                                            const zT *SB_RESTRICT b_, Idx ldbr,
+                                                            Idx ldbc, zT *SB_RESTRICT c_, Idx ldcr,
+                                                            Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
-                const T *SB_RESTRICT c = (const T *)(c_);
-                T *SB_RESTRICT d = (T *)(d_);
+                T *SB_RESTRICT c = (T *)(c_);
 
                 // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
                 auto a012 = get_A_cols(a, ldar, ldac);
@@ -585,7 +574,7 @@ namespace superbblas {
                         b0 = flip_ri(b0);
                         c0 = stdx::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
                     }
-                    set_B_col(c0 + c1, d, j, lddr, lddc);
+                    set_B_col(c0 + c1, c, j, ldcr, ldcc);
                 }
             }
         };
@@ -607,7 +596,7 @@ namespace superbblas {
                                               Idx ldr, Idx ldc, Idx d) {
                 return vc16([=](auto i0) {
                     auto i = i0 % 8;
-                    return (i < 8 ? a0 : a1)
+                    return (i0 < 8 ? a0 : a1)
                         [i < 6 ? get_disp_3x3(i / 2, (d + i / 2) % 3, ldr, ldc, i % 2)
                                : (i == 6 ? get_disp_3x3(4 / 2, (d + 4 / 2) % 3, ldr, ldc, 4 % 2)
                                          : get_disp_3x3(5 / 2, (d + 5 / 2) % 3, ldr, ldc, 5 % 2))];
@@ -638,6 +627,14 @@ namespace superbblas {
                 return vc8([=](auto i) { return b[ldc * 2 * j + get_8_ri(i, ldr)]; });
             }
 
+            static inline vc16 get_B_col(const T *SB_RESTRICT b0, const T *SB_RESTRICT b1, Idx j,
+                                         Idx ldr, Idx ldc) {
+                return vc16([=](auto i0) {
+                    auto i = i0 % 8;
+                    return (i0 < 8 ? b0 : b1)[ldc * 2 * j + get_8_ri(i, ldr)];
+                });
+            }
+
             static inline void set_B_col(vc8 x0, vc16 x, T *SB_RESTRICT b, Idx j, Idx ldr,
                                          Idx ldc) {
                 for (std::size_t i = 0; i < 8; ++i)
@@ -663,7 +660,7 @@ namespace superbblas {
             static inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_[2],
                                                             Idx ldar, Idx ldac,
                                                             const zT *SB_RESTRICT b_[2], Idx ldbr,
-                                                            Idx ldbc, const zT *SB_RESTRICT c_,
+                                                            Idx ldbc, zT *SB_RESTRICT c_,
                                                             Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
@@ -671,7 +668,7 @@ namespace superbblas {
                 const T *SB_RESTRICT a1 = (const T *)(a_[1]);
                 const T *SB_RESTRICT b0 = (const T *)(b_[0]);
                 const T *SB_RESTRICT b1 = (const T *)(b_[1]);
-                const T *SB_RESTRICT c = (const T *)(c);
+                T *SB_RESTRICT c = (T *)(c_);
 
                 // d{0,1}[i,j] = c{0,1}[i,j] + sum_0^k a{0,1}[i,k] * b{0,1}[k,j]
                 auto a012 = get_A_cols(a0, a1, ldar, ldac);
@@ -707,7 +704,7 @@ namespace superbblas {
             static inline vc32 get_A_cols_aux(const T *SB_RESTRICT a[5], Idx ldr, Idx ldc, Idx d) {
                 return vc32([=](auto i0) {
                     auto i = i0 % 6;
-                    return i0 > 29 || a[i0 / 30] == nullptr
+                    return i0 > 29
                                ? T{0}
                                : a[i0 / 6][get_disp_3x3(i / 2, (d + i / 2) % 3, ldr, ldc, i % 2)];
                 });
@@ -772,7 +769,7 @@ namespace superbblas {
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a[5] = (const T *[5])(a_);
                 const T *SB_RESTRICT b[5] = (const T *[5])(b_);
-                const T *SB_RESTRICT c = (const T *)(c_);
+                T *SB_RESTRICT c = (T *)(c_);
 
                 // c{0,1}[i,j] += sum_0^k a{0,1}[i,k] * b{0,1}[k,j]
                 auto a012 = get_A_cols(a, ldar, ldac);
@@ -792,59 +789,12 @@ namespace superbblas {
             }
         };
 
-        /// Matrix-matrix multiplication, D = alpha*A*B + beta*C, where
-        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
-        ///
-        /// \param N: number of columns of B
-        /// \param alpha: scale on the matrix multiplication
-        /// \param a_: pointer to the first element of matrix A
-        /// \param ldar: row leading dimension for matrix A
-        /// \param ldac: column leading dimension for matrix A
-        /// \param b_: pointer to the first leading dimension for the matrix B
-        /// \param ldbr: row leading dimension for matrix B
-        /// \param ldbc: column leading dimension for matrix B
-        /// \param beta: scale of the addition on matrix C
-        /// \param ldbr: row leading dimension for matrix B
-        /// \param ldbc: column leading dimension for matrix B
-        /// \param c_: pointer to the first element of matrix C
-        /// \param ldcr: row leading dimension for matrix C
-        /// \param ldcc: column leading dimension for matrix C
-        /// \param d_: pointer to the first element of matrix C
-        /// \param lddr: row leading dimension for matrix D
-        /// \param lddc: column leading dimension for matrix D
+        template <typename T>
+        constexpr std::size_t gemm_3x3c_max_matrices =
+            stdx::native_simd<typename T::value_type>::size() / 6;
 
-        // __attribute__((always_inline)) inline void
-        // gemm_basic_3x3c_intr4(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-        //                       const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc, zT beta,
-        //                       const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc, zT *SB_RESTRICT d_,
-        //                       Idx lddr, Idx lddc) {
-        //     using namespace gemm_3x3_double_512;
-        //     //constexpr Idx M = 3;
-        //     //constexpr Idx K = 3;
-        //     const double *SB_RESTRICT a = (const double *)(a_);
-        //     const double *SB_RESTRICT b = (const double *)(b_);
-        //     const double *SB_RESTRICT c = (const double *)(c_);
-        //     double *SB_RESTRICT d = (double *)(d_);
-
-        //     // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-        //     auto a012 = get_A_cols(a, ldar, ldac);
-        //     for (Idx j = 0; j < N; ++j) {
-        //         vc8 b0 = get_B_col(b, j, ldbr, ldbc);
-        //         vc8 c0(0);
-        //         auto c1 = beta == zT{0} ? vc8(0) : scalar_mult(beta, get_B_col(c, j, ldcr, ldcc));
-        //         for (int disp = 0; disp < 3; ++disp) {
-        //             if (disp > 0) b0 = flip_ri_plus_1(b0);
-        //             c0 = stdx::fma(get_A_col<the_real>(a012[disp]), b0, c0);
-
-        //             b0 = flip_ri(b0);
-        //             c0 = stdx::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
-        //         }
-        //         set_B_col(scalar_mult(alpha, c0) + c1, d, j, lddr, lddc);
-        //     }
-        // }
-
-        /// Matrix-matrix multiplication, D = A*B + C, where
-        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
+        /// Matrix-matrix multiplication, D = \sum_i A[i]*B[i] + C, where
+        /// A[i] is a 3x3 matrix, B[i] is a 3xN matrix, and C and D are 3xN matrices.
         ///
         /// \param N: number of columns of B
         /// \param a: pointer to the first element of matrix A
@@ -862,22 +812,22 @@ namespace superbblas {
         /// \param lddr: row leading dimension for matrix D
         /// \param lddc: column leading dimension for matrix D
 
-        inline void gemm_basic_3x3c_intr4_alpha1_beta1(Idx N, const cT *SB_RESTRICT a, Idx ldar,
-                                                       Idx ldac, const cT *SB_RESTRICT b, Idx ldbr,
-                                                       Idx ldbc, const cT *SB_RESTRICT c, Idx ldcr,
-                                                       Idx ldcc, cT *SB_RESTRICT d, Idx lddr,
-                                                       Idx lddc) {
-            gemm_3x3_8parts<float>::gemm_basic_3x3c_intr4_alpha1_beta1(
-                N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc, d, lddr, lddc);
-        }
-
-        inline void gemm_basic_3x3c_intr4_alpha1_beta1(Idx N, const zT *SB_RESTRICT a, Idx ldar,
-                                                       Idx ldac, const zT *SB_RESTRICT b, Idx ldbr,
-                                                       Idx ldbc, const zT *SB_RESTRICT c, Idx ldcr,
-                                                       Idx ldcc, zT *SB_RESTRICT d, Idx lddr,
-                                                       Idx lddc) {
-            gemm_3x3_8parts<double>::gemm_basic_3x3c_intr4_alpha1_beta1(
-                N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc, d, lddr, lddc);
+        template <typename T>
+        inline void
+        gemm_basic_3x3c_alpha1_beta1(Idx N, const T *SB_RESTRICT a[gemm_3x3c_max_matrices<T>],
+                                     Idx ldar, Idx ldac,
+                                     const T *SB_RESTRICT b[gemm_3x3c_max_matrices<T>], Idx ldbr,
+                                     Idx ldbc, T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
+            if constexpr (gemm_3x3c_max_matrices<T> == 1) {
+                gemm_3x3_8parts<typename T::value_type>::gemm_basic_3x3c_alpha1_beta1(
+                    N, a[0], ldar, ldac, b[0], ldbr, ldbc, c, ldcr, ldcc);
+            } else if constexpr (gemm_3x3c_max_matrices<T> == 2) {
+                gemm_3x3_16parts<typename T::value_type>::gemm_basic_3x3c_alpha1_beta1(
+                    N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
+            } else if constexpr (gemm_3x3c_max_matrices<T> == 5) {
+                gemm_3x3_32parts<typename T::value_type>::gemm_basic_3x3c_alpha1_beta1(
+                    N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
+            }
         }
 
 #endif // SUPERBBLAS_USE_XSIMD
