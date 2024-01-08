@@ -660,8 +660,8 @@ namespace superbblas {
             static inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_[2],
                                                             Idx ldar, Idx ldac,
                                                             const zT *SB_RESTRICT b_[2], Idx ldbr,
-                                                            Idx ldbc, zT *SB_RESTRICT c_,
-                                                            Idx ldcr, Idx ldcc) {
+                                                            Idx ldbc, zT *SB_RESTRICT c_, Idx ldcr,
+                                                            Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a0 = (const T *)(a_[0]);
@@ -736,9 +736,7 @@ namespace superbblas {
 
             static inline vc32 get_B_col(const T *SB_RESTRICT b[5], Idx j, Idx ldr, Idx ldc) {
                 return vc32([=](auto i) {
-                    return i <= 29 && b[i / 6] != nullptr
-                               ? b[i / 6][ldc * 2 * j + get_8_ri(i % 6, ldr)]
-                               : T{0};
+                    return i <= 29 ? b[i / 6][ldc * 2 * j + get_8_ri(i % 6, ldr)] : T{0};
                 });
             }
 
@@ -767,22 +765,24 @@ namespace superbblas {
                                                             Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
-                const T *SB_RESTRICT a[5] = (const T *[5])(a_);
-                const T *SB_RESTRICT b[5] = (const T *[5])(b_);
+                const T *SB_RESTRICT a[5];
+                const T *SB_RESTRICT b[5];
+                for (std::size_t i = 0; i < 5; ++i) a[i] = (const T *SB_RESTRICT)a_[i];
+                for (std::size_t i = 0; i < 5; ++i) b[i] = (const T *SB_RESTRICT)b_[i];
                 T *SB_RESTRICT c = (T *)(c_);
 
                 // c{0,1}[i,j] += sum_0^k a{0,1}[i,k] * b{0,1}[k,j]
                 auto a012 = get_A_cols(a, ldar, ldac);
                 for (Idx j = 0; j < N; ++j) {
-                    vc32 b = get_B_col(b, j, ldbr, ldbc);
+                    vc32 b0 = get_B_col(b, j, ldbr, ldbc);
                     vc32 d{0};
                     auto c0 = get_B_col(c, j, ldcr, ldcc);
                     for (int disp = 0; disp < 3; ++disp) {
-                        if (disp > 0) b = flip_ri_plus_1(b);
-                        d = stdx::fma(get_A_col<the_real>(a012[disp]), b, d);
+                        if (disp > 0) b0 = flip_ri_plus_1(b0);
+                        d = stdx::fma(get_A_col<the_real>(a012[disp]), b0, d);
 
-                        b = flip_ri(b);
-                        d = stdx::fma(get_A_col<the_imag>(a012[disp]), b, d);
+                        b0 = flip_ri(b0);
+                        d = stdx::fma(get_A_col<the_imag>(a012[disp]), b0, d);
                     }
                     set_B_col(c0, d, c, j, ldcr, ldcc);
                 }
@@ -829,8 +829,194 @@ namespace superbblas {
                     N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
             }
         }
-
 #endif // SUPERBBLAS_USE_XSIMD
+
+#ifdef SUPERBBLAS_USE_FLOAT16
+        template <bool Conj, typename T> inline T cond_conj(const T &t);
+
+        template <> _Float16 cond_conj<false, _Float16>(const _Float16 &t) { return t; }
+        template <>
+        std::complex<_Float16>
+        cond_conj<false, std::complex<_Float16>>(const std::complex<_Float16> &t) {
+            return t;
+        }
+        template <>
+        std::complex<_Float16>
+        cond_conj<true, std::complex<_Float16>>(const std::complex<_Float16> &t) {
+            return std::conj(t);
+        }
+
+        template <typename Idx, bool ConjA, bool ConjB, typename T>
+        void gemm_basic(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar, Idx ldac,
+                        const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta, T *SB_RESTRICT c,
+                        Idx ldcr, Idx ldcc) {
+            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+            bool beta_is_one = (beta == T{1});
+            bool beta_is_zero = (beta == T{0});
+            for (Idx i = 0; i < M; ++i) {
+                for (Idx j = 0; j < N; ++j) {
+                    T r{0};
+                    for (Idx k = 0; k < K; ++k)
+                        r += cond_conj<ConjA, T>(a[ldar * i + ldac * k]) *
+                             cond_conj<ConjB, T>(b[ldbr * k + ldbc * j]);
+                    if (beta_is_one)
+                        c[ldcr * i + ldcc * j] += alpha * r;
+                    else
+                        c[ldcr * i + ldcc * j] =
+                            (!beta_is_zero ? beta * c[ldcr * i + ldcc * j] : T{0}) + alpha * r;
+                }
+            }
+        }
+
+        template <unsigned int MM, unsigned int NN, unsigned int KK, typename Idx, bool ConjA,
+                  bool ConjB, typename T>
+        void gemm_blk_ikj_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar,
+                                   Idx ldac, const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta,
+                                   T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
+            // c[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+            if (beta != T{1})
+                for (Idx i = 0; i < i; ++i)
+                    for (Idx j = 0; j < j; ++j)
+                        c[ldcr * i + ldcc * j] =
+                            (beta != T{0} ? beta * c[ldcr * i + ldcc * j] : T{0});
+            for (Idx i = 0, ii = std::min(M, MM); i < M; i += ii, ii = std::min(M - i, MM)) {
+                for (Idx k = 0, kk = std::min(K, KK); k < K; k += kk, kk = std::min(K - k, KK)) {
+                    for (Idx j = 0, jj = std::min(N, NN); j < N;
+                         j += jj, jj = std::min(N - j, NN)) {
+                        if (ii == MM && jj == NN && kk == KK)
+                            gemm_basic<Idx, ConjA, ConjB>(MM, NN, KK, alpha,
+                                                          a + ldar * i + ldac * k, ldar, ldac,
+                                                          b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
+                                                          c + ldcr * i + ldcc * j, ldcr, ldcc);
+                        else if (ii == MM && kk == KK)
+                            gemm_basic<Idx, ConjA, ConjB>(MM, jj, KK, alpha,
+                                                          a + ldar * i + ldac * k, ldar, ldac,
+                                                          b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
+                                                          c + ldcr * i + ldcc * j, ldcr, ldcc);
+                        else
+                            gemm_basic<Idx, ConjA, ConjB>(ii, jj, kk, alpha,
+                                                          a + ldar * i + ldac * k, ldar, ldac,
+                                                          b + ldbr * k + ldbc * j, ldbr, ldbc, T{1},
+                                                          c + ldcr * i + ldcc * j, ldcr, ldcc);
+                    }
+                }
+            }
+        }
+
+        template <unsigned int MM, unsigned int NN, typename Idx, bool ConjA, bool ConjB,
+                  typename T>
+        void gemm_blk_ikj_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar,
+                                   Idx ldac, const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta,
+                                   T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
+
+            if (K <= 1 || (detail::is_complex<T>::value && MM > 1 && NN > 1))
+                gemm_blk_ikj_nobuffer<MM, NN, 1, Idx, ConjA, ConjB, T>(
+                    M, N, K, alpha, a, ldar, ldac, b, ldbr, ldbc, beta, c, ldcr, ldcc);
+            else if (K <= 2)
+                gemm_blk_ikj_nobuffer<MM, NN, 2, Idx, ConjA, ConjB, T>(
+                    M, N, K, alpha, a, ldar, ldac, b, ldbr, ldbc, beta, c, ldcr, ldcc);
+            else if (K <= 3)
+                gemm_blk_ikj_nobuffer<MM, NN, 3, Idx, ConjA, ConjB, T>(
+                    M, N, K, alpha, a, ldar, ldac, b, ldbr, ldbc, beta, c, ldcr, ldcc);
+            else
+                gemm_blk_ikj_nobuffer<MM, NN, 4, Idx, ConjA, ConjB, T>(
+                    M, N, K, alpha, a, ldar, ldac, b, ldbr, ldbc, beta, c, ldcr, ldcc);
+        }
+
+        template <unsigned int MM, typename Idx, bool ConjA, bool ConjB, typename T>
+        void gemm_blk_ikj_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar,
+                                   Idx ldac, const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta,
+                                   T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
+
+            if (N <= 1)
+                gemm_blk_ikj_nobuffer<MM, 1, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                                   ldbr, ldbc, beta, c, ldcr, ldcc);
+            else if (N <= 2)
+                gemm_blk_ikj_nobuffer<MM, 2, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                                   ldbr, ldbc, beta, c, ldcr, ldcc);
+            else if (N <= 3)
+                gemm_blk_ikj_nobuffer<MM, 3, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                                   ldbr, ldbc, beta, c, ldcr, ldcc);
+            else
+                gemm_blk_ikj_nobuffer<MM, 4, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                                   ldbr, ldbc, beta, c, ldcr, ldcc);
+        }
+
+        template <typename Idx, bool ConjA, bool ConjB, typename T>
+        void gemm_blk_ikj_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, Idx ldar,
+                                   Idx ldac, const T *SB_RESTRICT b, Idx ldbr, Idx ldbc, T beta,
+                                   T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
+
+            if (M <= 1)
+                gemm_blk_ikj_nobuffer<1, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                               ldbr, ldbc, beta, c, ldcr, ldcc);
+            else if (M <= 2)
+                gemm_blk_ikj_nobuffer<2, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                               ldbr, ldbc, beta, c, ldcr, ldcc);
+            else if (M <= 3)
+                gemm_blk_ikj_nobuffer<3, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                               ldbr, ldbc, beta, c, ldcr, ldcc);
+            else
+                gemm_blk_ikj_nobuffer<4, Idx, ConjA, ConjB, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                               ldbr, ldbc, beta, c, ldcr, ldcc);
+        }
+
+        template <typename Idx, typename T>
+        void gemm_blk_ikj_nobuffer(Idx M, Idx N, Idx K, T alpha, const T *SB_RESTRICT a, bool conja,
+                                   Idx ldar, Idx ldac, const T *SB_RESTRICT b, bool conjb, Idx ldbr,
+                                   Idx ldbc, T beta, T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
+            if constexpr (detail::is_complex<T>::value) {
+                if (!conja && !conjb)
+                    gemm_blk_ikj_nobuffer<Idx, false, false, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                                ldbr, ldbc, beta, c, ldcr, ldcc);
+                else if (conja && !conjb)
+                    gemm_blk_ikj_nobuffer<Idx, true, false, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                               ldbr, ldbc, beta, c, ldcr, ldcc);
+                else if (!conja && conjb)
+                    gemm_blk_ikj_nobuffer<Idx, false, true, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                               ldbr, ldbc, beta, c, ldcr, ldcc);
+                else
+                    gemm_blk_ikj_nobuffer<Idx, true, true, T>(M, N, K, alpha, a, ldar, ldac, b,
+                                                              ldbr, ldbc, beta, c, ldcr, ldcc);
+            } else {
+                gemm_blk_ikj_nobuffer<Idx, false, false, T>(M, N, K, alpha, a, ldar, ldac, b, ldbr,
+                                                            ldbc, beta, c, ldcr, ldcc);
+            }
+        }
+    }
+
+    namespace detail {
+        template <typename T,
+                  typename std::enable_if<std::is_same<_Float16, T>::value ||
+                                              std::is_same<std::complex<_Float16>, T>::value,
+                                          bool>::type = true>
+        inline void xgemm(char transa, char transb, int m, int n, int k, const T &alpha, const T *a,
+                          int lda, const T *b, int ldb, const T &beta, T *c, int ldc, Cpu) {
+            if (m == 0 || n == 0) return;
+            bool ta = (transa != 'n' && transa != 'N');
+            bool ca = (transa == 'c' || transa == 'C');
+            bool tb = (transb != 'n' && transb != 'N');
+            bool cb = (transb == 'c' || transb == 'C');
+
+            detail_xp::gemm_blk_ikj_nobuffer<unsigned int>(m, n, k, alpha, a, ca, !ta ? 1 : lda,
+                                                           !ta ? lda : 1, b, cb, !tb ? 1 : ldb,
+                                                           !tb ? ldb : 1, beta, c, 1, ldc);
+        }
+
+        template <typename T,
+                  typename std::enable_if<std::is_same<_Float16, T>::value ||
+                                              std::is_same<std::complex<_Float16>, T>::value,
+                                          bool>::type = true>
+        inline void xgemv(char transa, int m, int n, T alpha, const T *a, int lda, const T *x,
+                          int incx, T beta, T *y, int incy, Cpu) {
+            if (m == 0) return;
+            bool ta = (transa != 'n' && transa != 'N');
+            bool ca = (transa == 'c' || transa == 'C');
+            detail_xp::gemm_blk_ikj_nobuffer<unsigned int>(m, 1, n, alpha, a, ca, !ta ? 1 : lda,
+                                                           !ta ? lda : 1, x, false, incx, m, beta,
+                                                           y, incy, m);
+        }
+#endif // SUPERBBLAS_USE_FLOAT16
     }
 }
 #endif // __SUPERBBLAS_TENFUCKS__

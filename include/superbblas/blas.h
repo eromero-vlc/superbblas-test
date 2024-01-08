@@ -553,6 +553,29 @@ namespace superbblas {
             }
         }
 
+#ifdef SUPERBBLAS_USE_FLOAT16
+        /// Template scal for _Float16
+        template <typename T,
+                  typename std::enable_if<std::is_same<_Float16, T>::value ||
+                                              std::is_same<std::complex<_Float16>, T>::value,
+                                          bool>::type = true>
+        inline void xscal(std::size_t n, const T &alpha, T *SB_RESTRICT x, std::size_t incx, Cpu) {
+            if (n == 0) return;
+            if (std::fabs(alpha) == T{0.0}) {
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
+#    endif
+                for (std::size_t i = 0; i < n; ++i) x[i * incx] = T{0};
+                return;
+            }
+            if (alpha == T{1.0}) return;
+#    ifdef _OPENMP
+#        pragma omp parallel for schedule(static)
+#    endif
+            for (std::size_t i = 0; i < n; ++i) x[i * incx] *= alpha;
+        }
+#endif
+
 #ifdef SUPERBBLAS_USE_GPU
 #    ifdef SUPERBBLAS_USE_CUDA
 #        if CUDART_VERSION >= 11000

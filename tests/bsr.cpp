@@ -1013,6 +1013,9 @@ int main(int argc, char **argv) {
         for (int i = 0; i < ncomponents; ++i) ctx.push_back(createCpuContext());
         std::vector<Cpu> xpus;
         for (const auto &i : ctx) xpus.push_back(i.toCpu(0));
+#ifdef SUPERBBLAS_USE_FLOAT16
+        test<std::complex<_Float16>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
+#endif
         test<std::complex<float>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         test<std::complex<double>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         clearCaches();

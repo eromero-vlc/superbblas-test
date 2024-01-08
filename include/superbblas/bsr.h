@@ -9,13 +9,19 @@
 namespace superbblas {
 
     namespace detail {
-        enum num_type { float_t, cfloat_t, double_t, cdouble_t };
+        enum num_type { half_t, chalf_t, float_t, cfloat_t, double_t, cdouble_t };
         template <typename T> struct num_type_v;
+        template <> struct num_type_v<_Float16> {
+            static constexpr num_type value = half_t;
+        };
         template <> struct num_type_v<float> {
             static constexpr num_type value = float_t;
         };
         template <> struct num_type_v<double> {
             static constexpr num_type value = double_t;
+        };
+        template <> struct num_type_v<std::complex<_Float16>> {
+            static constexpr num_type value = chalf_t;
         };
         template <> struct num_type_v<std::complex<float>> {
             static constexpr num_type value = cfloat_t;
@@ -238,7 +244,8 @@ namespace superbblas {
                 return;
             }
 
-            if (beta != T{0} || blayout != ColumnMajor || alpha != T{1}) throw std::runtime_error("wtf");
+            if (beta != T{0} || blayout != ColumnMajor || alpha != T{1})
+                throw std::runtime_error("wtf");
 
             using Tc = typename ccomplex<T>::type;
             const Tc *SB_RESTRICT bc = (const Tc *)b;
@@ -684,6 +691,7 @@ namespace superbblas {
                                             'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, b, ki * ncols,
                                             a, !tb ? bi : bd, y + i * ki * ncols * bi, ki * ncols,
                                             Cpu{});
+                                        tn = 0;
                                     }
                                 }
                             }
