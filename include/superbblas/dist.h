@@ -576,13 +576,16 @@ namespace superbblas {
                    v1ToReceive->buf.size() * sizeof(Q));
             assert(v0ToSend->counts[comm.rank] == 0);
             assert(v1ToReceive->counts[comm.rank] == 0);
+            // NOTE: old MPICH versions don't have MPI_Ialltoallv
+#    if !defined(MPICH_NUMVERSION) || MPICH_NUMVERSION >= 40000000
             if (getUseAsyncAlltoall()) {
-                // NOTE: detected hung of MPI_Ialltoallv in some cases; still exploring the source of the problem
                 MPI_check(MPI_Ialltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
                                          v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
                                          v1ToReceive->counts.data(), v1ToReceive->displ.data(),
                                          dtype, comm.comm, &r));
-            } else {
+            } else
+#    endif
+            {
                 tracker<Cpu> _t("alltoall", toReceive.ctx());
                 MPI_check(MPI_Alltoallv(v0ToSend->buf.data(), v0ToSend->counts.data(),
                                         v0ToSend->displ.data(), dtype, v1ToReceive->buf.data(),
