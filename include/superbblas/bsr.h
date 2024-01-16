@@ -286,32 +286,27 @@ namespace superbblas {
             }
         }
 
-        template <typename SCALAR, std::size_t K>
+        template <typename SCALAR>
         inline void xgemm_alt_alpha1_beta1(char transa, char transb, int m, int n, int k,
-                                           const SCALAR *a[K], int lda, const SCALAR *b[K], int ldb,
+                                           const SCALAR *a, int lda, const SCALAR *b, int ldb,
                                            SCALAR *c, int ldc, Cpu) {
             if (m == 0 || n == 0) return;
 
             bool ta = (transa != 'n' && transa != 'N');
             bool tb = (transb != 'n' && transb != 'N');
             if (k == 3) {
-                if constexpr (K == detail_xp::gemm_3x3c_max_matrices<SCALAR>) {
-                    if (m == 3) {
-                        superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
-                            n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c,
-                            1, ldc);
-                        return;
-                    } else if (n == 3) {
-                        superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
-                            m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc,
-                            1);
-                        return;
-                    }
+                if (m == 3) {
+                    superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
+                        n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c, 1,
+                        ldc);
+                    return;
+                } else if (n == 3) {
+                    superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
+                        m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc, 1);
+                    return;
                 }
             }
-            for (std::size_t K0 = 0; K0 < K; ++K0)
-                xgemm(transa, transb, m, n, k, SCALAR{1}, a[K0], lda, b[K0], ldb, SCALAR{1}, c, ldc,
-                      Cpu{});
+            xgemm(transa, transb, m, n, k, SCALAR{1}, a, lda, b, ldb, SCALAR{1}, c, ldc, Cpu{});
         }
 
         ///
@@ -661,38 +656,23 @@ namespace superbblas {
 #        pragma omp parallel
 #    endif
                         {
-                            constexpr std::size_t TN =
-                                std::max(std::size_t{1}, detail_xp::gemm_3x3c_max_matrices<T>);
-                            std::vector<T> aux(ki * ncols * bd * TN);
+                            std::vector<T> aux(ki * ncols * bd);
                             std::vector<T> zero_a(bi * bd), zero_b(ki * bd * ncols);
-                            const T *a[TN] = {};
-                            const T *b[TN] = {};
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
                             for (IndexType i = 0; i < block_rows; ++i) {
-                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0, tn = 0; j < j1;
+                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
                                      ++j, ++j0) {
-                                    if (jj[j] != -1) {
-                                        // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
-                                        xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd,
-                                                      ncols * bd, ColumnMajor, kd, T{0},
-                                                      aux.data() + tn * ki * ncols * bd, ki);
-                                        // Annotate the contraction Kronecker blocking
-                                        a[tn] = nonzeros + j * bi * bd;
-                                        b[tn] = aux.data() + tn * ki * ncols * bd;
-                                        ++tn;
-                                    }
+                                    if (jj[j] == -1) continue;
+                                    // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
+                                    xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd, ncols * bd,
+                                                  ColumnMajor, kd, T{0}, aux.data(), ki);
                                     // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                    if (tn == TN || (tn > 0 && j == j1 - 1)) {
-                                        for (std::size_t k = std::size_t(tn); k < TN; ++k)
-                                            a[k] = zero_a.data(), b[k] = zero_b.data();
-                                        xgemm_alt_alpha1_beta1<T, TN>(
-                                            'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, b, ki * ncols,
-                                            a, !tb ? bi : bd, y + i * ki * ncols * bi, ki * ncols,
-                                            Cpu{});
-                                        tn = 0;
-                                    }
+                                    xgemm_alt_alpha1_beta1(
+                                        'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, aux.data(),
+                                        ki * ncols, nonzeros + j * bi * bd, !tb ? bi : bd,
+                                        y + i * ki * ncols * bi, ki * ncols, Cpu{});
                                 }
                             }
                         }

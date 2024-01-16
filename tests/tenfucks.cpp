@@ -14,24 +14,24 @@ using namespace superbblas::detail;
 
 using SCALAR = std::complex<double>;
 
-inline void xgemm_alt(char transa, char transb, int m, int n, int k, SCALAR alpha, const SCALAR *a,
-                      int lda, const SCALAR *b, int ldb, SCALAR beta, SCALAR *c, int ldc, Cpu) {
+inline void xgemm_alt(char transa, char transb, int m, int n, int k, const SCALAR *a, int lda,
+                      const SCALAR *b, int ldb, SCALAR *c, int ldc, Cpu) {
     if (m == 0 || n == 0) return;
-    (void)k;
-    assert(k == 3 && (m == 3 || n == 3));
 
     bool ta = (transa != 'n' && transa != 'N');
     bool tb = (transb != 'n' && transb != 'N');
-    if (m == 3) {
-        superbblas::detail_xp::gemm_basic_3x3c_intr4(n, alpha, a, !ta ? 1 : lda, !ta ? lda : 1, b,
-                                                     !tb ? 1 : ldb, !tb ? ldb : 1, beta, c, 1, ldc,
-                                                     c, 1, ldc);
-    } else if (n == 3) {
-        superbblas::detail_xp::gemm_basic_3x3c_intr4(m, alpha, b, tb ? 1 : ldb, tb ? ldb : 1, a,
-                                                     ta ? 1 : lda, ta ? lda : 1, beta, c, ldc, 1, c,
-                                                     ldc, 1);
-    } else
-        throw std::runtime_error("wtf");
+    if (k == 3) {
+        if (m == 3) {
+            superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
+                n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c, 1, ldc);
+            return;
+        } else if (n == 3) {
+            superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
+                m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc, 1);
+            return;
+        }
+    }
+    xgemm(transa, transb, m, n, k, SCALAR{1}, a, lda, b, ldb, SCALAR{1}, c, ldc, Cpu{});
 }
 
 int main(int, char **) {
@@ -44,7 +44,7 @@ int main(int, char **) {
     {
         std::vector<SCALAR> c(3 * n);
 
-        xgemm_alt('n', 'n', 3, n, 3, 1, a.data(), 3, b.data(), 3, 0, c.data(), 3, Cpu{});
+        xgemm_alt('n', 'n', 3, n, 3, a.data(), 3, b.data(), 3, c.data(), 3, Cpu{});
 
         std::vector<SCALAR> c0(3 * n);
         for (int i = 0; i < 3; ++i)
@@ -58,7 +58,7 @@ int main(int, char **) {
     {
         std::vector<SCALAR> c(3 * n);
 
-        xgemm_alt('n', 'n', n, 3, 3, 1, b.data(), n, a.data(), 3, 0, c.data(), n, Cpu{});
+        xgemm_alt('n', 'n', n, 3, 3, b.data(), n, a.data(), 3, c.data(), n, Cpu{});
 
         std::vector<SCALAR> c0(3 * n);
         for (int i = 0; i < n; ++i)
