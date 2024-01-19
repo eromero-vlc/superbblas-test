@@ -17,10 +17,12 @@
 #define __SUPERBBLAS_TENFUCKS__
 
 #include "platform.h"
-#ifdef SUPERBBLAS_USE_XSIMD
-#    include "xsimd/xsimd.hpp"
-#elif __cplusplus >= 202002L
-#    include <experimental/simd>
+#ifndef SUPERBBLAS_LIB
+#    ifdef SUPERBBLAS_USE_XSIMD
+#        include "xsimd/xsimd.hpp"
+#    elif __cplusplus >= 202002L
+#        include <experimental/simd>
+#    endif
 #endif
 #include <algorithm>
 #include <cmath>
@@ -38,6 +40,7 @@
 #endif
 
 namespace superbblas {
+#ifndef SUPERBBLAS_LIB
     namespace detail_xp {
 
         using Idx = unsigned int;
@@ -50,8 +53,8 @@ namespace superbblas {
             constexpr static bool supported = false;
         };
 
-#ifdef SUPERBBLAS_USE_XSIMD
-#    define SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
+#    ifdef SUPERBBLAS_USE_XSIMD
+#        define SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
 
         template <typename T> struct equivalent_int;
         template <> struct equivalent_int<float> {
@@ -292,8 +295,8 @@ namespace superbblas {
             static constexpr std::size_t size = xsimd::batch<T>::size;
         };
 
-#elif __cpp_lib_experimental_parallel_simd >= 201803
-#    define SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
+#    elif __cpp_lib_experimental_parallel_simd >= 201803
+#        define SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
 
         /// Implementation based on experimental simd C++ interface
 
@@ -668,12 +671,12 @@ namespace superbblas {
         template <typename T> struct get_native_size<std::complex<T>> {
             static constexpr std::size_t size = stdx::native_simd<T>::size();
         };
-#endif // SUPERBBLAS_USE_XSIMD
+#    endif // SUPERBBLAS_USE_XSIMD
 
         template <typename T, bool supported = (get_native_size<T>::size >= 8)>
         struct gemm_basic_3x3c_alpha1_beta1_wrapper;
 
-#ifdef SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
+#    ifdef SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
         /// Matrix-matrix multiplication, D = \sum_i A[i]*B[i] + C, where
         /// A[i] is a 3x3 matrix, B[i] is a 3xN matrix, and C and D are 3xN matrices.
         ///
@@ -731,7 +734,7 @@ namespace superbblas {
                 xgemm(transa, transb, m, n, k, T{1}, a, lda, b, ldb, T{1}, c, ldc, detail::Cpu{});
             }
         };
-#endif // SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
+#    endif // SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
 
         template <typename T> struct gemm_basic_3x3c_alpha1_beta1_wrapper<T, false> {
             static void func(char transa, char transb, int m, int n, int k, const T *a, int lda,
@@ -740,6 +743,7 @@ namespace superbblas {
             }
         };
     }
+#endif // SUPERBBLAS_LIB
 
     namespace detail {
         template <typename T>
