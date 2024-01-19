@@ -19,481 +19,281 @@
 #include "platform.h"
 #ifdef SUPERBBLAS_USE_XSIMD
 #    include "xsimd/xsimd.hpp"
+#elif __cplusplus >= 202002L
+#    include <experimental/simd>
 #endif
 #include <algorithm>
 #include <cmath>
 #include <complex>
-#include <execution>
 #include <numeric>
-#if __cplusplus >= 202002L
-#    include <experimental/simd>
+
+#ifdef SUPERBBLAS_CREATING_LIB
+/// Generate template instantiations for xgemm_alt_alpha1_beta1 function with template parameter T
+
+#    define DECL_XGEMM_ALT_ALPHA1_BETA1_T(...)                                                     \
+        EMIT REPLACE1(xgemm_alt_alpha1_beta1, superbblas::detail::xgemm_alt_alpha1_beta1<T>)       \
+            REPLACE(T, SUPERBBLAS_COMPLEX_TYPES) template __VA_ARGS__;
+#else
+#    define DECL_XGEMM_ALT_ALPHA1_BETA1_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
     namespace detail_xp {
 
-        using zT = std::complex<double>;
-        using cT = std::complex<float>;
         using Idx = unsigned int;
 
+        template <typename T> struct get_native_size {
+            static constexpr std::size_t size = 0;
+        };
+
+        template <std::size_t Parts, typename T> struct gemm_3x3_in_parts {
+            constexpr static bool supported = false;
+        };
+
 #ifdef SUPERBBLAS_USE_XSIMD
-        using vc16 = xsimd::make_sized_batch<float, 16>::type;
-        using vi16 = xsimd::batch<unsigned int, vc16::arch_type>;
-        using vz8 = xsimd::make_sized_batch<double, 8>::type;
-        using vi8 = xsimd::batch<uint64_t, vz8::arch_type>;
+#    define SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
 
-        inline vz8 flip_ri(const vz8 &b) {
-            return xsimd::swizzle(b, xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>());
-        }
+        template <typename T> struct equivalent_int;
+        template <> struct equivalent_int<float> {
+            using type = uint32_t;
+        };
+        template <> struct equivalent_int<double> {
+            using type = uint64_t;
+        };
 
-        inline vz8 scalar_mult(zT s, const vz8 &b) {
-            //if (s == zT{1}) return b;
-            double r = *(double *)&s;
-            double i = ((double *)&s)[1];
-            return s == zT{1} ? b
-                              : xsimd::fma(vz8(r), b, vz8(-i, i, -i, i, -i, i, i, i) * flip_ri(b));
-        }
+        /// Implementation for
+        ///  - complex double on SIMD 512 bits (avx512)
+        ///  - complex float  on SIMD 256 bits (avx)
+        ///  - complex half   on SIMD 128 bits (sse2?, probably not useful, although it may be possible to take advantage of the intel instruction to convert 4 half precision into float)
 
-        constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool the_real) {
-            return i * 2 * ldr + j * 2 * ldc + (the_real ? 0 : 1);
-        }
+        template <typename T> struct gemm_3x3_in_parts<8, T> {
+            constexpr static bool supported = true;
 
-        constexpr bool the_real = true;
-        constexpr bool the_imag = false;
-        inline std::array<vz8, 2> get_col_intr(const double *a, Idx ldr, Idx ldc, Idx d) {
-            auto va = vz8::gather(a,
-                                  vi8(                                                  //
-                                      get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
-                                      get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
-                                      get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_real), //
-                                      get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_imag), //
-                                      get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_real), //
-                                      get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
-                                      get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
-                                      get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
-            return {xsimd::shuffle(va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>()),
-                    xsimd::shuffle(
-                        xsimd::neg(va), va,
-                        xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>())};
-        }
+            using vc8 = xsimd::make_sized_batch<T, 8>::type;
+            using vi8 = xsimd::batch<typename equivalent_int<T>::type, typename vc8::arch_type>;
+            using zT = std::complex<T>;
 
-        inline vi8 get_8_ri(Idx ld) {
-            return vi8(ld * 2 * 0, ld * 2 * 0 + 1, ld * 2 * 1, ld * 2 * 1 + 1, ld * 2 * 2,
-                       ld * 2 * 2 + 1, ld * 2 * 2 + 1, ld * 2 * 2 + 1);
-        }
+            static constexpr bool the_real = true;
+            static constexpr bool the_imag = false;
 
-        inline void gemm_basic_3x3c_intr(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
-                                         Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                         zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                         zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+            static constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool reality) {
+                return i * 2 * ldr + j * 2 * ldc + (reality ? 0 : 1);
+            }
 
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            for (Idx j = 0; j < N; ++j) {
-                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 =
-                    beta == zT{0}
-                        ? vz8(0)
-                        : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, vi8(get_8_ri(ldcr))));
-                for (int disp = 0; disp < 3; ++disp) {
-                    auto a01 = get_col_intr(a, ldar, ldac, disp);
-                    if (disp > 0) { b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1()); }
-                    c0 = xsimd::fma(std::get<0>(a01), b0, c0);
+            static inline vc8 get_A_cols_aux(const T *SB_RESTRICT a, Idx ldr, Idx ldc, Idx d) {
+                return vc8::gather(a,
+                                   vi8(                                                  //
+                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
+                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_real), //
+                                       get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_real), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
+            }
 
-                    b0 = flip_ri(b0);
-                    c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+            static inline std::array<vc8, 3> get_A_cols(const T *SB_RESTRICT a, Idx ldr, Idx ldc) {
+                return {get_A_cols_aux(a, ldr, ldc, 0), //
+                        get_A_cols_aux(a, ldr, ldc, 1), //
+                        get_A_cols_aux(a, ldr, ldc, 2)};
+            }
+
+            template <bool the_real> static inline vc8 get_A_col(vc8 va) {
+                return the_real ? xsimd::shuffle(
+                                      va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
+                                : xsimd::shuffle(xsimd::neg(va), va,
+                                                 xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
+                                                                       8 + 5, 8 + 5, 8 + 5>());
+            }
+
+            static inline vi8 get_8_ri(Idx ld) {
+                return vi8(ld * 2 * 0, ld * 2 * 0 + 1, ld * 2 * 1, ld * 2 * 1 + 1, ld * 2 * 2,
+                           ld * 2 * 2 + 1, ld * 2 * 2 + 1, ld * 2 * 2 + 1);
+            }
+
+            template <bool default_leading_dimensions = false>
+            static inline void
+            gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                         const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                         zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                if (default_leading_dimensions) {
+                    ldar = ldbr = ldcr = 1;
+                    ldac = ldbc = ldcc = 3;
                 }
+                //constexpr Idx M = 3;
+                //constexpr Idx K = 3;
+                const T *SB_RESTRICT a = (const T *)(a_);
+                const T *SB_RESTRICT b = (const T *)(b_);
+                T *SB_RESTRICT c = (T *)(c_);
 
-                c0 = scalar_mult(alpha, c0);
-                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
-            }
-        }
+                // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                auto a012 = get_A_cols(a, ldar, ldac);
+                auto vi8_ri_b = get_8_ri(ldbr);
+                auto vi8_ri_c = get_8_ri(ldcr);
+                if (default_leading_dimensions) vi8_ri_c = vi8_ri_b;
+                for (Idx j = 0; j < N; ++j) {
+                    auto b0 = vc8::gather(b + ldbc * 2 * j, vi8_ri_b);
+                    auto c1 = vc8::gather(c + ldcc * 2 * j, vi8_ri_c);
+                    vc8 c0(T{0});
+                    for (int disp = 0; disp < 3; ++disp) {
+                        if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+                        c0 = xsimd::fma(get_A_col<the_real>(a012[disp]), b0, c0);
 
-        inline void gemm_basic_3x3c_intr2(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            //using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            Idx j = 0;
-            if (N % 2 != 0) {
-                gemm_basic_3x3c_intr(N % 2, alpha, a_, ldar, ldac, b_, ldbr, ldbc, beta, c_, ldcr,
-                                     ldcc, d_, lddr, lddc);
-                j = N % 2;
-            }
-
-            for (; j < N; j += 2) {
-                int j0 = j, j1 = j + 1;
-                auto b0 = vz8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
-                auto b1 = vz8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
-                auto c1 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
-
-                for (int disp = 0; disp < 3; ++disp) {
-                    auto a01 = get_col_intr(a, ldar, ldac, disp);
-                    if (disp > 0) {
-                        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                        b1 = xsimd::swizzle(b1, vi8_flip_and_plus_1());
+                        b0 = xsimd::swizzle(b0, vi8_flip_ri());
+                        c0 = xsimd::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
                     }
-                    c0 = xsimd::fma(std::get<0>(a01), b0, c0);
-                    c1 = xsimd::fma(std::get<0>(a01), b1, c1);
-
-                    b0 = flip_ri(b0);
-                    b1 = flip_ri(b1);
-                    c0 = xsimd::fma(std::get<1>(a01), b0, c0);
-                    c1 = xsimd::fma(std::get<1>(a01), b1, c1);
+                    (c0 + c1).scatter(c + ldcc * 2 * j, vi8_ri_c);
                 }
-
-                c0 = scalar_mult(alpha, c0);
-                c1 = scalar_mult(alpha, c1);
-                c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
-                c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
             }
-        }
+        };
 
-        inline std::array<vz8, 2> get_col_intr(const double *a, Idx ldr, Idx ldc, Idx d,
-                                               bool first_time, double v[3 * 8]) {
-            vz8 va;
-            if (first_time) {
-                va = vz8::gather(a,
-                                 vi8(                                                  //
-                                     get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
-                                     get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
-                                     get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_real), //
-                                     get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_imag), //
-                                     get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_real), //
-                                     get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
-                                     get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
-                                     get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
-                va.store_aligned(&v[8 * d]);
-            } else {
-                va = vz8::load_aligned(&v[8 * d]);
+        /// Implementation for
+        ///  - complex float  on SIMD 512 bits (avx512)
+        ///  - complex half   on SIMD 256 bits (avx, probably not useful)
+
+        template <typename T> struct gemm_3x3_in_parts<16, T> {
+            constexpr static bool supported = true;
+
+            using vc8 = xsimd::make_sized_batch<T, 8>::type;
+            using vi8 = xsimd::batch<typename equivalent_int<T>::type, typename vc8::arch_type>;
+            using vc16 = xsimd::make_sized_batch<T, 16>::type;
+            using vi16 = xsimd::batch<typename equivalent_int<T>::type, typename vc16::arch_type>;
+            using zT = std::complex<T>;
+
+            static constexpr bool the_real = true;
+            static constexpr bool the_imag = false;
+
+            static constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool reality) {
+                return i * 2 * ldr + j * 2 * ldc + (reality ? 0 : 1);
             }
-            return {xsimd::shuffle(va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>()),
-                    xsimd::shuffle(
-                        xsimd::neg(va), va,
-                        xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>())};
-        }
 
-        inline void gemm_basic_3x3c_intr3(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            //using vi8_seq = xsimd::batch_constant<vi8, 0, 2, 4, 6, 8, 10, 10, 10>;
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+            static inline vc8 get_A_cols_aux(const T *SB_RESTRICT a, Idx ldr, Idx ldc, Idx d) {
+                return vc8::gather(a,
+                                   vi8(                                                  //
+                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
+                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_real), //
+                                       get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_real), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
+            }
 
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            //    if (N%2 != 0) {
-            //gemm_basic_3x3c_intr(N%2, alpha, a_, ldar, ldac, b_, ldbr, ldbc, beta, c_, ldcr, ldcc, d_, lddr, lddc);
-            //j =N%2;
-            //    }
+            static inline std::array<vc8, 3> get_A_cols(const T *SB_RESTRICT a, Idx ldr, Idx ldc) {
+                return {get_A_cols_aux(a, ldr, ldc, 0), //
+                        get_A_cols_aux(a, ldr, ldc, 1), //
+                        get_A_cols_aux(a, ldr, ldc, 2)};
+            }
 
-            alignas(vz8::arch_type::alignment()) double a_aux[3 * 8];
+            template <bool the_real> static inline vc8 get_A_col(vc8 va) {
+                return the_real ? xsimd::shuffle(
+                                      va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
+                                : xsimd::shuffle(xsimd::neg(va), va,
+                                                 xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
+                                                                       8 + 5, 8 + 5, 8 + 5>());
+            }
 
-            Idx j = 0;
-            for (; j + 2 <= N; j += 2) {
-                int j0 = j, j1 = j + 1;
-                auto b0 = vz8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
-                auto b1 = vz8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
-                auto c1 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
+            template <bool the_real> static inline vc16 get_A_col_double(vc8 va) {
+                auto x = get_A_col<the_real>(va);
+                alignas(vc16::arch_type::alignment()) T buffer[16];
+                x.store_aligned(&buffer[0]);
+                x.store_aligned(&buffer[8]);
+                return vc16::load_aligned(&buffer[0]);
+            }
 
-                for (int disp = 0; disp < 3; ++disp) {
-                    auto a01 = get_col_intr(a, ldar, ldac, disp, j == 0, a_aux);
-                    if (disp > 0) {
-                        b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                        b1 = xsimd::swizzle(b1, vi8_flip_and_plus_1());
+            static inline vi8 get_8_ri(Idx ld) {
+                return vi8(ld * 2 * 0, ld * 2 * 0 + 1, ld * 2 * 1, ld * 2 * 1 + 1, ld * 2 * 2,
+                           ld * 2 * 2 + 1, ld * 2 * 2 + 1, ld * 2 * 2 + 1);
+            }
+
+            static inline vi16 get_16_ri(Idx ldr, Idx ldc) {
+                return vi16(ldr * 2 * 0,               //
+                            ldr * 2 * 0 + 1,           //
+                            ldr * 2 * 1,               //
+                            ldr * 2 * 1 + 1,           //
+                            ldr * 2 * 2,               //
+                            ldr * 2 * 2 + 1,           //
+                            ldr * 2 * 2 + 1,           //
+                            ldr * 2 * 2 + 1,           //
+                            ldc * 2 + ldr * 2 * 0,     //
+                            ldc * 2 + ldr * 2 * 0 + 1, //
+                            ldc * 2 + ldr * 2 * 1,     //
+                            ldc * 2 + ldr * 2 * 1 + 1, //
+                            ldc * 2 + ldr * 2 * 2,     //
+                            ldc * 2 + ldr * 2 * 2 + 1, //
+                            ldc * 2 + ldr * 2 * 2 + 1, //
+                            ldc * 2 + ldr * 2 * 2 + 1);
+            }
+
+            template <bool default_leading_dimensions = false>
+            static inline void
+            gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                         const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                         zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                if (default_leading_dimensions) {
+                    ldar = ldbr = ldcr = 1;
+                    ldac = ldbc = ldcc = 3;
+                }
+                //constexpr Idx M = 3;
+                //constexpr Idx K = 3;
+                const T *SB_RESTRICT a = (const T *)(a_);
+                const T *SB_RESTRICT b = (const T *)(b_);
+                T *SB_RESTRICT c = (T *)(c_);
+
+                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                auto a012 = get_A_cols(a, ldar, ldac);
+                if (N % 2 != 0) {
+                    auto vi8_ri_b = get_8_ri(ldbr);
+                    auto vi8_ri_c = get_8_ri(ldcr);
+                    if (default_leading_dimensions) vi8_ri_c = vi8_ri_b;
+                    auto b0 = vc8::gather(b, vi8_ri_b);
+                    auto c1 = vc8::gather(c, vi8_ri_c);
+                    vc8 c0(T{0});
+                    for (int disp = 0; disp < 3; ++disp) {
+                        if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+                        c0 = xsimd::fma(get_A_col<the_real>(a012[disp]), b0, c0);
+
+                        b0 = xsimd::swizzle(b0, vi8_flip_ri());
+                        c0 = xsimd::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
                     }
-                    c0 = xsimd::fma(std::get<0>(a01), b0, c0);
-                    c1 = xsimd::fma(std::get<0>(a01), b1, c1);
-
-                    b0 = flip_ri(b0);
-                    b1 = flip_ri(b1);
-                    c0 = xsimd::fma(std::get<1>(a01), b0, c0);
-                    c1 = xsimd::fma(std::get<1>(a01), b1, c1);
+                    (c0 + c1).scatter(c, vi8_ri_c);
                 }
+                using vi16_flip_ri =
+                    xsimd::batch_constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
+                                          8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
+                using vi16_flip_and_plus_1 =
+                    xsimd::batch_constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
+                                          8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
+                auto vi16_ri_b = get_16_ri(ldbr, ldbc);
+                auto vi16_ri_c = get_16_ri(ldcr, ldcc);
+                if (default_leading_dimensions) vi16_ri_c = vi16_ri_b;
+                for (Idx j = N % 2; j < N; j += 2) {
+                    auto b0 = vc16::gather(b + ldbc * 2 * j, vi16_ri_b);
+                    auto c1 = vc16::gather(c + ldcc * 2 * j, vi16_ri_c);
+                    vc16 c0(T{0});
+                    for (int disp = 0; disp < 3; ++disp) {
+                        if (disp > 0) b0 = xsimd::swizzle(b0, vi16_flip_and_plus_1());
+                        c0 = xsimd::fma(get_A_col_double<the_real>(a012[disp]), b0, c0);
 
-                c0 = scalar_mult(alpha, c0);
-                c1 = scalar_mult(alpha, c1);
-                c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
-                c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
-            }
-            if (j < N) {
-                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
-
-                for (int disp = 0; disp < 3; ++disp) {
-                    auto a01 = get_col_intr(a, ldar, ldac, disp, j == 0, a_aux);
-                    if (disp > 0) { b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1()); }
-                    c0 = xsimd::fma(std::get<0>(a01), b0, c0);
-
-                    b0 = flip_ri(b0);
-                    c0 = xsimd::fma(std::get<1>(a01), b0, c0);
+                        b0 = xsimd::swizzle(b0, vi16_flip_ri());
+                        c0 = xsimd::fma(get_A_col_double<the_imag>(a012[disp]), b0, c0);
+                    }
+                    (c0 + c1).scatter(c + ldcc * 2 * j, vi16_ri_c);
                 }
-
-                c0 = scalar_mult(alpha, c0);
-                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
             }
-        }
+        };
 
-        inline vz8 get_cols_aux(const double *a, Idx ldr, Idx ldc, Idx d) {
-            return vz8::gather(a,
-                               vi8(                                                  //
-                                   get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_real), //
-                                   get_disp_3x3(0, (d + 0) % 3, ldr, ldc, the_imag), //
-                                   get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_real), //
-                                   get_disp_3x3(1, (d + 1) % 3, ldr, ldc, the_imag), //
-                                   get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_real), //
-                                   get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
-                                   get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag), //
-                                   get_disp_3x3(2, (d + 2) % 3, ldr, ldc, the_imag)));
-        }
-
-        inline std::array<vz8, 3> get_cols(const double *a, Idx ldr, Idx ldc) {
-            return {get_cols_aux(a, ldr, ldc, 0), //
-                    get_cols_aux(a, ldr, ldc, 1), //
-                    get_cols_aux(a, ldr, ldc, 2)};
-        }
-
-        template <bool the_real> inline vz8 get_col(vz8 va) {
-            return the_real ? xsimd::shuffle(va, va,
-                                             xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
-                            : xsimd::shuffle(xsimd::neg(va), va,
-                                             xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
-                                                                   8 + 5, 8 + 5, 8 + 5>());
-        }
-
-        /// Matrix-matrix multiplication, D = alpha*A*B + beta*C, where
-        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
-        ///
-        /// \param N: number of columns of B
-        /// \param alpha: scale on the matrix multiplication
-        /// \param a_: pointer to the first element of matrix A
-        /// \param ldar: row leading dimension for matrix A
-        /// \param ldac: column leading dimension for matrix A
-        /// \param b_: pointer to the first leading dimension for the matrix B
-        /// \param ldbr: row leading dimension for matrix B
-        /// \param ldbc: column leading dimension for matrix B
-        /// \param beta: scale of the addition on matrix C
-        /// \param ldbr: row leading dimension for matrix B
-        /// \param ldbc: column leading dimension for matrix B
-        /// \param c_: pointer to the first element of matrix C
-        /// \param ldcr: row leading dimension for matrix C
-        /// \param ldcc: column leading dimension for matrix C
-        /// \param d_: pointer to the first element of matrix C
-        /// \param lddr: row leading dimension for matrix D
-        /// \param lddc: column leading dimension for matrix D
-
-        __attribute__((always_inline)) inline void
-        gemm_basic_3x3c_intr4(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                              const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc, zT beta,
-                              const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc, zT *SB_RESTRICT d_,
-                              Idx lddr, Idx lddc) {
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            auto a012 = get_cols(a, ldar, ldac);
-            for (Idx j = 0; j < N; ++j) {
-                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                vz8 c0{0};
-                auto c1 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
-                for (int disp = 0; disp < 3; ++disp) {
-                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
-
-                    b0 = flip_ri(b0);
-                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
-                }
-
-                c0 = scalar_mult(alpha, c0) + c1;
-                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
-            }
-        }
-
-        /// Matrix-matrix multiplication, D = A*B + C, where
-        /// A is a 3x3 matrix, B is a 3xN matrix, and C and D are 3xN matrices.
-        ///
-        /// \param N: number of columns of B
-        /// \param a_: pointer to the first element of matrix A
-        /// \param ldar: row leading dimension for matrix A
-        /// \param ldac: column leading dimension for matrix A
-        /// \param b_: pointer to the first leading dimension for the matrix B
-        /// \param ldbr: row leading dimension for matrix B
-        /// \param ldbc: column leading dimension for matrix B
-        /// \param ldbr: row leading dimension for matrix B
-        /// \param ldbc: column leading dimension for matrix B
-        /// \param c_: pointer to the first element of matrix C
-        /// \param ldcr: row leading dimension for matrix C
-        /// \param ldcc: column leading dimension for matrix C
-        /// \param d_: pointer to the first element of matrix C
-        /// \param lddr: row leading dimension for matrix D
-        /// \param lddc: column leading dimension for matrix D
-
-        __attribute__((always_inline)) inline void
-        gemm_basic_3x3c_intr4_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                                           const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                           const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                           zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            auto a012 = get_cols(a, ldar, ldac);
-            for (Idx j = 0; j < N; ++j) {
-                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr));
-                for (int disp = 0; disp < 3; ++disp) {
-                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
-
-                    b0 = flip_ri(b0);
-                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
-                }
-                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
-            }
-        }
-
-        __attribute__((always_inline)) inline void gemm_basic_3x3c_intr4_alpha1_beta1_perm(
-            Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr,
-            Idx ldbc, const Idx *SB_RESTRICT b_cols_perm, Idx b_cols_modulus,
-            const zT *SB_RESTRICT alphas, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-            zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
-
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            auto a012 = get_cols(a, ldar, ldac);
-            for (Idx j = 0; j < N; ++j) {
-                auto b0 = vz8::gather(
-                    b + ldbc * 2 *
-                            (j / b_cols_modulus * b_cols_modulus + b_cols_perm[j % b_cols_modulus]),
-                    get_8_ri(ldbr));
-                vz8 c0{0};
-                auto c1 = vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr));
-                for (int disp = 0; disp < 3; ++disp) {
-                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
-
-                    b0 = flip_ri(b0);
-                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
-                }
-
-                c0 = scalar_mult(alphas[j % b_cols_modulus], c0) + c1;
-                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
-            }
-        }
-
-        inline void gemm_basic_3x3c_intr5(Idx N, zT alpha, const zT *SB_RESTRICT a_, Idx ldar,
-                                          Idx ldac, const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                          zT beta, const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc,
-                                          zT *SB_RESTRICT d_, Idx lddr, Idx lddc) {
-            //constexpr Idx M = 3;
-            //constexpr Idx K = 3;
-            const double *SB_RESTRICT a = (const double *)(a_);
-            const double *SB_RESTRICT b = (const double *)(b_);
-            const double *SB_RESTRICT c = (const double *)(c_);
-            double *SB_RESTRICT d = (double *)(d_);
-            using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-
-            // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-            auto a012 = get_cols(a, ldar, ldac);
-            Idx j = 0;
-            if (j % 2 != 0) {
-                auto b0 = vz8::gather(b + ldbc * 2 * j, get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j, get_8_ri(ldcr)));
-                for (int disp = 0; disp < 3; ++disp) {
-                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
-
-                    b0 = flip_ri(b0);
-                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
-                }
-
-                c0 = scalar_mult(alpha, c0);
-                c0.scatter(d + lddc * 2 * j, get_8_ri(lddr));
-                j++;
-            }
-            for (; j + 2 <= N; j += 2) {
-                Idx j0 = j, j1 = j + 1;
-                auto b0 = vz8::gather(b + ldbc * 2 * j0, get_8_ri(ldbr));
-                auto b1 = vz8::gather(b + ldbc * 2 * j1, get_8_ri(ldbr));
-                auto c0 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j0, get_8_ri(ldcr)));
-                auto c1 = beta == zT{0}
-                              ? vz8(0)
-                              : scalar_mult(beta, vz8::gather(c + ldcc * 2 * j1, get_8_ri(ldcr)));
-                for (int disp = 0; disp < 3; ++disp) {
-                    if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                    if (disp > 0) b1 = xsimd::swizzle(b1, vi8_flip_and_plus_1());
-                    c0 = xsimd::fma(get_col<the_real>(a012[disp]), b0, c0);
-                    c1 = xsimd::fma(get_col<the_real>(a012[disp]), b1, c1);
-
-                    b0 = flip_ri(b0);
-                    b1 = flip_ri(b1);
-                    c0 = xsimd::fma(get_col<the_imag>(a012[disp]), b0, c0);
-                    c1 = xsimd::fma(get_col<the_imag>(a012[disp]), b1, c1);
-                }
-
-                c0 = scalar_mult(alpha, c0);
-                c1 = scalar_mult(alpha, c1);
-                c0.scatter(d + lddc * 2 * j0, get_8_ri(lddr));
-                c1.scatter(d + lddc * 2 * j1, get_8_ri(lddr));
-            }
-        }
+        template <typename T> struct get_native_size<std::complex<T>> {
+            static constexpr std::size_t size = xsimd::batch<T>::size;
+        };
 
 #elif __cpp_lib_experimental_parallel_simd >= 201803
+#    define SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
 
         /// Implementation based on experimental simd C++ interface
 
@@ -504,7 +304,9 @@ namespace superbblas {
         ///  - complex float  on SIMD 256 bits (avx)
         ///  - complex half   on SIMD 128 bits (sse2?, probably not useful, although it may be possible to take advantage of the intel instruction to convert 4 half precision into float)
 
-        template <typename T, bool default_leading_dimensions = false> struct gemm_3x3_8parts {
+        template <typename T> struct gemm_3x3_in_parts<8, T> {
+            constexpr static bool supported = true;
+
             using zT = std::complex<T>;
             using vc8 = stdx::fixed_size_simd<T, 8>;
 
@@ -567,11 +369,11 @@ namespace superbblas {
                 });
             }
 
-            static inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_,
-                                                            Idx ldar, Idx ldac,
-                                                            const zT *SB_RESTRICT b_, Idx ldbr,
-                                                            Idx ldbc, zT *SB_RESTRICT c_, Idx ldcr,
-                                                            Idx ldcc) {
+            template <bool default_leading_dimensions = false>
+            static inline void
+            gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                         const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                         zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 if (default_leading_dimensions) {
                     ldar = ldbr = ldcr = 1;
                     ldac = ldbc = ldcc = 3;
@@ -604,7 +406,9 @@ namespace superbblas {
         ///  - complex float  on SIMD 512 bits (avx512)
         ///  - complex half   on SIMD 256 bits (avx, probably not useful)
 
-        template <typename T, bool default_leading_dimensions = false> struct gemm_3x3_16parts {
+        template <typename T> struct gemm_3x3_in_parts<16, T> {
+            constexpr static bool supported = true;
+
             using zT = std::complex<T>;
             using vc8 = stdx::fixed_size_simd<T, 8>;
             using vi8 = stdx::fixed_size_simd<Idx, 8>;
@@ -704,11 +508,11 @@ namespace superbblas {
                 });
             }
 
-            static inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_,
-                                                            Idx ldar, Idx ldac,
-                                                            const zT *SB_RESTRICT b_, Idx ldbr,
-                                                            Idx ldbc, zT *SB_RESTRICT c_, Idx ldcr,
-                                                            Idx ldcc) {
+            template <bool default_leading_dimensions = false>
+            static inline void
+            gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                         const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                         zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 if (default_leading_dimensions) {
                     ldar = ldbr = ldcr = 1;
                     ldac = ldbc = ldcc = 3;
@@ -757,7 +561,9 @@ namespace superbblas {
         /// Implementation for
         ///  - complex half   on SIMD 512 bits
 
-        template <typename T, bool default_leading_dimensions = false> struct gemm_3x3_32parts {
+        template <typename T> struct gemm_3x3_in_parts<32, T> {
+            constexpr static bool supported = true;
+
             using zT = std::complex<T>;
             using vc8 = stdx::fixed_size_simd<T, 8>;
             using vc16 = stdx::fixed_size_simd<T, 16>;
@@ -824,11 +630,11 @@ namespace superbblas {
                 });
             }
 
-            static inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_[5],
-                                                            Idx ldar, Idx ldac,
-                                                            const zT *SB_RESTRICT b_[5], Idx ldbr,
-                                                            Idx ldbc, const zT *SB_RESTRICT c_,
-                                                            Idx ldcr, Idx ldcc) {
+            template <bool default_leading_dimensions = false>
+            static inline void
+            gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_[5], Idx ldar, Idx ldac,
+                                         const zT *SB_RESTRICT b_[5], Idx ldbr, Idx ldbc,
+                                         const zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 if (default_leading_dimensions) {
                     ldar = ldbr = ldcr = 1;
                     ldac = ldbc = ldcc = 3;
@@ -859,6 +665,15 @@ namespace superbblas {
             }
         };
 
+        template <typename T> struct get_native_size<std::complex<T>> {
+            static constexpr std::size_t size = stdx::native_simd<T>::size();
+        };
+#endif // SUPERBBLAS_USE_XSIMD
+
+        template <typename T, bool supported = (get_native_size<T>::size >= 8)>
+        struct gemm_basic_3x3c_alpha1_beta1_wrapper;
+
+#ifdef SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
         /// Matrix-matrix multiplication, D = \sum_i A[i]*B[i] + C, where
         /// A[i] is a 3x3 matrix, B[i] is a 3xN matrix, and C and D are 3xN matrices.
         ///
@@ -882,26 +697,63 @@ namespace superbblas {
         inline void gemm_basic_3x3c_alpha1_beta1(Idx N, const T *SB_RESTRICT a, Idx ldar, Idx ldac,
                                                  const T *SB_RESTRICT b, Idx ldbr, Idx ldbc,
                                                  T *SB_RESTRICT c, Idx ldcr, Idx ldcc) {
-            constexpr std::size_t native_size = stdx::native_simd<typename T::value_type>::size();
+            constexpr std::size_t native_size = get_native_size<T>::size;
             bool default_leading_dimensions =
                 (ldar == 1 && ldbr == 1 && ldcr == 1 && ldac == 3 && ldbc == 3 && ldcc == 3);
-            if constexpr (native_size == 8) {
-                if (default_leading_dimensions)
-                    gemm_3x3_8parts<typename T::value_type, true>::gemm_basic_3x3c_alpha1_beta1(
-                        N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
-                else
-                    gemm_3x3_8parts<typename T::value_type, false>::gemm_basic_3x3c_alpha1_beta1(
-                        N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
-            } else if constexpr (native_size == 16) {
-                if (default_leading_dimensions)
-                    gemm_3x3_16parts<typename T::value_type, true>::gemm_basic_3x3c_alpha1_beta1(
-                        N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
-                else
-                    gemm_3x3_16parts<typename T::value_type, false>::gemm_basic_3x3c_alpha1_beta1(
-                        N, a, ldar, ldac, b, ldbr, ldbc, c, ldcr, ldcc);
-            }
+            if (default_leading_dimensions)
+                gemm_3x3_in_parts<native_size, typename T::value_type>::
+                    template gemm_basic_3x3c_alpha1_beta1<true>(N, a, ldar, ldac, b, ldbr, ldbc, c,
+                                                                ldcr, ldcc);
+            else
+                gemm_3x3_in_parts<native_size, typename T::value_type>::
+                    template gemm_basic_3x3c_alpha1_beta1<false>(N, a, ldar, ldac, b, ldbr, ldbc, c,
+                                                                 ldcr, ldcc);
         }
-#endif // SUPERBBLAS_USE_XSIMD
+
+        template <typename T> struct gemm_basic_3x3c_alpha1_beta1_wrapper<T, true> {
+            static void func(char transa, char transb, int m, int n, int k, const T *a, int lda,
+                             const T *b, int ldb, T *c, int ldc) {
+                if (m == 0 || n == 0) return;
+
+                bool ta = (transa != 'n' && transa != 'N');
+                bool tb = (transb != 'n' && transb != 'N');
+                if (k == 3) {
+                    if (m == 3) {
+                        gemm_basic_3x3c_alpha1_beta1(n, a, !ta ? 1 : lda, !ta ? lda : 1, b,
+                                                     !tb ? 1 : ldb, !tb ? ldb : 1, c, 1, ldc);
+                        return;
+                    } else if (n == 3) {
+                        gemm_basic_3x3c_alpha1_beta1(m, b, tb ? 1 : ldb, tb ? ldb : 1, a,
+                                                     ta ? 1 : lda, ta ? lda : 1, c, ldc, 1);
+                        return;
+                    }
+                }
+                xgemm(transa, transb, m, n, k, T{1}, a, lda, b, ldb, T{1}, c, ldc, detail::Cpu{});
+            }
+        };
+#endif // SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
+
+        template <typename T> struct gemm_basic_3x3c_alpha1_beta1_wrapper<T, false> {
+            static void func(char transa, char transb, int m, int n, int k, const T *a, int lda,
+                             const T *b, int ldb, T *c, int ldc) {
+                xgemm(transa, transb, m, n, k, T{1}, a, lda, b, ldb, T{1}, c, ldc, detail::Cpu{});
+            }
+        };
+    }
+
+    namespace detail {
+        template <typename T>
+        DECL_XGEMM_ALT_ALPHA1_BETA1_T(void xgemm_alt_alpha1_beta1(char transa, char transb, int m,
+                                                                  int n, int k, const T *a, int lda,
+                                                                  const T *b, int ldb, T *c,
+                                                                  int ldc, Cpu))
+        IMPL({
+            superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1_wrapper<T>::func(
+                transa, transb, m, n, k, a, lda, b, ldb, c, ldc);
+        })
+    }
+
+    namespace detail_xp {
 
 #ifdef SUPERBBLAS_USE_FLOAT16
         template <bool Conj, typename T> inline T cond_conj(const T &t);

@@ -11,18 +11,22 @@ namespace superbblas {
     namespace detail {
         enum num_type { half_t, chalf_t, float_t, cfloat_t, double_t, cdouble_t };
         template <typename T> struct num_type_v;
+#ifdef SUPERBBLAS_USE_FLOAT16
         template <> struct num_type_v<_Float16> {
             static constexpr num_type value = half_t;
         };
+#endif
         template <> struct num_type_v<float> {
             static constexpr num_type value = float_t;
         };
         template <> struct num_type_v<double> {
             static constexpr num_type value = double_t;
         };
+#ifdef SUPERBBLAS_USE_FLOAT16
         template <> struct num_type_v<std::complex<_Float16>> {
             static constexpr num_type value = chalf_t;
         };
+#endif
         template <> struct num_type_v<std::complex<float>> {
             static constexpr num_type value = cfloat_t;
         };
@@ -284,29 +288,6 @@ namespace superbblas {
                         for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
                 }
             }
-        }
-
-        template <typename SCALAR>
-        inline void xgemm_alt_alpha1_beta1(char transa, char transb, int m, int n, int k,
-                                           const SCALAR *a, int lda, const SCALAR *b, int ldb,
-                                           SCALAR *c, int ldc, Cpu) {
-            if (m == 0 || n == 0) return;
-
-            bool ta = (transa != 'n' && transa != 'N');
-            bool tb = (transb != 'n' && transb != 'N');
-            if (k == 3) {
-                if (m == 3) {
-                    superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
-                        n, a, !ta ? 1 : lda, !ta ? lda : 1, b, !tb ? 1 : ldb, !tb ? ldb : 1, c, 1,
-                        ldc);
-                    return;
-                } else if (n == 3) {
-                    superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1(
-                        m, b, tb ? 1 : ldb, tb ? ldb : 1, a, ta ? 1 : lda, ta ? lda : 1, c, ldc, 1);
-                    return;
-                }
-            }
-            xgemm(transa, transb, m, n, k, SCALAR{1}, a, lda, b, ldb, SCALAR{1}, c, ldc, Cpu{});
         }
 
         ///
