@@ -471,7 +471,7 @@ namespace superbblas {
                 // Append the new intervals
                 for (unsigned int i = 0; i < N; ++i) {
                     // fs = {from, size} - \sum_j grid[i]_j
-                    From_size<1> fs(1, {from[i], size[i]});
+                    From_size<1> fs(1, {Coor<1>{from[i]}, Coor<1>{size[i]}});
                     for (const auto &j : grid[i])
                         fs = detail::intersection(
                             fs, Coor<1>{normalize_coor(j[0][0] + j[1][0], dim[i])},
@@ -1744,7 +1744,8 @@ namespace superbblas {
         template <typename T>
         inline void gatherv(const T *sendbuf, std::size_t sendcount, int *counts, T *recvbuf,
                             SelfComm) {
-            if (sendcount != counts[0]) throw std::runtime_error("gather: Invalid arguments");
+            if (sendcount != (std::size_t)counts[0])
+                throw std::runtime_error("gather: Invalid arguments");
             std::copy_n(sendbuf, counts[0], recvbuf);
         }
 
@@ -1835,11 +1836,13 @@ namespace superbblas {
 
             case BlockChecksum: {
                 // Divide the blocks among the processes
-                IndexType num_blocks = sto.disp_values.size();
-                std::vector<PartitionItem<1>> p =
-                    basic_partitioning(Coor<1>{num_blocks}, Coor<1>{IndexType(comm.nprocs)});
-                std::size_t first_block_to_process = p[comm.rank][0][0];
-                std::size_t num_blocks_to_process = p[comm.rank][1][0];
+                std::size_t num_blocks = sto.disp_values.size();
+                std::size_t first_block_to_process =
+                    num_blocks / comm.nprocs * comm.rank +
+                    std::min((std::size_t)comm.rank, num_blocks % (std::size_t)comm.nprocs);
+                std::size_t num_blocks_to_process =
+                    num_blocks / comm.nprocs +
+                    ((std::size_t)comm.rank < num_blocks % (std::size_t)comm.nprocs ? 1u : 0);
 
                 // Compute the checksum for the blocks that haven't done yet if do_write, or
                 // compute the checksum for every block otherwise
@@ -1848,20 +1851,21 @@ namespace superbblas {
                      b < num_blocks_to_process; ++b, ++blockIndex) {
 
                     // Read the checksum for the block
-                    double checksum;
+                    double checksum_on_disk;
                     seek(sto.fh, sto.disp_checksum[blockIndex]);
-                    read(sto.fh, &checksum, 1);
-                    if (sto.change_endianness) change_endianness(&checksum, 1);
+                    read(sto.fh, &checksum_on_disk, 1);
+                    if (sto.change_endianness) change_endianness(&checksum_on_disk, 1);
 
                     // Skip the already computed checksums
-                    if (do_write && checksum >= 0) continue;
+                    if (do_write && checksum_on_disk >= 0) continue;
 
                     // Compute the checksum of the block
                     std::size_t vol = volume(sto.blocks.blocks[blockIndex][1]);
                     buffer.resize(vol);
                     seek(sto.fh, sto.disp_values[blockIndex]);
                     read(sto.fh, buffer.data(), vol);
-                    checksum = do_checksum(buffer.data(), buffer.size(), sto.checksum_blocksize);
+                    double checksum =
+                        do_checksum(buffer.data(), buffer.size(), sto.checksum_blocksize);
 
                     if (do_write) {
                         // Write the checksum for the block
@@ -1869,15 +1873,13 @@ namespace superbblas {
                         seek(sto.fh, sto.disp_checksum[blockIndex]);
                         iwrite(sto.fh, &checksum, 1);
                     } else {
-                        // Read the stored checksum
-                        double checksum_on_disk;
-                        seek(sto.fh, sto.disp_checksum[blockIndex]);
-                        read(sto.fh, &checksum_on_disk, 1);
-                        if (sto.change_endianness) change_endianness(&checksum_on_disk, 1);
-
                         // Compare checksums
                         if (checksum != checksum_on_disk)
-                            throw std::runtime_error("Checksum failed: block checksum failed");
+                            throw std::runtime_error(
+                                std::string("Checksum failed: block checksum failed on block ") +
+                                std::to_string(blockIndex) + std::string(" : checksum ") +
+                                std::to_string(checksum_on_disk) + std::string(" expected ") +
+                                std::to_string(checksum));
                     }
                 }
 
