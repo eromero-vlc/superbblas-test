@@ -526,14 +526,6 @@ namespace superbblas {
                 return r;
             }
 
-            /// Return the overlap volume of the given range on this tensor
-            std::size_t get_overlap_volume(const Coor<N> &from, const Coor<N> &size) {
-                auto overlaps = intersection(from, size);
-                std::size_t vol_overlaps = 0;
-                for (const auto &i : overlaps) vol_overlaps += volume(i.first[1][1]);
-                return vol_overlaps;
-            }
-
         private:
             /// Return the subgrid with overlaps with the given range
             std::vector<Coor<N>> grid_intersection(Coor<N> from, Coor<N> size) const {
@@ -1460,6 +1452,45 @@ namespace superbblas {
             return r;
         }
 
+        /// Remove intersections of a list of ranges against another list of ranges
+        /// \param fs: list of given ranges
+        /// \param p: pointer to the first range to remove
+        /// \param num_blocks: number of ranges to remove
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        std::vector<PartitionItem<Nd>>
+        remove_repetitions(const std::vector<PartitionItem<Nd>> &fs, const PartitionItem<Nd> *p,
+                           std::size_t num_blocks, const Coor<Nd> &dim) {
+            std::vector<PartitionItem<Nd>> r = fs;
+            for (unsigned int i = 0; i < num_blocks; ++i) {
+                std::vector<PartitionItem<Nd>> r0;
+                r0.reserve(r.size());
+                for (const auto &ri : r) {
+                    auto new_ri = superbblas::make_hole<Nd>(ri[0], ri[1], p[i][0], p[i][1], dim);
+                    r0.insert(r0.end(), new_ri.begin(), new_ri.end());
+                }
+                std::swap(r, r0);
+            }
+            return r;
+        }
+
+        /// Remove intersections between a given range and another list of ranges
+        /// \param from: first element of the given range
+        /// \param size: number of elements of the given range in each direction
+        /// \param p: pointer to the first range to remove
+        /// \param num_blocks: number of ranges to remove
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        std::vector<PartitionItem<Nd>>
+        remove_repetitions(const Coor<Nd> &from, const Coor<Nd> &size, const PartitionItem<Nd> *p,
+                           std::size_t num_blocks, const Coor<Nd> &dim) {
+            return remove_repetitions(
+                std::vector<PartitionItem<Nd>>(1, PartitionItem<Nd>{from, size}), p, num_blocks,
+                dim);
+        }
+
         /// Add blocks to storage after restricted the range indicated by from0, size0, and from1
         /// \param p0: blocks to add
         /// \param num_blocks: number of items in p0
@@ -1504,33 +1535,41 @@ namespace superbblas {
 
             std::vector<std::size_t> num_values; ///< number of values for each block
             num_values.reserve(num_blocks);
-            std::size_t num_nonempty_blocks = 0; ///< number of non-empty blocks
             std::vector<double> chunk_header(1); ///< header of the chunk
             chunk_header.reserve(1 + num_blocks * (Nd1 * 2 + 1));
             for (std::size_t i = 0; i < num_blocks; ++i) {
-                // Skip if the range is empty or fully included on the blocks
-                std::size_t vol = volume(p[i][1]);
-                if (vol == 0 || vol == sto.blocks.get_overlap_volume(p[i][0], p[i][1])) continue;
+                // Remove the overlaps with ranges already stored and on the same block
+                std::vector<PartitionItem<Nd1>> sto_overlaps;
+                for (const auto &pair_fs_key : sto.blocks.intersection(p[i][0], p[i][1]))
+                    sto_overlaps.insert(sto_overlaps.end(), pair_fs_key.first.begin(),
+                                        pair_fs_key.first.end());
+                auto fs0 = remove_repetitions(p[i][0], p[i][1], sto_overlaps.data(),
+                                              sto_overlaps.size(), sto.dim);
+                auto fs1 = remove_repetitions(fs0, new_blocks.data(), new_blocks.size(), sto.dim);
 
-                const From_size_item<Nd1> &fs = p[i];
-                num_nonempty_blocks++;
-                num_values.push_back(vol);
-                new_blocks.push_back(fs);
+                for (const auto &fs : fs1) {
+                    std::size_t vol = volume(fs[1]);
+                    if (vol == 0) continue;
+                    num_values.push_back(vol);
+                    new_blocks.push_back(fs);
+                }
 
                 // Root process writes the "from" and "size" for each block
                 if (comm.rank == 0) {
-                    chunk_header.insert(chunk_header.end(), fs[0].begin(), fs[0].end());
-                    chunk_header.insert(chunk_header.end(), fs[1].begin(), fs[1].end());
+                    for (const auto &fs : fs1) {
+                        chunk_header.insert(chunk_header.end(), fs[0].begin(), fs[0].end());
+                        chunk_header.insert(chunk_header.end(), fs[1].begin(), fs[1].end());
+                    }
                 }
             }
 
             // If no new block, get out
-            if (num_nonempty_blocks == 0) return;
+            if (new_blocks.size() == 0) return;
 
             // Annotate where the nonzero values start for the new blocks
             std::size_t values_start =
-                sto.disp + sizeof(double) + num_nonempty_blocks * Nd1 * sizeof(double) * 2;
-            for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
+                sto.disp + sizeof(double) + new_blocks.size() * Nd1 * sizeof(double) * 2;
+            for (std::size_t i = 0; i < new_blocks.size(); ++i) {
                 sto.blocks.append_block(new_blocks[i][0], new_blocks[i][1], sto.disp_values.size());
                 sto.disp_values.push_back(values_start);
                 values_start += num_values[i] * sizeof(Q);
@@ -1538,7 +1577,7 @@ namespace superbblas {
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
-                chunk_header[0] = num_nonempty_blocks;
+                chunk_header[0] = new_blocks.size();
                 // Change endianness if needed
                 if (sto.change_endianness)
                     change_endianness(chunk_header.data(), chunk_header.size());
@@ -1550,7 +1589,7 @@ namespace superbblas {
 
                 // Add extra space for the checksums
                 if (sto.checksum == BlockChecksum)
-                    chunk_header.resize(chunk_header.size() + num_nonempty_blocks);
+                    chunk_header.resize(chunk_header.size() + new_blocks.size());
 
                 // Write all the blocks of this chunk
                 seek(sto.fh, sto.disp);
@@ -1561,12 +1600,12 @@ namespace superbblas {
             if (sto.checksum == BlockChecksum) {
                 // Write -1 in all new checksums
                 if (comm.rank == 0) {
-                    std::vector<double> ones(num_nonempty_blocks, -1);
+                    std::vector<double> ones(new_blocks.size(), -1);
                     change_endianness(ones.data(), ones.size());
                     seek(sto.fh, values_start);
                     iwrite(sto.fh, ones.data(), ones.size());
                 }
-                for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
+                for (std::size_t i = 0; i < new_blocks.size(); ++i) {
                     sto.disp_checksum.push_back(values_start);
                     values_start += sizeof(double);
                 }
