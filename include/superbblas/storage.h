@@ -511,12 +511,14 @@ namespace superbblas {
                         if (visited.count(bidx) > 0) continue;
 
                         // Do intersection between the block and the given range
-                        Coor<N> rfrom, rsize;
-                        detail::intersection(blocks[bidx][0], blocks[bidx][1], from, size, dim,
-                                             rfrom, rsize);
-                        if (volume(rsize) == 0) continue;
-                        rfrom = normalize_coor(rfrom - blocks[bidx][0], dim);
-                        r.push_back({{blocks[bidx], {rfrom, rsize}}, values[bidx]});
+                        auto ranges =
+                            detail::intersection(blocks[bidx][0], blocks[bidx][1], from, size, dim);
+                        for (const auto &fs : ranges) {
+                            if (volume(fs[1]) == 0) continue;
+                            r.push_back({{blocks[bidx],
+                                          {normalize_coor(fs[0] - blocks[bidx][0], dim), fs[1]}},
+                                         values[bidx]});
+                        }
 
                         // Note the visited block
                         visited.insert(bidx);
