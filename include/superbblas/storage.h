@@ -1883,7 +1883,7 @@ namespace superbblas {
                     std::min((std::size_t)comm.rank, num_blocks % (std::size_t)comm.nprocs);
                 std::size_t num_blocks_to_process =
                     num_blocks / comm.nprocs +
-                    ((std::size_t)comm.rank < num_blocks % (std::size_t)comm.nprocs ? 1u : 0);
+                    ((num_blocks % (std::size_t)comm.nprocs) > (std::size_t)comm.rank ? 1u : 0);
 
                 // Compute the checksum for the blocks that haven't done yet if do_write, or
                 // compute the checksum for every block otherwise
