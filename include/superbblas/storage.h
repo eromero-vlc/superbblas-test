@@ -1464,16 +1464,17 @@ namespace superbblas {
         std::vector<PartitionItem<Nd>>
         remove_repetitions(const std::vector<PartitionItem<Nd>> &fs, const PartitionItem<Nd> *p,
                            std::size_t num_blocks, const Coor<Nd> &dim) {
-            std::vector<PartitionItem<Nd>> r = fs;
+            std::vector<PartitionItem<Nd>> r;
+            r.reserve(fs.size());
+            for (const auto fsi : fs)
+                if (volume(fsi[1]) > 0) r.push_back(fsi);
             for (unsigned int i = 0; i < num_blocks; ++i) {
                 std::vector<PartitionItem<Nd>> r0;
                 r0.reserve(r.size());
                 for (const auto &ri : r) {
                     auto new_ri = superbblas::make_hole<Nd>(ri[0], ri[1], p[i][0], p[i][1], dim);
-                    for (const auto new_rii : new_ri) {
-                        if (volume(new_rii[1]) == 0) continue;
-                        r0.push_back(new_rii);
-                    }
+                    for (const auto new_rii : new_ri)
+                        if (volume(new_rii[1]) > 0) r0.push_back(new_rii);
                 }
                 std::swap(r, r0);
             }
@@ -1903,6 +1904,7 @@ namespace superbblas {
 
                     // Compute the checksum of the block
                     std::size_t vol = volume(sto.blocks.blocks[blockIndex][1]);
+                    if (vol == 0) continue;
                     buffer.resize(vol);
                     seek(sto.fh, sto.disp_values[blockIndex]);
                     read(sto.fh, buffer.data(), vol);
