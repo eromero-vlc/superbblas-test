@@ -4,6 +4,7 @@
 #
 SUPERBBLAS_WITH_MPI ?= $(if $(findstring mpi,${CXX}),yes,no)
 ifeq ($(SUPERBBLAS_WITH_MPI), yes)
+    MPISBFLAG ?= -DSUPERBBLAS_USE_MPI
     MPISBFLAG ?= -DSUPERBBLAS_USE_MPI -DSUPERBBLAS_USE_MPIIO
 endif
 
@@ -19,7 +20,7 @@ else
   BLAS_LDFLAGS ?= -L${MKLROOT}/lib/intel64 -lmkl_rt -lpthread -lm -ldl
 endif
 
-#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
 CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
 LDFLAGS ?= $(BLAS_LDFLAGS)
 

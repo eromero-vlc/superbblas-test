@@ -25,12 +25,12 @@ template <std::size_t Nd> PartitionStored<Nd> dist_tensor_on_root(Coor<Nd> dim, 
 /// Extend the region one element in each direction
 template <std::size_t Nd>
 std::vector<std::array<Coor<Nd>, 2>> extend(const std::vector<std::array<Coor<Nd>, 2>> &fs,
-                                            std::size_t i, const Coor<Nd> &dim) {
+                                            std::size_t i, IndexType size, const Coor<Nd> &dim) {
     auto r = fs;
     for (auto &ri : r) {
-        ri[1][i] = std::min(dim[i], ri[1][i] + 2);
+        ri[1][i] = std::min(dim[i], ri[1][i] + size);
         if (ri[1][i] < dim[i])
-            ri[0][i]--;
+            ri[0][i] -= size / 2;
         else
             ri[0][i] = 0;
         ri[0] = normalize_coor(ri[0], dim);
@@ -444,7 +444,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 
         // Store proper values to test the sparse storage
         {
-            PartitionStored<Nd - 1> p0 = extend(basic_partitioning(dim0, procs0), 1, dim0);
+            PartitionStored<Nd - 1> p0 = extend(basic_partitioning(dim0, procs0), 1, 4, dim0);
             const Coor<Nd - 1> local_size0 = p0[rank][1];
             std::size_t vol0 = detail::volume(local_size0);
             vector<Scalar, Cpu> t0_cpu(vol0, Cpu{});

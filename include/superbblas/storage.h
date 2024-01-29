@@ -1470,7 +1470,10 @@ namespace superbblas {
                 r0.reserve(r.size());
                 for (const auto &ri : r) {
                     auto new_ri = superbblas::make_hole<Nd>(ri[0], ri[1], p[i][0], p[i][1], dim);
-                    r0.insert(r0.end(), new_ri.begin(), new_ri.end());
+                    for (const auto new_rii : new_ri) {
+                        if (volume(new_rii[1]) == 0) continue;
+                        r0.push_back(new_rii);
+                    }
                 }
                 std::swap(r, r0);
             }
@@ -1550,9 +1553,7 @@ namespace superbblas {
                 auto fs1 = remove_repetitions(fs0, new_blocks.data(), new_blocks.size(), sto.dim);
 
                 for (const auto &fs : fs1) {
-                    std::size_t vol = volume(fs[1]);
-                    if (vol == 0) continue;
-                    num_values.push_back(vol);
+                    num_values.push_back(volume(fs[1]));
                     new_blocks.push_back(fs);
                 }
 
