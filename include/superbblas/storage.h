@@ -813,6 +813,49 @@ namespace superbblas {
             return {disp, blocking, v};
         }
 
+        /// Remove intersections of a list of ranges against another list of ranges
+        /// \param fs: list of given ranges
+        /// \param p: pointer to the first range to remove
+        /// \param num_blocks: number of ranges to remove
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        std::vector<PartitionItem<Nd>>
+        remove_repetitions(const std::vector<PartitionItem<Nd>> &fs, const PartitionItem<Nd> *p,
+                           std::size_t num_blocks, const Coor<Nd> &dim) {
+            std::vector<PartitionItem<Nd>> r;
+            r.reserve(fs.size());
+            for (const auto fsi : fs)
+                if (volume(fsi[1]) > 0) r.push_back(fsi);
+            for (unsigned int i = 0; i < num_blocks; ++i) {
+                std::vector<PartitionItem<Nd>> r0;
+                r0.reserve(r.size());
+                for (const auto &ri : r) {
+                    auto new_ri = superbblas::make_hole<Nd>(ri[0], ri[1], p[i][0], p[i][1], dim);
+                    for (const auto new_rii : new_ri)
+                        if (volume(new_rii[1]) > 0) r0.push_back(new_rii);
+                }
+                std::swap(r, r0);
+            }
+            return r;
+        }
+
+        /// Remove intersections between a given range and another list of ranges
+        /// \param from: first element of the given range
+        /// \param size: number of elements of the given range in each direction
+        /// \param p: pointer to the first range to remove
+        /// \param num_blocks: number of ranges to remove
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        std::vector<PartitionItem<Nd>>
+        remove_repetitions(const Coor<Nd> &from, const Coor<Nd> &size, const PartitionItem<Nd> *p,
+                           std::size_t num_blocks, const Coor<Nd> &dim) {
+            return remove_repetitions(
+                std::vector<PartitionItem<Nd>>(1, PartitionItem<Nd>{from, size}), p, num_blocks,
+                dim);
+        }
+
         /// Copy the content of tensor v0 into the storage
         /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
@@ -1034,7 +1077,7 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1>
-        void save(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+        void save(typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, Order<Nd1> o1,
                   Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, CoorOrder co,
@@ -1059,8 +1102,34 @@ namespace superbblas {
                 from1 = reverse(from1);
             }
 
-            // Generate the list of subranges to send from each component from v0 to v1
-            auto overlaps = get_overlap_ranges(dim0, p0, o0, from0, size0, sto.blocks, o1, from1);
+            // Remove repeated ranges from smaller ranks
+            unsigned int num_components = p0[comm.rank].size();
+            std::vector<std::vector<Op<Nd0, Nd1>>> overlaps(num_components); ///< [componentId][ops]
+            From_size<Nd0> ranges_to_save;
+            ranges_to_save.reserve(num_components);
+            for (unsigned int componentId = 0; componentId < num_components; ++componentId) {
+                From_size<Nd0> ranges =
+                    remove_repetitions(p0[comm.rank][componentId][0], p0[comm.rank][componentId][1],
+                                       ranges_to_save.data(), ranges_to_save.size(), dim0);
+                for (unsigned int rank = 0; rank < comm.rank; ++rank)
+                    ranges = remove_repetitions(ranges, p0[rank].data(), p0[rank].size(), dim0);
+
+                // Generate the list of subranges to send from each component from v0 to v1
+                auto ranges_overlaps =
+                    get_overlap_ranges(dim0, ranges, o0, from0, size0, sto.blocks, o1, from1);
+                for (auto &ranges_overlaps_it : ranges_overlaps)
+                    for (auto &op : ranges_overlaps_it)
+                        op.first_subtensor[0] =
+                            normalize_coor(op.first_subtensor[0] + op.first_tensor[0] -
+                                               p0[comm.rank][componentId][0],
+                                           dim0);
+                for (const auto &ranges_overlaps_it : ranges_overlaps)
+                    overlaps[componentId].insert(overlaps[componentId].end(),
+                                                 ranges_overlaps_it.begin(),
+                                                 ranges_overlaps_it.end());
+
+                ranges_to_save.insert(ranges_to_save.end(), ranges.begin(), ranges.end());
+            }
 
             // Do the local file modifications
             for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
@@ -1452,49 +1521,6 @@ namespace superbblas {
             }
 
             return r;
-        }
-
-        /// Remove intersections of a list of ranges against another list of ranges
-        /// \param fs: list of given ranges
-        /// \param p: pointer to the first range to remove
-        /// \param num_blocks: number of ranges to remove
-        /// \param dim: dimensions
-
-        template <std::size_t Nd>
-        std::vector<PartitionItem<Nd>>
-        remove_repetitions(const std::vector<PartitionItem<Nd>> &fs, const PartitionItem<Nd> *p,
-                           std::size_t num_blocks, const Coor<Nd> &dim) {
-            std::vector<PartitionItem<Nd>> r;
-            r.reserve(fs.size());
-            for (const auto fsi : fs)
-                if (volume(fsi[1]) > 0) r.push_back(fsi);
-            for (unsigned int i = 0; i < num_blocks; ++i) {
-                std::vector<PartitionItem<Nd>> r0;
-                r0.reserve(r.size());
-                for (const auto &ri : r) {
-                    auto new_ri = superbblas::make_hole<Nd>(ri[0], ri[1], p[i][0], p[i][1], dim);
-                    for (const auto new_rii : new_ri)
-                        if (volume(new_rii[1]) > 0) r0.push_back(new_rii);
-                }
-                std::swap(r, r0);
-            }
-            return r;
-        }
-
-        /// Remove intersections between a given range and another list of ranges
-        /// \param from: first element of the given range
-        /// \param size: number of elements of the given range in each direction
-        /// \param p: pointer to the first range to remove
-        /// \param num_blocks: number of ranges to remove
-        /// \param dim: dimensions
-
-        template <std::size_t Nd>
-        std::vector<PartitionItem<Nd>>
-        remove_repetitions(const Coor<Nd> &from, const Coor<Nd> &size, const PartitionItem<Nd> *p,
-                           std::size_t num_blocks, const Coor<Nd> &dim) {
-            return remove_repetitions(
-                std::vector<PartitionItem<Nd>>(1, PartitionItem<Nd>{from, size}), p, num_blocks,
-                dim);
         }
 
         /// Add blocks to storage after restricted the range indicated by from0, size0, and from1
@@ -2099,8 +2125,8 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
-            size0, dim0, detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm), from0, size0, dim0,
+            detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, co, comm);
     }
@@ -2378,8 +2404,8 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
-            size0, dim0, detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm), from0, size0, dim0,
+            detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
             detail::toArray<Nd1>(o1, "o1"), sto, from1, co, comm);
     }
