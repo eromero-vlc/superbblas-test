@@ -54,9 +54,8 @@ void test_checksum() {
 constexpr std::size_t Nd = 8;           // mdtgsSnN
 constexpr unsigned int nS = 4, nG = 16; // length of dimension spin and number of gammas
 constexpr unsigned int M = 0, D = 1, T = 2, G = 3, S0 = 4, S1 = 5, N0 = 6, N1 = 7;
-using Scalar = std::complex<double>;
 
-template <typename XPU>
+template <typename Scalar, typename XPU>
 void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int rank, Context ctx,
           XPU xpu, unsigned int nrep) {
 
@@ -335,7 +334,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 Scalar s;
                 for (std::size_t i = 0; i < vol; ++i) {
                     f.read((char *)&s, sizeof(s));
-                    if (i != s.real()) throw std::runtime_error("Failing reading from storage");
+                    if (i != std::real(s)) throw std::runtime_error("Failing reading from storage");
                 }
                 f.close();
             }
@@ -354,7 +353,8 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             if (std::vector<IndexType>(dim.begin(), dim.end()) != dim0)
                 throw std::runtime_error("Error recovering tensor dimensions");
 
-            if (dtype != CDOUBLE) throw std::runtime_error("Error recovering the tensor datatype");
+            if (dtype != get_values_datatype<Scalar>())
+                throw std::runtime_error("Error recovering the tensor datatype");
         }
 
         // Test the readings
@@ -399,7 +399,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                             Coor<Nd> c{{}};
                             c[Nd - 2] = cnn[with_trans == 0 ? 0 : 1];
                             c[Nd - 1] = cnn[with_trans == 0 ? 1 : 0];
-                            if (t1_cpu[i].real() != coor2index(from0 + c, dim, strides))
+                            if (std::real(t1_cpu[i]) != coor2index(from0 + c, dim, strides))
                                 throw std::runtime_error("Storage failed!");
                         }
                     }
@@ -521,7 +521,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                         Coor<Nd> c{{}};
                         c[Nd - 2] = cnn[0];
                         c[Nd - 1] = cnn[1];
-                        if (t1_cpu[i].real() != coor2index(from0 + c, dim, strides))
+                        if (std::real(t1_cpu[i]) != coor2index(from0 + c, dim, strides))
                             throw std::runtime_error("Storage failed!");
                     }
                 }
@@ -636,9 +636,14 @@ int main(int argc, char **argv) {
 
     {
         Context ctx = createCpuContext();
-        test(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
-        test(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
-        test(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<float>(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<float>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<float>(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<std::complex<double>>(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<std::complex<double>>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0),
+                                   nrep);
+        test<std::complex<double>>(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0),
+                                   nrep);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }
