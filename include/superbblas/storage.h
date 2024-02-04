@@ -653,6 +653,8 @@ namespace superbblas {
             std::vector<std::size_t> disp_values;
             /// displacement in the file of the checksum of the values of a block
             std::vector<std::size_t> disp_checksum;
+            /// whether the checksum of the values of a block is done
+            std::vector<char> is_checksum_done;
             GridHash<N, std::size_t> blocks; ///< list of blocks already written
 
             Storage_context(values_datatype values_type, std::size_t header_size,
@@ -921,14 +923,9 @@ namespace superbblas {
             }
 
             // Compute the checksum if the block is going to be completely overwritten
-            if (sto.checksum == BlockChecksum) {
-                double checksum = -1; // invalid checksum
-                if (from1 == Coor<Nd1>{{}} && size1 == dim1) {
-                    // Compute checksum
-                    checksum = do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
-                }
-
-                // Write checksum
+            if (sto.checksum == BlockChecksum && from1 == Coor<Nd1>{{}} && size1 == dim1) {
+                double checksum =
+                    do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
                 if (do_change_endianness) change_endianness(&checksum, 1);
                 seek(sto.fh, sto.disp_checksum[blockIndex]);
                 iwrite(sto.fh, &checksum, 1);
@@ -1102,33 +1099,65 @@ namespace superbblas {
                 from1 = reverse(from1);
             }
 
-            // Remove repeated ranges from smaller ranks
+            // Compute the local ranges to save and all the ranges that going to be modified (for
+            // tracking checksums). Also, avoid independent processes to write on the same chunk
+            // by removing overlaps over the given ranges to write
             unsigned int num_components = p0[comm.rank].size();
             std::vector<std::vector<Op<Nd0, Nd1>>> overlaps(num_components); ///< [componentId][ops]
             From_size<Nd0> ranges_to_save;
             ranges_to_save.reserve(num_components);
-            for (unsigned int componentId = 0; componentId < num_components; ++componentId) {
-                From_size<Nd0> ranges =
-                    remove_repetitions(p0[comm.rank][componentId][0], p0[comm.rank][componentId][1],
-                                       ranges_to_save.data(), ranges_to_save.size(), dim0);
-                for (unsigned int rank = 0; rank < comm.rank; ++rank)
-                    ranges = remove_repetitions(ranges, p0[rank].data(), p0[rank].size(), dim0);
+            for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
+                // We visit all the ranks only when block checksum; otherwise we visit comm.rank
+                if (sto.checksum != BlockChecksum && rank != comm.rank) continue;
 
-                // Generate the list of subranges to send from each component from v0 to v1
-                auto ranges_overlaps =
-                    get_overlap_ranges(dim0, ranges, o0, from0, size0, sto.blocks, o1, from1);
-                for (auto &ranges_overlaps_it : ranges_overlaps)
-                    for (auto &op : ranges_overlaps_it)
-                        op.first_subtensor[0] =
-                            normalize_coor(op.first_subtensor[0] + op.first_tensor[0] -
-                                               p0[comm.rank][componentId][0],
-                                           dim0);
-                for (const auto &ranges_overlaps_it : ranges_overlaps)
-                    overlaps[componentId].insert(overlaps[componentId].end(),
-                                                 ranges_overlaps_it.begin(),
-                                                 ranges_overlaps_it.end());
+                for (unsigned int componentId = 0, num_components = p0[rank].size();
+                     componentId < num_components; ++componentId) {
+                    if (componentId == 0) ranges_to_save.resize(0);
 
-                ranges_to_save.insert(ranges_to_save.end(), ranges.begin(), ranges.end());
+                    // Remove overlaps with ranges on the same process
+                    From_size<Nd0> ranges =
+                        remove_repetitions(p0[rank][componentId][0], p0[rank][componentId][1],
+                                           ranges_to_save.data(), ranges_to_save.size(), dim0);
+
+                    // Remove overlaps with ranges in smaller ranks
+                    for (unsigned int r = 0; r < rank; ++r)
+                        ranges = remove_repetitions(ranges, p0[r].data(), p0[r].size(), dim0);
+
+                    // Keep all the ranges to write on the same process
+                    ranges_to_save.insert(ranges_to_save.end(), ranges.begin(), ranges.end());
+
+                    // Generate the list of subranges to send from each component from v0 to v1
+                    auto ranges_overlaps =
+                        get_overlap_ranges(dim0, ranges, o0, from0, size0, sto.blocks, o1, from1);
+
+                    // Mark whether the chunks are going to be completely overwritten, to
+                    // track what checksums are going to be computed on the fly by `local_save`
+                    if (sto.checksum == BlockChecksum) {
+                        for (auto &ranges_overlaps_it : ranges_overlaps)
+                            for (auto &op : ranges_overlaps_it)
+                                sto.is_checksum_done[op.blockIndex] =
+                                    (op.second_subtensor[0] == Coor<Nd1>{{}} &&
+                                             op.second_tensor[1] == op.second_subtensor[1]
+                                         ? 1
+                                         : 0);
+                    }
+
+                    if (rank == comm.rank) {
+                        // Translate the given ranges to their origin
+                        for (auto &ranges_overlaps_it : ranges_overlaps)
+                            for (auto &op : ranges_overlaps_it)
+                                op.first_subtensor[0] =
+                                    normalize_coor(op.first_subtensor[0] + op.first_tensor[0] -
+                                                       p0[comm.rank][componentId][0],
+                                                   dim0);
+
+                        // Annotate the calls to `local_save`
+                        for (const auto &ranges_overlaps_it : ranges_overlaps)
+                            overlaps[componentId].insert(overlaps[componentId].end(),
+                                                         ranges_overlaps_it.begin(),
+                                                         ranges_overlaps_it.end());
+                    }
+                }
             }
 
             // Do the local file modifications
@@ -1617,10 +1646,6 @@ namespace superbblas {
                     sto.checksum_val =
                         do_checksum(chunk_header.data(), chunk_header.size(), 0, sto.checksum_val);
 
-                // Add extra space for the checksums
-                if (sto.checksum == BlockChecksum)
-                    chunk_header.resize(chunk_header.size() + new_blocks.size());
-
                 // Write all the blocks of this chunk
                 seek(sto.fh, sto.disp);
                 iwrite(sto.fh, chunk_header.data(), chunk_header.size());
@@ -1628,15 +1653,9 @@ namespace superbblas {
 
             // If using checksum at the level of blocks, add the space for the checksums
             if (sto.checksum == BlockChecksum) {
-                // Write -1 in all new checksums
-                if (comm.rank == 0) {
-                    std::vector<double> ones(new_blocks.size(), -1);
-                    change_endianness(ones.data(), ones.size());
-                    seek(sto.fh, values_start);
-                    iwrite(sto.fh, ones.data(), ones.size());
-                }
                 for (std::size_t i = 0; i < new_blocks.size(); ++i) {
                     sto.disp_checksum.push_back(values_start);
+                    sto.is_checksum_done.push_back(0);
                     values_start += sizeof(double);
                 }
             }
@@ -1715,6 +1734,7 @@ namespace superbblas {
                 if (sto.checksum == BlockChecksum) {
                     for (std::size_t i = 0; i < num_blocks; ++i) {
                         sto.disp_checksum.push_back(cur);
+                        sto.is_checksum_done.push_back(1); // mark them as done
                         cur += sizeof(double);
                     }
                 }
@@ -1919,14 +1939,8 @@ namespace superbblas {
                 for (std::size_t b = 0, blockIndex = first_block_to_process;
                      b < num_blocks_to_process; ++b, ++blockIndex) {
 
-                    // Read the checksum for the block
-                    double checksum_on_disk;
-                    seek(sto.fh, sto.disp_checksum[blockIndex]);
-                    read(sto.fh, &checksum_on_disk, 1);
-                    if (sto.change_endianness) change_endianness(&checksum_on_disk, 1);
-
-                    // Skip the already computed checksums
-                    if (do_write && checksum_on_disk >= 0) continue;
+                    // Skip if the checksum is already computed and we want to write the checksums
+                    if (do_write && sto.is_checksum_done[blockIndex] != 0) continue;
 
                     // Compute the checksum of the block
                     std::size_t vol = volume(sto.blocks.blocks[blockIndex][1]);
@@ -1943,6 +1957,12 @@ namespace superbblas {
                         seek(sto.fh, sto.disp_checksum[blockIndex]);
                         iwrite(sto.fh, &checksum, 1);
                     } else {
+                        // Read the checksum for the block
+                        double checksum_on_disk = -1;
+                        seek(sto.fh, sto.disp_checksum[blockIndex]);
+                        read(sto.fh, &checksum_on_disk, 1);
+                        if (sto.change_endianness) change_endianness(&checksum_on_disk, 1);
+
                         // Compare checksums
                         if (checksum != checksum_on_disk)
                             throw std::runtime_error(
