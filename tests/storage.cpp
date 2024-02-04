@@ -632,13 +632,15 @@ int main(int argc, char **argv) {
 #else
     int num_threads = 1;
 #endif
-    if (rank == 0) std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
 
     {
+        if (rank == 0) std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
+        if (rank == 0) std::cout << ">>> test for float" << std::endl;
         Context ctx = createCpuContext();
         test<float>(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
         test<float>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
         test<float>(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        if (rank == 0) std::cout << ">>> test for complex double" << std::endl;
         test<std::complex<double>>(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
         test<std::complex<double>>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0),
                                    nrep);
@@ -649,8 +651,11 @@ int main(int argc, char **argv) {
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
+        if (rank == 0) std::cout << ">>> GPU tests with " << num_threads << " threads" << std::endl;
+        if (rank == 0) std::cout << ">>> test for complex double" << std::endl;
         Context ctx = createGpuContext();
-        test(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toGpu(0), nrep);
+        test<std::complex<double>>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toGpu(0),
+                                   nrep);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }
