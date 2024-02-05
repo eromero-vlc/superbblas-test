@@ -1515,10 +1515,6 @@ namespace superbblas {
                     sto.checksum_val =
                         do_checksum(chunk_header.data(), chunk_header.size(), 0, sto.checksum_val);
 
-                // Add extra space for the checksums
-                if (sto.checksum == BlockChecksum)
-                    chunk_header.resize(chunk_header.size() + num_nonempty_blocks);
-
                 // Write all the blocks of this chunk
                 seek(sto.fh, sto.disp);
                 iwrite(sto.fh, chunk_header.data(), chunk_header.size());
