@@ -1,4 +1,5 @@
 #include "superbblas.h"
+#include <climits>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unistd.h>
 #include <vector>
 #ifdef _OPENMP
 #    include <omp.h>
@@ -57,11 +59,16 @@ constexpr unsigned int M = 0, D = 1, T = 2, G = 3, S0 = 4, S1 = 5, N0 = 6, N1 = 
 
 template <typename Scalar, typename XPU>
 void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int rank, Context ctx,
-          XPU xpu, unsigned int nrep) {
+          XPU xpu, unsigned int nrep, bool use_anarchofs = false) {
 
     std::string metadata = "S3T format!";
-    const char *filename = "tensor.s3t";
-    const char *filename_sp = "tensor_sp.s3t";
+    const char *filename_local = "tensor.s3t";
+    std::vector<char> wd(std::size_t(1) + PATH_MAX);
+    if (getcwd(wd.data(), wd.size()) == NULL) throw std::runtime_error("error on getwcd");
+    std::string filename_remote_str =
+        std::string("afs:") + std::string(wd.data()) + std::string("/tensor.s3t");
+    const char *filename_remote = !use_anarchofs ? filename_local : filename_remote_str.c_str();
+
     const unsigned int num_reqs = 1000;
 
     // Samples of different S to request
@@ -107,7 +114,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     const bool dowrite = true;
     std::vector<double> trefr(nn.size(), 0.0);
     if (rank == 0) {
-        std::FILE *f = std::fopen(filename, "w+");
+        std::FILE *f = std::fopen(filename_local, "w+");
         if (f == nullptr) superbblas::detail::gen_error("Error opening file for writing");
 
         // Dummy initialization of t0
@@ -130,7 +137,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
         trefw = t / nrep; // time in copying a whole tensor with size dim1
 
         std::fclose(f);
-        f = std::fopen(filename, "rb");
+        f = std::fopen(filename_local, "rb");
         if (f == nullptr) superbblas::detail::gen_error("Error opening file for reading");
 
         for (std::size_t nni = 0; nni < nn.size(); ++nni) {
@@ -172,7 +179,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Storage_handle stoh;
-                create_storage<Nd, Scalar>(dim, SlowToFast, filename, metadata.c_str(),
+                create_storage<Nd, Scalar>(dim, SlowToFast, filename_local, metadata.c_str(),
                                            metadata.size(), checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                            MPI_COMM_WORLD,
@@ -211,7 +218,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     }
 
     Storage_handle stoh;
-    open_storage<Nd, Scalar>(filename, true /* allow writing */,
+    open_storage<Nd, Scalar>(filename_remote, false /* don't allow writing */,
 #ifdef SUPERBBLAS_USE_MPI
                              MPI_COMM_WORLD,
 #endif
@@ -279,7 +286,8 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 
     for (CoorOrder co : std::array<CoorOrder, 2>{SlowToFast, FastToSlow}) {
         Storage_handle stoh;
-        create_storage<Nd, Scalar>(dim, co, filename, metadata.c_str(), metadata.size(), checksum,
+        create_storage<Nd, Scalar>(dim, co, filename_local, metadata.c_str(), metadata.size(),
+                                   checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                    MPI_COMM_WORLD,
 #endif
@@ -329,7 +337,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 std::size_t header_size =
                     sizeof(int) * 6 + metadata.size() + padding_size + sizeof(double) * (Nd + 1);
                 std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
-                std::ifstream f(filename, std::ios::binary);
+                std::ifstream f(filename_local, std::ios::binary);
                 f.seekg(disp);
                 Scalar s;
                 for (std::size_t i = 0; i < vol; ++i) {
@@ -345,7 +353,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             values_datatype dtype;
             std::vector<char> metadata0;
             std::vector<IndexType> dim0;
-            read_storage_header(filename, co, dtype, metadata0, dim0);
+            read_storage_header(filename_remote, co, dtype, metadata0, dim0);
 
             if (std::string(metadata0.begin(), metadata0.end()) != metadata)
                 throw std::runtime_error("Error recovering metadata");
@@ -414,7 +422,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 #endif
         );
 
-        open_storage<Nd, Scalar>(filename, false /* don't allow writing */,
+        open_storage<Nd, Scalar>(filename_remote, false /* don't allow writing */,
 #ifdef SUPERBBLAS_USE_MPI
                                  MPI_COMM_WORLD,
 #endif
@@ -435,7 +443,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 #endif
         );
 
-        create_storage<Nd, Scalar>(dim, co, filename_sp, metadata.c_str(), metadata.size(),
+        create_storage<Nd, Scalar>(dim, co, filename_local, metadata.c_str(), metadata.size(),
                                    checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                    MPI_COMM_WORLD,
@@ -535,7 +543,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 #endif
         );
 
-        open_storage<Nd, Scalar>(filename, true /* allow writing */,
+        open_storage<Nd, Scalar>(filename_remote, false /* don't allow writing */,
 #ifdef SUPERBBLAS_USE_MPI
                                  MPI_COMM_WORLD,
 #endif
@@ -656,6 +664,17 @@ int main(int argc, char **argv) {
         Context ctx = createGpuContext();
         test<std::complex<double>>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toGpu(0),
                                    nrep);
+        clearCaches();
+        checkForMemoryLeaks(std::cout);
+    }
+#endif
+#ifdef SUPERBBLAS_USE_ANARCHOFS
+    {
+        if (rank == 0) std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
+        if (rank == 0) std::cout << ">>> test for float with anarchofs" << std::endl;
+        Context ctx = createCpuContext();
+        test<float>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep,
+                    true /* use anarchofs */);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }

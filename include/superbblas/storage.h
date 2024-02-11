@@ -12,6 +12,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#ifdef SUPERBBLAS_USE_ANARCHOFS
+#    include "anarchofs_lib.h"
+#endif
 
 /// Specification for simple, sparse, streamed tensor (S3T) format
 /// magic_number <i32>: 314
@@ -111,7 +114,7 @@ namespace superbblas {
             throw std::runtime_error(ss.str());
         }
 
-        inline std::FILE *file_open(SelfComm, const char *filename, Mode mode) {
+        inline std::FILE *file_open_local(SelfComm, const char *filename, Mode mode) {
             std::FILE *f = nullptr;
             switch (mode) {
             case CreateForReadWrite: f = std::fopen(filename, "wb+"); break;
@@ -252,7 +255,7 @@ namespace superbblas {
             static constexpr CommType value = MPI;
         };
 
-        inline File_Requests file_open(MpiComm comm, const char *filename, Mode mode) {
+        inline File_Requests file_open_local(MpiComm comm, const char *filename, Mode mode) {
             MPI_File fh;
             barrier(comm);
             switch (mode) {
@@ -352,23 +355,23 @@ namespace superbblas {
             static constexpr CommType value = MPI;
         };
 
-        inline File_Comm file_open(MpiComm comm, const char *filename, Mode mode) {
+        inline File_Comm file_open_local(MpiComm comm, const char *filename, Mode mode) {
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
-                check_consistency(
-                    std::make_tuple(std::string("file_open"), std::string(filename), (int)mode),
-                    comm);
+                check_consistency(std::make_tuple(std::string("file_open_local"),
+                                                  std::string(filename), (int)mode),
+                                  comm);
             }
 
             std::FILE *f = nullptr;
             // Avoid all processes to create the file at the same time; so root process create the file, and the rest open it
             if (comm.rank == 0) {
-                f = file_open(detail::get_comm(), filename, mode);
+                f = file_open_local(detail::get_comm(), filename, mode);
                 barrier(comm);
             } else {
                 barrier(comm);
-                f = file_open(detail::get_comm(), filename,
-                              mode == OnlyRead ? OnlyRead : ReadWrite);
+                f = file_open_local(detail::get_comm(), filename,
+                                    mode == OnlyRead ? OnlyRead : ReadWrite);
             }
             return {f, comm};
         }
@@ -430,6 +433,120 @@ namespace superbblas {
 #    endif // SUPERBBLAS_USE_MPIIO
 
 #endif // SUPERBBLAS_USE_MPI
+
+#ifdef SUPERBBLAS_USE_ANARCHOFS
+        // Anarchofs and local file handler
+        template <typename Comm> struct FileAfs {
+            anarchofs::client::File *f_afs;
+            typename File<Comm>::type f_local;
+            static constexpr CommType value = File<Comm>::value;
+        };
+
+        /// General class
+        template <typename Comm> using FileHandler = FileAfs<Comm>;
+
+        template <typename Comm>
+        inline FileAfs<Comm> file_open(const Comm &comm, const char *filename, Mode mode) {
+
+            // Check if the file starts with afs:
+            bool is_remote = (std::strncmp("afs:", filename, 4) == 0);
+
+            // If not is remote, open as a local file
+            if (!is_remote) return FileAfs<Comm>{nullptr, file_open_local(comm, filename, mode)};
+
+            // Skip "afs:"
+            const char *filename_core = filename + 4;
+
+            // Not supported writing mode
+            if (mode != OnlyRead) std::runtime_error("unsupported write operations for anarchofs");
+
+            // Open the file with anarchofs
+            auto f = anarchofs::client::open(filename_core);
+            if (f == nullptr) {
+                std::stringstream ss;
+                ss << "Error opening file `" << filename << "'";
+                throw std::runtime_error(ss.str());
+            }
+
+            return FileAfs<Comm>{f, {}};
+        }
+
+        template <typename Comm> inline void preallocate(FileAfs<Comm> &f, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("preallocation: unsupported operation for anarchofs");
+            preallocate(f.f_local, n);
+        }
+
+        template <typename Comm> inline void truncate(FileAfs<Comm> &f, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("truncate: unsupported operation for anarchofs");
+            truncate(f.f_local, n);
+        }
+
+        template <typename Comm> inline void seek(FileAfs<Comm> &f, std::size_t offset) {
+            if (f.f_afs != nullptr)
+                anarchofs::client::seek(f.f_afs, offset);
+            else
+                seek(f.f_local, offset);
+        }
+
+        template <typename Comm, typename T>
+        void write(FileAfs<Comm> &f, const T *v, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("write: unsupported operation for anarchofs");
+            write(f.f_local, v, n);
+        }
+
+        template <typename Comm, typename T>
+        void iwrite(FileAfs<Comm> &f, const T *v, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("write: unsupported operation for anarchofs");
+            iwrite(f.f_local, v, n);
+        }
+
+        template <typename Comm, typename T>
+        void iwrite(FileAfs<Comm> &f, const T *v, std::size_t n, vector<T, Cpu>) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("write: unsupported operation for anarchofs");
+            write(f.f_local, v, n);
+        }
+
+        template <typename Comm, typename T> void read(FileAfs<Comm> &f, T *v, std::size_t n) {
+            if (f.f_afs != nullptr) {
+                if (anarchofs::client::read(f.f_afs, (char *)v, n * sizeof(T)) !=
+                    (std::int64_t)(n * sizeof(T)))
+                    std::runtime_error("read: error reading from anarchofs");
+            } else {
+                read(f.f_local, v, n);
+            }
+        }
+
+        template <typename Comm> inline void flush(FileAfs<Comm> &f) {
+            if (f.f_afs == nullptr) flush(f.f_local);
+        }
+
+        template <typename Comm> inline void check_pending_requests(FileAfs<Comm> &f) {
+            if (f.f_afs == nullptr) check_pending_requests(f.f_local);
+        }
+
+        template <typename Comm> inline void close(FileAfs<Comm> &f) {
+            if (f.f_afs != nullptr) {
+                if (!anarchofs::client::close(f.f_afs))
+                    throw std::runtime_error("error closing file");
+                f.f_afs = nullptr;
+            } else {
+                close(f.f_local);
+            }
+        }
+#else
+        /// General class
+        template <typename Comm> using FileHandler = typename File<Comm>::type;
+
+        template <typename Comm>
+        inline FileHandler<Comm> file_open(const Comm &comm, const char *filename, Mode mode) {
+            return file_open_local(comm, filename, mode);
+        }
+#endif
 
         /// Data-structure to accelerate the intersection of sparse tensors
         template <std::size_t N, typename Key = void> struct GridHash {
@@ -637,7 +754,7 @@ namespace superbblas {
             values_datatype values_type;  ///< type of the nonzero values
             std::size_t header_size;      ///< number of bytes before the field num_chunks
             std::size_t disp;             ///< number of bytes before the current chunk
-            typename File<Comm>::type fh; ///< file descriptor
+            FileHandler<Comm> fh;         ///< file descriptor
             const Coor<N> dim;            ///< global tensor dimensions
             const bool change_endianness; ///< whether to change endianness
             bool modified_for_flush;      ///< whether the storage content changed since last flush
@@ -658,7 +775,7 @@ namespace superbblas {
             GridHash<N, std::size_t> blocks; ///< list of blocks already written
 
             Storage_context(values_datatype values_type, std::size_t header_size,
-                            typename File<Comm>::type fh, Coor<N> dim, bool change_endianness,
+                            FileHandler<Comm> fh, Coor<N> dim, bool change_endianness,
                             bool is_new_storage, checksum_type checksum,
                             std::size_t checksum_blocksize, checksum_t checksum_val,
                             bool allow_writing)
@@ -1327,7 +1444,7 @@ namespace superbblas {
             if (sizeof(int) != 4) throw std::runtime_error("Expected int to have size 4");
 
             // Create file
-            typename File<Comm>::type fh = file_open(comm, filename, CreateForReadWrite);
+            FileHandler<Comm> fh = file_open(comm, filename, CreateForReadWrite);
 
             // Root process writes down header
             std::size_t padding_size = (8 - metadata_length % 8) % 8;
@@ -1421,7 +1538,7 @@ namespace superbblas {
                           std::vector<IndexType> &size, std::size_t &header_size,
                           bool &do_change_endianness, checksum_type &checksum,
                           std::size_t &checksum_blocksize, checksum_t &checksum_val, Comm comm,
-                          typename File<Comm>::type &fh) {
+                          FileHandler<Comm> &fh) {
 
             // Check that common arguments have the same value in all processes
             if (getDebugLevel() > 0) {
@@ -1774,7 +1891,7 @@ namespace superbblas {
                                                          Comm comm) {
 
             // Open storage and check template parameters
-            typename File<Comm>::type fh;
+            FileHandler<Comm> fh;
             values_datatype values_dtype;
             std::vector<char> metadata;
             std::vector<IndexType> size;
@@ -2041,7 +2158,7 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        typename detail::File<detail::MpiComm>::type fh;
+        detail::FileHandler<detail::MpiComm> fh;
         std::size_t header_size;
         bool do_change_endianness;
         checksum_type checksum;
@@ -2285,7 +2402,7 @@ namespace superbblas {
 
         detail::SelfComm comm = detail::get_comm();
 
-        typename detail::File<detail::SelfComm>::type fh;
+        detail::FileHandler<detail::SelfComm> fh;
         std::size_t header_size;
         bool do_change_endianness;
         checksum_type checksum;

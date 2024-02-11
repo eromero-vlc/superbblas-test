@@ -8,6 +8,14 @@ ifeq ($(SUPERBBLAS_WITH_MPI), yes)
 endif
 
 #
+# If SUPERBBLAS_WITH_ANARCHOFS is yes, then include support for it
+#
+SUPERBBLAS_WITH_ANARCHOFS ?= $(if $(findstring undefined,$(origin ANARCHOFS_HOME)),no,yes)
+ifeq ($(SUPERBBLAS_WITH_ANARCHOFS), yes)
+    AFSFLAGS ?= -DSUPERBBLAS_USE_ANARCHOFS -I$(ANARCHOFS_HOME)
+endif
+
+#
 # Compiler for cpu target, CXX, compiler flags when compiling for cpu target and for NVCC -Xcompiler
 # when compiling for cuda, and general linking flags for all targets
 #
@@ -19,8 +27,9 @@ else
   BLAS_LDFLAGS ?= -L${MKLROOT}/lib/intel64 -lmkl_rt -lpthread -lm -ldl
 endif
 
-#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
-CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS)
+
+#CXXFLAGS ?= -g -O0 -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS) $(AFSFLAGS)
+CXXFLAGS ?= -Ofast -march=native -DNDEBUG -Wall -Wextra -fopenmp $(MPISBFLAG) $(BLAS_FLAGS) $(AFSFLAGS)
 LDFLAGS ?= $(BLAS_LDFLAGS)
 
 #
