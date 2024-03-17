@@ -12,7 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
-#ifdef SUPERBBLAS_USE_ANARCHOFS
+#if defined(SUPERBBLAS_USE_ANARCHOFS) && defined(SUPERBBLAS_USE_MPI)
 #    include "anarchofs_lib.h"
 #endif
 
@@ -434,7 +434,7 @@ namespace superbblas {
 
 #endif // SUPERBBLAS_USE_MPI
 
-#ifdef SUPERBBLAS_USE_ANARCHOFS
+#if defined(SUPERBBLAS_USE_ANARCHOFS) && defined(SUPERBBLAS_USE_MPI)
         // Anarchofs and local file handler
         template <typename Comm> struct FileAfs {
             anarchofs::client::File *f_afs;
@@ -546,7 +546,7 @@ namespace superbblas {
         inline FileHandler<Comm> file_open(const Comm &comm, const char *filename, Mode mode) {
             return file_open_local(comm, filename, mode);
         }
-#endif
+#endif // defined(SUPERBBLAS_USE_ANARCHOFS) && defined(SUPERBBLAS_USE_MPI)
 
         /// Data-structure to accelerate the intersection of sparse tensors
         template <std::size_t N, typename Key = void> struct GridHash {
