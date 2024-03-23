@@ -1,4 +1,5 @@
 #include "superbblas.h"
+#include <climits>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unistd.h>
 #include <vector>
 #ifdef _OPENMP
 #    include <omp.h>
@@ -20,6 +22,22 @@ template <std::size_t Nd> PartitionStored<Nd> dist_tensor_on_root(Coor<Nd> dim, 
     PartitionStored<Nd> fs(nprocs);
     if (1 <= nprocs) fs[0][1] = dim;
     return fs;
+}
+
+/// Extend the region one element in each direction
+template <std::size_t Nd>
+std::vector<std::array<Coor<Nd>, 2>> extend(const std::vector<std::array<Coor<Nd>, 2>> &fs,
+                                            std::size_t i, IndexType size, const Coor<Nd> &dim) {
+    auto r = fs;
+    for (auto &ri : r) {
+        ri[1][i] = std::min(dim[i], ri[1][i] + size);
+        if (ri[1][i] < dim[i])
+            ri[0][i] -= size / 2;
+        else
+            ri[0][i] = 0;
+        ri[0] = normalize_coor(ri[0], dim);
+    }
+    return r;
 }
 
 void test_checksum() {
@@ -38,15 +56,19 @@ void test_checksum() {
 constexpr std::size_t Nd = 8;           // mdtgsSnN
 constexpr unsigned int nS = 4, nG = 16; // length of dimension spin and number of gammas
 constexpr unsigned int M = 0, D = 1, T = 2, G = 3, S0 = 4, S1 = 5, N0 = 6, N1 = 7;
-using Scalar = std::complex<double>;
 
-template <typename XPU>
+template <typename Scalar, typename XPU>
 void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int rank, Context ctx,
-          XPU xpu, unsigned int nrep) {
+          XPU xpu, unsigned int nrep, bool use_anarchofs = false) {
 
     std::string metadata = "S3T format!";
-    const char *filename = "tensor.s3t";
-    const char *filename_sp = "tensor_sp.s3t";
+    const char *filename_local = "tensor.s3t";
+    std::vector<char> wd(std::size_t(1) + PATH_MAX);
+    if (getcwd(wd.data(), wd.size()) == NULL) throw std::runtime_error("error on getwcd");
+    std::string filename_remote_str =
+        std::string("afs:") + std::string(wd.data()) + std::string("/tensor.s3t");
+    const char *filename_remote = !use_anarchofs ? filename_local : filename_remote_str.c_str();
+
     const unsigned int num_reqs = 1000;
 
     // Samples of different S to request
@@ -73,7 +95,12 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     }
 
     if (rank == 0)
-        std::cout << "Maximum number of elements in a tested tensor per process: "
+        std::cout << "Testing "
+                  << (checksum == NoChecksum
+                          ? "without checksum"
+                          : (checksum == BlockChecksum ? "block checksum" : "global checksum"))
+                  << std::endl
+                  << "Maximum number of elements in a tested tensor per process: "
                   << detail::volume(local_size0) << " ( "
                   << detail::volume(local_size0) * 1.0 * sizeof(Scalar) / 1024 / 1024
                   << " MiB)   Expected file size: " << vol * 1.0 * sizeof(Scalar) / 1024 / 1024
@@ -87,7 +114,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     const bool dowrite = true;
     std::vector<double> trefr(nn.size(), 0.0);
     if (rank == 0) {
-        std::FILE *f = std::fopen(filename, "w+");
+        std::FILE *f = std::fopen(filename_local, "w+");
         if (f == nullptr) superbblas::detail::gen_error("Error opening file for writing");
 
         // Dummy initialization of t0
@@ -110,7 +137,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
         trefw = t / nrep; // time in copying a whole tensor with size dim1
 
         std::fclose(f);
-        f = std::fopen(filename, "rb");
+        f = std::fopen(filename_local, "rb");
         if (f == nullptr) superbblas::detail::gen_error("Error opening file for reading");
 
         for (std::size_t nni = 0; nni < nn.size(); ++nni) {
@@ -152,7 +179,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             double t = w_time();
             for (unsigned int rep = 0; rep < nrep; ++rep) {
                 Storage_handle stoh;
-                create_storage<Nd, Scalar>(dim, SlowToFast, filename, metadata.c_str(),
+                create_storage<Nd, Scalar>(dim, SlowToFast, filename_local, metadata.c_str(),
                                            metadata.size(), checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                            MPI_COMM_WORLD,
@@ -191,7 +218,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
     }
 
     Storage_handle stoh;
-    open_storage<Nd, Scalar>(filename, true /* allow writing */,
+    open_storage<Nd, Scalar>(filename_remote, false /* don't allow writing */,
 #ifdef SUPERBBLAS_USE_MPI
                              MPI_COMM_WORLD,
 #endif
@@ -259,7 +286,8 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 
     for (CoorOrder co : std::array<CoorOrder, 2>{SlowToFast, FastToSlow}) {
         Storage_handle stoh;
-        create_storage<Nd, Scalar>(dim, co, filename, metadata.c_str(), metadata.size(), checksum,
+        create_storage<Nd, Scalar>(dim, co, filename_local, metadata.c_str(), metadata.size(),
+                                   checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                    MPI_COMM_WORLD,
 #endif
@@ -309,12 +337,12 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                 std::size_t header_size =
                     sizeof(int) * 6 + metadata.size() + padding_size + sizeof(double) * (Nd + 1);
                 std::size_t disp = header_size + sizeof(double) * (2 + Nd * 2);
-                std::ifstream f(filename, std::ios::binary);
+                std::ifstream f(filename_local, std::ios::binary);
                 f.seekg(disp);
                 Scalar s;
                 for (std::size_t i = 0; i < vol; ++i) {
                     f.read((char *)&s, sizeof(s));
-                    if (i != s.real()) throw std::runtime_error("Failing reading from storage");
+                    if (i != std::real(s)) throw std::runtime_error("Failing reading from storage");
                 }
                 f.close();
             }
@@ -325,7 +353,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             values_datatype dtype;
             std::vector<char> metadata0;
             std::vector<IndexType> dim0;
-            read_storage_header(filename, co, dtype, metadata0, dim0);
+            read_storage_header(filename_remote, co, dtype, metadata0, dim0);
 
             if (std::string(metadata0.begin(), metadata0.end()) != metadata)
                 throw std::runtime_error("Error recovering metadata");
@@ -333,7 +361,8 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
             if (std::vector<IndexType>(dim.begin(), dim.end()) != dim0)
                 throw std::runtime_error("Error recovering tensor dimensions");
 
-            if (dtype != CDOUBLE) throw std::runtime_error("Error recovering the tensor datatype");
+            if (dtype != get_values_datatype<Scalar>())
+                throw std::runtime_error("Error recovering the tensor datatype");
         }
 
         // Test the readings
@@ -378,7 +407,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                             Coor<Nd> c{{}};
                             c[Nd - 2] = cnn[with_trans == 0 ? 0 : 1];
                             c[Nd - 1] = cnn[with_trans == 0 ? 1 : 0];
-                            if (t1_cpu[i].real() != coor2index(from0 + c, dim, strides))
+                            if (std::real(t1_cpu[i]) != coor2index(from0 + c, dim, strides))
                                 throw std::runtime_error("Storage failed!");
                         }
                     }
@@ -393,7 +422,28 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 #endif
         );
 
-        create_storage<Nd, Scalar>(dim, co, filename_sp, metadata.c_str(), metadata.size(),
+        open_storage<Nd, Scalar>(filename_remote, false /* don't allow writing */,
+#ifdef SUPERBBLAS_USE_MPI
+                                 MPI_COMM_WORLD,
+#endif
+                                 &stoh);
+
+        // Check storage
+        check_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
+
+        close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
+
+        create_storage<Nd, Scalar>(dim, co, filename_local, metadata.c_str(), metadata.size(),
                                    checksum,
 #ifdef SUPERBBLAS_USE_MPI
                                    MPI_COMM_WORLD,
@@ -402,7 +452,7 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
 
         // Store proper values to test the sparse storage
         {
-            PartitionStored<Nd - 1> p0 = basic_partitioning(dim0, procs0);
+            PartitionStored<Nd - 1> p0 = extend(basic_partitioning(dim0, procs0), 1, 4, dim0);
             const Coor<Nd - 1> local_size0 = p0[rank][1];
             std::size_t vol0 = detail::volume(local_size0);
             vector<Scalar, Cpu> t0_cpu(vol0, Cpu{});
@@ -479,12 +529,33 @@ void test(Coor<Nd> dim, checksum_type checksum, Coor<Nd> procs, int nprocs, int 
                         Coor<Nd> c{{}};
                         c[Nd - 2] = cnn[0];
                         c[Nd - 1] = cnn[1];
-                        if (t1_cpu[i].real() != coor2index(from0 + c, dim, strides))
+                        if (std::real(t1_cpu[i]) != coor2index(from0 + c, dim, strides))
                             throw std::runtime_error("Storage failed!");
                     }
                 }
             }
         }
+
+        close_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
+
+        open_storage<Nd, Scalar>(filename_remote, false /* don't allow writing */,
+#ifdef SUPERBBLAS_USE_MPI
+                                 MPI_COMM_WORLD,
+#endif
+                                 &stoh);
+
+        // Check storage
+        check_storage<Nd, Scalar>(stoh
+#ifdef SUPERBBLAS_USE_MPI
+                                  ,
+                                  MPI_COMM_WORLD
+#endif
+        );
 
         close_storage<Nd, Scalar>(stoh
 #ifdef SUPERBBLAS_USE_MPI
@@ -519,7 +590,6 @@ int main(int argc, char **argv) {
 
     // Get options
     bool procs_was_set = false;
-    checksum_type checksum = NoChecksum;
     for (int i = 1; i < argc; ++i) {
         if (std::strncmp("--dim=", argv[i], 6) == 0) {
             if (sscanf(argv[i] + 6,
@@ -545,16 +615,6 @@ int main(int argc, char **argv) {
                 return -1;
             }
             procs_was_set = true;
-        } else if (std::strncmp("--checksum=", argv[i], 11) == 0) {
-            int checksum_d = 0;
-            if (sscanf(argv[i] + 11, "%d", &checksum_d) != 1 || checksum_d < 0 || checksum_d > 2) {
-                std::cerr << "--checksum= should follow 0, 1, or 2, for instance --checksum=1"
-                          << std::endl;
-                return -1;
-            }
-            checksum =
-                (checksum_d == 0 ? NoChecksum : (checksum_d == 1 ? GlobalChecksum : BlockChecksum));
-            dim[N1] = dim[N0];
         } else if (std::strncmp("--help", argv[i], 6) == 0) {
             std::cout << "Commandline option:\n  " << argv[0]
                       << " [--dim='m d t g n'] [--procs=t] [--help]" << std::endl;
@@ -580,18 +640,41 @@ int main(int argc, char **argv) {
 #else
     int num_threads = 1;
 #endif
-    if (rank == 0) std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
 
     {
+        if (rank == 0) std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
+        if (rank == 0) std::cout << ">>> test for float" << std::endl;
         Context ctx = createCpuContext();
-        test(dim, checksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<float>(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<float>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<float>(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        if (rank == 0) std::cout << ">>> test for complex double" << std::endl;
+        test<std::complex<double>>(dim, NoChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep);
+        test<std::complex<double>>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0),
+                                   nrep);
+        test<std::complex<double>>(dim, GlobalChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0),
+                                   nrep);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }
 #ifdef SUPERBBLAS_USE_GPU
     {
+        if (rank == 0) std::cout << ">>> GPU tests with " << num_threads << " threads" << std::endl;
+        if (rank == 0) std::cout << ">>> test for complex double" << std::endl;
         Context ctx = createGpuContext();
-        test(dim, checksum, procs, nprocs, rank, ctx, ctx.toGpu(0), nrep);
+        test<std::complex<double>>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toGpu(0),
+                                   nrep);
+        clearCaches();
+        checkForMemoryLeaks(std::cout);
+    }
+#endif
+#ifdef SUPERBBLAS_USE_ANARCHOFS
+    {
+        if (rank == 0) std::cout << ">>> CPU tests with " << num_threads << " threads" << std::endl;
+        if (rank == 0) std::cout << ">>> test for float with anarchofs" << std::endl;
+        Context ctx = createCpuContext();
+        test<float>(dim, BlockChecksum, procs, nprocs, rank, ctx, ctx.toCpu(0), nrep,
+                    true /* use anarchofs */);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }

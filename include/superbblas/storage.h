@@ -12,6 +12,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#if defined(SUPERBBLAS_USE_ANARCHOFS) && defined(SUPERBBLAS_USE_MPI)
+#    include "anarchofs_lib.h"
+#endif
 
 /// Specification for simple, sparse, streamed tensor (S3T) format
 /// magic_number <i32>: 314
@@ -111,7 +114,7 @@ namespace superbblas {
             throw std::runtime_error(ss.str());
         }
 
-        inline std::FILE *file_open(SelfComm, const char *filename, Mode mode) {
+        inline std::FILE *file_open_local(SelfComm, const char *filename, Mode mode) {
             std::FILE *f = nullptr;
             switch (mode) {
             case CreateForReadWrite: f = std::fopen(filename, "wb+"); break;
@@ -252,7 +255,7 @@ namespace superbblas {
             static constexpr CommType value = MPI;
         };
 
-        inline File_Requests file_open(MpiComm comm, const char *filename, Mode mode) {
+        inline File_Requests file_open_local(MpiComm comm, const char *filename, Mode mode) {
             MPI_File fh;
             barrier(comm);
             switch (mode) {
@@ -352,26 +355,41 @@ namespace superbblas {
             static constexpr CommType value = MPI;
         };
 
-        inline File_Comm file_open(MpiComm comm, const char *filename, Mode mode) {
+        inline File_Comm file_open_local(MpiComm comm, const char *filename, Mode mode) {
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_open_local"),
+                                                  std::string(filename), (int)mode),
+                                  comm);
+            }
+
             std::FILE *f = nullptr;
             // Avoid all processes to create the file at the same time; so root process create the file, and the rest open it
             if (comm.rank == 0) {
-                f = file_open(detail::get_comm(), filename, mode);
+                f = file_open_local(detail::get_comm(), filename, mode);
                 barrier(comm);
             } else {
                 barrier(comm);
-                f = file_open(detail::get_comm(), filename,
-                              mode == OnlyRead ? OnlyRead : ReadWrite);
+                f = file_open_local(detail::get_comm(), filename,
+                                    mode == OnlyRead ? OnlyRead : ReadWrite);
             }
             return {f, comm};
         }
 
         inline void preallocate(File_Comm f, std::size_t n) {
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_preallocate"), n), f.comm);
+            }
+
             if (f.comm.rank == 0) preallocate(f.f, n);
             barrier(f.comm);
         }
 
         inline void truncate(File_Comm f, std::size_t n) {
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_truncate"), n), f.comm);
+            }
+
             if (f.comm.rank == 0) truncate(f.f, n);
             barrier(f.comm);
         }
@@ -393,6 +411,10 @@ namespace superbblas {
         template <typename T> void read(File_Comm f, T *v, std::size_t n) { read(f.f, v, n); }
 
         inline void flush(File_Comm f) {
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("file_flush")), f.comm);
+            }
+
             flush(f.f);
             barrier(f.comm);
         }
@@ -400,12 +422,131 @@ namespace superbblas {
         inline void check_pending_requests(File_Comm) {}
 
         inline void close(File_Comm &f) {
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("close_file")), f.comm);
+            }
+
             close(f.f);
             barrier(f.comm);
         }
 #    endif // SUPERBBLAS_USE_MPIIO
 
 #endif // SUPERBBLAS_USE_MPI
+
+#if defined(SUPERBBLAS_USE_ANARCHOFS) && defined(SUPERBBLAS_USE_MPI)
+        // Anarchofs and local file handler
+        template <typename Comm> struct FileAfs {
+            anarchofs::client::File *f_afs;
+            typename File<Comm>::type f_local;
+            static constexpr CommType value = File<Comm>::value;
+        };
+
+        /// General class
+        template <typename Comm> using FileHandler = FileAfs<Comm>;
+
+        template <typename Comm>
+        inline FileAfs<Comm> file_open(const Comm &comm, const char *filename, Mode mode) {
+
+            // Check if the file starts with afs:
+            bool is_remote = (std::strncmp("afs:", filename, 4) == 0);
+
+            // If not is remote, open as a local file
+            if (!is_remote) return FileAfs<Comm>{nullptr, file_open_local(comm, filename, mode)};
+
+            // Skip "afs:"
+            const char *filename_core = filename + 4;
+
+            // Not supported writing mode
+            if (mode != OnlyRead) std::runtime_error("unsupported write operations for anarchofs");
+
+            // Open the file with anarchofs
+            auto f = anarchofs::client::open(filename_core);
+            if (f == nullptr) {
+                std::stringstream ss;
+                ss << "Error opening file `" << filename << "'";
+                throw std::runtime_error(ss.str());
+            }
+
+            return FileAfs<Comm>{f, {}};
+        }
+
+        template <typename Comm> inline void preallocate(FileAfs<Comm> &f, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("preallocation: unsupported operation for anarchofs");
+            preallocate(f.f_local, n);
+        }
+
+        template <typename Comm> inline void truncate(FileAfs<Comm> &f, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("truncate: unsupported operation for anarchofs");
+            truncate(f.f_local, n);
+        }
+
+        template <typename Comm> inline void seek(FileAfs<Comm> &f, std::size_t offset) {
+            if (f.f_afs != nullptr)
+                anarchofs::client::seek(f.f_afs, offset);
+            else
+                seek(f.f_local, offset);
+        }
+
+        template <typename Comm, typename T>
+        void write(FileAfs<Comm> &f, const T *v, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("write: unsupported operation for anarchofs");
+            write(f.f_local, v, n);
+        }
+
+        template <typename Comm, typename T>
+        void iwrite(FileAfs<Comm> &f, const T *v, std::size_t n) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("write: unsupported operation for anarchofs");
+            iwrite(f.f_local, v, n);
+        }
+
+        template <typename Comm, typename T>
+        void iwrite(FileAfs<Comm> &f, const T *v, std::size_t n, vector<T, Cpu>) {
+            if (f.f_afs != nullptr)
+                throw std::runtime_error("write: unsupported operation for anarchofs");
+            write(f.f_local, v, n);
+        }
+
+        template <typename Comm, typename T> void read(FileAfs<Comm> &f, T *v, std::size_t n) {
+            if (f.f_afs != nullptr) {
+                if (anarchofs::client::read(f.f_afs, (char *)v, n * sizeof(T)) !=
+                    (std::int64_t)(n * sizeof(T)))
+                    std::runtime_error("read: error reading from anarchofs");
+            } else {
+                read(f.f_local, v, n);
+            }
+        }
+
+        template <typename Comm> inline void flush(FileAfs<Comm> &f) {
+            if (f.f_afs == nullptr) flush(f.f_local);
+        }
+
+        template <typename Comm> inline void check_pending_requests(FileAfs<Comm> &f) {
+            if (f.f_afs == nullptr) check_pending_requests(f.f_local);
+        }
+
+        template <typename Comm> inline void close(FileAfs<Comm> &f) {
+            if (f.f_afs != nullptr) {
+                if (!anarchofs::client::close(f.f_afs))
+                    throw std::runtime_error("error closing file");
+                f.f_afs = nullptr;
+            } else {
+                close(f.f_local);
+            }
+        }
+#else
+        /// General class
+        template <typename Comm> using FileHandler = typename File<Comm>::type;
+
+        template <typename Comm>
+        inline FileHandler<Comm> file_open(const Comm &comm, const char *filename, Mode mode) {
+            return file_open_local(comm, filename, mode);
+        }
+#endif // defined(SUPERBBLAS_USE_ANARCHOFS) && defined(SUPERBBLAS_USE_MPI)
 
         /// Data-structure to accelerate the intersection of sparse tensors
         template <std::size_t N, typename Key = void> struct GridHash {
@@ -423,7 +564,7 @@ namespace superbblas {
             /// From grid coordinate index (SlowToFast) to `blocks` and `values` indices
             std::unordered_multimap<Coor<N>, BlockIndex, TupleHash<Coor<N>>> gridToBlocks;
 
-            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks{16} {
+            GridHash(Coor<N> dim) : dim{dim}, grid{{}}, gridToBlocks(16) {
                 assert(check_positive(dim));
             }
 
@@ -447,7 +588,7 @@ namespace superbblas {
                 // Append the new intervals
                 for (unsigned int i = 0; i < N; ++i) {
                     // fs = {from, size} - \sum_j grid[i]_j
-                    From_size<1> fs(1, {from[i], size[i]});
+                    From_size<1> fs(1, {Coor<1>{from[i]}, Coor<1>{size[i]}});
                     for (const auto &j : grid[i])
                         fs = detail::intersection(
                             fs, Coor<1>{normalize_coor(j[0][0] + j[1][0], dim[i])},
@@ -487,12 +628,14 @@ namespace superbblas {
                         if (visited.count(bidx) > 0) continue;
 
                         // Do intersection between the block and the given range
-                        Coor<N> rfrom, rsize;
-                        detail::intersection(blocks[bidx][0], blocks[bidx][1], from, size, dim,
-                                             rfrom, rsize);
-                        if (volume(rsize) == 0) continue;
-                        rfrom = normalize_coor(rfrom - blocks[bidx][0], dim);
-                        r.push_back({{blocks[bidx], {rfrom, rsize}}, values[bidx]});
+                        auto ranges =
+                            detail::intersection(blocks[bidx][0], blocks[bidx][1], from, size, dim);
+                        for (const auto &fs : ranges) {
+                            if (volume(fs[1]) == 0) continue;
+                            r.push_back({{blocks[bidx],
+                                          {normalize_coor(fs[0] - blocks[bidx][0], dim), fs[1]}},
+                                         values[bidx]});
+                        }
 
                         // Note the visited block
                         visited.insert(bidx);
@@ -500,14 +643,6 @@ namespace superbblas {
                 }
 
                 return r;
-            }
-
-            /// Return the overlap volume of the given range on this tensor
-            std::size_t get_overlap_volume(const Coor<N> &from, const Coor<N> &size) {
-                auto overlaps = intersection(from, size);
-                std::size_t vol_overlaps = 0;
-                for (const auto &i : overlaps) vol_overlaps += volume(i.first[1][1]);
-                return vol_overlaps;
             }
 
         private:
@@ -566,6 +701,9 @@ namespace superbblas {
         template <typename T>
         checksum_t do_checksum(const T *str, std::size_t size = 1,
                                std::size_t checksum_blocksize = 0, checksum_t prev_checksum = 0) {
+            Cpu cpu{0};
+            tracker<Cpu> _t("do checksums", cpu);
+
             // Update size to bytes
             size *= sizeof(T);
 
@@ -616,7 +754,7 @@ namespace superbblas {
             values_datatype values_type;  ///< type of the nonzero values
             std::size_t header_size;      ///< number of bytes before the field num_chunks
             std::size_t disp;             ///< number of bytes before the current chunk
-            typename File<Comm>::type fh; ///< file descriptor
+            FileHandler<Comm> fh;         ///< file descriptor
             const Coor<N> dim;            ///< global tensor dimensions
             const bool change_endianness; ///< whether to change endianness
             bool modified_for_flush;      ///< whether the storage content changed since last flush
@@ -632,10 +770,12 @@ namespace superbblas {
             std::vector<std::size_t> disp_values;
             /// displacement in the file of the checksum of the values of a block
             std::vector<std::size_t> disp_checksum;
+            /// whether the checksum of the values of a block is done
+            std::vector<char> is_checksum_done;
             GridHash<N, std::size_t> blocks; ///< list of blocks already written
 
             Storage_context(values_datatype values_type, std::size_t header_size,
-                            typename File<Comm>::type fh, Coor<N> dim, bool change_endianness,
+                            FileHandler<Comm> fh, Coor<N> dim, bool change_endianness,
                             bool is_new_storage, checksum_type checksum,
                             std::size_t checksum_blocksize, checksum_t checksum_val,
                             bool allow_writing)
@@ -792,6 +932,49 @@ namespace superbblas {
             return {disp, blocking, v};
         }
 
+        /// Remove intersections of a list of ranges against another list of ranges
+        /// \param fs: list of given ranges
+        /// \param p: pointer to the first range to remove
+        /// \param num_blocks: number of ranges to remove
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        std::vector<PartitionItem<Nd>>
+        remove_repetitions(const std::vector<PartitionItem<Nd>> &fs, const PartitionItem<Nd> *p,
+                           std::size_t num_blocks, const Coor<Nd> &dim) {
+            std::vector<PartitionItem<Nd>> r;
+            r.reserve(fs.size());
+            for (const auto fsi : fs)
+                if (volume(fsi[1]) > 0) r.push_back(fsi);
+            for (unsigned int i = 0; i < num_blocks; ++i) {
+                std::vector<PartitionItem<Nd>> r0;
+                r0.reserve(r.size());
+                for (const auto &ri : r) {
+                    auto new_ri = superbblas::make_hole<Nd>(ri[0], ri[1], p[i][0], p[i][1], dim);
+                    for (const auto new_rii : new_ri)
+                        if (volume(new_rii[1]) > 0) r0.push_back(new_rii);
+                }
+                std::swap(r, r0);
+            }
+            return r;
+        }
+
+        /// Remove intersections between a given range and another list of ranges
+        /// \param from: first element of the given range
+        /// \param size: number of elements of the given range in each direction
+        /// \param p: pointer to the first range to remove
+        /// \param num_blocks: number of ranges to remove
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        std::vector<PartitionItem<Nd>>
+        remove_repetitions(const Coor<Nd> &from, const Coor<Nd> &size, const PartitionItem<Nd> *p,
+                           std::size_t num_blocks, const Coor<Nd> &dim) {
+            return remove_repetitions(
+                std::vector<PartitionItem<Nd>>(1, PartitionItem<Nd>{from, size}), p, num_blocks,
+                dim);
+        }
+
         /// Copy the content of tensor v0 into the storage
         /// \param alpha: factor on the copy
         /// \param o0: dimension labels for the origin tensor
@@ -857,14 +1040,9 @@ namespace superbblas {
             }
 
             // Compute the checksum if the block is going to be completely overwritten
-            if (sto.checksum == BlockChecksum) {
-                double checksum = -1; // invalid checksum
-                if (v0_host.size() == volume(dim1)) {
-                    // Compute checksum
-                    checksum = do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
-                }
-
-                // Write checksum
+            if (sto.checksum == BlockChecksum && from1 == Coor<Nd1>{{}} && size1 == dim1) {
+                double checksum =
+                    do_checksum(v0_host.data(), v0_host.size(), sto.checksum_blocksize);
                 if (do_change_endianness) change_endianness(&checksum, 1);
                 seek(sto.fh, sto.disp_checksum[blockIndex]);
                 iwrite(sto.fh, &checksum, 1);
@@ -1013,10 +1191,22 @@ namespace superbblas {
 
         template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename Comm,
                   typename XPU0, typename XPU1>
-        void save(typename elem<T>::type alpha, const From_size<Nd0> &p0, const Coor<Nd0> &from0,
+        void save(typename elem<T>::type alpha, const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
                   const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
                   const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0, Order<Nd1> o1,
-                  Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, CoorOrder co) {
+                  Storage_context<Nd1, Comm> &sto, Coor<Nd1> from1, CoorOrder co,
+                  const Comm &comm) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                for (const auto &i : v0.first) sync(i.it.ctx());
+                for (const auto &i : v0.second) sync(i.it.ctx());
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("save"), alpha, p0, from0, size0,
+                                                  dim0, o0, o1, from1, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             tracker<XPU1> _t("save", Cpu{});
 
@@ -1026,8 +1216,66 @@ namespace superbblas {
                 from1 = reverse(from1);
             }
 
-            // Generate the list of subranges to send from each component from v0 to v1
-            auto overlaps = get_overlap_ranges(dim0, p0, o0, from0, size0, sto.blocks, o1, from1);
+            // Compute the local ranges to save and all the ranges that going to be modified (for
+            // tracking checksums). Also, avoid independent processes to write on the same chunk
+            // by removing overlaps over the given ranges to write
+            unsigned int num_components = p0[comm.rank].size();
+            std::vector<std::vector<Op<Nd0, Nd1>>> overlaps(num_components); ///< [componentId][ops]
+            From_size<Nd0> ranges_to_save;
+            ranges_to_save.reserve(num_components);
+            for (unsigned int rank = 0; rank < comm.nprocs; ++rank) {
+                // We visit all the ranks only when block checksum; otherwise we visit comm.rank
+                if (sto.checksum != BlockChecksum && rank != comm.rank) continue;
+
+                for (unsigned int componentId = 0, num_components = p0[rank].size();
+                     componentId < num_components; ++componentId) {
+                    if (componentId == 0) ranges_to_save.resize(0);
+
+                    // Remove overlaps with ranges on the same process
+                    From_size<Nd0> ranges =
+                        remove_repetitions(p0[rank][componentId][0], p0[rank][componentId][1],
+                                           ranges_to_save.data(), ranges_to_save.size(), dim0);
+
+                    // Remove overlaps with ranges in smaller ranks
+                    for (unsigned int r = 0; r < rank; ++r)
+                        ranges = remove_repetitions(ranges, p0[r].data(), p0[r].size(), dim0);
+
+                    // Keep all the ranges to write on the same process
+                    ranges_to_save.insert(ranges_to_save.end(), ranges.begin(), ranges.end());
+
+                    // Generate the list of subranges to send from each component from v0 to v1
+                    auto ranges_overlaps =
+                        get_overlap_ranges(dim0, ranges, o0, from0, size0, sto.blocks, o1, from1);
+
+                    // Mark whether the chunks are going to be completely overwritten, to
+                    // track what checksums are going to be computed on the fly by `local_save`
+                    if (sto.checksum == BlockChecksum) {
+                        for (auto &ranges_overlaps_it : ranges_overlaps)
+                            for (auto &op : ranges_overlaps_it)
+                                sto.is_checksum_done[op.blockIndex] =
+                                    (op.second_subtensor[0] == Coor<Nd1>{{}} &&
+                                             op.second_tensor[1] == op.second_subtensor[1]
+                                         ? 1
+                                         : 0);
+                    }
+
+                    if (rank == comm.rank) {
+                        // Translate the given ranges to their origin
+                        for (auto &ranges_overlaps_it : ranges_overlaps)
+                            for (auto &op : ranges_overlaps_it)
+                                op.first_subtensor[0] =
+                                    normalize_coor(op.first_subtensor[0] + op.first_tensor[0] -
+                                                       p0[comm.rank][componentId][0],
+                                                   dim0);
+
+                        // Annotate the calls to `local_save`
+                        for (const auto &ranges_overlaps_it : ranges_overlaps)
+                            overlaps[componentId].insert(overlaps[componentId].end(),
+                                                         ranges_overlaps_it.begin(),
+                                                         ranges_overlaps_it.end());
+                    }
+                }
+            }
 
             // Do the local file modifications
             for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {
@@ -1074,7 +1322,19 @@ namespace superbblas {
         void load(typename elem<T>::type alpha, Storage_context<Nd0, Comm> &sto, Coor<Nd0> from0,
                   Coor<Nd0> size0, Order<Nd0> o0, const From_size<Nd1> &p1, const Coor<Nd1> &from1,
                   const Coor<Nd1> &dim1, const Order<Nd1> &o1,
-                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, EWOP, CoorOrder co) {
+                  const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1, EWOP, CoorOrder co,
+                  const Comm &comm) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                for (const auto &i : v1.first) sync(i.it.ctx());
+                for (const auto &i : v1.second) sync(i.it.ctx());
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("load"), alpha, from0, size0, o0, p1,
+                                                  from1, dim1, o1, typeid(EWOP).hash_code(), co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             tracker<XPU1> _t("load", Cpu{});
 
@@ -1168,13 +1428,23 @@ namespace superbblas {
                                                   const char *metadata, int metadata_length,
                                                   checksum_type checksum, Comm comm) {
 
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("create_storage"), dim, co,
+                                                  std::string(filename),
+                                                  std::string(metadata, metadata_length),
+                                                  (int)checksum, typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
             if (co == FastToSlow) dim = detail::reverse(dim);
 
             // Check that int has a size of 4
             if (sizeof(int) != 4) throw std::runtime_error("Expected int to have size 4");
 
             // Create file
-            typename File<Comm>::type fh = file_open(comm, filename, CreateForReadWrite);
+            FileHandler<Comm> fh = file_open(comm, filename, CreateForReadWrite);
 
             // Root process writes down header
             std::size_t padding_size = (8 - metadata_length % 8) % 8;
@@ -1268,7 +1538,15 @@ namespace superbblas {
                           std::vector<IndexType> &size, std::size_t &header_size,
                           bool &do_change_endianness, checksum_type &checksum,
                           std::size_t &checksum_blocksize, checksum_t &checksum_val, Comm comm,
-                          typename File<Comm>::type &fh) {
+                          FileHandler<Comm> &fh) {
+
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("open_storage"), allow_writing, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
 
             // Check that int has a size of 4
             if (sizeof(int) != 4) throw std::runtime_error("Expected int to have size 4");
@@ -1409,6 +1687,16 @@ namespace superbblas {
                            const Order<Nd0> &o0, Order<Nd1> o1, Storage_context<Nd1, Comm> &sto,
                            Coor<Nd1> from1, Comm comm, CoorOrder co) {
 
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                auto p0_ = to_vector(p0, num_blocks, Cpu{0});
+                check_consistency(std::make_tuple(std::string("append_blocks"), p0_, from0, size0,
+                                                  dim0, o0, o1, from1, co,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
             tracker<Cpu> _t("append blocks", Cpu{0});
 
             // Generate the list of subranges to add
@@ -1425,33 +1713,39 @@ namespace superbblas {
 
             std::vector<std::size_t> num_values; ///< number of values for each block
             num_values.reserve(num_blocks);
-            std::size_t num_nonempty_blocks = 0; ///< number of non-empty blocks
             std::vector<double> chunk_header(1); ///< header of the chunk
             chunk_header.reserve(1 + num_blocks * (Nd1 * 2 + 1));
             for (std::size_t i = 0; i < num_blocks; ++i) {
-                // Skip if the range is empty or fully included on the blocks
-                std::size_t vol = volume(p[i][1]);
-                if (vol == 0 || vol == sto.blocks.get_overlap_volume(p[i][0], p[i][1])) continue;
+                // Remove the overlaps with ranges already stored and on the same block
+                std::vector<PartitionItem<Nd1>> sto_overlaps;
+                for (const auto &pair_fs_key : sto.blocks.intersection(p[i][0], p[i][1]))
+                    sto_overlaps.insert(sto_overlaps.end(), pair_fs_key.first.begin(),
+                                        pair_fs_key.first.end());
+                auto fs0 = remove_repetitions(p[i][0], p[i][1], sto_overlaps.data(),
+                                              sto_overlaps.size(), sto.dim);
+                auto fs1 = remove_repetitions(fs0, new_blocks.data(), new_blocks.size(), sto.dim);
 
-                const From_size_item<Nd1> &fs = p[i];
-                num_nonempty_blocks++;
-                num_values.push_back(vol);
-                new_blocks.push_back(fs);
+                for (const auto &fs : fs1) {
+                    num_values.push_back(volume(fs[1]));
+                    new_blocks.push_back(fs);
+                }
 
                 // Root process writes the "from" and "size" for each block
                 if (comm.rank == 0) {
-                    chunk_header.insert(chunk_header.end(), fs[0].begin(), fs[0].end());
-                    chunk_header.insert(chunk_header.end(), fs[1].begin(), fs[1].end());
+                    for (const auto &fs : fs1) {
+                        chunk_header.insert(chunk_header.end(), fs[0].begin(), fs[0].end());
+                        chunk_header.insert(chunk_header.end(), fs[1].begin(), fs[1].end());
+                    }
                 }
             }
 
             // If no new block, get out
-            if (num_nonempty_blocks == 0) return;
+            if (new_blocks.size() == 0) return;
 
             // Annotate where the nonzero values start for the new blocks
             std::size_t values_start =
-                sto.disp + sizeof(double) + num_nonempty_blocks * Nd1 * sizeof(double) * 2;
-            for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
+                sto.disp + sizeof(double) + new_blocks.size() * Nd1 * sizeof(double) * 2;
+            for (std::size_t i = 0; i < new_blocks.size(); ++i) {
                 sto.blocks.append_block(new_blocks[i][0], new_blocks[i][1], sto.disp_values.size());
                 sto.disp_values.push_back(values_start);
                 values_start += num_values[i] * sizeof(Q);
@@ -1459,7 +1753,7 @@ namespace superbblas {
 
             // Write the number of blocks in this chunk and preallocate for the values
             if (comm.rank == 0) {
-                chunk_header[0] = num_nonempty_blocks;
+                chunk_header[0] = new_blocks.size();
                 // Change endianness if needed
                 if (sto.change_endianness)
                     change_endianness(chunk_header.data(), chunk_header.size());
@@ -1469,10 +1763,6 @@ namespace superbblas {
                     sto.checksum_val =
                         do_checksum(chunk_header.data(), chunk_header.size(), 0, sto.checksum_val);
 
-                // Add extra space for the checksums
-                if (sto.checksum == BlockChecksum)
-                    chunk_header.resize(chunk_header.size() + num_nonempty_blocks);
-
                 // Write all the blocks of this chunk
                 seek(sto.fh, sto.disp);
                 iwrite(sto.fh, chunk_header.data(), chunk_header.size());
@@ -1480,15 +1770,9 @@ namespace superbblas {
 
             // If using checksum at the level of blocks, add the space for the checksums
             if (sto.checksum == BlockChecksum) {
-                // Write -1 in all new checksums
-                if (comm.rank == 0) {
-                    std::vector<double> ones(num_nonempty_blocks, -1);
-                    change_endianness(ones.data(), ones.size());
-                    seek(sto.fh, values_start);
-                    iwrite(sto.fh, ones.data(), ones.size());
-                }
-                for (std::size_t i = 0; i < num_nonempty_blocks; ++i) {
+                for (std::size_t i = 0; i < new_blocks.size(); ++i) {
                     sto.disp_checksum.push_back(values_start);
+                    sto.is_checksum_done.push_back(0);
                     values_start += sizeof(double);
                 }
             }
@@ -1567,6 +1851,7 @@ namespace superbblas {
                 if (sto.checksum == BlockChecksum) {
                     for (std::size_t i = 0; i < num_blocks; ++i) {
                         sto.disp_checksum.push_back(cur);
+                        sto.is_checksum_done.push_back(1); // mark them as done
                         cur += sizeof(double);
                     }
                 }
@@ -1606,7 +1891,7 @@ namespace superbblas {
                                                          Comm comm) {
 
             // Open storage and check template parameters
-            typename File<Comm>::type fh;
+            FileHandler<Comm> fh;
             values_datatype values_dtype;
             std::vector<char> metadata;
             std::vector<IndexType> size;
@@ -1645,20 +1930,29 @@ namespace superbblas {
 
 #ifdef SUPERBBLAS_USE_MPI
         template <typename T>
-        inline void gather(const T *sendbuf, std::size_t sendcount, T *recvbuf,
-                           std::size_t recvcount, MpiComm comm) {
+        inline void gatherv(const T *sendbuf, std::size_t sendcount, int *counts, T *recvbuf,
+                            MpiComm comm) {
+            std::size_t recvcount = 0;
+            for (unsigned int i = 0; i < comm.nprocs; ++i) recvcount += counts[i];
             if (recvcount * sizeof(T) > (std::size_t)std::numeric_limits<int>::max())
                 throw std::runtime_error("Too many elements to gather");
-            MPI_check(MPI_Gather(sendbuf, sendcount * sizeof(T), MPI_CHAR, recvbuf,
-                                 recvcount * sizeof(T), MPI_CHAR, 0, comm.comm));
+            std::vector<int> recvcounts(comm.nprocs);
+            std::vector<int> displs(comm.nprocs);
+            for (unsigned int i = 0; i < comm.nprocs; ++i) {
+                recvcounts[i] = counts[i] * sizeof(T);
+                displs[i] = (i == 0 ? 0 : displs[i - 1] + counts[i - 1]) * sizeof(T);
+            }
+            MPI_check(MPI_Gatherv(sendbuf, sendcount * sizeof(T), MPI_CHAR, recvbuf,
+                                  recvcounts.data(), displs.data(), MPI_CHAR, 0, comm.comm));
         }
 #endif // SUPERBBLAS_USE_MPI
 
         template <typename T>
-        inline void gather(const T *sendbuf, std::size_t sendcount, T *recvbuf,
-                           std::size_t recvcount, SelfComm) {
-            if (sendcount != recvcount) throw std::runtime_error("gather: Invalid arguments");
-            std::copy_n(sendbuf, sendcount, recvbuf);
+        inline void gatherv(const T *sendbuf, std::size_t sendcount, int *counts, T *recvbuf,
+                            SelfComm) {
+            if (sendcount != (std::size_t)counts[0])
+                throw std::runtime_error("gather: Invalid arguments");
+            std::copy_n(sendbuf, counts[0], recvbuf);
         }
 
         /// Compute all checksums in a storage
@@ -1666,8 +1960,19 @@ namespace superbblas {
 
         template <std::size_t Nd, typename T, typename Comm>
         void check_or_write_checksums(Storage_context<Nd, Comm> &sto, Comm comm, bool do_write) {
+            // Check that common arguments have the same value in all processes
+            if (getDebugLevel() > 0) {
+                struct tag_type {}; // For hashing template arguments
+                check_consistency(std::make_tuple(std::string("check_or_write_checksums"), do_write,
+                                                  typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
             // Quick exit
             if (do_write && sto.modified_for_checksum == false) return;
+
+            Cpu cpu{0};
+            tracker<Cpu> _t("checksums (closing/checking)", cpu);
 
             // Synchronize the content of the storage before reading from it
             if (sto.modified_for_flush) {
@@ -1691,6 +1996,9 @@ namespace superbblas {
                     basic_partitioning(Coor<1>{num_blocks}, Coor<1>{IndexType(comm.nprocs)});
                 std::size_t first_block_to_process = p[comm.rank][0][0];
                 std::size_t num_blocks_to_process = p[comm.rank][1][0];
+                std::vector<int> num_blocks_to_process_v;
+                num_blocks_to_process_v.reserve(comm.nprocs);
+                for (const auto &pi : p) num_blocks_to_process_v.push_back(pi[1][0]);
 
                 // Compute the checksum for each block
                 std::vector<unsigned char> buffer(sto.checksum_blocksize);
@@ -1710,7 +2018,8 @@ namespace superbblas {
 
                 // Compute the checksum of the checksums
                 std::vector<checksum_t> all_checksums(comm.rank == 0 ? num_blocks : 0);
-                gather(checksums.data(), checksums.size(), all_checksums.data(), num_blocks, comm);
+                gatherv(checksums.data(), checksums.size(), num_blocks_to_process_v.data(),
+                        all_checksums.data(), comm);
 
                 if (comm.rank == 0) {
                     checksum_t checksum = do_checksum(all_checksums.data(), all_checksums.size());
@@ -1733,11 +2042,13 @@ namespace superbblas {
 
             case BlockChecksum: {
                 // Divide the blocks among the processes
-                IndexType num_blocks = sto.disp_values.size();
-                std::vector<PartitionItem<1>> p =
-                    basic_partitioning(Coor<1>{num_blocks}, Coor<1>{IndexType(comm.nprocs)});
-                std::size_t first_block_to_process = p[comm.rank][0][0];
-                std::size_t num_blocks_to_process = p[comm.rank][1][0];
+                std::size_t num_blocks = sto.disp_values.size();
+                std::size_t first_block_to_process =
+                    num_blocks / comm.nprocs * comm.rank +
+                    std::min((std::size_t)comm.rank, num_blocks % (std::size_t)comm.nprocs);
+                std::size_t num_blocks_to_process =
+                    num_blocks / comm.nprocs +
+                    ((num_blocks % (std::size_t)comm.nprocs) > (std::size_t)comm.rank ? 1u : 0);
 
                 // Compute the checksum for the blocks that haven't done yet if do_write, or
                 // compute the checksum for every block otherwise
@@ -1745,21 +2056,17 @@ namespace superbblas {
                 for (std::size_t b = 0, blockIndex = first_block_to_process;
                      b < num_blocks_to_process; ++b, ++blockIndex) {
 
-                    // Read the checksum for the block
-                    double checksum;
-                    seek(sto.fh, sto.disp_checksum[blockIndex]);
-                    read(sto.fh, &checksum, 1);
-                    if (sto.change_endianness) change_endianness(&checksum, 1);
-
-                    // Skip the already computed checksums
-                    if (do_write && checksum >= 0) continue;
+                    // Skip if the checksum is already computed and we want to write the checksums
+                    if (do_write && sto.is_checksum_done[blockIndex] != 0) continue;
 
                     // Compute the checksum of the block
                     std::size_t vol = volume(sto.blocks.blocks[blockIndex][1]);
+                    if (vol == 0) continue;
                     buffer.resize(vol);
                     seek(sto.fh, sto.disp_values[blockIndex]);
                     read(sto.fh, buffer.data(), vol);
-                    checksum = do_checksum(buffer.data(), buffer.size(), sto.checksum_blocksize);
+                    double checksum =
+                        do_checksum(buffer.data(), buffer.size(), sto.checksum_blocksize);
 
                     if (do_write) {
                         // Write the checksum for the block
@@ -1767,15 +2074,19 @@ namespace superbblas {
                         seek(sto.fh, sto.disp_checksum[blockIndex]);
                         iwrite(sto.fh, &checksum, 1);
                     } else {
-                        // Read the stored checksum
-                        double checksum_on_disk;
+                        // Read the checksum for the block
+                        double checksum_on_disk = -1;
                         seek(sto.fh, sto.disp_checksum[blockIndex]);
                         read(sto.fh, &checksum_on_disk, 1);
                         if (sto.change_endianness) change_endianness(&checksum_on_disk, 1);
 
                         // Compare checksums
                         if (checksum != checksum_on_disk)
-                            throw std::runtime_error("Checksum failed");
+                            throw std::runtime_error(
+                                std::string("Checksum failed: block checksum failed on block ") +
+                                std::to_string(blockIndex) + std::string(" : checksum ") +
+                                std::to_string(checksum_on_disk) + std::string(" expected ") +
+                                std::to_string(checksum));
                     }
                 }
 
@@ -1793,7 +2104,8 @@ namespace superbblas {
                         read(sto.fh, &checksum_headers, 1);
                         if (sto.change_endianness) change_endianness(&checksum_headers, 1);
                         if (checksum_headers != sto.checksum_val)
-                            throw std::runtime_error("Checksum failed");
+                            throw std::runtime_error(
+                                "Checksum failed: header checksum failed (postcheck)");
                     }
                 }
 
@@ -1846,7 +2158,7 @@ namespace superbblas {
 
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        typename detail::File<detail::MpiComm>::type fh;
+        detail::FileHandler<detail::MpiComm> fh;
         std::size_t header_size;
         bool do_change_endianness;
         checksum_type checksum;
@@ -1950,10 +2262,10 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
-            size0, dim0, detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm), from0, size0, dim0,
+            detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), sto, from1, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, co, comm);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -1987,14 +2299,14 @@ namespace superbblas {
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co, comm);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Add{}, co);
+                detail::EWOp::Add{}, co, comm);
     }
 
     /// Return the nonzero blocks stored
@@ -2032,7 +2344,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false /* don't write checksums */);
     }
 
     /// Close storage
@@ -2046,7 +2358,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::MpiComm>(stoh);
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true /* do write checksums */);
 
         delete stoh;
     }
@@ -2090,7 +2402,7 @@ namespace superbblas {
 
         detail::SelfComm comm = detail::get_comm();
 
-        typename detail::File<detail::SelfComm>::type fh;
+        detail::FileHandler<detail::SelfComm> fh;
         std::size_t header_size;
         bool do_change_endianness;
         checksum_type checksum;
@@ -2124,7 +2436,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, false /* don't write checksums */);
     }
 
     /// Close storage
@@ -2136,7 +2448,7 @@ namespace superbblas {
             *detail::get_storage_context<Nd1, Q, detail::SelfComm>(stoh);
         detail::SelfComm comm = detail::get_comm();
 
-        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true);
+        detail::check_or_write_checksums<Nd1, Q>(sto, comm, true /* do write checksums */);
 
         delete stoh;
     }
@@ -2229,10 +2541,10 @@ namespace superbblas {
         detail::SelfComm comm = detail::get_comm();
 
         detail::save<Nd0, Nd1, T, Q>(
-            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm)[comm.rank], from0,
-            size0, dim0, detail::toArray<Nd0>(o0, "o0"),
+            alpha, detail::get_from_size(p0, ncomponents0 * comm.nprocs, comm), from0, size0, dim0,
+            detail::toArray<Nd0>(o0, "o0"),
             detail::get_components<Nd0>(v0, nullptr, ctx0, ncomponents0, p0, comm, session),
-            detail::toArray<Nd1>(o1, "o1"), sto, from1, co);
+            detail::toArray<Nd1>(o1, "o1"), sto, from1, co, comm);
     }
 
     /// Copy from a storage into a plural tensor v1
@@ -2266,14 +2578,14 @@ namespace superbblas {
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Copy{}, co);
+                detail::EWOp::Copy{}, co, comm);
         else
             detail::load<Nd0, Nd1, T, Q>(
                 alpha, sto, from0, size0, detail::toArray<Nd0>(o0, "o0"),
                 detail::get_from_size(p1, ncomponents1 * comm.nprocs, comm)[comm.rank], from1, dim1,
                 detail::toArray<Nd1>(o1, "o1"),
                 detail::get_components<Nd1>(v1, nullptr, ctx1, ncomponents1, p1, comm, session),
-                detail::EWOp::Add{}, co);
+                detail::EWOp::Add{}, co, comm);
     }
 
     /// Return the nonzero blocks stored

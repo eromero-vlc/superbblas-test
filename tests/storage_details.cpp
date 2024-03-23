@@ -50,7 +50,7 @@ Blocks get_blocks(const char *filename, const std::vector<IndexType> &dim) {
     Coor<N> dimc{};
     std::copy_n(dim.begin(), N, dimc.begin());
     std::vector<PartitionItem<N>> blocks;
-    get_blocks<N, N, T>(stoh, o.data(), o.data(), {}, dimc, blocks, SlowToFast);
+    get_blocks<N, N, T>(stoh, o.data(), o.data(), {}, dimc, blocks, FastToSlow);
     close_storage<N, T>(stoh);
     Blocks blocks_out;
     for (const auto &b : blocks)
@@ -97,7 +97,7 @@ bool show(const char *filename, bool list_blocks, bool only_metadata) {
     std::vector<char> metadata;
     std::vector<IndexType> dim;
     try {
-        read_storage_header(filename, SlowToFast, dtype, metadata, dim);
+        read_storage_header(filename, FastToSlow, dtype, metadata, dim);
     } catch (const std::exception &e) {
         std::cerr << "Ops! " << e.what() << std::endl;
         return false;
