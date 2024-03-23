@@ -161,10 +161,16 @@ namespace superbblas {
                 perm = std::vector<std::vector<IndexType>>(nmats, std::vector<IndexType>(nrows));
                 scalars = std::vector<std::vector<T>>(nmats, std::vector<T>(nrows));
                 for (IndexType imat = 0; imat < nmats; ++imat) {
+                    T s{0};
+                    for (IndexType ij = 0; ij < nrows * ncols; ++ij)
+                        if (std::fabs(m[ncols * nrows * imat + ij]) > std::fabs(s))
+                            s = m[ncols * nrows * imat + ij];
+                    scalar[imat] = s;
+                }
+                for (IndexType imat = 0; imat < nmats; ++imat) {
                     bool is_identity = (nrows == ncols);
                     bool is_all_ones = true;
                     bool is_perm = true;
-                    scalar[imat] = m[ncols * nrows * imat];
                     for (IndexType i = 0; i < nrows; ++i) {
                         IndexType idx = ii[imat * nrows + i], idx0 = idx;
                         for (IndexType j = 0; j < ncols; ++j) {
