@@ -188,6 +188,7 @@ namespace superbblas {
                             perm[imat][i] = j;
                             ++idx;
                         }
+                        if (idx == idx0) is_identity = is_perm = false;
                         ii[imat * nrows + i + 1] = idx;
                     }
                     if (is_identity) {
@@ -312,7 +313,8 @@ namespace superbblas {
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSR;
 
-#if defined(SUPERBBLAS_USE_MKL)
+/// NOTE: disable MKL implementation in favor of the inhouse one
+#if 0 && defined(SUPERBBLAS_USE_MKL)
         inline void checkMKLSparse(sparse_status_t status) {
             static std::map<sparse_status_t, std::string> statuses = {
                 {SPARSE_STATUS_NOT_INITIALIZED, "SPARSE_STATUS_NOT_INITIALIZED"},
@@ -644,7 +646,6 @@ namespace superbblas {
 #    endif
                         {
                             std::vector<T> aux(ki * ncols * bd);
-                            std::vector<T> zero_a(bi * bd), zero_b(ki * bd * ncols);
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
@@ -1975,7 +1976,7 @@ namespace superbblas {
                     ly = lx = preferred_layout;
                 }
                 sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
-                sug_oy = ly == ColumnMajor ? sug_oy_row_major : sug_oy_col_major;
+                sug_oy = ly == RowMajor ? sug_oy_row_major : sug_oy_col_major;
             }
 
             if (okr != 0 && power > 1) {
