@@ -45,9 +45,9 @@
 
 #    ifdef SUPERBBLAS_USE_HIP
 #        include <hip/hip_runtime_api.h>
-#        include <hipsparse.h>
-#        include <rocblas.h>
-#        include <rocsolver.h>
+#        include <hipsparse/hipsparse.h>
+#        include <rocblas/rocblas.h>
+#        include <rocsolver/rocsolver.h>
 #    endif
 #endif // SUPERBBLAS_CREATING_FLAGS
 
@@ -429,7 +429,11 @@ namespace superbblas {
             struct hipPointerAttribute_t ptr_attr;
             if (hipPointerGetAttributes(&ptr_attr, x) != hipSuccess) return CPU_DEVICE_ID;
 
+#    if HIP_VERSION_MAJOR >= 6
+            if (ptr_attr.type != hipMemoryTypeDevice) return CPU_DEVICE_ID;
+#    else
             if (ptr_attr.memoryType != hipMemoryTypeDevice) return CPU_DEVICE_ID;
+#    endif
             return ptr_attr.device;
 
 #else
@@ -612,9 +616,6 @@ namespace superbblas {
             setDevice(xpu);
             gpuBlasCheck(SUPERBBLAS_GPU_SELECT(XXX, cublasSetStream,
                                                rocblas_set_stream)(*h, getStream(xpu)));
-#    ifdef SUPERBBLAS_USE_HIP
-            gpuBlasCheck(rocblas_set_atomics_mode(*h, rocblas_atomics_allowed));
-#    endif
             return *h;
         }
 
