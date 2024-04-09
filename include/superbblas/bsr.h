@@ -2,7 +2,8 @@
 #define __SUPERBBLAS_BSR__
 
 #include "dist.h"
-#include "tenfucks.h"
+#include "tenfucks_cpu.h"
+#include "tenfucks_gpu.h"
 #include <numeric>
 #include <stdexcept>
 
@@ -308,7 +309,16 @@ namespace superbblas {
             SameLayoutForXAndY, ///< X and Y should have the same layout, either row-major or column-major
             ColumnMajorForY,     ///< X can be either way but Y should be column-major
             ColumnMajorForXandY, ///< X and Y should be column-major
+            RowMajorForXandY,    ///< X and Y should be row-major
             AnyLayoutForXAndY    ///< X and Y can be either way
+        };
+
+        /// Flavor of the jj values, used by get_bsr_indices
+
+        enum ReturnJJ {
+            ReturnJJNoBlocking, ///< return jj with no implicit blocking
+            ReturnJJBlocked, ///< return jj implicitly blocked without considering the kronecker blocking
+            ReturnJJBlockedWithKron, ///< return jj implicitly blocked considering the kronecker blocking
         };
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSR;
@@ -711,6 +721,9 @@ namespace superbblas {
             enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
+            bool kron_use_crafted_kernel; ///< whether to use a crafted kernel instead of hipsparse
+            vector<int, Gpu> kron_perm;   ///< represent the kron matrices with a permutation
+            vector<T, Gpu> kron_scalars;  ///< represent the kron matrices with scalars
 #    endif
             unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
             vector<T, Cpu> kron_cpu;        ///< Host version of v.kron
@@ -734,8 +747,53 @@ namespace superbblas {
                     throw std::runtime_error("cuSPARSE does not support non-square blocks");
                 bool is_kron = v.kron_it.size() > 0;
 
-                // Analyze the density of kron
+                // Check whether to use the crafted kernels
+#    ifdef SUPERBBLAS_USE_HIP
                 if (is_kron) {
+                    kron_use_crafted_kernel = true;
+                    std::size_t ki = volume(v.kroni);
+                    std::size_t kd = volume(v.krond);
+                    std::size_t block_size = volume(v.blocki);
+                    // Check that the kronecker block is 4 and the block is 3
+                    if (ki != kd || ki != 4 || block_size != volume(v.blockd) || block_size != 3 ||
+                        !available_bsr_kron_3x3_4x4perm<T>(v.it.ctx()))
+                        kron_use_crafted_kernel = false;
+                    // Check that the kronecker blocks can be represented with a permutation
+                    auto kron_cpu = makeSure(v.kron_it, Cpu{});
+                    std::size_t num_blocks = kron_cpu.size() / ki / kd;
+                    vector<int, Cpu> kron_perm_cpu(kd * num_blocks, Cpu{});
+                    vector<T, Cpu> kron_scalars_cpu(kd * num_blocks, Cpu{});
+                    int ldr = (v.blockImFast ? 1 : kd);
+                    int ldc = (v.blockImFast ? kd : 1);
+                    for (std::size_t blk = 0; blk < num_blocks; blk++) {
+                        for (std::size_t i = 0; i < ki; i++) {
+                            bool is_perm = true;
+                            for (std::size_t j = 0; j < kd; j++) {
+                                T val = kron_cpu[ki * kd * blk + i * ldr + j * ldc];
+                                if (std::norm(val) > 0) {
+                                    if (is_perm) {
+                                        kron_use_crafted_kernel = false;
+                                    } else {
+                                        is_perm = true;
+                                        kron_perm_cpu[kd * blk + i] = j;
+                                        kron_scalars_cpu[kd * blk + i] = val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (kron_use_crafted_kernel) {
+                        kron_perm = makeSure(kron_perm_cpu, ii.ctx());
+                        kron_scalars = makeSure(kron_scalars_cpu, ii.ctx());
+                    }
+                } else
+#    endif
+                {
+                    kron_use_crafted_kernel = false;
+                }
+
+                // Analyze the density of kron
+                if (is_kron && !kron_use_crafted_kernel) {
                     kron_cpu = makeSure(v.kron_it, Cpu{});
                     std::size_t ki = volume(v.kroni);
                     std::size_t kd = volume(v.krond);
@@ -766,8 +824,10 @@ namespace superbblas {
                 }
 
                 // Get the nonzero pattern
-                auto bsr =
-                    !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true, kron_disp);
+                auto bsr = !is_kron ? get_bsr_indices(v, ReturnJJBlocked)
+                                    : (kron_use_crafted_kernel
+                                           ? get_bsr_indices(v, ReturnJJBlockedWithKron)
+                                           : get_kron_indices(v, true, kron_disp));
                 ii = bsr.i;
                 jj = bsr.j;
                 num_nnz_per_row = bsr.num_nnz_per_row;
@@ -834,17 +894,24 @@ namespace superbblas {
                     throw std::runtime_error("bsr: unsupported -1 column indices when using "
                                              "hipSPARSE");
 
-                implementation_ = "hipsparse_bsr";
-                allowLayout = ColumnMajorForY;
-                preferredLayout = !is_kron ? RowMajor : ColumnMajor;
-                descrA_bsr = std::shared_ptr<hipsparseMatDescr_t>(new hipsparseMatDescr_t,
-                                                                  [](hipsparseMatDescr_t *p) {
-                                                                      hipsparseDestroyMatDescr(*p);
-                                                                      delete p;
-                                                                  });
-                gpuSparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
-                gpuSparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
-                gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                if (!kron_use_crafted_kernel) {
+                    implementation_ = "hipsparse_bsr";
+                    allowLayout = ColumnMajorForY;
+                    preferredLayout = !is_kron ? RowMajor : ColumnMajor;
+                    descrA_bsr = std::shared_ptr<hipsparseMatDescr_t>(
+                        new hipsparseMatDescr_t, [](hipsparseMatDescr_t *p) {
+                            hipsparseDestroyMatDescr(*p);
+                            delete p;
+                        });
+                    gpuSparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
+                    gpuSparseCheck(
+                        hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
+                    gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                } else {
+                    implementation_ = "rocm_mmfa";
+                    allowLayout = RowMajorForXandY;
+                    preferredLayout = RowMajor;
+                }
 #    endif
             }
 
@@ -1088,6 +1155,19 @@ namespace superbblas {
                 assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
                 assert(vy.size() == (std::size_t)(block_size * block_rows * ncols * ki));
                 assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
+
+#    ifdef SUPERBBLAS_USE_HIP
+                if (kron_use_crafted_kernel) {
+                    bsr_kron_3x3_4x4perm(v.it.data(), v.blockImFast ? 1 : block_size,
+                                         v.blockImFast ? block_size : 1, jj.data(), block_rows,
+                                         num_nnz_per_row, kron_scalars.data(), kron_perm.data(), x,
+                                         kd * block_size * ncols, y, ki * block_size * ncols, ncols,
+                                         ii.ctx());
+                    causalConnectTo(ii.ctx(), vy_.ctx());
+                    return;
+                }
+#    endif // SUPERBBLAS_USE_HIP
+
                 if (ly == RowMajor && lx == RowMajor) {
                     assert(ldy == ki * ncols);
 
@@ -1471,7 +1551,7 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
                   typename std::enable_if<(Nd > 0 && Ni > 0), bool>::type = true>
         CsrIndices<XPU> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
-                                        bool return_jj_blocked = false) {
+                                        ReturnJJ return_jj_blocked = ReturnJJNoBlocking) {
             // Check that IndexType is big enough
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
                 throw std::runtime_error("Ups! IndexType isn't big enough");
@@ -1493,7 +1573,11 @@ namespace superbblas {
             // Transform the domain coordinates into indices
             Coor<Nd> strided = get_strides<IndexType>(v.dimd, v.co);
             IndexType block_nnz = v.j.size();
-            IndexType bd = return_jj_blocked ? volume(v.blockd) : 1;
+            IndexType bd =
+                (return_jj_blocked == ReturnJJNoBlocking
+                     ? 1
+                     : volume(v.blockd) *
+                           (return_jj_blocked == ReturnJJBlockedWithKron ? volume(v.krond) : 1));
             bool there_are_minus_ones_in_columns = false;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
@@ -1516,8 +1600,9 @@ namespace superbblas {
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
                   typename std::enable_if<(Nd == 0 || Ni == 0), bool>::type = true>
-        std::pair<CsrIndices<XPU>, int> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
-                                                        bool return_jj_blocked = false) {
+        std::pair<CsrIndices<XPU>, int>
+        get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
+                        ReturnJJ return_jj_blocked = ReturnJJNoBlocking) {
             (void)return_jj_blocked;
             return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1, 0};
         }
@@ -1975,6 +2060,11 @@ namespace superbblas {
                 } else {
                     ly = lx = preferred_layout;
                 }
+                if ((xylayout == ColumnMajorForY && ly != ColumnMajor) ||
+                    (xylayout == ColumnMajorForXandY && lx != ColumnMajor)) {
+                    lx = ly = ColumnMajor;
+                }
+                if (xylayout == RowMajorForXandY && lx != RowMajor) { lx = ly = RowMajor; }
                 sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
                 sug_oy = ly == RowMajor ? sug_oy_row_major : sug_oy_col_major;
             }

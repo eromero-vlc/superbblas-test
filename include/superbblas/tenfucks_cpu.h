@@ -13,8 +13,8 @@
 /// 2) [ a_01 ] x [ b_0 ] -> [ c_0 ]
 ///    [ a_10 ]   [ b_1 ] +  [ c_1 ]
 
-#ifndef __SUPERBBLAS_TENFUCKS__
-#define __SUPERBBLAS_TENFUCKS__
+#ifndef __SUPERBBLAS_TENFUCKS_CPU__
+#define __SUPERBBLAS_TENFUCKS_CPU__
 
 #include "platform.h"
 #ifndef SUPERBBLAS_LIB
@@ -947,4 +947,4 @@ namespace superbblas {
 #endif // SUPERBBLAS_USE_FLOAT16
     }
 }
-#endif // __SUPERBBLAS_TENFUCKS__
+#endif // __SUPERBBLAS_TENFUCKS_CPU__
