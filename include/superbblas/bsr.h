@@ -764,27 +764,29 @@ namespace superbblas {
                     vector<int, Cpu> kron_perm_cpu(kd * num_blocks, Cpu{});
                     vector<T, Cpu> kron_scalars_cpu(kd * num_blocks, Cpu{});
                     int ldr = (v.blockImFast ? 1 : kd);
-                    int ldc = (v.blockImFast ? kd : 1);
+                    int ldc = (v.blockImFast ? ki : 1);
                     for (std::size_t blk = 0; blk < num_blocks; blk++) {
                         for (std::size_t i = 0; i < ki; i++) {
-                            bool is_perm = true;
+                            bool is_perm = false, is_first_nnz = true;
                             for (std::size_t j = 0; j < kd; j++) {
                                 T val = kron_cpu[ki * kd * blk + i * ldr + j * ldc];
                                 if (std::norm(val) > 0) {
-                                    if (is_perm) {
-                                        kron_use_crafted_kernel = false;
-                                    } else {
+                                    if (is_first_nnz) {
                                         is_perm = true;
+					is_first_nnz = false;
                                         kron_perm_cpu[kd * blk + i] = j;
                                         kron_scalars_cpu[kd * blk + i] = val;
+                                    } else {
+                                        is_perm = false;
                                     }
                                 }
                             }
+                            if (!is_perm) kron_use_crafted_kernel = false;
                         }
                     }
                     if (kron_use_crafted_kernel) {
-                        kron_perm = makeSure(kron_perm_cpu, ii.ctx());
-                        kron_scalars = makeSure(kron_scalars_cpu, ii.ctx());
+                        kron_perm = makeSure(kron_perm_cpu, v.it.ctx());
+                        kron_scalars = makeSure(kron_scalars_cpu, v.it.ctx());
                     }
                 } else
 #    endif
@@ -1158,6 +1160,8 @@ namespace superbblas {
 
 #    ifdef SUPERBBLAS_USE_HIP
                 if (kron_use_crafted_kernel) {
+                    assert(lx == RowMajor && ly == RowMajor);
+                    assert(ldx >= block_size * kd * ncols && ldy >= block_size * kd * ncols);
                     bsr_kron_3x3_4x4perm(v.it.data(), v.blockImFast ? 1 : block_size,
                                          v.blockImFast ? block_size : 1, jj.data(), block_rows,
                                          num_nnz_per_row, kron_scalars.data(), kron_perm.data(), x,

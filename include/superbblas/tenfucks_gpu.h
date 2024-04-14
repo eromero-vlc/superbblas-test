@@ -92,6 +92,8 @@ namespace superbblas {
         }
 
         template <typename T> struct bsr_kron_3x3_4x4perm_kernel {
+            static constexpr bool type_available() { return false; }
+
             using ptr = T *;
 
             static dim3 block_size() { return dim3(0, 0, 0); }
@@ -120,6 +122,8 @@ namespace superbblas {
         };
 
         template <> struct bsr_kron_3x3_4x4perm_kernel<std::complex<double>> {
+            static constexpr bool type_available() { return true; }
+
             using ptr = double *;
 
             static dim3 block_size() { return dim3(4, 4, 4); }
@@ -140,7 +144,8 @@ namespace superbblas {
                                        int block_rows, int num_dirs, const double *perm_scalars,
                                        const int *perm, const double *x, int ldx, double *y,
                                        int ldy, int ncols) {
-#    if defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
+//#    if defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
+#    if 0 && defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
                 (void)block_rows;
                 int col0 = blockIdx.x * 4;
                 int blk_row = blockIdx.y;
@@ -202,6 +207,8 @@ namespace superbblas {
         };
 
         template <> struct bsr_kron_3x3_4x4perm_kernel<std::complex<float>> {
+            static constexpr bool type_available() { return true; }
+
             using ptr = float *;
 
             static dim3 block_size() { return dim3(4, 16, 1); }
@@ -298,6 +305,8 @@ namespace superbblas {
                                                               const int *perm, const T *x, int ldx,
                                                               T *y, int ldy, int ncols, Gpu xpu))
             IMPL({
+                if (!bsr_kron_3x3_4x4perm_kernel<T>::type_available())
+                    throw std::runtime_error("wtf!");
                 using ptr = typename bsr_kron_3x3_4x4perm_kernel<T>::ptr;
                 hipExtLaunchKernelGGL(bsr_kron_3x3_4x4perm_kernel<T>::fun,
                                       bsr_kron_3x3_4x4perm_kernel<T>::grid_size(block_rows, ncols),
@@ -315,6 +324,7 @@ namespace superbblas {
         template <typename T>
         DECL_AVAILABLE_BSR_KRON_3x3_4x4PERM_T(bool available_bsr_kron_3x3_4x4perm(const Gpu &xpu))
             IMPL({
+                if (!bsr_kron_3x3_4x4perm_kernel<T>::type_available()) return false;
                 setDevice(xpu);
                 int *flag;
                 gpuCheck(hipMalloc(&flag, sizeof(int)));
