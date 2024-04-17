@@ -1975,6 +1975,7 @@ namespace superbblas {
                 } else {
                     ly = lx = preferred_layout;
                 }
+                ly = lx = preferred_layout;
                 sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
                 sug_oy = ly == RowMajor ? sug_oy_row_major : sug_oy_col_major;
             }
