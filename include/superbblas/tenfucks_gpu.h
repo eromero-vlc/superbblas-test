@@ -144,8 +144,7 @@ namespace superbblas {
                                        int block_rows, int num_dirs, const double *perm_scalars,
                                        const int *perm, const double *x, int ldx, double *y,
                                        int ldy, int ncols) {
-//#    if defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
-#    if 0 && defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
+#    if defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
                 (void)block_rows;
                 int col0 = blockIdx.x * 4;
                 int blk_row = blockIdx.y;

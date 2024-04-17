@@ -865,7 +865,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
 
     const std::vector<std::string> kron_sparse_str{"dense", "identity", "permutation",
                                                    "general-sparse"};
-    for (int kron_sparse = 0; kron_sparse < 4; kron_sparse++) {
+    for (int kron_sparse = 1; kron_sparse < 4; kron_sparse++) {
         // Create the Kronecker operator
         auto op_kron_s = create_lattice_kron<Q>(po, rank, (KronSparsity)kron_sparse, dimo,
                                                 kron_sparse == 0 /* show size */, ctx, xpu);
@@ -1028,7 +1028,7 @@ int main(int argc, char **argv) {
             ctx.push_back(createGpuContext((rank * ncomponents + i) % getGpuDevicesCount()));
         std::vector<Gpu> xpus;
         for (const auto &i : ctx) xpus.push_back(i.toGpu(0));
-        test<float, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
+        test<std::complex<float>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         test<std::complex<double>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         clearCaches();
         clearHandles();

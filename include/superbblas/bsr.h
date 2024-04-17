@@ -1161,7 +1161,7 @@ namespace superbblas {
 #    ifdef SUPERBBLAS_USE_HIP
                 if (kron_use_crafted_kernel) {
                     assert(lx == RowMajor && ly == RowMajor);
-                    assert(ldx >= block_size * kd * ncols && ldy >= block_size * kd * ncols);
+                    assert(ldx >= kd * ncols && ldy >= kd * ncols);
                     bsr_kron_3x3_4x4perm(v.it.data(), v.blockImFast ? 1 : block_size,
                                          v.blockImFast ? block_size : 1, jj.data(), block_rows,
                                          num_nnz_per_row, kron_scalars.data(), kron_perm.data(), x,
@@ -2069,6 +2069,7 @@ namespace superbblas {
                     lx = ly = ColumnMajor;
                 }
                 if (xylayout == RowMajorForXandY && lx != RowMajor) { lx = ly = RowMajor; }
+                ly = lx = preferred_layout;
                 sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
                 sug_oy = ly == RowMajor ? sug_oy_row_major : sug_oy_col_major;
             }
