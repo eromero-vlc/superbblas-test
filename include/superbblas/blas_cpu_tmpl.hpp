@@ -298,7 +298,7 @@ namespace superbblas {
 
         inline void xscal(BLASINT n, SCALAR alpha, SCALAR *SB_RESTRICT x, BLASINT incx, Cpu) {
             if (n == 0) return;
-            if (std::fabs(alpha) == SCALAR{0.0}) {
+            if (std::norm(alpha) == 0) {
 #    ifdef _OPENMP
 #        pragma omp parallel for schedule(static)
 #    endif

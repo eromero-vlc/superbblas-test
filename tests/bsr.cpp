@@ -344,7 +344,7 @@ void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
 
                 // Compare the results
                 for (unsigned int k = 0, vol_blk = op_dim[4] * op_dim[5] * ncols; k < vol_blk; ++k)
-                    if (std::fabs(y_cpu[i * vol_blk + k] - right_values[k]) > 0.1)
+                    if (std::norm(y_cpu[i * vol_blk + k] - right_values[k]) > 0.1)
                         throw std::runtime_error("check error");
             }
         }

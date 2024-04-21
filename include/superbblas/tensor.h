@@ -1509,7 +1509,7 @@ namespace superbblas {
             unsigned int posCr = std::find(o_r.begin(), o_r.end(), 'c') - o_r.begin();
 
             // Avoid issues with uninitialized memory by zeroing out
-            if (std::fabs(beta) == 0.0) zero_n<T>(vr.data(), volT * volB * volC, vr.ctx());
+            if (std::norm(beta) == 0) zero_n<T>(vr.data(), volT * volB * volC, vr.ctx());
 
             // Quick exit
             if (volA == 0) return;

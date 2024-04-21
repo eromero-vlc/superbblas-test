@@ -51,7 +51,7 @@ void check_are_equal(vector<T, XPU0> u_, vector<T, XPU1> v_) {
     vector<T, Cpu> v = superbblas::detail::makeSure(v_, Cpu{0});
     const double bound = Epsilon<T>::get() * 100;
     for (unsigned int i = 0; i < u.size(); i++) {
-        double diff = std::fabs(u[i] - v[i]) / std::max(std::fabs(u[i]), std::fabs(v[i]));
+        double diff = std::abs(u[i] - v[i]) / std::max(std::abs(u[i]), std::abs(v[i]));
         if (diff > bound) {
             std::stringstream ss;
             ss << "1-norm of the difference between the input vectors of size " << v.size()
