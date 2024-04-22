@@ -773,7 +773,7 @@ namespace superbblas {
                                 if (std::norm(val) > 0) {
                                     if (is_first_nnz) {
                                         is_perm = true;
-					is_first_nnz = false;
+                                        is_first_nnz = false;
                                         kron_perm_cpu[kd * blk + i] = j;
                                         kron_scalars_cpu[kd * blk + i] = val;
                                     } else {
