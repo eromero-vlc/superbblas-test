@@ -2,20 +2,32 @@
 #define __SUPERBBLAS_BSR__
 
 #include "dist.h"
+#include "tenfucks_cpu.h"
+#include "tenfucks_gpu.h"
 #include <numeric>
 #include <stdexcept>
 
 namespace superbblas {
 
     namespace detail {
-        enum num_type { float_t, cfloat_t, double_t, cdouble_t };
+        enum num_type { half_t, chalf_t, float_t, cfloat_t, double_t, cdouble_t };
         template <typename T> struct num_type_v;
+#ifdef SUPERBBLAS_USE_FLOAT16
+        template <> struct num_type_v<_Float16> {
+            static constexpr num_type value = half_t;
+        };
+#endif
         template <> struct num_type_v<float> {
             static constexpr num_type value = float_t;
         };
         template <> struct num_type_v<double> {
             static constexpr num_type value = double_t;
         };
+#ifdef SUPERBBLAS_USE_FLOAT16
+        template <> struct num_type_v<std::complex<_Float16>> {
+            static constexpr num_type value = chalf_t;
+        };
+#endif
         template <> struct num_type_v<std::complex<float>> {
             static constexpr num_type value = cfloat_t;
         };
@@ -107,9 +119,12 @@ namespace superbblas {
             Indices<Cpu> ii, jj;
             vector<T, Cpu> vals;
             IndexType nrows, ncols, nmats;
-            enum Type { Dense, Identity, SparseAllOnes, Sparse };
+            enum Type { Dense, Identity, Permutation, SparseAllOnes, Sparse };
             std::vector<Type> type;
-            MatrixLayout layout; // matrix layout for a dense type
+            std::vector<T> scalar;                    ///< used by Identity, SparseAllOnes
+            std::vector<std::vector<IndexType>> perm; ///< permutation
+            std::vector<std::vector<T>> scalars;      ///< permutation
+            MatrixLayout layout;                      ///< matrix layout for a dense type
 
             /// Empty constructor
 
@@ -143,23 +158,38 @@ namespace superbblas {
                 jj = Indices<Cpu>(std::ceil(m.size() * 0.4), Cpu{});
                 vals = vector<T, Cpu>(jj.size(), Cpu{});
                 type = std::vector<Type>(nmats, Dense);
+                scalar = std::vector<T>(nmats, T{1});
+                perm = std::vector<std::vector<IndexType>>(nmats, std::vector<IndexType>(nrows));
+                scalars = std::vector<std::vector<T>>(nmats, std::vector<T>(nrows));
+                for (IndexType imat = 0; imat < nmats; ++imat) {
+                    T s{0};
+                    for (IndexType ij = 0; ij < nrows * ncols; ++ij)
+                        if (std::fabs(m[ncols * nrows * imat + ij]) > std::fabs(s))
+                            s = m[ncols * nrows * imat + ij];
+                    scalar[imat] = s;
+                }
                 for (IndexType imat = 0; imat < nmats; ++imat) {
                     bool is_identity = (nrows == ncols);
                     bool is_all_ones = true;
+                    bool is_perm = true;
                     for (IndexType i = 0; i < nrows; ++i) {
-                        IndexType idx = ii[imat * nrows + i];
+                        IndexType idx = ii[imat * nrows + i], idx0 = idx;
                         for (IndexType j = 0; j < ncols; ++j) {
                             T mij = m[ncols * nrows * imat +
                                       (layout == ColumnMajor ? i + j * nrows : i * ncols + j)];
                             if (mij == T{0} || mij == -T{0}) continue;
-                            if (mij != T{1})
+                            if (mij != scalar[imat])
                                 is_all_ones = is_identity = false;
                             else if (i != j)
                                 is_identity = false;
+                            else if (idx != idx0)
+                                is_perm = false;
                             jj[idx] = j;
-                            vals[idx] = mij;
+                            scalars[imat][i] = vals[idx] = mij;
+                            perm[imat][i] = j;
                             ++idx;
                         }
+                        if (idx == idx0) is_identity = is_perm = false;
                         ii[imat * nrows + i + 1] = idx;
                     }
                     if (is_identity) {
@@ -170,7 +200,9 @@ namespace superbblas {
                             if (mij != T{1}) is_identity = false;
                         }
                     }
-                    type[imat] = (is_identity ? Identity : (is_all_ones ? SparseAllOnes : Sparse));
+                    type[imat] = (is_identity ? Identity
+                                              : (is_perm ? Permutation
+                                                         : (is_all_ones ? SparseAllOnes : Sparse)));
                 }
             }
 
@@ -183,6 +215,13 @@ namespace superbblas {
 
             bool is_identity(IndexType imat) const {
                 return is_sparse() ? type[imat] == Identity : false;
+            }
+
+            /// Return whether the imat-th matrices is treated as a permutation matrix
+            /// \param imat: matrix index to inspect
+
+            bool is_permutation(IndexType imat) const {
+                return is_sparse() ? type[imat] == Permutation : false;
             }
 
             /// Return whether the imat-th matrices is treated as as sparse matrix with all nonzero elements being ones
@@ -217,31 +256,45 @@ namespace superbblas {
                 return;
             }
 
-            if (beta != T{0} || blayout != ColumnMajor) throw std::runtime_error("wtf");
+            if (beta != T{0} || blayout != ColumnMajor || alpha != T{1})
+                throw std::runtime_error("wtf");
 
             using Tc = typename ccomplex<T>::type;
             const Tc *SB_RESTRICT bc = (const Tc *)b;
             Tc *SB_RESTRICT cc = (Tc *)c;
             const Tc alphac = *(const Tc *)&alpha;
-            const Tc *SB_RESTRICT valsc = (const Tc *)a.vals.data();
-
             bool a_is_all_ones = a.is_all_ones(ai);
-            for (IndexType i = 0, m = a.nrows; i < m; ++i) {
-                bool first = true;
-                for (IndexType jidx = a.ii[m * ai + i], jidx1 = a.ii[m * ai + i + 1]; jidx < jidx1;
-                     ++jidx) {
-                    IndexType s = a.jj[jidx];
-                    Tc a_is = (a_is_all_ones ? alphac : alphac * valsc[jidx]);
-                    if (first) {
-                        for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = a_is * bc[s + ldb * j];
-                        first = false;
-                    } else {
-                        for (IndexType j = 0; j < bn; ++j)
-                            cc[i + ldc * j] += a_is * bc[s + ldb * j];
-                    }
+
+            if (a.is_identity(ai)) {
+                for (IndexType j = 0; j < bn; ++j)
+                    for (IndexType i = 0; i < bm; ++i) c[i + ldc * j] = b[i + ldb * j];
+            } else if (a.is_permutation(ai)) {
+                const Tc *SB_RESTRICT scalars = (const Tc *)a.scalars[ai].data();
+                for (IndexType i = 0, m = a.nrows; i < m; ++i) {
+                    IndexType s = a.perm[ai][i];
+                    Tc a_is = (a_is_all_ones ? alphac : alphac * scalars[i]);
+                    for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = a_is * bc[s + ldb * j];
                 }
-                if (first)
-                    for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
+            } else {
+                const Tc *SB_RESTRICT valsc = (const Tc *)a.vals.data();
+                for (IndexType i = 0, m = a.nrows; i < m; ++i) {
+                    bool first = true;
+                    for (IndexType jidx = a.ii[m * ai + i], jidx1 = a.ii[m * ai + i + 1];
+                         jidx < jidx1; ++jidx) {
+                        IndexType s = a.jj[jidx];
+                        Tc a_is = (a_is_all_ones ? alphac : alphac * valsc[jidx]);
+                        if (first) {
+                            for (IndexType j = 0; j < bn; ++j)
+                                cc[i + ldc * j] = a_is * bc[s + ldb * j];
+                            first = false;
+                        } else {
+                            for (IndexType j = 0; j < bn; ++j)
+                                cc[i + ldc * j] += a_is * bc[s + ldb * j];
+                        }
+                    }
+                    if (first)
+                        for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
+                }
             }
         }
 
@@ -256,12 +309,22 @@ namespace superbblas {
             SameLayoutForXAndY, ///< X and Y should have the same layout, either row-major or column-major
             ColumnMajorForY,     ///< X can be either way but Y should be column-major
             ColumnMajorForXandY, ///< X and Y should be column-major
+            RowMajorForXandY,    ///< X and Y should be row-major
             AnyLayoutForXAndY    ///< X and Y can be either way
+        };
+
+        /// Flavor of the jj values, used by get_bsr_indices
+
+        enum ReturnJJ {
+            ReturnJJNoBlocking, ///< return jj with no implicit blocking
+            ReturnJJBlocked, ///< return jj implicitly blocked without considering the kronecker blocking
+            ReturnJJBlockedWithKron, ///< return jj implicitly blocked considering the kronecker blocking
         };
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSR;
 
-#if defined(SUPERBBLAS_USE_MKL)
+/// NOTE: disable MKL implementation in favor of the inhouse one
+#if 0 && defined(SUPERBBLAS_USE_MKL)
         inline void checkMKLSparse(sparse_status_t status) {
             static std::map<sparse_status_t, std::string> statuses = {
                 {SPARSE_STATUS_NOT_INITIALIZED, "SPARSE_STATUS_NOT_INITIALIZED"},
@@ -371,9 +434,10 @@ namespace superbblas {
                 return (volume(v.dimi) * rhs + (b * b + b * rhs) * jj.size()) * sizeof(T);
             }
 
-            void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
-                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const vector<T, Cpu> &vx, IndexType ldx, MatrixLayout lx,
+                            vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
+                const T alpha{1};
                 if (lx != ly) throw std::runtime_error("Unsupported operation with MKL");
                 IndexType block_size = volume(v.blocki);
                 IndexType ki = volume(v.kroni);
@@ -532,9 +596,10 @@ namespace superbblas {
                 return (volume(v.dimi) * rhs + (bi * bd + bd * rhs) * jj.size()) * sizeof(T);
             }
 
-            void operator()(T alpha, bool conjA, const vector<T, Cpu> &vx, IndexType ldx,
-                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const vector<T, Cpu> &vx, IndexType ldx, MatrixLayout lx,
+                            vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
+                const T alpha{1};
                 if (conjA) throw std::runtime_error("Not implemented");
                 if (v.kron_it.size() > 0 && lx != ly) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
@@ -598,23 +663,14 @@ namespace superbblas {
                                 for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
                                      ++j, ++j0) {
                                     if (jj[j] == -1) continue;
-                                    if (kron.is_identity(j0)) {
-                                        // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                              x + jj[j] * ncols, ki * ncols, nonzeros + j * bi * bd,
-                                              !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
-                                              ki * ncols, Cpu{});
-                                    } else {
-                                        // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
-                                        xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd,
-                                                      ncols * bd, ColumnMajor, kd, T{0}, aux.data(),
-                                                      ki);
-                                        // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                        xgemm('N', !tb ? 'T' : 'N', ki * ncols, bi, bd, alpha,
-                                              aux.data(), ki * ncols, nonzeros + j * bi * bd,
-                                              !tb ? bi : bd, T{1}, y + i * ki * ncols * bi,
-                                              ki * ncols, Cpu{});
-                                    }
+                                    // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
+                                    xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd, ncols * bd,
+                                                  ColumnMajor, kd, T{0}, aux.data(), ki);
+                                    // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                    xgemm_alt_alpha1_beta1(
+                                        'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, aux.data(),
+                                        ki * ncols, nonzeros + j * bi * bd, !tb ? bi : bd,
+                                        y + i * ki * ncols * bi, ki * ncols, Cpu{});
                                 }
                             }
                         }
@@ -665,6 +721,9 @@ namespace superbblas {
             enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
+            bool kron_use_crafted_kernel; ///< whether to use a crafted kernel instead of hipsparse
+            vector<int, Gpu> kron_perm;   ///< represent the kron matrices with a permutation
+            vector<T, Gpu> kron_scalars;  ///< represent the kron matrices with scalars
 #    endif
             unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
             vector<T, Cpu> kron_cpu;        ///< Host version of v.kron
@@ -688,8 +747,55 @@ namespace superbblas {
                     throw std::runtime_error("cuSPARSE does not support non-square blocks");
                 bool is_kron = v.kron_it.size() > 0;
 
-                // Analyze the density of kron
+                // Check whether to use the crafted kernels
+#    ifdef SUPERBBLAS_USE_HIP
                 if (is_kron) {
+                    kron_use_crafted_kernel = true;
+                    std::size_t ki = volume(v.kroni);
+                    std::size_t kd = volume(v.krond);
+                    std::size_t block_size = volume(v.blocki);
+                    // Check that the kronecker block is 4 and the block is 3
+                    if (ki != kd || ki != 4 || block_size != volume(v.blockd) || block_size != 3 ||
+                        !available_bsr_kron_3x3_4x4perm<T>(v.it.ctx()))
+                        kron_use_crafted_kernel = false;
+                    // Check that the kronecker blocks can be represented with a permutation
+                    auto kron_cpu = makeSure(v.kron_it, Cpu{});
+                    std::size_t num_blocks = kron_cpu.size() / ki / kd;
+                    vector<int, Cpu> kron_perm_cpu(kd * num_blocks, Cpu{});
+                    vector<T, Cpu> kron_scalars_cpu(kd * num_blocks, Cpu{});
+                    int ldr = (v.blockImFast ? 1 : kd);
+                    int ldc = (v.blockImFast ? ki : 1);
+                    for (std::size_t blk = 0; blk < num_blocks; blk++) {
+                        for (std::size_t i = 0; i < ki; i++) {
+                            bool is_perm = false, is_first_nnz = true;
+                            for (std::size_t j = 0; j < kd; j++) {
+                                T val = kron_cpu[ki * kd * blk + i * ldr + j * ldc];
+                                if (std::norm(val) > 0) {
+                                    if (is_first_nnz) {
+                                        is_perm = true;
+					is_first_nnz = false;
+                                        kron_perm_cpu[kd * blk + i] = j;
+                                        kron_scalars_cpu[kd * blk + i] = val;
+                                    } else {
+                                        is_perm = false;
+                                    }
+                                }
+                            }
+                            if (!is_perm) kron_use_crafted_kernel = false;
+                        }
+                    }
+                    if (kron_use_crafted_kernel) {
+                        kron_perm = makeSure(kron_perm_cpu, v.it.ctx());
+                        kron_scalars = makeSure(kron_scalars_cpu, v.it.ctx());
+                    }
+                } else
+#    endif
+                {
+                    kron_use_crafted_kernel = false;
+                }
+
+                // Analyze the density of kron
+                if (is_kron && !kron_use_crafted_kernel) {
                     kron_cpu = makeSure(v.kron_it, Cpu{});
                     std::size_t ki = volume(v.kroni);
                     std::size_t kd = volume(v.krond);
@@ -720,8 +826,10 @@ namespace superbblas {
                 }
 
                 // Get the nonzero pattern
-                auto bsr =
-                    !is_kron ? get_bsr_indices(v, true) : get_kron_indices(v, true, kron_disp);
+                auto bsr = !is_kron ? get_bsr_indices(v, ReturnJJBlocked)
+                                    : (kron_use_crafted_kernel
+                                           ? get_bsr_indices(v, ReturnJJBlockedWithKron)
+                                           : get_kron_indices(v, true, kron_disp));
                 ii = bsr.i;
                 jj = bsr.j;
                 num_nnz_per_row = bsr.num_nnz_per_row;
@@ -788,17 +896,24 @@ namespace superbblas {
                     throw std::runtime_error("bsr: unsupported -1 column indices when using "
                                              "hipSPARSE");
 
-                implementation_ = "hipsparse_bsr";
-                allowLayout = ColumnMajorForY;
-                preferredLayout = !is_kron ? RowMajor : ColumnMajor;
-                descrA_bsr = std::shared_ptr<hipsparseMatDescr_t>(new hipsparseMatDescr_t,
-                                                                  [](hipsparseMatDescr_t *p) {
-                                                                      hipsparseDestroyMatDescr(*p);
-                                                                      delete p;
-                                                                  });
-                gpuSparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
-                gpuSparseCheck(hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
-                gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                if (!kron_use_crafted_kernel) {
+                    implementation_ = "hipsparse_bsr";
+                    allowLayout = ColumnMajorForY;
+                    preferredLayout = !is_kron ? RowMajor : ColumnMajor;
+                    descrA_bsr = std::shared_ptr<hipsparseMatDescr_t>(
+                        new hipsparseMatDescr_t, [](hipsparseMatDescr_t *p) {
+                            hipsparseDestroyMatDescr(*p);
+                            delete p;
+                        });
+                    gpuSparseCheck(hipsparseCreateMatDescr(&*descrA_bsr));
+                    gpuSparseCheck(
+                        hipsparseSetMatIndexBase(*descrA_bsr, HIPSPARSE_INDEX_BASE_ZERO));
+                    gpuSparseCheck(hipsparseSetMatType(*descrA_bsr, HIPSPARSE_MATRIX_TYPE_GENERAL));
+                } else {
+                    implementation_ = "rocm_mmfa";
+                    allowLayout = RowMajorForXandY;
+                    preferredLayout = RowMajor;
+                }
 #    endif
             }
 
@@ -998,10 +1113,11 @@ namespace superbblas {
             }
 
         public:
-            void operator()(T alpha, bool conjA, const vector<T, Gpu> &vx_, IndexType ldx,
-                            MatrixLayout lx, vector<T, Gpu> &vy_, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const vector<T, Gpu> &vx_, IndexType ldx, MatrixLayout lx,
+                            vector<T, Gpu> &vy_, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
 
+                const T alpha{1};
                 bool is_kron = v.kron_it.size() > 0;
                 check_same_device(vx_.ctx(), vy_.ctx());
                 check_same_device(vx_.ctx(), ii.ctx());
@@ -1041,6 +1157,21 @@ namespace superbblas {
                 assert(vx.size() == (std::size_t)(block_size * block_cols * ncols * kd));
                 assert(vy.size() == (std::size_t)(block_size * block_rows * ncols * ki));
                 assert(v.kron_it.size() == (std::size_t)(kd * ki * num_nnz_per_row));
+
+#    ifdef SUPERBBLAS_USE_HIP
+                if (kron_use_crafted_kernel) {
+                    assert(lx == RowMajor && ly == RowMajor);
+                    assert(ldx >= kd * ncols && ldy >= kd * ncols);
+                    bsr_kron_3x3_4x4perm(v.it.data(), v.blockImFast ? 1 : block_size,
+                                         v.blockImFast ? block_size : 1, jj.data(), block_rows,
+                                         num_nnz_per_row, kron_scalars.data(), kron_perm.data(), x,
+                                         kd * block_size * ncols, y, ki * block_size * ncols, ncols,
+                                         ii.ctx());
+                    causalConnectTo(ii.ctx(), vy_.ctx());
+                    return;
+                }
+#    endif // SUPERBBLAS_USE_HIP
+
                 if (ly == RowMajor && lx == RowMajor) {
                     assert(ldy == ki * ncols);
 
@@ -1424,7 +1555,7 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
                   typename std::enable_if<(Nd > 0 && Ni > 0), bool>::type = true>
         CsrIndices<XPU> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
-                                        bool return_jj_blocked = false) {
+                                        ReturnJJ return_jj_blocked = ReturnJJNoBlocking) {
             // Check that IndexType is big enough
             if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
                 throw std::runtime_error("Ups! IndexType isn't big enough");
@@ -1446,7 +1577,11 @@ namespace superbblas {
             // Transform the domain coordinates into indices
             Coor<Nd> strided = get_strides<IndexType>(v.dimd, v.co);
             IndexType block_nnz = v.j.size();
-            IndexType bd = return_jj_blocked ? volume(v.blockd) : 1;
+            IndexType bd =
+                (return_jj_blocked == ReturnJJNoBlocking
+                     ? 1
+                     : volume(v.blockd) *
+                           (return_jj_blocked == ReturnJJBlockedWithKron ? volume(v.krond) : 1));
             bool there_are_minus_ones_in_columns = false;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
@@ -1469,8 +1604,9 @@ namespace superbblas {
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU,
                   typename std::enable_if<(Nd == 0 || Ni == 0), bool>::type = true>
-        std::pair<CsrIndices<XPU>, int> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
-                                                        bool return_jj_blocked = false) {
+        std::pair<CsrIndices<XPU>, int>
+        get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
+                        ReturnJJ return_jj_blocked = ReturnJJNoBlocking) {
             (void)return_jj_blocked;
             return {Indices<XPU>(0, v.i.ctx()), Indices<XPU>(0, v.j.ctx()), false, -1, 0};
         }
@@ -1908,22 +2044,34 @@ namespace superbblas {
                 // Check that ox should (okr,D,d,C,kd) or (okr,I,i,C,ki) for row major,
                 // and (okr,kd,C,D,d) or (okr,ki,C,I,i) for column major.
 
-                lx = ly = preferred_layout;
+                Order<Nx> sug_ox_row_major, sug_ox_col_major;
+                Order<Ny> sug_oy_row_major, sug_oy_col_major;
                 if (kindx == ContractWithDomain) {
-                    sug_ox = lx == RowMajor
-                                 ? concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
-                                 : concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
-                    sug_oy = ly == RowMajor
-                                 ? concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
-                                 : concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
+                    sug_ox_row_major = concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds);
+                    sug_ox_col_major = concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
+                    sug_oy_row_major = concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis);
+                    sug_oy_col_major = concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
                 } else {
-                    sug_ox = lx == RowMajor
-                                 ? concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis)
-                                 : concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
-                    sug_oy = ly == RowMajor
-                                 ? concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds)
-                                 : concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
+                    sug_ox_row_major = concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis);
+                    sug_ox_col_major = concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
+                    sug_oy_row_major = concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds);
+                    sug_oy_col_major = concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
                 }
+                if (ox == sug_ox_row_major && oy == sug_oy_row_major) {
+                    ly = lx = RowMajor;
+                } else if (ox == sug_ox_col_major && oy == sug_oy_col_major) {
+                    ly = lx = ColumnMajor;
+                } else {
+                    ly = lx = preferred_layout;
+                }
+                if ((xylayout == ColumnMajorForY && ly != ColumnMajor) ||
+                    (xylayout == ColumnMajorForXandY && lx != ColumnMajor)) {
+                    lx = ly = ColumnMajor;
+                }
+                if (xylayout == RowMajorForXandY && lx != RowMajor) { lx = ly = RowMajor; }
+                ly = lx = preferred_layout;
+                sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
+                sug_oy = ly == RowMajor ? sug_oy_row_major : sug_oy_col_major;
             }
 
             if (okr != 0 && power > 1) {
@@ -1962,7 +2110,7 @@ namespace superbblas {
 
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
                   typename XPU>
-        void local_bsr_krylov(T alpha, const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
+        void local_bsr_krylov(const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
                               const Order<Nd> &odm, const Coor<Nx> &dimx, const Order<Nx> &ox,
                               vector<T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
                               char okr, vector<T, XPU> vy) {
@@ -2006,7 +2154,7 @@ namespace superbblas {
             _t.flops = bsr.getFlopsPerMatvec(volC, lx);
             _t.memops = bsr.getMemopsPerMatvec(volC, lx);
             _t.arity = volC;
-            bsr(alpha, transSp, vx, ldx, lx, vy, ldy, ly, volC);
+            bsr(transSp, vx, ldx, lx, vy, ldy, ly, volC);
         }
 
         /// Get the partitions for the dense input and output tensors
@@ -2212,29 +2360,29 @@ namespace superbblas {
                     for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
                         const unsigned int componentId = bsr.c.first[i].v.componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.first[i], oim, odm,
-                            px_[comm.rank][componentId][1], sug_ox, vx_.first[i].it,
-                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.first[i].it);
+                            bsr.c.first[i], oim, odm, px_[comm.rank][componentId][1], sug_ox,
+                            vx_.first[i].it, py_[comm.rank][componentId][1], sug_oy, okr,
+                            vy_.first[i].it);
                     }
                     for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                         const unsigned int componentId = bsr.c.second[i].v.componentId;
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            p == 0 ? alpha : T{1}, bsr.c.second[i], oim, odm,
-                            px_[comm.rank][componentId][1], sug_ox, vx_.second[i].it,
-                            py_[comm.rank][componentId][1], sug_oy, okr, vy_.second[i].it);
+                            bsr.c.second[i], oim, odm, px_[comm.rank][componentId][1], sug_ox,
+                            vx_.second[i].it, py_[comm.rank][componentId][1], sug_oy, okr,
+                            vy_.second[i].it);
                     }
 
                     // Copy the result to final tensor
                     Coor<Ny> fromyi = fromy;
                     if (p > 0) fromyi[power_pos] += p;
                     if (std::norm(beta) == 0)
-                        copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
-                                        py, fromyi, dimy, oy, vy, comm, EWOp::Copy{}, co,
-                                        force_local);
+                        copy<Ny, Ny, T>(p == 0 ? alpha : T{1}, py_, {{}}, sug_sizey, sug_sizey,
+                                        sug_oy, toConst(vy_), py, fromyi, dimy, oy, vy, comm,
+                                        EWOp::Copy{}, co, force_local);
                     else
-                        copy<Ny, Ny, T>(1.0, py_, {{}}, sug_sizey, sug_sizey, sug_oy, toConst(vy_),
-                                        py, fromyi, dimy, oy, vy, comm, EWOp::Add{}, co,
-                                        force_local);
+                        copy<Ny, Ny, T>(p == 0 ? alpha : T{1}, py_, {{}}, sug_sizey, sug_sizey,
+                                        sug_oy, toConst(vy_), py, fromyi, dimy, oy, vy, comm,
+                                        EWOp::Add{}, co, force_local);
 
                     // Copy the result into x for doing the next power
                     if (p == power - 1) break;

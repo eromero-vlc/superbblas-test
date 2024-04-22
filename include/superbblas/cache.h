@@ -156,7 +156,7 @@ namespace superbblas {
                 // Associate a timestamp to the key and insert the key
                 ++timestamp;
                 timestamps[timestamp] = &cache;
-                cache.cache[k] = Value<V>{v, timestamp, size};
+                cache.cache.emplace(std::make_pair(k, Value<V>{v, timestamp, size}));
                 cache.keys[timestamp] = k;
                 currentSize += size;
             }

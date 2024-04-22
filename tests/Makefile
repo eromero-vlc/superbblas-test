@@ -17,7 +17,7 @@ SB_LDFLAGS ?=
 
 include ../make.inc
 
-SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp bsr_hist.cpp
+SOURCES := blas.cpp dist.cpp contract.cpp storage.cpp storage_details.cpp bsr.cpp dense.cpp bsr_hist.cpp tenfucks.cpp
 
 CPU_TARGETS := $(patsubst %.cpp,%_cpu,$(SOURCES))
 CUDA_TARGETS := $(patsubst %.cpp,%_cuda,$(SOURCES))
@@ -26,7 +26,7 @@ CPU_LIB_TARGETS := $(patsubst %.cpp,%_cpu_lib,$(SOURCES))
 CUDA_LIB_TARGETS := $(patsubst %.cpp,%_cuda_lib,$(SOURCES))
 HIP_LIB_TARGETS := $(patsubst %.cpp,%_hip_lib,$(SOURCES))
 
-SB_INCLUDE ?= -I$(BUILDDIR)/include
+SB_INCLUDE ?= -I$(BUILDDIR)/include -I$(BUILDDIR)/include/xsimd/include
 MPISBFLAG ?= $(if $(findstring mpi,${CXX}),-DSUPERBBLAS_USE_MPI,)
 
 comma := ,

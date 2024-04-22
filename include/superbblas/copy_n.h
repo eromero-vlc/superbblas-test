@@ -39,6 +39,11 @@ namespace superbblas {
         template <typename T> struct ccomplex {
             using type = T;
         };
+#ifdef SUPERBBLAS_USE_FLOAT16
+        template <> struct ccomplex<std::complex<_Float16>> {
+            using type = _Complex _Float16;
+        };
+#endif
         template <> struct ccomplex<std::complex<float>> {
             using type = _Complex float;
         };
@@ -54,6 +59,12 @@ namespace superbblas {
         /// \param v: value to test
 
         template <typename T> bool is_zero(const T &v) { return std::norm(v) == 0; }
+#ifdef SUPERBBLAS_USE_FLOAT16
+        template <> inline bool is_zero<_Complex _Float16>(const _Complex _Float16 &v) {
+            const _Float16 *v_ = (const _Float16 *)&v;
+            return std::abs(v_[0]) == 0 && std::abs(v_[1]) == 0;
+        }
+#endif
         template <> inline bool is_zero<_Complex float>(const _Complex float &v) {
             const float *v_ = (const float *)&v;
             return std::abs(v_[0]) == 0 && std::abs(v_[1]) == 0;

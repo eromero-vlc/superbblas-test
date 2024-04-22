@@ -514,7 +514,15 @@ namespace superbblas {
             template <typename U = T,
                       typename std::enable_if<!std::is_enum<U>::value, bool>::type = true>
             static std::size_t hash(U const &t) noexcept {
-                return std::hash<T>{}(t);
+#ifdef SUPERBBLAS_USE_FLOAT16
+                // Work around that std::hash has not support for _Float16
+                if constexpr (std::is_same<T, _Float16>::value) {
+                    return std::hash<float>{}(float(t));
+                } else
+#endif
+                {
+                    return std::hash<T>{}(t);
+                }
             }
             template <typename U = T,
                       typename std::enable_if<std::is_enum<U>::value, bool>::type = true>
