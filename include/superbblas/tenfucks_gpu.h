@@ -146,26 +146,33 @@ namespace superbblas {
                                        int ldy, int ncols) {
 #    if defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES_FOR_DOUBLES)
                 (void)block_rows;
-                int col0 = blockIdx.x * 4;
-                int blk_row = blockIdx.y;
+                auto col = blockIdx.x * 4 + threadIdx.y;
+                auto blk_row = blockIdx.y;
+                auto a_row = threadIdx.x;
+                auto a_col = threadIdx.z;
+                auto x_color = threadIdx.z;
+                auto x_spin = threadIdx.x;
+                auto y_color = threadIdx.z;
+                auto y_spin = threadIdx.x;
                 double y_val_r = 0.0, y_val_i = 0.0;
-                unsigned int rem_cols = ncols - col0;
                 for (int dir = 0; dir < num_dirs; ++dir) {
                     // read a
-                    bool a_is_zero = (threadIdx.x == 3 || threadIdx.z == 3);
-                    int a_idx = get_a_idx_complex(a_ldr, a_ldc, num_dirs, threadIdx.x, threadIdx.z,
-                                                  blk_row, dir);
+                    bool a_is_zero = (a_row == 3 || a_col == 3);
+                    int a_idx =
+                        get_a_idx_complex(a_ldr, a_ldc, num_dirs, a_row, a_col, blk_row, dir);
                     double a_val_r = 0.0, a_val_i = 0.0;
                     if (!a_is_zero) a_val_r = a[a_idx], a_val_i = a[a_idx + 1];
 
                     // read x
-                    bool x_is_zero = (threadIdx.z == 3 || threadIdx.y >= rem_cols);
-                    int x_idx = get_xy_idx_complex(
-                        ldx, ncols, threadIdx.z, perm[4 * dir + threadIdx.x],
-                        jj[get_jj_idx(num_dirs, blk_row, dir)], col0 + threadIdx.y);
+                    bool x_is_zero = (x_color == 3 || col >= ncols);
+                    int x_idx = get_xy_idx_complex(ldx, ncols, x_color, perm[4 * dir + x_spin],
+                                                   jj[get_jj_idx(num_dirs, blk_row, dir)], col);
                     double x_val_r = 0.0, x_val_i = 0.0;
-                    const double s = perm_scalars[4 * dir + threadIdx.x];
-                    if (!x_is_zero) x_val_r = s * x[x_idx], x_val_i = s * x[x_idx + 1];
+                    int s_dir = (4 * dir + x_spin) * 2;
+                    const double s_r = perm_scalars[s_dir], s_i = perm_scalars[s_dir + 1];
+                    if (!x_is_zero) x_val_r = x[x_idx], x_val_i = x[x_idx + 1];
+                    x_val_r = x_val_r * s_r - x_val_i * s_i;
+                    x_val_i = x_val_r * s_i + x_val_i * s_r;
 
                     // a[real] times x[real] -> y[real]
                     y_val_r =
@@ -183,9 +190,8 @@ namespace superbblas {
                     y_val_r =
                         __builtin_amdgcn_mfma_f64_4x4x4f64(-a_val_i, x_val_i, y_val_r, 0, 0, 0);
                 }
-                bool y_is_zero = (threadIdx.z == 3 || threadIdx.y >= rem_cols);
-                int y_idx = get_xy_idx_complex(ldy, ncols, threadIdx.z, threadIdx.x, blk_row,
-                                               col0 + threadIdx.y);
+                bool y_is_zero = (y_color == 3 || col >= ncols);
+                int y_idx = get_xy_idx_complex(ldy, ncols, y_color, y_spin, blk_row, col);
                 if (!y_is_zero) y[y_idx] = y_val_r, y[y_idx + 1] = y_val_i;
 #    else
                 (void)a;
@@ -231,27 +237,31 @@ namespace superbblas {
 #    if defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES)
                 (void)block_rows;
                 using float4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
-                int col0 = blockIdx.x * 16;
-                int blk_row = blockIdx.y;
+                auto col = blockIdx.x * 16 + threadIdx.y;
+                auto blk_row = blockIdx.y;
+                auto a_row = threadIdx.x;
+                auto x_spin = threadIdx.x;
+                auto y_spin = threadIdx.x;
                 float4 y_val_r = {0}, y_val_i = {0};
-                unsigned int rem_cols = ncols - col0;
                 for (int dir = 0; dir < num_dirs; ++dir) {
                     for (int k = 0; k < 3; ++k) {
                         // read a
-                        bool a_is_zero = (threadIdx.x == 3);
+                        bool a_is_zero = (a_row == 3);
                         int a_idx =
-                            get_a_idx_complex(a_ldr, a_ldc, num_dirs, threadIdx.x, k, blk_row, dir);
+                            get_a_idx_complex(a_ldr, a_ldc, num_dirs, a_row, k, blk_row, dir);
                         float a_val_r = 0.0, a_val_i = 0.0;
                         if (!a_is_zero) a_val_r = a[a_idx], a_val_i = a[a_idx + 1];
 
                         // read x
-                        bool x_is_zero = (threadIdx.y >= rem_cols);
-                        int x_idx = get_xy_idx_complex(ldx, ncols, k, perm[4 * dir + threadIdx.x],
-                                                       jj[get_jj_idx(num_dirs, blk_row, dir)],
-                                                       col0 + threadIdx.y);
+                        bool x_is_zero = (col >= ncols);
+                        int x_idx = get_xy_idx_complex(ldx, ncols, k, perm[4 * dir + x_spin],
+                                                       jj[get_jj_idx(num_dirs, blk_row, dir)], col);
                         float x_val_r = 0.0, x_val_i = 0.0;
-                        const float s = perm_scalars[4 * dir + threadIdx.x];
-                        if (!x_is_zero) x_val_r = s * x[x_idx], x_val_i = s * x[x_idx + 1];
+                        int s_dir = (4 * dir + x_spin) * 2;
+                        const float s_r = perm_scalars[s_dir], s_i = perm_scalars[s_dir + 1];
+                        if (!x_is_zero) x_val_r = x[x_idx], x_val_i = x[x_idx + 1];
+                        x_val_r = x_val_r * s_r - x_val_i * s_i;
+                        x_val_i = x_val_r * s_i + x_val_i * s_r;
 
                         // a[real] times x[real] -> y[real]
                         y_val_r =
@@ -270,11 +280,10 @@ namespace superbblas {
                             __builtin_amdgcn_mfma_f32_4x4x1f32(-a_val_i, x_val_i, y_val_r, 0, 0, 0);
                     }
                 }
-                bool y_is_zero = (threadIdx.y >= rem_cols);
+                bool y_is_zero = (col >= ncols);
                 if (!y_is_zero) {
                     for (int k = 0; k < 3; ++k) {
-                        int y_idx = get_xy_idx_complex(ldy, ncols, k, threadIdx.x, blk_row,
-                                                       col0 + threadIdx.y);
+                        int y_idx = get_xy_idx_complex(ldy, ncols, k, y_spin, blk_row, col);
                         y[y_idx] = y_val_r[k];
                         y[y_idx + 1] = y_val_i[k];
                     }
