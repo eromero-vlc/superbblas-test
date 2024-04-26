@@ -784,72 +784,72 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
 
     // Copy tensor t0 into each of the c components of tensor 1
     resetTimings();
-    //    try {
-    //        double t = w_time();
-    //        for (unsigned int rep = 0; rep < nrep; ++rep) {
-    //            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-    //                Q{1}, op, "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn", {{}}, dim0, dim0,
-    //                (const Q **)t0.data(), Q{0}, p1.data(), o1, {{}}, dim1, dim1, 'p', t1.data(),
-    //                ctx.data(),
-    //#ifdef SUPERBBLAS_USE_MPI
-    //                MPI_COMM_WORLD,
-    //#endif
-    //                SlowToFast);
-    //        }
-    //        for (const auto &xpui : xpu) sync(xpui);
-    //        t = w_time() - t;
-    //        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
-    //        test_contraction(p1, rank, o1, t1, dimo, true, ctx);
-    //    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
-    //
-    //    destroy_bsr(op);
-    //
-    //    if (rank == 0) reportTimings(std::cout);
-    //    if (rank == 0) reportCacheUsage(std::cout);
-    //
-    //    // Create split tensor
-    //    auto op_pair_s = create_lattice_split<Q>(po, rank, dimo, ctx, xpu);
-    //
-    //    // Copy tensor t0 into each of the c components of tensor 1
-    //    resetTimings();
-    //    try {
-    //        double t = w_time();
-    //        for (unsigned int rep = 0; rep < nrep; ++rep) {
-    //            // Set the output tensor to zero
-    //            copy(0, p1.data(), ctx.size(), o1, {{}}, dim1, dim1, (const Q **)t0.data(), nullptr,
-    //                 ctx.data(), p1.data(), ctx.size(), o1, {{}}, dim1, t1.data(), nullptr, ctx.data(),
-    //#ifdef SUPERBBLAS_USE_MPI
-    //                 MPI_COMM_WORLD,
-    //#endif
-    //                 SlowToFast, Copy);
-    //
-    //            // Do the contractions on each part
-    //            std::vector<Request> r(op_pair_s.first.size());
-    //            for (unsigned int p = 0; p < op_pair_s.first.size(); ++p) {
-    //                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
-    //                    Q{1}, op_pair_s.first[p], "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn",
-    //                    {{}}, dim0, dim0, (const Q **)t0.data(), Q{1}, p1.data(), o1, {{}}, dim1, dim1,
-    //                    'p', t1.data(), ctx.data(),
-    //#ifdef SUPERBBLAS_USE_MPI
-    //                    MPI_COMM_WORLD,
-    //#endif
-    //                    SlowToFast, &r[p]);
-    //            }
-    //            for (const auto &ri : r) wait(ri);
-    //        }
-    //
-    //        for (const auto &xpui : xpu) sync(xpui);
-    //        t = w_time() - t;
-    //        if (rank == 0)
-    //            std::cout << "Time in mavec per rhs (split): " << t / nrep / dim[N] << std::endl;
-    //        test_contraction(p1, rank, o1, t1, dimo, false /* Don't do quick check, it isn't correct */,
-    //                         ctx);
-    //    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
-    //
-    //    for (const auto op : op_pair_s.first) destroy_bsr(op);
-    //
-    //    if (rank == 0) reportTimings(std::cout);
-    //    if (rank == 0) reportCacheUsage(std::cout);
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                Q{1}, op, "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn", {{}}, dim0, dim0,
+                (const Q **)t0.data(), Q{0}, p1.data(), o1, {{}}, dim1, dim1, 'p', t1.data(),
+                ctx.data(),
+#ifdef SUPERBBLAS_USE_MPI
+                MPI_COMM_WORLD,
+#endif
+                SlowToFast);
+        }
+        for (const auto &xpui : xpu) sync(xpui);
+        t = w_time() - t;
+        if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
+        test_contraction(p1, rank, o1, t1, dimo, true, ctx);
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    destroy_bsr(op);
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
+
+    // Create split tensor
+    auto op_pair_s = create_lattice_split<Q>(po, rank, dimo, ctx, xpu);
+
+    // Copy tensor t0 into each of the c components of tensor 1
+    resetTimings();
+    try {
+        double t = w_time();
+        for (unsigned int rep = 0; rep < nrep; ++rep) {
+            // Set the output tensor to zero
+            copy(0, p1.data(), ctx.size(), o1, {{}}, dim1, dim1, (const Q **)t0.data(), nullptr,
+                 ctx.data(), p1.data(), ctx.size(), o1, {{}}, dim1, t1.data(), nullptr, ctx.data(),
+#ifdef SUPERBBLAS_USE_MPI
+                 MPI_COMM_WORLD,
+#endif
+                 SlowToFast, Copy);
+
+            // Do the contractions on each part
+            std::vector<Request> r(op_pair_s.first.size());
+            for (unsigned int p = 0; p < op_pair_s.first.size(); ++p) {
+                bsr_krylov<Nd - 1, Nd - 1, Nd + 1, Nd + 1, Q>(
+                    Q{1}, op_pair_s.first[p], "xyztsc", "XYZTSC", p0.data(), ctx.size(), "pXYZTSCn",
+                    {{}}, dim0, dim0, (const Q **)t0.data(), Q{1}, p1.data(), o1, {{}}, dim1, dim1,
+                    'p', t1.data(), ctx.data(),
+#ifdef SUPERBBLAS_USE_MPI
+                    MPI_COMM_WORLD,
+#endif
+                    SlowToFast, &r[p]);
+            }
+            for (const auto &ri : r) wait(ri);
+        }
+
+        for (const auto &xpui : xpu) sync(xpui);
+        t = w_time() - t;
+        if (rank == 0)
+            std::cout << "Time in mavec per rhs (split): " << t / nrep / dim[N] << std::endl;
+        test_contraction(p1, rank, o1, t1, dimo, false /* Don't do quick check, it isn't correct */,
+                         ctx);
+    } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
+
+    for (const auto op : op_pair_s.first) destroy_bsr(op);
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
 
     const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
                                 dim[T], dim[C], dim[N], dim[S]}; // pxyztcns
@@ -1018,9 +1018,9 @@ int main(int argc, char **argv) {
 #endif
         test<std::complex<float>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         test<std::complex<double>, Cpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
-        clearCaches();
-        checkForMemoryLeaks(std::cout);
     }
+    clearCaches();
+    checkForMemoryLeaks(std::cout);
 #ifdef SUPERBBLAS_USE_GPU
     {
         std::vector<Context> ctx;
@@ -1030,10 +1030,10 @@ int main(int argc, char **argv) {
         for (const auto &i : ctx) xpus.push_back(i.toGpu(0));
         test<std::complex<float>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
         test<std::complex<double>, Gpu>(dim, procs, rank, nprocs, max_power, nrep, ctx, xpus);
-        clearCaches();
-        clearHandles();
-        checkForMemoryLeaks(std::cout);
     }
+    clearCaches();
+    clearHandles();
+    checkForMemoryLeaks(std::cout);
 #endif
 
 #ifdef SUPERBBLAS_USE_MPI

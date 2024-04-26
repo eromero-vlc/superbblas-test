@@ -1,5 +1,5 @@
-#include "superbblas/tenfucks.h"
 #include "superbblas.h"
+#include "superbblas/tenfucks_cpu.h"
 #include <algorithm>
 #include <ccomplex>
 #include <chrono>
@@ -20,8 +20,11 @@ template <typename SCALAR> void test() {
         {std::type_index(typeid(std::complex<float>)), "complex float"},
         {std::type_index(typeid(std::complex<double>)), "complex double"}};
     std::cout << "Testing " << type_to_string.at(std::type_index(typeid(SCALAR)))
+#ifndef SUPERBBLAS_LIB
               << " with a specific implementation for a vectorization of "
-              << superbblas::detail_xp::get_native_size<SCALAR>::size << " parts" << std::endl;
+              << superbblas::detail_xp::get_native_size<SCALAR>::size << " parts"
+#endif
+              << std::endl;
     std::vector<SCALAR> a(9);
     for (size_t i = 0; i < a.size(); ++i) a[i] = {1.f * i, .5f * i};
 
