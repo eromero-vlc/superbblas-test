@@ -164,7 +164,7 @@ namespace superbblas {
                 for (IndexType imat = 0; imat < nmats; ++imat) {
                     T s{0};
                     for (IndexType ij = 0; ij < nrows * ncols; ++ij)
-                        if (std::fabs(m[ncols * nrows * imat + ij]) > std::fabs(s))
+                        if (std::norm(m[ncols * nrows * imat + ij]) > std::norm(s))
                             s = m[ncols * nrows * imat + ij];
                     scalar[imat] = s;
                 }
@@ -763,11 +763,13 @@ namespace superbblas {
                     std::size_t num_blocks = kron_cpu.size() / ki / kd;
                     vector<int, Cpu> kron_perm_cpu(kd * num_blocks, Cpu{});
                     vector<T, Cpu> kron_scalars_cpu(kd * num_blocks, Cpu{});
+                    for (int i = 0; i < kd * num_blocks; ++i) kron_perm_cpu[i] = 0;
+                    for (int i = 0; i < kd * num_blocks; ++i) kron_scalars_cpu[i] = T{0};
                     int ldr = (v.blockImFast ? 1 : kd);
                     int ldc = (v.blockImFast ? ki : 1);
                     for (std::size_t blk = 0; blk < num_blocks; blk++) {
                         for (std::size_t i = 0; i < ki; i++) {
-                            bool is_perm = false, is_first_nnz = true;
+                            bool is_perm = true, is_first_nnz = true;
                             for (std::size_t j = 0; j < kd; j++) {
                                 T val = kron_cpu[ki * kd * blk + i * ldr + j * ldc];
                                 if (std::norm(val) > 0) {
