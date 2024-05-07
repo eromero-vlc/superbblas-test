@@ -72,7 +72,7 @@ namespace superbblas {
         template <typename T> struct gemm_3x3_in_parts<8, T> {
             constexpr static bool supported = true;
 
-            using vc8 = xsimd::make_sized_batch<T, 8>::type;
+            using vc8 = typename xsimd::make_sized_batch<T, 8>::type;
             using vi8 = xsimd::batch<typename equivalent_int<T>::type, typename vc8::arch_type>;
             using zT = std::complex<T>;
 
@@ -160,9 +160,9 @@ namespace superbblas {
         template <typename T> struct gemm_3x3_in_parts<16, T> {
             constexpr static bool supported = true;
 
-            using vc8 = xsimd::make_sized_batch<T, 8>::type;
+            using vc8 = typename xsimd::make_sized_batch<T, 8>::type;
             using vi8 = xsimd::batch<typename equivalent_int<T>::type, typename vc8::arch_type>;
-            using vc16 = xsimd::make_sized_batch<T, 16>::type;
+            using vc16 = typename xsimd::make_sized_batch<T, 16>::type;
             using vi16 = xsimd::batch<typename equivalent_int<T>::type, typename vc16::arch_type>;
             using zT = std::complex<T>;
 
