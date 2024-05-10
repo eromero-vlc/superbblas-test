@@ -35,7 +35,7 @@
 
 #endif
 
-#if defined(SUPERBBLAS_CREATING_LIB) // && defined(SUPERBBLAS_ROCM_SUPPORTS_TENSOR_CORES)
+#if defined(SUPERBBLAS_CREATING_LIB)
 /// Generate template instantiations for bsr_kron_3x3_4x4perm functions with template parameter T
 
 #    define DECL_BSR_KRON_3x3_4x4PERM_T(...)                                                       \

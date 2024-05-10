@@ -77,6 +77,7 @@ endif
 ifeq ($(TARGET), hip)
 	${HIP} -x c++ -E ${MPISBFLAG} ${HIPFLAGS} ${CXXFLAGS} ${MPIINCFLAGS} -DSUPERBBLAS_CREATING_LIB ../include/superbblas.h | $(PYTHON) tools/ctemplate > $@
 endif
+	echo >> $@
 
 $(SOURCE_LIB): $(LIB_SOURCE_STEM).split
 

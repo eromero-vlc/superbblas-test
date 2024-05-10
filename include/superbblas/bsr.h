@@ -38,7 +38,8 @@ namespace superbblas {
 
     /// Matrix layout
     enum MatrixLayout {
-        RowMajor,   // the Kronecker labels and the column index are the fastest indices
+        RowMajor, // the Kronecker labels and the column index are the fastest indices
+        AltKronRowMajor, // the blocking labels, then the Kronecker labels and then the column index are the fastest indices
         ColumnMajor // the column index and Kronecker labels are the slowest indices
     };
 
@@ -522,12 +523,19 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T> struct BSR<Nd, Ni, T, Cpu> {
             BSRComponent<Nd, Ni, T, Cpu> v; ///< BSR general information
             vector<IndexType, Cpu> ii, jj;  ///< BSR row and column nonzero indices
-            static std::string implementation() { return "builtin_cpu"; }
-            unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
-            CSRs<IndexType, T> kron;      ///< kron sparse representation
+            unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
+            CSRs<IndexType, T> kron;        ///< kron sparse representation
+            bool
+                kron_use_crafted_kernel; ///< whether to use a crafted gemm kernel instead of an external one
+            vector<int, Cpu> kron_perm;         ///< represent the kron matrices with a permutation
+            vector<int, Cpu> kron_sign_scalars; ///< represent the kron matrices with scalar signs
+
+            std::string implementation() const {
+                return kron_use_crafted_kernel ? "builtin_kron_perm_cpu" : "builtin_cpu";
+            }
 
             SpMMAllowedLayout allowLayout;
-            static const MatrixLayout preferredLayout = RowMajor;
+            MatrixLayout preferredLayout = RowMajor;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 allowLayout = (v.kron_it.size() > 0) ? SameLayoutForXAndY : AnyLayoutForXAndY;
@@ -536,10 +544,50 @@ namespace superbblas {
                 ii = bsr.i;
                 jj = bsr.j;
                 num_nnz_per_row = bsr.num_nnz_per_row;
-                if (v.kron_it.size() > 0)
-                    kron =
-                        CSRs<IndexType, T>(v.kron_it, volume(v.kroni), volume(v.krond),
-                                           num_nnz_per_row, v.blockImFast ? ColumnMajor : RowMajor);
+                if (v.kron_it.size() > 0) {
+                    kron_use_crafted_kernel = true;
+                    std::size_t ki = volume(v.kroni);
+                    std::size_t kd = volume(v.krond);
+                    std::size_t block_size = volume(v.blocki);
+                    // Check that the kronecker block is 4 and the block is 3
+                    if (ki != kd || block_size != volume(v.blockd) || block_size != 3 ||
+                        !available_bsr_kron_3x3_perm<T>())
+                        kron_use_crafted_kernel = false;
+                    // Check that the kronecker blocks can be represented with a permutation
+                    std::size_t num_blocks = v.kron_it.size() / ki / kd;
+                    kron_perm = vector<int, Cpu>(kd * num_blocks, Cpu{});
+                    kron_sign_scalars = vector<int, Cpu>(kd * num_blocks, Cpu{});
+                    for (std::size_t i = 0; i < kd * num_blocks; ++i) kron_perm[i] = 0;
+                    for (std::size_t i = 0; i < kd * num_blocks; ++i) kron_sign_scalars[i] = 1;
+                    int ldr = (v.blockImFast ? 1 : kd);
+                    int ldc = (v.blockImFast ? ki : 1);
+                    for (std::size_t blk = 0; blk < num_blocks; blk++) {
+                        for (std::size_t i = 0; i < ki; i++) {
+                            bool is_perm = true, is_first_nnz = true;
+                            for (std::size_t j = 0; j < kd; j++) {
+                                T val = v.kron_it[ki * kd * blk + i * ldr + j * ldc];
+                                if (std::norm(val) > 0) {
+                                    if (is_first_nnz) {
+                                        is_perm = true;
+                                        is_first_nnz = false;
+                                        if (val != T{1} && val != T{-1}) kron_use_crafted_kernel = false;
+                                        kron_perm[kd * blk + i] = j;
+                                        kron_sign_scalars[kd * blk + i] = (val == T{1} ? 1 : -1);
+                                    } else {
+                                        is_perm = false;
+                                    }
+                                }
+                            }
+                            if (!is_perm) kron_use_crafted_kernel = false;
+                        }
+                    }
+                    if (!kron_use_crafted_kernel)
+                        kron = CSRs<IndexType, T>(v.kron_it, volume(v.kroni), volume(v.krond),
+                                                  num_nnz_per_row,
+                                                  v.blockImFast ? ColumnMajor : RowMajor);
+                }
+
+                preferredLayout = kron_use_crafted_kernel ? AltKronRowMajor : RowMajor;
             }
 
             /// Return the number of flops for a given number of right-hand-sides
@@ -650,7 +698,29 @@ namespace superbblas {
                     }
                 } else {
                     // With Kronecker product
-                    if (lx == RowMajor) {
+                    if (lx == AltKronRowMajor) {
+#    ifdef _OPENMP
+#        pragma omp parallel
+#    endif
+                        {
+#    ifdef _OPENMP
+#        pragma omp for schedule(static)
+#    endif
+                            for (IndexType i = 0; i < block_rows; ++i) {
+                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
+                                     ++j, ++j0) {
+                                    if (jj[j] == -1) continue;
+                                    // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                    xgemm_alt_alpha1_beta1_perm(
+                                        bi, ki * ncols, bi, nonzeros + j * bi * bd, !tb ? 1 : bi,
+                                        !tb ? bi : 1, x + jj[j] * ncols, 1, bi, ki,
+                                        kron_perm.data() + j0 * kd,
+                                        kron_sign_scalars.data() + j0 * kd, y + i * bi * ki * ncols,
+                                        1, bi, Cpu{});
+                                }
+                            }
+                        }
+                    } else if (lx == RowMajor) {
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
@@ -2044,36 +2114,45 @@ namespace superbblas {
             } else { // !is_kron
                 // Contraction with the blocking and the Kronecker blocking
                 // Check that ox should (okr,D,d,C,kd) or (okr,I,i,C,ki) for row major,
+                // and (okr,D,C,kd,d) or (okr,I,C,ki,i) for alt row major,
                 // and (okr,kd,C,D,d) or (okr,ki,C,I,i) for column major.
 
-                Order<Nx> sug_ox_row_major, sug_ox_col_major;
-                Order<Ny> sug_oy_row_major, sug_oy_col_major;
+                Order<Nx> sug_ox_row_major, sug_ox_altrow_major, sug_ox_col_major;
+                Order<Ny> sug_oy_row_major, sug_oy_altrow_major, sug_oy_col_major;
                 if (kindx == ContractWithDomain) {
                     sug_ox_row_major = concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds);
+                    sug_ox_altrow_major = concat<Nx>(okr, oDs, nDs, oC, nC, okds, nkds, ods, nds);
                     sug_ox_col_major = concat<Nx>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
                     sug_oy_row_major = concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis);
+                    sug_oy_altrow_major = concat<Ny>(okr, oIs, nIs, oC, nC, okis, nkis, ois, nis);
                     sug_oy_col_major = concat<Ny>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
                 } else {
                     sug_ox_row_major = concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC, okis, nkis);
+                    sug_ox_altrow_major = concat<Nx>(okr, oIs, nIs, oC, nC, okis, nkis, ois, nis);
                     sug_ox_col_major = concat<Nx>(okr, okis, nkis, oC, nC, oIs, nIs, ois, nis);
                     sug_oy_row_major = concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC, okds, nkds);
+                    sug_oy_altrow_major = concat<Ny>(okr, oDs, nDs, oC, nC, okds, nkds, ods, nds);
                     sug_oy_col_major = concat<Ny>(okr, okds, nkds, oC, nC, oDs, nDs, ods, nds);
                 }
-                if (ox == sug_ox_row_major && oy == sug_oy_row_major) {
-                    ly = lx = RowMajor;
-                } else if (ox == sug_ox_col_major && oy == sug_oy_col_major) {
-                    ly = lx = ColumnMajor;
-                } else {
-                    ly = lx = preferred_layout;
-                }
-                if ((xylayout == ColumnMajorForY && ly != ColumnMajor) ||
-                    (xylayout == ColumnMajorForXandY && lx != ColumnMajor)) {
-                    lx = ly = ColumnMajor;
-                }
-                if (xylayout == RowMajorForXandY && lx != RowMajor) { lx = ly = RowMajor; }
+                //if (ox == sug_ox_row_major && oy == sug_oy_row_major) {
+                //    ly = lx = RowMajor;
+                //} else if (ox == sug_ox_col_major && oy == sug_oy_col_major) {
+                //    ly = lx = ColumnMajor;
+                //} else {
+                //    ly = lx = preferred_layout;
+                //}
+                //if ((xylayout == ColumnMajorForY && ly != ColumnMajor) ||
+                //    (xylayout == ColumnMajorForXandY && lx != ColumnMajor)) {
+                //    lx = ly = ColumnMajor;
+                //}
+                //if (xylayout == RowMajorForXandY && lx != RowMajor) { lx = ly = RowMajor; }
                 ly = lx = preferred_layout;
-                sug_ox = lx == RowMajor ? sug_ox_row_major : sug_ox_col_major;
-                sug_oy = ly == RowMajor ? sug_oy_row_major : sug_oy_col_major;
+                sug_ox = lx == RowMajor
+                             ? sug_ox_row_major
+                             : (lx == AltKronRowMajor ? sug_ox_altrow_major : sug_ox_col_major);
+                sug_oy = ly == RowMajor
+                             ? sug_oy_row_major
+                             : (ly == AltKronRowMajor ? sug_oy_altrow_major : sug_oy_col_major);
             }
 
             if (okr != 0 && power > 1) {
@@ -2146,11 +2225,16 @@ namespace superbblas {
             IndexType kd = volume(bsr.v.krond);
             if (vold == 0 || voli == 0) return;
             // Layout for row major: (kd,n,bd,rows)
+            // Layout for alt row major: (bd,kd,n,rows)
             // Layout for column major: (bd,rows,n,kd)
-            IndexType ldx = lx == ColumnMajor ? (!transSp ? vold / kd : voli / ki)
-                                              : (!transSp ? kd : ki) * volC;
-            IndexType ldy = ly == ColumnMajor ? (!transSp ? voli / ki : vold / kd)
-                                              : (!transSp ? ki : kd) * volC;
+            IndexType ldx = lx == ColumnMajor
+                                ? (!transSp ? vold / kd : voli / ki)
+                                : (!transSp ? kd : ki) *
+                                      (lx == AltKronRowMajor ? (!transSp ? vold : voli) : 1) * volC;
+            IndexType ldy = ly == ColumnMajor
+                                ? (!transSp ? voli / ki : vold / kd)
+                                : (!transSp ? ki : kd) *
+                                      (ly == AltKronRowMajor ? (!transSp ? voli : vold) : 1) * volC;
 
             // Do the contraction
             _t.flops = bsr.getFlopsPerMatvec(volC, lx);
