@@ -168,39 +168,79 @@ namespace superbblas {
                 }
             }
 
-            static inline void
-            gemm_basic_3x3c_alpha1_beta1_perm(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                                              const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
-                                              int perm_size, int *SB_RESTRICT perm,
-                                              int *SB_RESTRICT perm_sign,
-
-                                              zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+            static inline void gemm_basic_3x3c_alpha1_beta1_perm(
+                Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
+                int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
+                zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
 
-                // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j/perm_size*perm_size+perm[j%perm_size]] * perm_sign[j%perm_size]
+                // c[i,j] = sum_{m=0:Nmats-1} sum_{k=0:2} a_m[i,k] * b_m[k,j/perm_size*perm_size+perm_m[j%perm_size]] * perm_sign_m[j%perm_size]
                 using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
                 using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-                auto a012 = get_A_cols(a, ldar, ldac);
                 auto vi8_ri_b = get_8_ri(ldbr);
                 auto vi8_ri_c = get_8_ri(ldcr);
-                for (Idx j = 0; j < N; ++j) {
-                    auto b0 = vc8::gather(
-                        b + ldbc * 2 * (j / perm_size * perm_size + perm[j % perm_size]), vi8_ri_b);
-                    auto c1 = vc8::gather(c + ldcc * 2 * j, vi8_ri_c);
+                for (Idx j = 0; j < N; j += 4) {
                     vc8 c0(T{0});
-                    for (int disp = 0; disp < 3; ++disp) {
-                        if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                        c0 = xsimd::fma(get_A_col<the_real>(a012[disp]), b0, c0);
+                    vc8 c1(T{0});
+                    vc8 c2(T{0});
+                    vc8 c3(T{0});
+                    for (Idx mat = 0; mat < Nmats; ++mat) {
+                        auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
+                        auto b0 = vc8::gather(b + bj[mat] * bjprod +
+                                                  ldbc * 2 *
+                                                      (j / perm_size * perm_size +
+                                                       perm[mat * perm_size + j % perm_size]),
+                                              vi8_ri_b);
+                        b0 = (perm_sign[mat * perm_size + j % perm_size] == 1 ? b0 : -b0);
+                        auto b1 = vc8::gather(b + bj[mat] * bjprod +
+                                                  ldbc * 2 *
+                                                      ((j + 1) / perm_size * perm_size +
+                                                       perm[mat * perm_size + (j + 1) % perm_size]),
+                                              vi8_ri_b);
+                        b1 = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1 : -b1);
+                        auto b2 = vc8::gather(b + bj[mat] * bjprod +
+                                                  ldbc * 2 *
+                                                      ((j + 2) / perm_size * perm_size +
+                                                       perm[mat * perm_size + (j + 2) % perm_size]),
+                                              vi8_ri_b);
+                        b2 = (perm_sign[mat * perm_size + (j + 2) % perm_size] == 1 ? b2 : -b2);
+                        auto b3 = vc8::gather(b + bj[mat] * bjprod +
+                                                  ldbc * 2 *
+                                                      ((j + 3) / perm_size * perm_size +
+                                                       perm[mat * perm_size + (j + 3) % perm_size]),
+                                              vi8_ri_b);
+                        b3 = (perm_sign[mat * perm_size + (j + 3) % perm_size] == 1 ? b3 : -b3);
+                        for (int disp = 0; disp < 3; ++disp) {
+                            if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
+                            if (disp > 0) b1 = xsimd::swizzle(b1, vi8_flip_and_plus_1());
+                            if (disp > 0) b2 = xsimd::swizzle(b2, vi8_flip_and_plus_1());
+                            if (disp > 0) b3 = xsimd::swizzle(b3, vi8_flip_and_plus_1());
+                            auto ar = get_A_col<the_real>(a012[disp]);
+                            c0 = xsimd::fma(ar, b0, c0);
+                            c1 = xsimd::fma(ar, b1, c1);
+                            c2 = xsimd::fma(ar, b2, c2);
+                            c3 = xsimd::fma(ar, b3, c3);
 
-                        b0 = xsimd::swizzle(b0, vi8_flip_ri());
-                        c0 = xsimd::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
+                            b0 = xsimd::swizzle(b0, vi8_flip_ri());
+                            b1 = xsimd::swizzle(b1, vi8_flip_ri());
+                            b2 = xsimd::swizzle(b2, vi8_flip_ri());
+                            b3 = xsimd::swizzle(b3, vi8_flip_ri());
+                            auto ai = get_A_col<the_imag>(a012[disp]);
+                            c0 = xsimd::fma(ai, b0, c0);
+                            c1 = xsimd::fma(ai, b1, c1);
+                            c2 = xsimd::fma(ai, b2, c2);
+                            c3 = xsimd::fma(ai, b3, c3);
+                        }
                     }
-                    (perm_sign[j % perm_size] == 1 ? c1 + c0 : c1 - c0)
-                        .scatter(c + ldcc * 2 * j, vi8_ri_c);
+                    c0.scatter(c + ldcc * 2 * j, vi8_ri_c);
+                    c1.scatter(c + ldcc * 2 * (j + 1), vi8_ri_c);
+                    c2.scatter(c + ldcc * 2 * (j + 2), vi8_ri_c);
+                    c3.scatter(c + ldcc * 2 * (j + 3), vi8_ri_c);
                 }
             }
         };
@@ -288,10 +328,10 @@ namespace superbblas {
             static inline vc16 get_B_col_double(const T *SB_RESTRICT b0, int sign0,
                                                 const T *SB_RESTRICT b1, int sign1, VI8 ri) {
                 alignas(vc16::arch_type::alignment()) T buffer[16];
-                auto x = vc8::gather(b0, ri);
-                (sign0 == 1 ? x : -x).store_aligned(&buffer[0]);
-                x = vc8::gather(b1, ri);
-                (sign1 == 1 ? x : -x).store_aligned(&buffer[8]);
+                auto x0 = vc8::gather(b0, ri);
+                auto x1 = vc8::gather(b1, ri);
+                (sign0 == 1 ? x0 : -x0).store_aligned(&buffer[0]);
+                (sign1 == 1 ? x1 : -x1).store_aligned(&buffer[8]);
                 return vc16::load_aligned(&buffer[0]);
             }
 
@@ -354,33 +394,22 @@ namespace superbblas {
             }
 
             static inline void gemm_basic_3x3c_alpha1_beta1_perm(
-                Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac, const zT *SB_RESTRICT b_,
-                Idx ldbr, Idx ldbc, int perm_size, int *SB_RESTRICT perm,
-                int *SB_RESTRICT perm_sign, zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
+                int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
+                zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
 
-                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
-                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
-                auto a012 = get_A_cols(a, ldar, ldac);
-                auto vi8_ri_b = get_8_ri(ldbr);
-                if (N % 2 != 0) {
-                    auto vi8_ri_c = get_8_ri(ldcr);
-                    auto b0 = vc8::gather(b + ldbc * 2 * perm[0], vi8_ri_b);
-                    auto c1 = vc8::gather(c, vi8_ri_c);
-                    vc8 c0(T{0});
-                    for (int disp = 0; disp < 3; ++disp) {
-                        if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
-                        c0 = xsimd::fma(get_A_col<the_real>(a012[disp]), b0, c0);
+                // TEMP!!!
+                //ldar = ldbr = ldcr = 1;
+                //ldac = ldbc = ldcc = 3;
+                //perm_size = 4;
 
-                        b0 = xsimd::swizzle(b0, vi8_flip_ri());
-                        c0 = xsimd::fma(get_A_col<the_imag>(a012[disp]), b0, c0);
-                    }
-                    (perm_sign[0] == 1 ? c1 + c0 : c1 - c0).scatter(c, vi8_ri_c);
-                }
+                auto vi8_ri_b = get_8_ri(ldbr);
                 using vi16_flip_ri =
                     xsimd::batch_constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
                                           8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
@@ -388,23 +417,152 @@ namespace superbblas {
                     xsimd::batch_constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
                                           8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
                 auto vi16_ri_c = get_16_ri(ldcr, ldcc);
-                for (Idx j = N % 2; j < N; j += 2) {
-                    auto b0 = get_B_col_double(
-                        b + ldbc * 2 * (j / perm_size * perm_size + perm[j % perm_size]),
-                        perm_sign[j % perm_size],
-                        b + ldbc * 2 *
-                                ((j + 1) / perm_size * perm_size + perm[(j + 1) % perm_size]),
-                        perm_sign[(j + 1) % perm_size], vi8_ri_b);
-                    auto c1 = vc16::gather(c + ldcc * 2 * j, vi16_ri_c);
+                for (Idx j = 0; j < N; j += 16) {
                     vc16 c0(T{0});
-                    for (int disp = 0; disp < 3; ++disp) {
-                        if (disp > 0) b0 = xsimd::swizzle(b0, vi16_flip_and_plus_1());
-                        c0 = xsimd::fma(get_A_col_double<the_real>(a012[disp]), b0, c0);
+                    vc16 c2(T{0});
+                    vc16 c4(T{0});
+                    vc16 c6(T{0});
+                    vc16 c8(T{0});
+                    vc16 c10(T{0});
+                    vc16 c12(T{0});
+                    vc16 c14(T{0});
+                    for (Idx mat = 0; mat < Nmats; ++mat) {
+                        auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
+                        auto b0 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    (j / perm_size * perm_size +
+                                     perm[mat * perm_size + j % perm_size]),
+                            perm_sign[mat * perm_size + j % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 1) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 1) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 1) % perm_size], vi8_ri_b);
+                        auto b2 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 2) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 2) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 2) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 3) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 3) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 3) % perm_size], vi8_ri_b);
+                        auto b4 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 4) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 4) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 4) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 5) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 5) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 5) % perm_size], vi8_ri_b);
+                        auto b6 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 6) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 6) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 6) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 7) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 7) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 7) % perm_size], vi8_ri_b);
+                        auto b8 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 8) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 8) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 8) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 9) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 9) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 9) % perm_size], vi8_ri_b);
+                        auto b10 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 10) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 10) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 10) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 11) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 11) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 11) % perm_size], vi8_ri_b);
+                        auto b12 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 12) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 12) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 12) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 13) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 13) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 13) % perm_size], vi8_ri_b);
+                        auto b14 = get_B_col_double(
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 14) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 14) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 14) % perm_size],
+                            b + bj[mat] * bjprod +
+                                ldbc * 2 *
+                                    ((j + 15) / perm_size * perm_size +
+                                     perm[mat * perm_size + (j + 15) % perm_size]),
+                            perm_sign[mat * perm_size + (j + 15) % perm_size], vi8_ri_b);
 
-                        b0 = xsimd::swizzle(b0, vi16_flip_ri());
-                        c0 = xsimd::fma(get_A_col_double<the_imag>(a012[disp]), b0, c0);
+                        for (int disp = 0; disp < 3; ++disp) {
+                            if (disp > 0) b0 = xsimd::swizzle(b0, vi16_flip_and_plus_1());
+                            if (disp > 0) b2 = xsimd::swizzle(b2, vi16_flip_and_plus_1());
+                            if (disp > 0) b4 = xsimd::swizzle(b4, vi16_flip_and_plus_1());
+                            if (disp > 0) b6 = xsimd::swizzle(b6, vi16_flip_and_plus_1());
+                            if (disp > 0) b8 = xsimd::swizzle(b8, vi16_flip_and_plus_1());
+                            if (disp > 0) b10 = xsimd::swizzle(b10, vi16_flip_and_plus_1());
+                            if (disp > 0) b12 = xsimd::swizzle(b12, vi16_flip_and_plus_1());
+                            if (disp > 0) b14 = xsimd::swizzle(b14, vi16_flip_and_plus_1());
+                            auto ar = get_A_col_double<the_real>(a012[disp]);
+                            c0 = xsimd::fma(ar, b0, c0);
+                            c2 = xsimd::fma(ar, b2, c2);
+                            c4 = xsimd::fma(ar, b4, c4);
+                            c6 = xsimd::fma(ar, b6, c6);
+                            c8 = xsimd::fma(ar, b8, c8);
+                            c10 = xsimd::fma(ar, b10, c10);
+                            c12 = xsimd::fma(ar, b12, c12);
+                            c14 = xsimd::fma(ar, b14, c14);
+
+                            b0 = xsimd::swizzle(b0, vi16_flip_ri());
+                            b2 = xsimd::swizzle(b2, vi16_flip_ri());
+                            b4 = xsimd::swizzle(b4, vi16_flip_ri());
+                            b6 = xsimd::swizzle(b6, vi16_flip_ri());
+                            b8 = xsimd::swizzle(b8, vi16_flip_ri());
+                            b10 = xsimd::swizzle(b10, vi16_flip_ri());
+                            b12 = xsimd::swizzle(b12, vi16_flip_ri());
+                            b14 = xsimd::swizzle(b14, vi16_flip_ri());
+                            auto ai = get_A_col_double<the_imag>(a012[disp]);
+                            c0 = xsimd::fma(ai, b0, c0);
+                            c2 = xsimd::fma(ai, b2, c2);
+                            c4 = xsimd::fma(ai, b4, c4);
+                            c6 = xsimd::fma(ai, b6, c6);
+                            c8 = xsimd::fma(ai, b8, c8);
+                            c10 = xsimd::fma(ai, b10, c10);
+                            c12 = xsimd::fma(ai, b12, c12);
+                            c14 = xsimd::fma(ai, b14, c14);
+                        }
                     }
-                    (c0 + c1).scatter(c + ldcc * 2 * j, vi16_ri_c);
+                    c0.scatter(c + ldcc * 2 * j, vi16_ri_c);
+                    c2.scatter(c + ldcc * 2 * (j + 2), vi16_ri_c);
+                    c4.scatter(c + ldcc * 2 * (j + 4), vi16_ri_c);
+                    c6.scatter(c + ldcc * 2 * (j + 6), vi16_ri_c);
+                    c8.scatter(c + ldcc * 2 * (j + 8), vi16_ri_c);
+                    c10.scatter(c + ldcc * 2 * (j + 10), vi16_ri_c);
+                    c12.scatter(c + ldcc * 2 * (j + 12), vi16_ri_c);
+                    c14.scatter(c + ldcc * 2 * (j + 14), vi16_ri_c);
                 }
             }
         };
@@ -920,8 +1078,8 @@ namespace superbblas {
         template <typename T> struct gemm_basic_3x3c_alpha1_beta1_wrapper<T, true> {
             static constexpr bool available() { return true; }
 
-            static void func(char transa, char transb, int m, int n, int k, const T *a, int lda,
-                             const T *b, int ldb, T *c, int ldc) {
+            static inline void func(char transa, char transb, int m, int n, int k, const T *a,
+                                    int lda, const T *b, int ldb, T *c, int ldc) {
                 if (m == 0 || n == 0) return;
 
                 bool ta = (transa != 'n' && transa != 'N');
@@ -940,28 +1098,30 @@ namespace superbblas {
                 xgemm(transa, transb, m, n, k, T{1}, a, lda, b, ldb, T{1}, c, ldc, detail::Cpu{});
             }
 
-            static void func_perm(int m, int n, int k, const T *a, int ldar, int ldac, const T *b,
-                                  int ldbr, int ldbc, int perm_size, int *perm, int *perm_sign,
-                                  T *c, int ldcr, int ldcc) {
+            static inline void func_perm(int nmats, int m, int n, int k, const T *a, int ldar,
+                                         int ldac, const T *b, int *bj, int bjprod, int ldbr,
+                                         int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
+                                         int ldcr, int ldcc) {
                 (void)k;
                 if (m == 0 || n == 0) return;
 
                 constexpr std::size_t native_size = get_native_size<T>::size;
                 gemm_3x3_in_parts<native_size, typename T::value_type>::
-                    gemm_basic_3x3c_alpha1_beta1_perm(
-                        n, a, ldar, ldac, b, ldbr, ldbc, perm_size, perm, perm_sign, c, ldcr, ldcc);
+                    gemm_basic_3x3c_alpha1_beta1_perm(nmats, n, a, ldar, ldac, b, bj, bjprod, ldbr,
+                                                      ldbc, perm_size, perm, perm_sign, c, ldcr,
+                                                      ldcc);
             }
         };
 #    endif // SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
 
         template <typename T> struct gemm_basic_3x3c_alpha1_beta1_wrapper<T, false> {
             static constexpr bool available() { return false; }
-            static void func(char transa, char transb, int m, int n, int k, const T *a, int lda,
-                             const T *b, int ldb, T *c, int ldc) {
+            static inline void func(char transa, char transb, int m, int n, int k, const T *a,
+                                    int lda, const T *b, int ldb, T *c, int ldc) {
                 xgemm(transa, transb, m, n, k, T{1}, a, lda, b, ldb, T{1}, c, ldc, detail::Cpu{});
             }
-            static void func_perm(int, int, int, const T *, int, int, const T *, int, int, int,
-                                  int *, int *, T *, int, int) {
+            static inline void func_perm(int, int, int, int, const T *, int, int, const T *, int *,
+                                         int, int, int, int, int *, int *, T *, int, int) {
                 abort();
             }
         };
@@ -981,16 +1141,18 @@ namespace superbblas {
 
         template <typename T>
         DECL_XGEMM_ALT_ALPHA1_BETA1_PERM_T(void xgemm_alt_alpha1_beta1_perm(
-            int m, int n, int k, const T *a, int ldar, int ldac, const T *b, int ldbr, int ldbc,
-            int perm_size, int *perm, int *perm_sign, T *c, int ldcr, int ldcc, Cpu))
+            int nmats, int m, int n, int k, const T *a, int ldar, int ldac, const T *b, int *bj,
+            int bjprod, int ldbr, int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
+            int ldcr, int ldcc, Cpu))
         IMPL({
             superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1_wrapper<T>::func_perm(
-                m, n, k, a, ldar, ldac, b, ldbr, ldbc, perm_size, perm, perm_sign, c, ldcr, ldcc);
+                nmats, m, n, k, a, ldar, ldac, b, bj, bjprod, ldbr, ldbc, perm_size, perm,
+                perm_sign, c, ldcr, ldcc);
         })
 
         template <typename T>
         DECL_AVAILABLE_BSR_KRON_3x3_PERM_T(bool available_bsr_kron_3x3_perm()) IMPL({
-		static_assert(superbblas::detail_xp::get_native_size<T>::size >= 8, "caca");
+            static_assert(superbblas::detail_xp::get_native_size<T>::size >= 8, "caca");
             return superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1_wrapper<T>::available();
         })
     }

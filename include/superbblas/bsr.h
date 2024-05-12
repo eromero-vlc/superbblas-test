@@ -570,7 +570,8 @@ namespace superbblas {
                                     if (is_first_nnz) {
                                         is_perm = true;
                                         is_first_nnz = false;
-                                        if (val != T{1} && val != T{-1}) kron_use_crafted_kernel = false;
+                                        if (val != T{1} && val != T{-1})
+                                            kron_use_crafted_kernel = false;
                                         kron_perm[kd * blk + i] = j;
                                         kron_sign_scalars[kd * blk + i] = (val == T{1} ? 1 : -1);
                                     } else {
@@ -700,27 +701,23 @@ namespace superbblas {
                     // With Kronecker product
                     if (lx == AltKronRowMajor) {
 #    ifdef _OPENMP
-#        pragma omp parallel
+#        pragma omp parallel for schedule(static)
 #    endif
-                        {
-#    ifdef _OPENMP
-#        pragma omp for schedule(static)
-#    endif
-                            for (IndexType i = 0; i < block_rows; ++i) {
-                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
-                                     ++j, ++j0) {
-                                    if (jj[j] == -1) continue;
-                                    // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                    xgemm_alt_alpha1_beta1_perm(
-                                        bi, ki * ncols, bi, nonzeros + j * bi * bd, !tb ? 1 : bi,
-                                        !tb ? bi : 1, x + jj[j] * ncols, 1, bi, ki,
-                                        kron_perm.data() + j0 * kd,
-                                        kron_sign_scalars.data() + j0 * kd, y + i * bi * ki * ncols,
-                                        1, bi, Cpu{});
-                                }
-                            }
+                        for (IndexType i = 0; i < block_rows; ++i) {
+                            auto kron_perm_data = kron_perm.data();
+                            auto kron_sign_scalars_data = kron_sign_scalars.data();
+                            IndexType j = ii[i], j1 = ii[i + 1], jn = j1 - j;
+                            //if (jj[j] == -1) continue;
+                            // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                            //if (j+1<j1) for (IndexType k=0; k<ncols*kd; k++) __builtin_prefetch(x + jj[j+1] * ncols + k*bd);
+                            xgemm_alt_alpha1_beta1_perm(
+                                jn, bi, ki * ncols, bi, nonzeros + j * bi * bd, !tb ? 1 : bi,
+                                !tb ? bi : 1, x, jj.data() + j, ncols /*x + jj[j] * ncols*/, 1, bi,
+                                ki, kron_perm_data, kron_sign_scalars_data, y + i * bi * ki * ncols,
+                                1, bi, Cpu{});
                         }
                     } else if (lx == RowMajor) {
+                        abort();
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
