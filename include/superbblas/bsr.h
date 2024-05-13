@@ -2218,6 +2218,8 @@ namespace superbblas {
                     "Unsupported layout for the input and output dense tensors");
 
             std::size_t vold = volume(bsr.v.dimd), voli = volume(bsr.v.dimi);
+            IndexType bi = volume(bsr.v.blocki);
+            IndexType bd = volume(bsr.v.blockd);
             IndexType ki = volume(bsr.v.kroni);
             IndexType kd = volume(bsr.v.krond);
             if (vold == 0 || voli == 0) return;
@@ -2227,11 +2229,11 @@ namespace superbblas {
             IndexType ldx = lx == ColumnMajor
                                 ? (!transSp ? vold / kd : voli / ki)
                                 : (!transSp ? kd : ki) *
-                                      (lx == AltKronRowMajor ? (!transSp ? vold : voli) : 1) * volC;
+                                      (lx == AltKronRowMajor ? (!transSp ? bd : bi) : 1) * volC;
             IndexType ldy = ly == ColumnMajor
                                 ? (!transSp ? voli / ki : vold / kd)
                                 : (!transSp ? ki : kd) *
-                                      (ly == AltKronRowMajor ? (!transSp ? voli : vold) : 1) * volC;
+                                      (ly == AltKronRowMajor ? (!transSp ? bi : bd) : 1) * volC;
 
             // Do the contraction
             _t.flops = bsr.getFlopsPerMatvec(volC, lx);

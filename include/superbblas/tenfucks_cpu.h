@@ -178,6 +178,7 @@ namespace superbblas {
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
+		bjprod *= 2;
 
                 // c[i,j] = sum_{m=0:Nmats-1} sum_{k=0:2} a_m[i,k] * b_m[k,j/perm_size*perm_size+perm_m[j%perm_size]] * perm_sign_m[j%perm_size]
                 using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
@@ -403,6 +404,7 @@ namespace superbblas {
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
+		bjprod *= 2;
 
                 // TEMP!!!
                 //ldar = ldbr = ldcr = 1;
@@ -1103,6 +1105,7 @@ namespace superbblas {
                                          int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
                                          int ldcr, int ldcc) {
                 (void)k;
+		if (m != 3 || k != 3) abort();
                 if (m == 0 || n == 0) return;
 
                 constexpr std::size_t native_size = get_native_size<T>::size;
