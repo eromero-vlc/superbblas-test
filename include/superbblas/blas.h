@@ -351,6 +351,14 @@ namespace superbblas {
                 return vector{n, ptr_aligned, ptr, new_xpu};
             }
 
+            /// Return an alias of the vector with another context
+            /// \param new_xpu: new context
+            vector displace(std::size_t elems) const {
+                if (elems > n)
+                    throw std::runtime_error("detail::vector::displace: invalid argument");
+                return vector{n - elems, ptr_aligned + elems, ptr, xpu};
+            }
+
             std::size_t n;             ///< Number of allocated `T` elements
             T *ptr_aligned;            ///< Pointer aligned
             std::shared_ptr<char> ptr; ///< Pointer to the allocated memory

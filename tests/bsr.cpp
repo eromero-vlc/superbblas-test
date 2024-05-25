@@ -208,7 +208,6 @@ create_lattice(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim,
         int rank_comp = rank * ctx.size() + component;
         Coor<6> from = pi[rank_comp][0]; // first nonblock dimensions of the RSB image
         Coor<6> dimi = pi[rank_comp][1]; // nonblock dimensions of the RSB image
-        auto fromd = pd[rank_comp][0];   // first nonblock dimension of the RSB domain
         dimi[4] = dimi[5] = 1;
         std::size_t voli = volume(dimi);
         vector<IndexType, Cpu> ii(voli, Cpu{});
@@ -219,13 +218,13 @@ create_lattice(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim,
         Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
         for (std::size_t i = 0, j = 0; i < voli; ++i) {
             Coor<6> c = index2coor(i, dimi, stride) + from;
-            jj[j++] = normalize_coor(c - fromd, op_dim);
+            jj[j++] = normalize_coor(c, op_dim);
             for (int dim = 0; dim < 4; ++dim) {
                 if (op_dim[dim] == 1) continue;
                 for (int dir = -1; dir < 2; dir += 2) {
                     Coor<6> c0 = c;
                     c0[dim] += dir;
-                    jj[j++] = normalize_coor(c0 - fromd, op_dim);
+                    jj[j++] = normalize_coor(c0, op_dim);
                     if (op_dim[dim] <= 2) break;
                 }
             }
@@ -245,7 +244,7 @@ create_lattice(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim,
             for (std::size_t i = 0, j = 0; i < voli; ++i) {
                 Coor<6> blk_row = normalize_coor(index2coor(i, dimi, stride) + from, op_dim);
                 for (int j0 = 0; j0 < neighbors; ++j, ++j0) {
-                    Coor<6> blk_col = normalize_coor(jj[j] + fromd, op_dim);
+                    Coor<6> blk_col = jj[j];
                     get_lattice_nonzeros(blk_row, blk_col, j0, nonzero_blocks_imaginary_fast,
                                          op_dim, data_cpu.data() + j * vol_blk);
                 }
@@ -265,7 +264,7 @@ create_lattice(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim,
     vectors<IndexType, XPU> iiv(ii_xpus);
     vectors<Coor<6>, XPU> jjv(jj_xpus);
     vectors<T, XPU> datav(data_xpus);
-    create_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, ctx.size(), block, block,
+    create_bsr<6, 6, T>(pi.data(), op_dim, ctx.size(), pd.data(), op_dim, ctx.size(), block, block,
                         nonzero_blocks_imaginary_fast, iiv.data(), jjv.data(),
                         (const T **)datav.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
@@ -501,7 +500,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
                         if (k == 1 && check_results)
                             get_lattice_nonzeros(c, c, op_dir, nonzero_blocks_imaginary_fast,
                                                  op_dim, data_cpu.data() + j * vol_blk);
-                        jj[j++] = normalize_coor(c - fromd, op_dim);
+                        jj[j++] = normalize_coor(c, op_dim);
                     }
                     op_dir++;
                     for (int dim = 0; dim < 4; ++dim) {
@@ -517,7 +516,7 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
                                     get_lattice_nonzeros(c, c0, op_dir,
                                                          nonzero_blocks_imaginary_fast, op_dim,
                                                          data_cpu.data() + j * vol_blk);
-                                jj[j++] = normalize_coor(c0 - fromd, op_dim);
+                                jj[j++] = normalize_coor(c0, op_dim);
                             }
                             op_dir++;
                             if (op_dim[dim] <= 2) break;
@@ -546,8 +545,8 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
         vectors<IndexType, XPU> iiv(ii_xpus);
         vectors<Coor<6>, XPU> jjv(jj_xpus);
         vectors<T, XPU> datav(data_xpus);
-        create_bsr<6, 6, T>(pi_s[p].data(), op_dim, pd_s[p].data(), op_dim, ctx.size(), block,
-                            block, nonzero_blocks_imaginary_fast, iiv.data(), jjv.data(),
+        create_bsr<6, 6, T>(pi_s[p].data(), op_dim, ctx.size(), pd_s[p].data(), op_dim, ctx.size(),
+                            block, block, nonzero_blocks_imaginary_fast, iiv.data(), jjv.data(),
                             (const T **)datav.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                             MPI_COMM_WORLD,
@@ -602,13 +601,13 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_
         Coor<6, std::size_t> stride = get_strides<std::size_t>(dimi, SlowToFast);
         for (std::size_t i = 0, j = 0; i < voli; ++i) {
             Coor<6> c = index2coor(i, dimi, stride) + from;
-            jj[j++] = normalize_coor(c - pd[rank_comp][0], op_dim);
+            jj[j++] = normalize_coor(c, op_dim);
             for (int dim = 0; dim < 4; ++dim) {
                 if (op_dim[dim] == 1) continue;
                 for (int dir = -1; dir < 2; dir += 2) {
                     Coor<6> c0 = c;
                     c0[dim] += dir;
-                    jj[j++] = normalize_coor(c0 - pd[rank_comp][0], op_dim);
+                    jj[j++] = normalize_coor(c0, op_dim);
                     if (op_dim[dim] <= 2) break;
                 }
             }
@@ -629,7 +628,7 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_
             for (std::size_t i = 0, j = 0; i < voli; ++i) {
                 Coor<6> blk_row = normalize_coor(index2coor(i, dimi, stride) + from, op_dim);
                 for (int j0 = 0; j0 < neighbors; ++j, ++j0) {
-                    Coor<6> blk_col = normalize_coor(jj[j] + pd[rank_comp][0], op_dim);
+                    Coor<6> blk_col = jj[j];
                     get_lattice_nonzeros_block(blk_row, blk_col, nonzero_blocks_imaginary_fast,
                                                op_dim, data_cpu.data() + j * vol_blk);
                 }
@@ -664,9 +663,10 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_
     vectors<Coor<6>, XPU> jjv(jj_xpus);
     vectors<T, XPU> datav(data_xpus);
     vectors<T, XPU> kronv(kron_xpus);
-    create_kron_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, ctx.size(), block, block, kron,
-                             kron, nonzero_blocks_imaginary_fast, iiv.data(), jjv.data(),
-                             (const T **)datav.data(), (const T **)kronv.data(), ctx.data(),
+    create_kron_bsr<6, 6, T>(pi.data(), op_dim, ctx.size(), pd.data(), op_dim, ctx.size(), block,
+                             block, kron, kron, nonzero_blocks_imaginary_fast, iiv.data(),
+                             jjv.data(), (const T **)datav.data(), (const T **)kronv.data(),
+                             ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                              MPI_COMM_WORLD,
 #endif

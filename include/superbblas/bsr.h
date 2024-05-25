@@ -76,25 +76,29 @@ namespace superbblas {
 
         /// Component of a BSR tensor
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSRComponent {
-            Indices<XPU> i;          ///< number of nonzero blocks on each block image
-            vector<Coor<Nd>, XPU> j; ///< domain coordinates of the nonzero blocks
-            vector<T, XPU> it;       ///< nonzero values
-            Coor<Nd> dimd;           ///< dimensions of the domain space
-            Coor<Ni> dimi;           ///< dimensions of the image space
-            Coor<Nd> blockd;         ///< dimensions of a block in the domain space
-            Coor<Ni> blocki;         ///< dimensions of a block in the image space
-            Coor<Nd> krond;          ///< dimensions of Kronecker in the domain space
-            Coor<Ni> kroni;          ///< dimensions of Kronecker in the image space
-            vector<T, XPU> kron_it;  ///< nonzero values
+            Indices<XPU> i;                ///< number of nonzero blocks on each block image
+            vector<Coor<Nd>, XPU> j;       ///< domain coordinates of the nonzero blocks
+            vector<T, XPU> it;             ///< nonzero values
+            Coor<Nd> dimd;                 ///< dimensions of the domain space
+            From_size<Nd> fragmentsd;      ///< fragments of the domain space
+            unsigned int first_domain_componentId; ///< first component Id for the domain
+            Coor<Ni> dimi;                 ///< dimensions of the image space
+            Coor<Nd> blockd;               ///< dimensions of a block in the domain space
+            Coor<Ni> blocki;               ///< dimensions of a block in the image space
+            Coor<Nd> krond;                ///< dimensions of Kronecker in the domain space
+            Coor<Ni> kroni;                ///< dimensions of Kronecker in the image space
+            vector<T, XPU> kron_it;        ///< nonzero values
             bool blockImFast; ///< whether the image indices are the fastest on the dense blocks
             CoorOrder co;     ///< Coordinate order of ii and jj
-            unsigned int componentId; ///< Component Id
+            unsigned int componentId; ///< Component Id for the image
 
             template <typename Q = T, typename = typename std::enable_if<std::is_same<
                                           Q, typename std::remove_const<Q>::type>::value>::type>
             operator BSRComponent<Nd, Ni, const Q, XPU>() const {
-                return {i,     j,     it,      dimd,        dimi, blockd,     blocki,
-                        krond, kroni, kron_it, blockImFast, co,   componentId};
+                return {
+                    i,           j,      it,         dimd,  fragmentsd, first_domain_componentId,
+                    dimi,        blockd, blocki,     krond, kroni,      kron_it,
+                    blockImFast, co,     componentId};
             }
         };
 
@@ -296,6 +300,42 @@ namespace superbblas {
                         for (IndexType j = 0; j < bn; ++j) cc[i + ldc * j] = 0;
                 }
             }
+        }
+
+        /// Return at most two pointers containing the space of a list of fragments and
+        /// the first value belonging to the second pointer
+        /// \param v: list of allocated fragments
+        /// \param fragments: list of fragments
+        /// \param ncols: number of fields in `v`
+        ///
+        /// NOTE: the maximum number of non-consecutive fragments should be two if `like_this_components`
+        /// works correctly: it will make at most one allocation no matter what. The routine will use
+        /// a given tensor if its ordering coincide with one of the fragments, and make a single allocation
+        /// to contain the remaining fragments
+
+        template <typename T, std::size_t N>
+        std::tuple<std::size_t, std::array<T *, 2>>
+        get_discriminator_and_pointers(const std::vector<vector<T, Cpu>> &v,
+                                       From_size<N> &fragments, IndexType ncols) {
+            std::array<T *, 2> r{nullptr, nullptr};
+            if (v.size() != fragments.size()) throw std::runtime_error("wtf");
+            std::size_t s = 0;
+            std::size_t ri = 0;
+            std::size_t discriminator = 0;
+            for (std::size_t i = 0; i < v.size(); ++i) {
+                std::size_t vol = volume(fragments[i][1]) * ncols;
+                if (ri == 0 || v[i].data() != r[ri - 1] + s) {
+                    if (ri < 2) {
+                        r[ri++] = v[i].data();
+                        discriminator = s;
+                        s = 0;
+                    } else
+                        throw std::runtime_error("wtf");
+                }
+                s += vol;
+            }
+
+            return {discriminator, r};
         }
 
         ///
@@ -526,11 +566,10 @@ namespace superbblas {
             unsigned int num_nnz_per_row; ///< Number of nnz per row (for Kronecker BSR)
             CSRs<IndexType, T> kron;      ///< kron sparse representation
 
-            SpMMAllowedLayout allowLayout;
+            static const SpMMAllowedLayout allowLayout = RowMajorForXandY;
             static const MatrixLayout preferredLayout = RowMajor;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
-                allowLayout = (v.kron_it.size() > 0) ? SameLayoutForXAndY : AnyLayoutForXAndY;
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 auto bsr = get_bsr_indices(v); // column indices aren't blocked
                 ii = bsr.i;
@@ -596,27 +635,29 @@ namespace superbblas {
                 return (volume(v.dimi) * rhs + (bi * bd + bd * rhs) * jj.size()) * sizeof(T);
             }
 
-            void operator()(bool conjA, const vector<T, Cpu> &vx, IndexType ldx, MatrixLayout lx,
-                            vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
+            void operator()(bool conjA, const std::vector<vector<T, Cpu>> &vx, IndexType ldx,
+                            MatrixLayout lx, vector<T, Cpu> &vy, IndexType ldy, MatrixLayout ly,
                             IndexType ncols) const {
+                if (conjA || lx != RowMajor || ly != RowMajor)
+                    throw std::runtime_error("Not implemented");
+                if (vx.size() != v.fragmenst.size()) throw std::runtime_error("wtf");
+
                 const T alpha{1};
-                if (conjA) throw std::runtime_error("Not implemented");
-                if (v.kron_it.size() > 0 && lx != ly) throw std::runtime_error("Not implemented");
                 IndexType bi = volume(v.blocki);
                 IndexType bd = volume(v.blockd);
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
                 IndexType block_cols = volume(v.dimd) / bd / kd;
                 IndexType block_rows = volume(v.dimi) / bi / ki;
-                const T *x = vx.data();
                 T *y = vy.data();
                 const T beta{0};
                 xscal(volume(v.dimi) * ncols, beta, y, 1, Cpu{});
                 T *nonzeros = v.it.data();
-                const bool tx = lx == RowMajor;
-                const bool ty = ly == RowMajor;
                 const bool tb = !v.blockImFast;
-                const IndexType xs = lx == ColumnMajor ? 1 : ldx;
+                auto disc_and_pointers = get_discriminator_and_pointers(vx, v.fragmentsd, ldx);
+                const T *x0 = std::get<1>(disc_and_pointers)[0];
+                const T *x1 = std::get<1>(disc_and_pointers)[1];
+                IndexType j01 = std::get<0>(disc_and_pointers) / ldx;
                 if (v.kron_it.size() == 0) {
                     if (ncols > 1) {
 #    ifdef _OPENMP
@@ -624,15 +665,14 @@ namespace superbblas {
 #    endif
                         for (IndexType i = 0; i < block_rows; ++i) {
                             for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
-                                if (jj[j] == -1) continue;
-                                if (ly == ColumnMajor)
-                                    xgemm(tb ? 'T' : 'N', tx ? 'T' : 'N', bi, ncols, bd, alpha,
-                                          nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs, ldx,
-                                          T{1}, y + i * bi, ldy, Cpu{});
-                                else
-                                    xgemm(!tx ? 'T' : 'N', !tb ? 'T' : 'N', ncols, bi, bd, alpha,
-                                          x + jj[j] * xs, ldx, nonzeros + j * bi * bd, tb ? bd : bi,
-                                          T{1}, y + i * bi * ldy, ldy, Cpu{});
+                                IndexType jjj = jj[j];
+                                if (jjj == -1) continue;
+                                const T *xj = (jjj < j01 ? x0 : x1);
+                                jjj = (jjj < j01 ? jjj : jjj - j01);
+                                // Contract with the blocking: (n,bd) x (bi,bd)[rows,mu] -> (n,bi) ; note (fast,slow)
+                                xgemm('N', !tb ? 'T' : 'N', ncols, bi, bd, alpha, xj + jjj * ldx,
+                                      ldx, nonzeros + j * bi * bd, tb ? bd : bi, T{1},
+                                      y + i * bi * ldy, ldy, Cpu{});
                             }
                         }
                     } else {
@@ -641,64 +681,40 @@ namespace superbblas {
 #    endif
                         for (IndexType i = 0; i < block_rows; ++i) {
                             for (IndexType j = ii[i], j1 = ii[i + 1]; j < j1; ++j) {
-                                if (jj[j] == -1) continue;
+                                IndexType jjj = jj[j];
+                                if (jjj == -1) continue;
+                                const T *xj = (jjj < j01 ? x0 : x1);
+                                jjj = (jjj < j01 ? jjj : jjj - j01);
                                 xgemv(tb ? 'T' : 'N', tb ? bd : bi, tb ? bi : bd, alpha,
-                                      nonzeros + j * bi * bd, tb ? bd : bi, x + jj[j] * xs,
-                                      tx ? ldx : 1, T{1}, y + i * bi, ty ? ldy : 1, Cpu{});
+                                      nonzeros + j * bi * bd, tb ? bd : bi, xj + jjj * ldx, ldx,
+                                      T{1}, y + i * bi, ldy, Cpu{});
                             }
                         }
                     }
                 } else {
                     // With Kronecker product
-                    if (lx == RowMajor) {
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
-                        {
-                            std::vector<T> aux(ki * ncols * bd);
+                    {
+                        std::vector<T> aux(ki * ncols * bd);
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
-                            for (IndexType i = 0; i < block_rows; ++i) {
-                                for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1;
-                                     ++j, ++j0) {
-                                    if (jj[j] == -1) continue;
-                                    // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
-                                    xgemm_csr_mat(T{1}, kron, j0, x + jj[j] * ncols, kd, ncols * bd,
-                                                  ColumnMajor, kd, T{0}, aux.data(), ki);
-                                    // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                                    xgemm_alt_alpha1_beta1(
-                                        'N', !tb ? 'T' : 'N', ki * ncols, bi, bd, aux.data(),
-                                        ki * ncols, nonzeros + j * bi * bd, !tb ? bi : bd,
-                                        y + i * ki * ncols * bi, ki * ncols, Cpu{});
-                                }
-                            }
-                        }
-                    } else {
-                        // Contract with the blocking: (bd,rows,n,kd) x (ki,kd)[mu] -> (bd,rows,n,ki,mu) ; note (fast,slow)
-                        vector<T, Cpu> aux(bd * block_cols * ncols * ki * num_nnz_per_row, Cpu{});
-                        zero_n(aux.data(), aux.size(), aux.ctx());
-#    ifdef _OPENMP
-#        pragma omp parallel for schedule(static)
-#    endif
-                        for (unsigned int i = 0; i < num_nnz_per_row; ++i)
-                            xgemm('N', !tb ? 'T' : 'N', bd * block_cols * ncols, ki, kd, alpha, x,
-                                  bd * block_cols * ncols, v.kron_it.data() + ki * kd * i,
-                                  !tb ? ki : kd, T{0},
-                                  aux.data() + bd * block_cols * ncols * ki * i,
-                                  bd * block_cols * ncols, Cpu{});
-#    ifdef _OPENMP
-#        pragma omp parallel for schedule(static)
-#    endif
                         for (IndexType i = 0; i < block_rows; ++i) {
                             for (IndexType j = ii[i], j1 = ii[i + 1], j0 = 0; j < j1; ++j, ++j0) {
-                                if (jj[j] == -1) continue;
-                                // Contract with the Kronecker blocking: (bi,bd) x (bd,n,ki)[rows,mu] -> (bi,n,ki) ; note (fast,slow)
-                                // Note that jj is (bd,kd,rows) but aux is (bd,rows,n,ki,mu), so jj/kd is the right shift on aux
-                                xgemm(!tb ? 'N' : 'T', 'N', bi, ncols * ki, bd, T{1},
-                                      nonzeros + j * bi * bd, !tb ? bi : bd,
-                                      aux.data() + jj[j] / kd + bd * block_cols * ncols * ki * j0,
-                                      bd * block_cols, T{1}, y + bi * i, bi * block_rows, Cpu{});
+                                IndexType jjj = jj[j];
+                                if (jjj == -1) continue;
+                                const T *xj = (jjj < j01 ? x0 : x1);
+                                jjj = (jjj < j01 ? jjj : jjj - j01);
+                                // Contract with the blocking:  (ki,kd) x (kd,n,bd,rows) -> (ki,n,bd) ; note (fast,slow)
+                                xgemm_csr_mat(T{1}, kron, j0, xj + jjj * ncols, kd, ncols * bd,
+                                              ColumnMajor, kd, T{0}, aux.data(), ki);
+                                // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
+                                xgemm_alt_alpha1_beta1('N', !tb ? 'T' : 'N', ki * ncols, bi, bd,
+                                                       aux.data(), ki * ncols,
+                                                       nonzeros + j * bi * bd, !tb ? bi : bd,
+                                                       y + i * ki * ncols * bi, ki * ncols, Cpu{});
                             }
                         }
                     }
@@ -1346,7 +1362,7 @@ namespace superbblas {
                        CoorOrder co) override {
                 (void)rank;
                 if (Nd_ != Nd || Ni_ != Ni || num_type_v<T>::value != type || nprocs != pd.size() ||
-                    ncomponents != pd[rank].size())
+                    ncomponents != pi[rank].size())
                     return false;
 
                 if (c.first.size() + c.second.size() != ncomponents) return false;
@@ -1388,12 +1404,22 @@ namespace superbblas {
         get_mock_components(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr) {
             Components_tmpl<Ni, T, XPU0, XPU1> r;
             for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
-                r.first.push_back(Component<Ni, T, XPU0>{
-                    bsr.c.first[i].v.it, {{}}, bsr.c.first[i].v.componentId, Mask<XPU0>{}});
+                for (unsigned int j = 0; j < bsr.c.first[i].v.fragmentsd.size(); ++j) {
+                    r.first.push_back(
+                        Component<Ni, T, XPU0>{bsr.c.first[i].v.it,
+                                               {{}},
+                                               bsr.c.first[i].v.first_domain_componentId + j,
+                                               Mask<XPU0>{}});
+                }
             }
             for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
-                r.second.push_back(Component<Ni, T, XPU1>{
-                    bsr.c.second[i].v.it, {{}}, bsr.c.second[i].v.componentId, Mask<XPU1>{}});
+                for (unsigned int j = 0; j < bsr.c.first[i].v.fragmentsd.size(); ++j) {
+                    r.second.push_back(
+                        Component<Ni, T, XPU1>{bsr.c.second[i].v.it,
+                                               {{}},
+                                               bsr.c.second[i].v.first_domain_componentId + j,
+                                               Mask<XPU1>{}});
+                }
             }
 
             return r;
@@ -1402,20 +1428,22 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T, typename Comm>
         BSRComponents<Nd, Ni, T>
         get_bsr_components(T **v, IndexType **ii, Coor<Nd> **jj, T **kronv, const Context *ctx,
-                           unsigned int ncomponents, From_size_iterator<Ni> pi,
-                           const Coor<Ni> &dimi, From_size_iterator<Nd> pd, const Coor<Nd> &dimd,
-                           const Coor<Nd> &blockd, const Coor<Ni> &blocki, const Coor<Nd> &krond,
-                           const Coor<Ni> &kroni, bool blockImFast, Comm comm, CoorOrder co,
-                           Session session) {
+                           unsigned int ncomponentsi, From_size_iterator<Ni> pi,
+                           const Coor<Ni> &dimi, unsigned int ncomponentsd,
+                           From_size_iterator<Nd> pd, const Coor<Nd> &dimd, const Coor<Nd> &blockd,
+                           const Coor<Ni> &blocki, const Coor<Nd> &krond, const Coor<Ni> &kroni,
+                           bool blockImFast, Comm comm, CoorOrder co, Session session) {
             // Get components on the local process
-            From_size_iterator<Nd> fsd = pd + comm.rank * ncomponents;
-            From_size_iterator<Ni> fsi = pi + comm.rank * ncomponents;
+            From_size_iterator<Nd> fsd = pd + comm.rank * ncomponentsd;
+            From_size_iterator<Ni> fsi = pi + comm.rank * ncomponentsi;
 
             BSRComponents<Nd, Ni, T> r{};
             r.dimd = dimd;
             r.dimi = dimi;
-            r.pd = detail::get_from_size(pd, ncomponents * comm.nprocs, comm);
-            r.pi = detail::get_from_size(pi, ncomponents * comm.nprocs, comm);
+            if (ncomponentsd % ncomponentsi != 0)
+                throw std::runtime_error("invalid given number of components for the domain");
+            r.pd = detail::get_from_size(pd, ncomponentsd * comm.nprocs, comm);
+            r.pi = detail::get_from_size(pi, ncomponentsi * comm.nprocs, comm);
             r.blockd = blockd;
             r.blocki = blocki;
             r.krond = krond;
@@ -1431,7 +1459,7 @@ namespace superbblas {
                                   comm);
             }
 
-            for (unsigned int i = 0; i < ncomponents; ++i) {
+            for (unsigned int i = 0; i < ncomponentsi; ++i) {
                 std::size_t nii = volume(fsi[i][1]) / volume(blocki) / volume(kroni);
                 std::size_t njj =
                     ctx[i].plat == CPU ? sum(to_vector(ii[i], nii, ctx[i].toCpu(session))) :
@@ -1446,14 +1474,17 @@ namespace superbblas {
                 std::size_t num_neighbors = (nii > 0 ? njj / nii : 0);
                 std::size_t nkronvalues =
                     (kronv ? volume(krond) * volume(kroni) * num_neighbors : 0);
+                unsigned int first_componenId_for_d = i * ncomponentsd / ncomponentsi;
+                From_size<Nd> fragments(fsd + i * ncomponentsd / ncomponentsi,
+                                        fsd + (i + 1) * ncomponentsd / ncomponentsi);
                 switch (ctx[i].plat) {
 #ifdef SUPERBBLAS_USE_GPU
                 case CPU:
                     r.c.second.push_back(BSR<Nd, Ni, T, Cpu>{BSRComponent<Nd, Ni, T, Cpu>{
                         to_vector(ii[i], nii, ctx[i].toCpu(session)),
                         to_vector(jj[i], njj, ctx[i].toCpu(session)),
-                        to_vector(v[i], nvalues, ctx[i].toCpu(session)), fsd[i][1], fsi[i][1],
-                        blockd, blocki, krond, kroni,
+                        to_vector(v[i], nvalues, ctx[i].toCpu(session)), dimd, fragments,
+                        first_componenId_for_d, fsi[i][1], blockd, blocki, krond, kroni,
                         to_vector(kronvi, nkronvalues, ctx[i].toCpu(session)), blockImFast, co,
                         i}});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
@@ -1462,8 +1493,8 @@ namespace superbblas {
                     r.c.first.push_back(BSR<Nd, Ni, T, Gpu>{BSRComponent<Nd, Ni, T, Gpu>{
                         to_vector(ii[i], nii, ctx[i].toGpu(session)),
                         to_vector(jj[i], njj, ctx[i].toGpu(session)),
-                        to_vector(v[i], nvalues, ctx[i].toGpu(session)), fsd[i][1], fsi[i][1],
-                        blockd, blocki, krond, kroni,
+                        to_vector(v[i], nvalues, ctx[i].toGpu(session)), dimd, fragments,
+                        first_componenId_for_d, fsi[i][1], blockd, blocki, krond, kroni,
                         to_vector(kronvi, nkronvalues, ctx[i].toGpu(session)), blockImFast, co,
                         i}});
                     assert(!v[i] || getPtrDevice(v[i]) == ctx[i].device);
@@ -1473,8 +1504,8 @@ namespace superbblas {
                     r.c.first.push_back(BSR<Nd, Ni, T, Cpu>{BSRComponent<Nd, Ni, T, Cpu>{
                         to_vector(ii[i], nii, ctx[i].toCpu(session)),
                         to_vector(jj[i], njj, ctx[i].toCpu(session)),
-                        to_vector(v[i], nvalues, ctx[i].toCpu(session)), fsd[i][1], fsi[i][1],
-                        blockd, blocki, krond, kroni,
+                        to_vector(v[i], nvalues, ctx[i].toCpu(session)), dimd, fragments,
+                        first_componenId_for_d, fsi[i][1], blockd, blocki, krond, kroni,
                         to_vector(kronvi, nkronvalues, ctx[i].toCpu(session)), blockImFast, co,
                         i}});
                     assert(!v[i] || getPtrDevice(v[i]) == CPU_DEVICE_ID);
@@ -1559,7 +1590,7 @@ namespace superbblas {
         CsrIndices<XPU> get_bsr_indices(const BSRComponent<Nd, Ni, T, XPU> &v,
                                         ReturnJJ return_jj_blocked = ReturnJJNoBlocking) {
             // Check that IndexType is big enough
-            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.dimd))
+            if ((std::size_t)std::numeric_limits<IndexType>::max() <= volume(v.fragmentsd))
                 throw std::runtime_error("Ups! IndexType isn't big enough");
 
             Indices<Cpu> ii(v.i.size() + 1, Cpu{}), jj(v.j.size(), Cpu{});
@@ -1577,20 +1608,40 @@ namespace superbblas {
             for (std::size_t i = 0; i < vi.size(); ++i) ii[i + 1] = ii[i] + vi[i];
 
             // Transform the domain coordinates into indices
-            Coor<Nd> strided = get_strides<IndexType>(v.dimd, v.co);
+            std::vector<Coor<Nd>> strided(v.fragmentsd.size());
+            for (unsigned int i = 0; i < v.fragmentsd.size(); ++i)
+                strided[i] = get_strides<IndexType>(v.fragmentsd[i][1], v.co);
             IndexType block_nnz = v.j.size();
             IndexType bd =
                 (return_jj_blocked == ReturnJJNoBlocking
                      ? 1
                      : volume(v.blockd) *
                            (return_jj_blocked == ReturnJJBlockedWithKron ? volume(v.krond) : 1));
+            std::vector<IndexType> domain_prefix(v.fragmentsd.size());
+            for (unsigned int i = 1; i < v.fragmentsd.size(); ++i)
+                domain_prefix[i] = domain_prefix[i - 1] + volume(v.fragmentsd[i][1]) / bd;
+            Coor<Nd> blockd = v.blockd * v.krond;
             bool there_are_minus_ones_in_columns = false;
 #ifdef _OPENMP
 #    pragma omp parallel for schedule(static)
 #endif
             for (IndexType i = 0; i < block_nnz; ++i) {
-                if (vj[i][0] == -1) there_are_minus_ones_in_columns = true;
-                jj[i] = (vj[i][0] == -1 ? -1 : coor2index(vj[i], v.dimd, strided) / bd);
+                if (vj[i][0] == -1) {
+                    there_are_minus_ones_in_columns = true;
+                    jj[i] = -1;
+                    continue;
+                }
+                for (unsigned int j = 0; j < v.fragmentsd.size(); ++j) {
+                    Coor<Nd> fromr, sizer;
+                    intersection(vj[i], blockd, v.fragmentsd[j][0], v.fragmentsd[j][1], v.dimd, fromr,
+                                 sizer);
+                    if (volume(sizer) == 0) continue;
+                    jj[i] = coor2index(normalize_coor(vj[i] - v.fragmentsd[j][0], v.dimd),
+                                       v.fragmentsd[j][1], strided[j]) /
+                                bd +
+                            domain_prefix[j];
+                    break;
+                }
             }
 
             // Unsupported -1 in the domain coordinate unless using the ELL format, which
@@ -2113,16 +2164,21 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
                   typename XPU>
         void local_bsr_krylov(const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
-                              const Order<Nd> &odm, const Coor<Nx> &dimx, const Order<Nx> &ox,
-                              vector<T, XPU> vx, const Coor<Ny> &dimy, const Order<Ny> &oy,
-                              char okr, vector<T, XPU> vy) {
+                              const Order<Nd> &odm, const From_size<Nx> &fragmentsd,
+                              const Order<Nx> &ox, const std::vector<vector<T, XPU>> &vx,
+                              const Coor<Ny> &dimy, const Order<Ny> &oy, char okr,
+                              vector<T, XPU> vy) {
 
             tracker<XPU> _t(std::string("local BSR matvec (") + bsr.implementation() +
                                 std::string(")"),
-                            vx.ctx());
+                            vy.ctx());
 
             // Quick exit
-            if (volume(dimx) == 0 && volume(dimy) == 0) return;
+            if (volume(fragmentsd) == 0 && volume(dimy) == 0) return;
+
+            // Check that the domain fragments are the same ones expected
+            if (fragmentsd.size() == 0 || bsr.v.fragmentsd != fragmentsd)
+                throw std::runtime_error("local_bsr_krylov: unsupported input option, fragmentsd");
 
             // Check inputs and get the common dimensions
             bool transSp;
@@ -2134,9 +2190,9 @@ namespace superbblas {
             bool is_kron =
                 (volume(bsr.v.krond) > 1 || volume(bsr.v.kroni) > 1 || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   bsr.v.kroni, bsr.v.krond, is_kron, dimx, ox, dimy, oy, okr,
-                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
-                                   volC, sug_ox, sug_oy, sug_oy_trans);
+                                   bsr.v.kroni, bsr.v.krond, is_kron, fragmentsd.first(), ox, dimy,
+                                   oy, okr, bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp,
+                                   lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -2214,13 +2270,18 @@ namespace superbblas {
             Proc_ranges<Ny> pyr(px.size());
             for (unsigned int i = 0; i < pi.size(); ++i) {
                 if (just_local && i != comm.rank) continue;
-                pxr[i].resize(pi[i].size());
-                pyr[i].resize(pi[i].size());
-                for (unsigned int j = 0; j < pi[i].size(); ++j) {
+                pxr[i].resize(pd[i].size());
+                for (unsigned int j = 0; j < pd[i].size(); ++j) {
                     pxr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
                                                   sug_ox, false);
                     pxr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
                                                   sug_ox, false);
+
+                    // Normalize range
+                    if (volume(pxr[i][j][1]) == 0) pxr[i][j][0] = pxr[i][j][1] = Coor<Nx>{{}};
+                }
+                pyr[i].resize(pi[i].size());
+                for (unsigned int j = 0; j < pi[i].size(); ++j) {
                     pyr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
                                                   sug_oy, false);
                     pyr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
@@ -2231,13 +2292,26 @@ namespace superbblas {
                     }
 
                     // Normalize range
-                    if (volume(pxr[i][j][1]) == 0) pxr[i][j][0] = pxr[i][j][1] = Coor<Nx>{{}};
                     if (volume(pyr[i][j][1]) == 0) pyr[i][j][0] = pyr[i][j][1] = Coor<Ny>{{}};
                 }
             }
             cache.insert(key, {pxr, pyr}, storageSize(pxr) + storageSize(pyr));
 
             return {pxr, pyr};
+        }
+
+        template <std::size_t N>
+        From_size<N> get_range(const From_size<N> &p, std::size_t first, std::size_t num_elems) {
+            return From_size<N>(p.data() + first, p.data() + first + num_elems);
+        }
+
+        template <std::size_t N, typename T, typename XPU>
+        std::vector<vector<T, XPU>> get_range(const std::vector<Component<N, T, XPU>> &v,
+                                                    std::size_t first, std::size_t num_elems) {
+            std::vector<vector<T, XPU>> r;
+            for (const auto &c : v)
+                if (first <= c.componentId && c.componentId < first + num_elems) r.push_back(c.it);
+            return r;
         }
 
         /// RSB operator - tensor multiplication
@@ -2338,8 +2412,8 @@ namespace superbblas {
             ForceLocal force_local = (just_local ? doForceLocal : dontForceLocal);
             auto vx_and_req = reorder_tensor_request(
                 px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, get_mock_components(bsr),
-                comm, co, power > 1 /* force copy when power > 1 */, doCacheAlloc, force_local);
-            Components_tmpl<Nx, T, XPU0, XPU1> vx_ = vx_and_req.first;
+                comm, co, power > 1 ? doCopy : avoidCopy /* force copy when power > 1 */,
+                doCacheAlloc, force_local);
 
             // Scale the output vector if beta isn't 0 or 1
             if (std::norm(beta) != 0 && beta != T{1})
@@ -2350,7 +2424,8 @@ namespace superbblas {
                 tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
 
                 // Wait for the data to be ready
-                wait(vx_and_req.second);
+                wait(std::get<1>(vx_and_req));
+                Components_tmpl<Nx, T, XPU0, XPU1> vx_ = std::get<0>(vx_and_req);
 
                 // Allocate the output tensor
                 Proc_ranges<Ny> py_ = pxy_.second;
@@ -2360,18 +2435,24 @@ namespace superbblas {
                 // Do contraction
                 for (unsigned int p = 0; p < power; ++p) {
                     for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
-                        const unsigned int componentId = bsr.c.first[i].v.componentId;
+                        const unsigned int componentIdd = bsr.c.first[i].v.first_domain_componentId;
+                        const unsigned int componentIdi = bsr.c.first[i].v.componentId;
+                        const unsigned int num_elems = bsr.c.first[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            bsr.c.first[i], oim, odm, px_[comm.rank][componentId][1], sug_ox,
-                            vx_.first[i].it, py_[comm.rank][componentId][1], sug_oy, okr,
-                            vy_.first[i].it);
+                            bsr.c.first[i], oim, odm,
+                            get_range(px_[comm.rank], componentIdd, num_elems), sug_ox,
+                            get_range(vx_.first, componentIdd, num_elems),
+                            py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.first[i].it);
                     }
                     for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
-                        const unsigned int componentId = bsr.c.second[i].v.componentId;
+                        const unsigned int componentIdd = bsr.c.second[i].v.first_domain_componentId;
+                        const unsigned int componentIdi = bsr.c.second[i].v.componentId;
+                        const unsigned int num_elems = bsr.c.second[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            bsr.c.second[i], oim, odm, px_[comm.rank][componentId][1], sug_ox,
-                            vx_.second[i].it, py_[comm.rank][componentId][1], sug_oy, okr,
-                            vy_.second[i].it);
+                            bsr.c.second[i], oim, odm,
+                            get_range(px_[comm.rank], componentIdd, num_elems), sug_ox,
+                            get_range(vx_.second, componentIdd, num_elems),
+                            py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.second[i].it);
                     }
 
                     // Copy the result to final tensor
@@ -2419,7 +2500,11 @@ namespace superbblas {
 #ifdef SUPERBBLAS_USE_MPI
     /// Create BSR sparse operator
     /// \param pim: partitioning of the RSB operator image in consecutive ranges
+    /// \param dimi: image dimension size
+    /// \param ncomponentsi: number of consecutive components in each MPI rank for the image
     /// \param pdm: pseudo-partitioning of the RSB operator domain in consecutive ranges
+    /// \param dimd: domain dimension size
+    /// \param ncomponentsd: number of consecutive components in each MPI rank for the domain
     /// \param ncomponents: number of consecutive components in each MPI rank
     /// \param blockim: image dimensions of the block
     /// \param blockdm: domain dimensions of the block
@@ -2434,8 +2519,8 @@ namespace superbblas {
     /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
 
     template <std::size_t Nd, std::size_t Ni, typename T>
-    void create_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
-                    const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
+    void create_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi, int ncomponentsi,
+                    const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponentsd,
                     const Coor<Ni> &blockim, const Coor<Nd> &blockdm, bool blockImFast,
                     IndexType **ii, Coor<Nd> **jj, const T **v, const Context *ctx,
                     MPI_Comm mpicomm, CoorOrder co, BSR_handle **bsrh, Session session = 0) {
@@ -2444,15 +2529,19 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, nullptr, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm, blockim,
-                detail::ones<Nd>(), detail::ones<Ni>(), blockImFast, comm, co, session)};
+                (T **)v, ii, jj, nullptr, ctx, ncomponentsi, pim, dimi, ncomponentsd, pdm, dimd,
+                blockdm, blockim, detail::ones<Nd>(), detail::ones<Ni>(), blockImFast, comm, co,
+                session)};
         *bsrh = r;
     }
 
     /// Create Kronecker BSR sparse operator
     /// \param pim: partitioning of the RSB operator image in consecutive ranges
+    /// \param dimi: image dimension size
+    /// \param ncomponentsi: number of consecutive components in each MPI rank for the image
     /// \param pdm: pseudo-partitioning of the RSB operator domain in consecutive ranges
-    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param dimd: domain dimension size
+    /// \param ncomponentsd: number of consecutive components in each MPI rank for the domain
     /// \param blockim: image dimensions of the block
     /// \param blockdm: domain dimensions of the block
     /// \param kronim: image dimensions of the Kronecker block
@@ -2469,8 +2558,8 @@ namespace superbblas {
     /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
 
     template <std::size_t Nd, std::size_t Ni, typename T>
-    void create_kron_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
-                         const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
+    void create_kron_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi, int ncomponentsi,
+                         const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponentsd,
                          const Coor<Ni> &blockim, const Coor<Nd> &blockdm, const Coor<Ni> &kronim,
                          const Coor<Nd> &krondm, bool blockImFast, IndexType **ii, Coor<Nd> **jj,
                          const T **v, const T **kronv, const Context *ctx, MPI_Comm mpicomm,
@@ -2480,8 +2569,8 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, (T **)kronv, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm,
-                blockim, krondm, kronim, blockImFast, comm, co, session)};
+                (T **)v, ii, jj, (T **)kronv, ctx, ncomponentsd, pim, dimi, ncomponentsd, pdm, dimd,
+                blockdm, blockim, krondm, kronim, blockImFast, comm, co, session)};
         *bsrh = r;
     }
 
@@ -2573,8 +2662,11 @@ namespace superbblas {
 
     /// Create BSR sparse operator
     /// \param pim: partitioning of the RSB operator image in consecutive ranges
+    /// \param dimi: image dimension size
+    /// \param ncomponentsi: number of consecutive components in each MPI rank for the image
     /// \param pdm: pseudo-partitioning of the RSB operator domain in consecutive ranges
-    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param dimd: domain dimension size
+    /// \param ncomponentsd: number of consecutive components in each MPI rank for the domain
     /// \param blockim: image dimensions of the block
     /// \param blockdm: domain dimensions of the block
     /// \param blockImFast: whether the blocks are stored with the image indices the fastest
@@ -2588,8 +2680,8 @@ namespace superbblas {
     /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
 
     template <std::size_t Nd, std::size_t Ni, typename T>
-    void create_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
-                    const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
+    void create_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi, int ncomponentsi,
+                    const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponentsd,
                     const Coor<Ni> &blockim, const Coor<Nd> &blockdm, bool blockImFast,
                     IndexType **ii, Coor<Nd> **jj, const T **v, const Context *ctx, CoorOrder co,
                     BSR_handle **bsrh, Session session = 0) {
@@ -2598,15 +2690,19 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, nullptr, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm, blockim,
-                detail::ones<Nd>(), detail::ones<Ni>(), blockImFast, comm, co, session)};
+                (T **)v, ii, jj, nullptr, ctx, ncomponentsi, pim, dimi, ncomponentsd, pdm, dimd,
+                blockdm, blockim, detail::ones<Nd>(), detail::ones<Ni>(), blockImFast, comm, co,
+                session)};
         *bsrh = r;
     }
 
     /// Create Kronecker BSR sparse operator
     /// \param pim: partitioning of the RSB operator image in consecutive ranges
+    /// \param dimi: image dimension size
+    /// \param ncomponentsi: number of consecutive components in each MPI rank for the image
     /// \param pdm: pseudo-partitioning of the RSB operator domain in consecutive ranges
-    /// \param ncomponents: number of consecutive components in each MPI rank
+    /// \param dimd: domain dimension size
+    /// \param ncomponentsd: number of consecutive components in each MPI rank for the domain
     /// \param blockim: image dimensions of the block
     /// \param blockdm: domain dimensions of the block
     /// \param kronim: image dimensions of the Kronecker block
@@ -2623,8 +2719,8 @@ namespace superbblas {
     /// NOTE: keep allocated the space pointed out by ii, jj, and v until calling `destroy_bsr`.
 
     template <std::size_t Nd, std::size_t Ni, typename T>
-    void create_kron_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi,
-                         const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponents,
+    void create_kron_bsr(const PartitionItem<Ni> *pim, const Coor<Ni> &dimi, int ncomponentsi,
+                         const PartitionItem<Nd> *pdm, const Coor<Nd> &dimd, int ncomponentsd,
                          const Coor<Ni> &blockim, const Coor<Nd> &blockdm, const Coor<Ni> &kronim,
                          const Coor<Nd> &krondm, bool blockImFast, IndexType **ii, Coor<Nd> **jj,
                          const T **v, const T **kronv, const Context *ctx, CoorOrder co,
@@ -2634,8 +2730,8 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, (T **)kronv, ctx, ncomponents, pim, dimi, pdm, dimd, blockdm,
-                blockim, krondm, kronim, blockImFast, comm, co, session)};
+                (T **)v, ii, jj, (T **)kronv, ctx, ncomponentsi, pim, dimi, ncomponentsd, pdm, dimd,
+                blockdm, blockim, krondm, kronim, blockImFast, comm, co, session)};
         *bsrh = r;
     }
 
