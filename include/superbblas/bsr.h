@@ -1400,13 +1400,13 @@ namespace superbblas {
         /// \param bsr: BSR operator
 
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU0, typename XPU1>
-        Components_tmpl<Ni, T, XPU0, XPU1>
-        get_mock_components(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr) {
-            Components_tmpl<Ni, T, XPU0, XPU1> r;
+        Components_tmpl<Nd, T, XPU0, XPU1>
+        get_mock_components_for_domain(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr) {
+            Components_tmpl<Nd, T, XPU0, XPU1> r;
             for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
                 for (unsigned int j = 0; j < bsr.c.first[i].v.fragmentsd.size(); ++j) {
                     r.first.push_back(
-                        Component<Ni, T, XPU0>{bsr.c.first[i].v.it,
+                        Component<Nd, T, XPU0>{bsr.c.first[i].v.it,
                                                {{}},
                                                bsr.c.first[i].v.first_domain_componentId + j,
                                                Mask<XPU0>{}});
@@ -1415,11 +1415,30 @@ namespace superbblas {
             for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
                 for (unsigned int j = 0; j < bsr.c.first[i].v.fragmentsd.size(); ++j) {
                     r.second.push_back(
-                        Component<Ni, T, XPU1>{bsr.c.second[i].v.it,
+                        Component<Nd, T, XPU1>{bsr.c.second[i].v.it,
                                                {{}},
                                                bsr.c.second[i].v.first_domain_componentId + j,
                                                Mask<XPU1>{}});
                 }
+            }
+
+            return r;
+        }
+
+        /// Return a components based on the nonzeros of a BSR operator
+        /// \param bsr: BSR operator
+
+        template <std::size_t Nd, std::size_t Ni, typename T, typename XPU0, typename XPU1>
+        Components_tmpl<Ni, T, XPU0, XPU1>
+        get_mock_components_for_image(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> &bsr) {
+            Components_tmpl<Ni, T, XPU0, XPU1> r;
+            for (unsigned int i = 0; i < bsr.c.first.size(); ++i) {
+                r.first.push_back(Component<Ni, T, XPU0>{
+                    bsr.c.first[i].v.it, {{}}, bsr.c.first[i].v.componentId, Mask<XPU0>{}});
+            }
+            for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
+                r.second.push_back(Component<Ni, T, XPU1>{
+                    bsr.c.second[i].v.it, {{}}, bsr.c.second[i].v.componentId, Mask<XPU1>{}});
             }
 
             return r;
@@ -2418,9 +2437,10 @@ namespace superbblas {
             Proc_ranges<Nx> px_ = pxy_.first;
             ForceLocal force_local = (just_local ? doForceLocal : dontForceLocal);
             auto vx_and_req = reorder_tensor_request(
-                px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox, get_mock_components(bsr),
-                comm, co, power > 1 ? doCopy : avoidCopy /* force copy when power > 1 */,
-                doCacheAlloc, force_local);
+                px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox,
+                get_mock_components_for_domain(bsr), comm, co,
+                power > 1 ? doCopy : avoidCopy /* force copy when power > 1 */, doCacheAlloc,
+                force_local);
 
             // Scale the output vector if beta isn't 0 or 1
             if (std::norm(beta) != 0 && beta != T{1})
@@ -2436,8 +2456,9 @@ namespace superbblas {
 
                 // Allocate the output tensor
                 Proc_ranges<Ny> py_ = pxy_.second;
-                Components_tmpl<Ny, T, XPU0, XPU1> vy_ =
-                    like_this_components(py_, vx_, comm, doCacheAlloc);
+                Components_tmpl<Ny, T, XPU0, XPU1> vy_ = like_this_components(
+                    py, oy, fromy, dimy, toConst(vy), py_, sug_oy, sug_sizey,
+                    get_mock_components_for_image(bsr), comm, avoidCopy, doCacheAlloc);
 
                 // Do contraction
                 for (unsigned int p = 0; p < power; ++p) {
