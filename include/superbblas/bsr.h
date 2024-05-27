@@ -2456,9 +2456,12 @@ namespace superbblas {
 
                 // Allocate the output tensor
                 Proc_ranges<Ny> py_ = pxy_.second;
-                Components_tmpl<Ny, T, XPU0, XPU1> vy_ = like_this_components(
-                    py, oy, fromy, dimy, toConst(vy), py_, sug_oy, sug_sizey,
-                    get_mock_components_for_image(bsr), comm, avoidCopy, doCacheAlloc);
+                Components_tmpl<Ny, T, XPU0, XPU1> vy_ =
+                    (std::norm(beta) == 0.0
+                         ? like_this_components(py, oy, fromy, dimy, vy, py_, sug_oy, sug_sizey,
+                                                get_mock_components_for_image(bsr), comm, avoidCopy,
+                                                doCacheAlloc)
+                         : like_this_components(py_, vx_, comm, doCacheAlloc));
 
                 // Do contraction
                 for (unsigned int p = 0; p < power; ++p) {
