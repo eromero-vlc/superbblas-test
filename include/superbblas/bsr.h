@@ -2164,10 +2164,10 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
                   typename XPU>
         void local_bsr_krylov(const BSR<Nd, Ni, T, XPU> &bsr, const Order<Ni> &oim,
-                              const Order<Nd> &odm, const From_size<Nx> &fragmentsd,
-                              const Order<Nx> &ox, const std::vector<vector<T, XPU>> &vx,
-                              const Coor<Ny> &dimy, const Order<Ny> &oy, char okr,
-                              vector<T, XPU> vy) {
+                              const Order<Nd> &odm, const Coor<Nx> &sizex,
+                              const From_size<Nx> &fragmentsd, const Order<Nx> &ox,
+                              const std::vector<vector<T, XPU>> &vx, const Coor<Ny> &dimy,
+                              const Order<Ny> &oy, char okr, vector<T, XPU> vy) {
 
             tracker<XPU> _t(std::string("local BSR matvec (") + bsr.implementation() +
                                 std::string(")"),
@@ -2197,9 +2197,9 @@ namespace superbblas {
             bool is_kron =
                 (volume(bsr.v.krond) > 1 || volume(bsr.v.kroni) > 1 || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   bsr.v.kroni, bsr.v.krond, is_kron, fragmentsd.front()[1], ox,
-                                   dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout, bsr.v.co,
-                                   transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                   bsr.v.kroni, bsr.v.krond, is_kron, sizex, ox, dimy, oy, okr,
+                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
+                                   volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -2446,7 +2446,7 @@ namespace superbblas {
                         const unsigned int componentIdi = bsr.c.first[i].v.componentId;
                         const unsigned int num_elems = bsr.c.first[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            bsr.c.first[i], oim, odm,
+                            bsr.c.first[i], oim, odm, sug_dimx,
                             get_range(px_[comm.rank], componentIdd, num_elems), sug_ox,
                             get_range(vx_.first, componentIdd, num_elems),
                             py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.first[i].it);
@@ -2457,7 +2457,7 @@ namespace superbblas {
                         const unsigned int componentIdi = bsr.c.second[i].v.componentId;
                         const unsigned int num_elems = bsr.c.second[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            bsr.c.second[i], oim, odm,
+                            bsr.c.second[i], oim, odm, sug_dimx,
                             get_range(px_[comm.rank], componentIdd, num_elems), sug_ox,
                             get_range(vx_.second, componentIdd, num_elems),
                             py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.second[i].it);
