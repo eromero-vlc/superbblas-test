@@ -2937,6 +2937,8 @@ namespace superbblas {
             check_components(p1, v1_sample, comm);
 
             // Compute how much to allocate
+            Coor<N> perm1 = find_permutation(o0, o1);
+            auto p_rank_translated = translate_range(p[comm.rank], from, dim, {{}}, dim1, perm1);
             std::vector<std::size_t> allocate_device(getGpuDevicesCount() + 1);
             std::vector<int> allocated_component(p1[comm.rank].size());
             Components_tmpl<N, T, XPU0, XPU1> v1;
@@ -2960,26 +2962,26 @@ namespace superbblas {
                 bool is_superset = false;
                 if (force_copy != doCopy) {
                     for (unsigned int j = 0; j < v.first.size(); ++j) {
-                        auto p_rank_j = p[comm.rank][v.first[j].componentId];
-                        if (deviceId(v.first[j].it.cxt()) == device &&
+                        auto p_rank_j = p_rank_translated[v.first[j].componentId];
+                        if (deviceId(v.first[j].it.ctx()) == device &&
                             p_rank_j == p1[comm.rank][i] &&
                             same_layout(o1, dimi, o0, p_rank_j[1])) {
                             is_superset = true;
-                            v1.first.push_back(
-                                Component<N, T, XPU0>{v.first[j].it, dimi, i, Mask<XPU0>{}});
-                            causalConnectTo(v.first[j].it.ctx().withNewContext(xpu0), xpu0);
+                            v1.first.push_back(Component<N, T, XPU0>{
+                                v.first[j].it.withNewContext(xpu0), dimi, i, Mask<XPU0>{}});
+                            causalConnectTo(v.first[j].it.ctx(), xpu0);
                             break;
                         }
                     }
                     for (unsigned int j = 0; j < v.second.size(); ++j) {
-                        auto p_rank_j = p[comm.rank][v.second[j].componentId];
-                        if (deviceId(v.second[j].it.cxt()) == device &&
+                        auto p_rank_j = p_rank_translated[v.first[j].componentId];
+                        if (deviceId(v.second[j].it.ctx()) == device &&
                             p_rank_j == p1[comm.rank][i] &&
                             same_layout(o1, dimi, o0, p_rank_j[1])) {
                             is_superset = true;
-                            v1.second.push_back(
-                                Component<N, T, XPU1>{v.second[j].it, dimi, i, Mask<XPU1>{}});
-                            causalConnectTo(v.second[j].it.ctx().withNewContext(xpu1), xpu1);
+                            v1.second.push_back(Component<N, T, XPU1>{
+                                v.second[j].it.withNewContext(xpu1), dimi, i, Mask<XPU1>{}});
+                            causalConnectTo(v.second[j].it.ctx(), xpu1);
                             break;
                         }
                     }
@@ -2992,16 +2994,16 @@ namespace superbblas {
             }
 
             // Allocate the tensor
-            std::vector<vector<T, XPU0>> allocs0({}, getGpuDevicesCount() + 1);
-            std::vector<vector<T, XPU1>> allocs1({}, getGpuDevicesCount() + 1);
+            std::vector<vector<T, XPU0>> allocs0(getGpuDevicesCount() + 1);
+            std::vector<vector<T, XPU1>> allocs1(getGpuDevicesCount() + 1);
             for (unsigned int j = 0; j < v1_sample.first.size(); ++j) {
-                int i = v1_sample.first[j].componentId;
+                unsigned int i = v1_sample.first[j].componentId;
                 if (allocated_component[i]) continue;
                 int dev_plus_1 = 1 + deviceId(v1_sample.first[j].it.ctx());
-                if (!allocs0.at(dev_plus_1)) {
-                    auto v = allocs0.at(dev_plus_1) = vector<T, XPU0>(
+                if (allocs0.at(dev_plus_1).size() == 0) {
+                    auto it = allocs0.at(dev_plus_1) = vector<T, XPU0>(
                         allocate_device.at(dev_plus_1), v.first[j].it.ctx(), cacheAlloc);
-                    if (zero_init == doZeroInit) zero_n(v.data(), v.size(), v.ctx());
+                    if (zero_init == doZeroInit) zero_n(it.data(), it.size(), it.ctx());
                 }
                 auto v1i = allocs0.at(dev_plus_1);
                 const Coor<N> &dimi = p1[comm.rank][i][1];
@@ -3009,13 +3011,13 @@ namespace superbblas {
                 v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, i, Mask<XPU0>{}});
             }
             for (unsigned int j = 0; j < v.second.size(); ++j) {
-                int i = v1_sample.first[j].componentId;
+                unsigned int i = v1_sample.first[j].componentId;
                 if (allocated_component[i]) continue;
                 int dev_plus_1 = 1 + deviceId(v.second[j].it.ctx());
-                if (!allocs1.at(dev_plus_1)) {
-                    auto v = allocs1.at(dev_plus_1) = vector<T, XPU0>(
+                if (allocs1.at(dev_plus_1).size() == 0) {
+                    auto it = allocs1.at(dev_plus_1) = vector<T, XPU0>(
                         allocate_device.at(dev_plus_1), v.second[j].it.ctx(), cacheAlloc);
-                    if (zero_init == doZeroInit) zero_n(v.data(), v.size(), v.ctx());
+                    if (zero_init == doZeroInit) zero_n(it.data(), it.size(), it.ctx());
                 }
                 auto v1i = allocs1.at(dev_plus_1);
                 const Coor<N> &dimi = p1[comm.rank][i][1];

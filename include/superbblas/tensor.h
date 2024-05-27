@@ -146,6 +146,13 @@ namespace superbblas {
         }
 
         template <typename T, std::size_t N>
+        std::array<T, N> operator*(const std::array<T, N> &a, const std::array<T, N> &b) {
+            std::array<T, N> r;
+            for (std::size_t i = 0; i < N; i++) r[i] = a[i] * b[i];
+            return r;
+        }
+
+        template <typename T, std::size_t N>
         std::array<T, N> operator/(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
             for (std::size_t i = 0; i < N; i++) r[i] = a[i] / b[i];

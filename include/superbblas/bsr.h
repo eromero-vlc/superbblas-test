@@ -76,18 +76,18 @@ namespace superbblas {
 
         /// Component of a BSR tensor
         template <std::size_t Nd, std::size_t Ni, typename T, typename XPU> struct BSRComponent {
-            Indices<XPU> i;                ///< number of nonzero blocks on each block image
-            vector<Coor<Nd>, XPU> j;       ///< domain coordinates of the nonzero blocks
-            vector<T, XPU> it;             ///< nonzero values
-            Coor<Nd> dimd;                 ///< dimensions of the domain space
-            From_size<Nd> fragmentsd;      ///< fragments of the domain space
+            Indices<XPU> i;                        ///< number of nonzero blocks on each block image
+            vector<Coor<Nd>, XPU> j;               ///< domain coordinates of the nonzero blocks
+            vector<T, XPU> it;                     ///< nonzero values
+            Coor<Nd> dimd;                         ///< dimensions of the domain space
+            From_size<Nd> fragmentsd;              ///< fragments of the domain space
             unsigned int first_domain_componentId; ///< first component Id for the domain
-            Coor<Ni> dimi;                 ///< dimensions of the image space
-            Coor<Nd> blockd;               ///< dimensions of a block in the domain space
-            Coor<Ni> blocki;               ///< dimensions of a block in the image space
-            Coor<Nd> krond;                ///< dimensions of Kronecker in the domain space
-            Coor<Ni> kroni;                ///< dimensions of Kronecker in the image space
-            vector<T, XPU> kron_it;        ///< nonzero values
+            Coor<Ni> dimi;                         ///< dimensions of the image space
+            Coor<Nd> blockd;                       ///< dimensions of a block in the domain space
+            Coor<Ni> blocki;                       ///< dimensions of a block in the image space
+            Coor<Nd> krond;                        ///< dimensions of Kronecker in the domain space
+            Coor<Ni> kroni;                        ///< dimensions of Kronecker in the image space
+            vector<T, XPU> kron_it;                ///< nonzero values
             bool blockImFast; ///< whether the image indices are the fastest on the dense blocks
             CoorOrder co;     ///< Coordinate order of ii and jj
             unsigned int componentId; ///< Component Id for the image
@@ -316,7 +316,7 @@ namespace superbblas {
         template <typename T, std::size_t N>
         std::tuple<std::size_t, std::array<T *, 2>>
         get_discriminator_and_pointers(const std::vector<vector<T, Cpu>> &v,
-                                       From_size<N> &fragments, IndexType ncols) {
+                                       const From_size<N> &fragments, IndexType ncols) {
             std::array<T *, 2> r{nullptr, nullptr};
             if (v.size() != fragments.size()) throw std::runtime_error("wtf");
             std::size_t s = 0;
@@ -334,6 +334,7 @@ namespace superbblas {
                 }
                 s += vol;
             }
+            if (ri == 1) discriminator = s;
 
             return {discriminator, r};
         }
@@ -640,14 +641,13 @@ namespace superbblas {
                             IndexType ncols) const {
                 if (conjA || lx != RowMajor || ly != RowMajor)
                     throw std::runtime_error("Not implemented");
-                if (vx.size() != v.fragmenst.size()) throw std::runtime_error("wtf");
+                if (vx.size() != v.fragmentsd.size()) throw std::runtime_error("wtf");
 
                 const T alpha{1};
                 IndexType bi = volume(v.blocki);
                 IndexType bd = volume(v.blockd);
                 IndexType ki = volume(v.kroni);
                 IndexType kd = volume(v.krond);
-                IndexType block_cols = volume(v.dimd) / bd / kd;
                 IndexType block_rows = volume(v.dimi) / bi / ki;
                 T *y = vy.data();
                 const T beta{0};
@@ -1633,8 +1633,8 @@ namespace superbblas {
                 }
                 for (unsigned int j = 0; j < v.fragmentsd.size(); ++j) {
                     Coor<Nd> fromr, sizer;
-                    intersection(vj[i], blockd, v.fragmentsd[j][0], v.fragmentsd[j][1], v.dimd, fromr,
-                                 sizer);
+                    intersection(vj[i], blockd, v.fragmentsd[j][0], v.fragmentsd[j][1], v.dimd,
+                                 fromr, sizer);
                     if (volume(sizer) == 0) continue;
                     jj[i] = coor2index(normalize_coor(vj[i] - v.fragmentsd[j][0], v.dimd),
                                        v.fragmentsd[j][1], strided[j]) /
@@ -2177,8 +2177,15 @@ namespace superbblas {
             if (volume(fragmentsd) == 0 && volume(dimy) == 0) return;
 
             // Check that the domain fragments are the same ones expected
-            if (fragmentsd.size() == 0 || bsr.v.fragmentsd != fragmentsd)
+            if (fragmentsd.size() != bsr.v.fragmentsd.size())
                 throw std::runtime_error("local_bsr_krylov: unsupported input option, fragmentsd");
+            Coor<Nd> permd = find_permutation(ox, odm);
+            for (unsigned int i = 0; i < fragmentsd.size(); ++i) {
+                if (reorder_coor(fragmentsd[i][0], permd) != bsr.v.fragmentsd[i][0] ||
+                    reorder_coor(fragmentsd[i][1], permd) != bsr.v.fragmentsd[i][1])
+                    throw std::runtime_error(
+                        "local_bsr_krylov: unsupported input option, fragmentsd");
+            }
 
             // Check inputs and get the common dimensions
             bool transSp;
@@ -2190,9 +2197,9 @@ namespace superbblas {
             bool is_kron =
                 (volume(bsr.v.krond) > 1 || volume(bsr.v.kroni) > 1 || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
-                                   bsr.v.kroni, bsr.v.krond, is_kron, fragmentsd.first(), ox, dimy,
-                                   oy, okr, bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp,
-                                   lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                   bsr.v.kroni, bsr.v.krond, is_kron, fragmentsd.front()[1], ox,
+                                   dimy, oy, okr, bsr.allowLayout, bsr.preferredLayout, bsr.v.co,
+                                   transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -2307,7 +2314,7 @@ namespace superbblas {
 
         template <std::size_t N, typename T, typename XPU>
         std::vector<vector<T, XPU>> get_range(const std::vector<Component<N, T, XPU>> &v,
-                                                    std::size_t first, std::size_t num_elems) {
+                                              std::size_t first, std::size_t num_elems) {
             std::vector<vector<T, XPU>> r;
             for (const auto &c : v)
                 if (first <= c.componentId && c.componentId < first + num_elems) r.push_back(c.it);
@@ -2445,7 +2452,8 @@ namespace superbblas {
                             py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.first[i].it);
                     }
                     for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
-                        const unsigned int componentIdd = bsr.c.second[i].v.first_domain_componentId;
+                        const unsigned int componentIdd =
+                            bsr.c.second[i].v.first_domain_componentId;
                         const unsigned int componentIdi = bsr.c.second[i].v.componentId;
                         const unsigned int num_elems = bsr.c.second[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
@@ -2569,7 +2577,7 @@ namespace superbblas {
 
         detail::BSRComponents<Nd, Ni, T> *r =
             new detail::BSRComponents<Nd, Ni, T>{detail::get_bsr_components<Nd, Ni, T>(
-                (T **)v, ii, jj, (T **)kronv, ctx, ncomponentsd, pim, dimi, ncomponentsd, pdm, dimd,
+                (T **)v, ii, jj, (T **)kronv, ctx, ncomponentsi, pim, dimi, ncomponentsd, pdm, dimd,
                 blockdm, blockim, krondm, kronim, blockImFast, comm, co, session)};
         *bsrh = r;
     }
