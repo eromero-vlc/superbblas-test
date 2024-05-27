@@ -2743,6 +2743,40 @@ namespace superbblas {
             return fsr;
         }
 
+        // Remove self-intersections
+        /// \param p: partitioning
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        Proc_ranges<Nd> remove_repetitions(const Proc_ranges<Nd> &p, const Coor<Nd> &dim,
+                                           bool check_only_locally = false) {
+            Proc_ranges<Nd> r(p.size());
+            for (unsigned int i = 0; i < p.size(); ++i) {
+                for (unsigned int i0 = 0; i0 < p[i].size(); ++i0) {
+                    From_size<Nd> fs(1, p[i][i0]);
+                    for (unsigned int j = check_only_locally ? i : 0; j <= i; ++j) {
+                        for (unsigned int j0 = 0, j1 = (j < i ? p[j].size() : i0); j0 < j1; ++j0) {
+                            From_size<Nd> fsr;
+                            for (unsigned int fsi = 0; fsi < fs.size(); ++fsi) {
+                                if (volume(intersection(fs[fsi][0], fs[fsi][1], p[j][j0][0],
+                                                        p[j][j0][1], dim)) == 0) {
+                                    fsr.push_back(fs[fsi]);
+                                } else {
+                                    // make hole
+                                    auto new_fs = make_hole(fs[fsi][0], fs[fsi][1], p[j][j0][0],
+                                                            p[j][j0][1], dim);
+                                    for (const auto &fsi_ : new_fs) fsr.push_back(fsi_);
+                                }
+                            }
+                            fs = fsr;
+                        }
+                    }
+                    for (const auto &fsi : fs) r[i].push_back(fsi);
+                }
+            }
+            return r;
+        }
+
         enum ZeroInit { dontZeroInit, doZeroInit };
 
         enum ForceCopy { avoidCopy, avoidCopyAtAnyCost, doCopy };
@@ -2863,8 +2897,8 @@ namespace superbblas {
             }
 
             // Allocate the tensor
-            std::vector<vector<T, XPU0>> allocs0({}, getGpuDevicesCount() + 1);
-            std::vector<vector<T, XPU1>> allocs1({}, getGpuDevicesCount() + 1);
+            std::vector<vector<T, XPU0>> allocs0(getGpuDevicesCount() + 1);
+            std::vector<vector<T, XPU1>> allocs1(getGpuDevicesCount() + 1);
             Components_tmpl<N, T, XPU0, XPU1> vr;
             for (unsigned int i = 0; i < pr[comm.rank].size(); ++i) {
                 const Coor<N> &dimi = pr[comm.rank][i][1];
@@ -2878,7 +2912,7 @@ namespace superbblas {
                         vri = v.first[j].it;
                     } else {
                         int dev_plus_1 = 1 + deviceId(v.first[j].it.ctx());
-                        if (!allocs0.at(dev_plus_1)) {
+                        if (allocs0.at(dev_plus_1).size() == 0) {
                             auto newv = allocs0.at(dev_plus_1) = vector<T, XPU0>(
                                 allocate_device.at(dev_plus_1), v.first[j].it.ctx(), cacheAlloc);
                             if (zero_init == doZeroInit)
@@ -2896,7 +2930,7 @@ namespace superbblas {
                         vri = v.second[j].it;
                     } else {
                         int dev_plus_1 = 1 + deviceId(v.second[j].it.ctx());
-                        if (!allocs1.at(dev_plus_1)) {
+                        if (allocs1.at(dev_plus_1).size() == 0) {
                             auto newv = allocs1.at(dev_plus_1) = vector<T, XPU0>(
                                 allocate_device.at(dev_plus_1), v.second[j].it.ctx(), cacheAlloc);
                             if (zero_init == doZeroInit)
@@ -3124,7 +3158,7 @@ namespace superbblas {
 
             // If the two orderings and partitions are equal, return the tensor
             if (force_copy != doCopy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1)
-                return {v0, Request()};
+                return {p0, v0, Request()};
 
             // Allocate the tensor
             auto pr_vr = like_this_components(p0, o0, from0, dim0, v0, p1, o1, dim1, comm,
@@ -3188,40 +3222,6 @@ namespace superbblas {
             if (unmatch_dev) return false;
 
             return true;
-        }
-
-        // Remove self-intersections
-        /// \param p: partitioning
-        /// \param dim: dimensions
-
-        template <std::size_t Nd>
-        Proc_ranges<Nd> remove_repetitions(const Proc_ranges<Nd> &p, const Coor<Nd> &dim,
-                                           bool check_only_locally = false) {
-            Proc_ranges<Nd> r(p.size());
-            for (unsigned int i = 0; i < p.size(); ++i) {
-                for (unsigned int i0 = 0; i0 < p[i].size(); ++i0) {
-                    From_size<Nd> fs(1, p[i][i0]);
-                    for (unsigned int j = check_only_locally ? i : 0; j <= i; ++j) {
-                        for (unsigned int j0 = 0, j1 = (j < i ? p[j].size() : i0); j0 < j1; ++j0) {
-                            From_size<Nd> fsr;
-                            for (unsigned int fsi = 0; fsi < fs.size(); ++fsi) {
-                                if (volume(intersection(fs[fsi][0], fs[fsi][1], p[j][j0][0],
-                                                        p[j][j0][1], dim)) == 0) {
-                                    fsr.push_back(fs[fsi]);
-                                } else {
-                                    // make hole
-                                    auto new_fs = make_hole(fs[fsi][0], fs[fsi][1], p[j][j0][0],
-                                                            p[j][j0][1], dim);
-                                    for (const auto &fsi_ : new_fs) fsr.push_back(fsi_);
-                                }
-                            }
-                            fs = fsr;
-                        }
-                    }
-                    for (const auto &fsi : fs) r[i].push_back(fsi);
-                }
-            }
-            return r;
         }
 
         /// Return partitions for the input tensors that are compatible for contraction
