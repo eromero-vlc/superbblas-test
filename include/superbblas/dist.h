@@ -299,7 +299,8 @@ namespace superbblas {
 
         template <typename Comm, typename Vector>
         void print(const Comm &comm, const Vector &v, std::string name) {
-            std::cerr << "[" << comm.rank << "] " << " " << name << ":";
+            std::cerr << "[" << comm.rank << "] "
+                      << " " << name << ":";
             for (const auto &i : v) std::cerr << " " << i;
             std::cerr << std::endl;
             std::cerr.flush();
@@ -3479,16 +3480,20 @@ namespace superbblas {
                 two = three = 0;
                 value = 1;
                 unsigned int remaining = number;
-                for (; remaining % 2 == 0; ++two, remaining /= 2, value *= 2);
-                for (; remaining % 3 == 0; ++three, remaining /= 3, value *= 3);
+                for (; remaining % 2 == 0; ++two, remaining /= 2, value *= 2)
+                    ;
+                for (; remaining % 3 == 0; ++three, remaining /= 3, value *= 3)
+                    ;
 
                 // b) Find as many powers as possible of tree and then two
-                for (; remaining >= 3; ++three, remaining /= 3, value *= 3);
+                for (; remaining >= 3; ++three, remaining /= 3, value *= 3)
+                    ;
                 if (remaining >= 2) ++two, remaining /= 2, value *= 2;
 
                 // c) Try to exchange factors of 3 by 4
                 for (; three > 0 && value * 4 / 3 <= number;
-                     --three, two += 2, value = value * 4 / 3);
+                     --three, two += 2, value = value * 4 / 3)
+                    ;
             }
 
             /// Internal constructor
