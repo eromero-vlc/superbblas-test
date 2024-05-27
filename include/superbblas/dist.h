@@ -299,8 +299,7 @@ namespace superbblas {
 
         template <typename Comm, typename Vector>
         void print(const Comm &comm, const Vector &v, std::string name) {
-            std::cerr << "[" << comm.rank << "] "
-                      << " " << name << ":";
+            std::cerr << "[" << comm.rank << "] " << " " << name << ":";
             for (const auto &i : v) std::cerr << " " << i;
             std::cerr << std::endl;
             std::cerr.flush();
@@ -2879,9 +2878,10 @@ namespace superbblas {
                     } else {
                         int dev_plus_1 = 1 + deviceId(v.first[j].it.ctx());
                         if (!allocs0.at(dev_plus_1)) {
-                            auto v = allocs0.at(dev_plus_1) = vector<T, XPU0>(
+                            auto newv = allocs0.at(dev_plus_1) = vector<T, XPU0>(
                                 allocate_device.at(dev_plus_1), v.first[j].it.ctx(), cacheAlloc);
-                            if (zero_init == doZeroInit) zero_n(v.data(), v.size(), v.ctx());
+                            if (zero_init == doZeroInit)
+                                zero_n(newv.data(), newv.size(), newv.ctx());
                         }
                         vri = allocs0.at(dev_plus_1);
                         allocs0.at(dev_plus_1) = allocs0.at(dev_plus_1).displace(volume(dimi));
@@ -2896,9 +2896,10 @@ namespace superbblas {
                     } else {
                         int dev_plus_1 = 1 + deviceId(v.second[j].it.ctx());
                         if (!allocs1.at(dev_plus_1)) {
-                            auto v = allocs1.at(dev_plus_1) = vector<T, XPU0>(
+                            auto newv = allocs1.at(dev_plus_1) = vector<T, XPU0>(
                                 allocate_device.at(dev_plus_1), v.second[j].it.ctx(), cacheAlloc);
-                            if (zero_init == doZeroInit) zero_n(v.data(), v.size(), v.ctx());
+                            if (zero_init == doZeroInit)
+                                zero_n(newv.data(), newv.size(), newv.ctx());
                         }
                         vri = allocs1.at(dev_plus_1);
                         allocs1.at(dev_plus_1) = allocs1.at(dev_plus_1).displace(volume(dimi));
@@ -2953,7 +2954,7 @@ namespace superbblas {
                     device = deviceId(xpu0);
                     break;
                 }
-                for (unsigned int j = 0; j < v1.second.size(); ++j) {
+                for (unsigned int j = 0; j < v1_sample.second.size(); ++j) {
                     if (v1_sample.second[j].componentId != i) continue;
                     xpu1 = v1_sample.second[j].it.ctx();
                     device = deviceId(xpu1);
@@ -2974,7 +2975,7 @@ namespace superbblas {
                         }
                     }
                     for (unsigned int j = 0; j < v.second.size(); ++j) {
-                        auto p_rank_j = p_rank_translated[v.first[j].componentId];
+                        auto p_rank_j = p_rank_translated[v.second[j].componentId];
                         if (deviceId(v.second[j].it.ctx()) == device &&
                             p_rank_j == p1[comm.rank][i] &&
                             same_layout(o1, dimi, o0, p_rank_j[1])) {
@@ -3002,27 +3003,31 @@ namespace superbblas {
                 int dev_plus_1 = 1 + deviceId(v1_sample.first[j].it.ctx());
                 if (allocs0.at(dev_plus_1).size() == 0) {
                     auto it = allocs0.at(dev_plus_1) = vector<T, XPU0>(
-                        allocate_device.at(dev_plus_1), v.first[j].it.ctx(), cacheAlloc);
+                        allocate_device.at(dev_plus_1), v1_sample.first[j].it.ctx(), cacheAlloc);
                     if (zero_init == doZeroInit) zero_n(it.data(), it.size(), it.ctx());
                 }
                 auto v1i = allocs0.at(dev_plus_1);
                 const Coor<N> &dimi = p1[comm.rank][i][1];
-                allocs0.at(dev_plus_1) = v1i.displace(volume(dimi));
-                v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, i, Mask<XPU0>{}});
+                std::size_t vol = volume(dimi);
+                allocs0.at(dev_plus_1) = v1i.displace(vol);
+                v1.first.push_back(
+                    Component<N, T, XPU0>{v1i.subrange(0, vol), dimi, i, Mask<XPU0>{}});
             }
-            for (unsigned int j = 0; j < v.second.size(); ++j) {
-                unsigned int i = v1_sample.first[j].componentId;
+            for (unsigned int j = 0; j < v1_sample.second.size(); ++j) {
+                unsigned int i = v1_sample.second[j].componentId;
                 if (allocated_component[i]) continue;
-                int dev_plus_1 = 1 + deviceId(v.second[j].it.ctx());
+                int dev_plus_1 = 1 + deviceId(v1_sample.second[j].it.ctx());
                 if (allocs1.at(dev_plus_1).size() == 0) {
                     auto it = allocs1.at(dev_plus_1) = vector<T, XPU0>(
-                        allocate_device.at(dev_plus_1), v.second[j].it.ctx(), cacheAlloc);
+                        allocate_device.at(dev_plus_1), v1_sample.second[j].it.ctx(), cacheAlloc);
                     if (zero_init == doZeroInit) zero_n(it.data(), it.size(), it.ctx());
                 }
                 auto v1i = allocs1.at(dev_plus_1);
                 const Coor<N> &dimi = p1[comm.rank][i][1];
-                allocs1.at(dev_plus_1) = v1i.displace(volume(dimi));
-                v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, i, Mask<XPU1>{}});
+                std::size_t vol = volume(dimi);
+                allocs1.at(dev_plus_1) = v1i.displace(vol);
+                v1.second.push_back(
+                    Component<N, T, XPU1>{v1i.subrange(0, vol), dimi, i, Mask<XPU1>{}});
             }
 
             return v1;
@@ -3474,20 +3479,16 @@ namespace superbblas {
                 two = three = 0;
                 value = 1;
                 unsigned int remaining = number;
-                for (; remaining % 2 == 0; ++two, remaining /= 2, value *= 2)
-                    ;
-                for (; remaining % 3 == 0; ++three, remaining /= 3, value *= 3)
-                    ;
+                for (; remaining % 2 == 0; ++two, remaining /= 2, value *= 2);
+                for (; remaining % 3 == 0; ++three, remaining /= 3, value *= 3);
 
                 // b) Find as many powers as possible of tree and then two
-                for (; remaining >= 3; ++three, remaining /= 3, value *= 3)
-                    ;
+                for (; remaining >= 3; ++three, remaining /= 3, value *= 3);
                 if (remaining >= 2) ++two, remaining /= 2, value *= 2;
 
                 // c) Try to exchange factors of 3 by 4
                 for (; three > 0 && value * 4 / 3 <= number;
-                     --three, two += 2, value = value * 4 / 3)
-                    ;
+                     --three, two += 2, value = value * 4 / 3);
             }
 
             /// Internal constructor

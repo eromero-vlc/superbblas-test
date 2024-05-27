@@ -324,6 +324,8 @@ namespace superbblas {
             std::size_t discriminator = 0;
             for (std::size_t i = 0; i < v.size(); ++i) {
                 std::size_t vol = volume(fragments[i][1]) * ncols;
+                if (vol != v[i].size()) throw std::runtime_error("wtf");
+                if (vol == 0) continue;
                 if (ri == 0 || v[i].data() != r[ri - 1] + s) {
                     if (ri < 2) {
                         r[ri++] = v[i].data();
@@ -2229,10 +2231,8 @@ namespace superbblas {
             if (vold == 0 || voli == 0) return;
             // Layout for row major: (kd,n,bd,rows)
             // Layout for column major: (bd,rows,n,kd)
-            IndexType ldx = lx == ColumnMajor ? (!transSp ? vold / kd : voli / ki)
-                                              : (!transSp ? kd : ki) * volC;
-            IndexType ldy = ly == ColumnMajor ? (!transSp ? voli / ki : vold / kd)
-                                              : (!transSp ? ki : kd) * volC;
+            IndexType ldx = lx == ColumnMajor ? (!transSp ? vold / kd : voli / ki) : volC;
+            IndexType ldy = ly == ColumnMajor ? (!transSp ? voli / ki : vold / kd) : volC;
 
             // Do the contraction
             _t.flops = bsr.getFlopsPerMatvec(volC, lx);

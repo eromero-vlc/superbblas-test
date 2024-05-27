@@ -105,6 +105,7 @@ PartitionStored<6> extend(const PartitionStored<6> &p, const Coor<6> &dim,
             auto range = p[i];
             auto fs = extend(p[i], dim);
             PartitionItem<6> hole;
+            std::size_t hole_dim = 0;
             for (std::size_t i = 0; i < 6; ++i) {
                 if (fs[1][i] == range[1][i]) {
                     hole[0][i] = 0;
@@ -112,11 +113,13 @@ PartitionStored<6> extend(const PartitionStored<6> &p, const Coor<6> &dim,
                 } else {
                     hole[0][i] = range[0][i] + range[1][i];
                     hole[1][i] = dim[i] - range[1][i];
+                    hole_dim++;
                 }
             }
-            auto new_fs = make_hole(fs[0], fs[1], hole[0], hole[1], dim);
             PartitionStored<6> fs_without_range;
             fs_without_range.push_back(range);
+            auto new_fs = hole_dim > 1 ? make_hole(fs[0], fs[1], hole[0], hole[1], dim)
+                                       : PartitionStored<6>(1, fs);
             for (const auto new_fsi : new_fs) {
                 auto new_fsi_without_range =
                     make_hole(new_fsi[0], new_fsi[1], range[0], range[1], dim);
