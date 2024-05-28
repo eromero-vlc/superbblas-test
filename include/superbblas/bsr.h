@@ -1415,7 +1415,7 @@ namespace superbblas {
                 }
             }
             for (unsigned int i = 0; i < bsr.c.second.size(); ++i) {
-                for (unsigned int j = 0; j < bsr.c.first[i].v.fragmentsd.size(); ++j) {
+                for (unsigned int j = 0; j < bsr.c.second[i].v.fragmentsd.size(); ++j) {
                     r.second.push_back(
                         Component<Nd, T, XPU1>{bsr.c.second[i].v.it,
                                                {{}},
@@ -2032,86 +2032,19 @@ namespace superbblas {
                 // Contraction with the blocking:
                 // Check that ox should one of (okr,C,D,d) or (okr,D,d,C) or (okr,C,I,i) or (okr,I,i,C)
 
+                ly = lx = preferred_layout;
                 if (kindx == ContractWithDomain) {
-                    auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
-                    auto sDx = std::search(ox.begin(), ox.end(), oDs.begin(), oDs.begin() + nDs);
-                    auto sdx = std::search(ox.begin(), ox.end(), ods.begin(), ods.begin() + nds);
-                    lx = (nC == 0 || ((nDs == 0 || sCx < sDx) && (nds == 0 || sCx < sdx)))
-                             ? ColumnMajor
-                             : RowMajor;
-                    if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
-                        (nDs > 0 && sDx == ox.end()) || (nds > 0 && sdx == ox.end()) ||
-                        (nDs > 0 && nds > 0 && sDx > sdx) ||
-                        (nC > 0 && nDs > 0 && nds > 0 && sDx < sCx && sCx < sdx) ||
-                        (volC > 1 && lx == RowMajor && xylayout == ColumnMajorForXandY)) {
-                        lx = preferred_layout;
-                        sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oDs, nDs, ods, nds)
-                                                    : concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC));
-                    } else {
-                        sug_ox = ox;
-                    }
+                    sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oDs, nDs, ods, nds)
+                                                : concat<Nx>(okr, oDs, nDs, ods, nds, oC, nC));
 
-                    auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
-                    auto sIy = std::search(oy.begin(), oy.end(), oIs.begin(), oIs.begin() + nIs);
-                    auto siy = std::search(oy.begin(), oy.end(), ois.begin(), ois.begin() + nis);
-                    ly = (nC == 0 || ((nIs == 0 || sCy < sIy) && (nds == 0 || sCy < siy)))
-                             ? ColumnMajor
-                             : RowMajor;
-                    if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
-                        (nIs > 0 && sIy == oy.end()) || (nis > 0 && siy == oy.end()) ||
-                        (nIs > 0 && nis > 0 && sIy > siy) ||
-                        (nC > 0 && nIs > 0 && nis > 0 && sIy < sCy && sCy < siy) ||
-                        (lx != ly && xylayout == SameLayoutForXAndY) ||
-                        (ly == RowMajor && xylayout == ColumnMajorForY) ||
-                        (lx == RowMajor && xylayout == ColumnMajorForXandY)) {
-                        ly = (xylayout == SameLayoutForXAndY
-                                  ? lx
-                                  : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
-                        sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oIs, nIs, ois, nis)
-                                                    : concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC));
-                    } else {
-                        sug_oy = oy;
-                    }
+                    sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oIs, nIs, ois, nis)
+                                                : concat<Ny>(okr, oIs, nIs, ois, nis, oC, nC));
                 } else {
-                    auto sCx = std::search(ox.begin(), ox.end(), oC.begin(), oC.begin() + nC);
-                    auto sIx = std::search(ox.begin(), ox.end(), oIs.begin(), oIs.begin() + nIs);
-                    auto six = std::search(ox.begin(), ox.end(), ois.begin(), ois.begin() + nis);
-                    lx = (nC == 0 || ((nIs == 0 || sCx < sIx) && (nis == 0 || sCx < six)))
-                             ? ColumnMajor
-                             : RowMajor;
-                    if ((okr != 0 && ox[0] != okr) || (nC > 0 && sCx == ox.end()) ||
-                        (nIs > 0 && sIx == ox.end()) || (nis > 0 && six == ox.end()) ||
-                        (nIs > 0 && nis > 0 && sIx > six) ||
-                        (nC > 0 && nIs > 0 && nis > 0 && sIx < sCx && sCx < six) ||
-                        (lx == RowMajor && xylayout == ColumnMajorForXandY)) {
-                        lx = preferred_layout;
-                        sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
-                                                    : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
-                    } else {
-                        sug_ox = ox;
-                    }
+                    sug_ox = (lx == ColumnMajor ? concat<Nx>(okr, oC, nC, oIs, nIs, ois, nis)
+                                                : concat<Nx>(okr, oIs, nIs, ois, nis, oC, nC));
 
-                    auto sCy = std::search(oy.begin(), oy.end(), oC.begin(), oC.begin() + nC);
-                    auto sDy = std::search(oy.begin(), oy.end(), oDs.begin(), oDs.begin() + nDs);
-                    auto sdy = std::search(oy.begin(), oy.end(), ods.begin(), ods.begin() + nds);
-                    ly = (nC == 0 || ((nDs == 0 || sCy < sDy) && (nds == 0 || sCy < sdy)))
-                             ? ColumnMajor
-                             : RowMajor;
-                    if ((okr != 0 && oy[0] != okr) || (nC > 0 && sCy == oy.end()) ||
-                        (nDs > 0 && sDy == oy.end()) || (nds > 0 && sdy == oy.end()) ||
-                        (nDs > 0 && nds > 0 && sDy > sdy) ||
-                        (nC > 0 && nDs > 0 && nds > 0 && sDy < sCy && sCy < sdy) ||
-                        (lx != ly && xylayout == SameLayoutForXAndY) ||
-                        (ly == RowMajor && xylayout == ColumnMajorForY) ||
-                        (ly == RowMajor && xylayout == ColumnMajorForXandY)) {
-
-                    } else {
-                        ly = (xylayout == SameLayoutForXAndY
-                                  ? lx
-                                  : (xylayout == ColumnMajorForY ? ColumnMajor : preferred_layout));
-                        sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oDs, nDs, ods, nds)
-                                                    : concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC));
-                    }
+                    sug_oy = (ly == ColumnMajor ? concat<Ny>(okr, oC, nC, oDs, nDs, ods, nds)
+                                                : concat<Ny>(okr, oDs, nDs, ods, nds, oC, nC));
                 }
             } else { // !is_kron
                 // Contraction with the blocking and the Kronecker blocking
@@ -2296,22 +2229,28 @@ namespace superbblas {
             Proc_ranges<Ny> pyr(px.size());
             for (unsigned int i = 0; i < pi.size(); ++i) {
                 if (just_local && i != comm.rank) continue;
+                if (pd[i].size() % pi[i].size() != 0) throw std::runtime_error("wtf");
+                std::size_t num_fragments = pd[i].size() / pi[i].size();
                 pxr[i].resize(pd[i].size());
                 for (unsigned int j = 0; j < pd[i].size(); ++j) {
-                    pxr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
-                                                  sug_ox, false);
-                    pxr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
-                                                  sug_ox, false);
+                    pxr[i][j][0] =
+                        get_dimensions(om, concat(pd[i][j][0], pi[i][j / num_fragments][0]), ox,
+                                       {{}}, sug_ox, false);
+                    pxr[i][j][1] =
+                        get_dimensions(om, concat(pd[i][j][1], pi[i][j / num_fragments][1]), ox,
+                                       sizex, sug_ox, false);
 
                     // Normalize range
                     if (volume(pxr[i][j][1]) == 0) pxr[i][j][0] = pxr[i][j][1] = Coor<Nx>{{}};
                 }
                 pyr[i].resize(pi[i].size());
                 for (unsigned int j = 0; j < pi[i].size(); ++j) {
-                    pyr[i][j][0] = get_dimensions(om, concat(pd[i][j][0], pi[i][j][0]), ox, {{}},
-                                                  sug_oy, false);
-                    pyr[i][j][1] = get_dimensions(om, concat(pd[i][j][1], pi[i][j][1]), ox, sizex,
-                                                  sug_oy, false);
+                    pyr[i][j][0] =
+                        get_dimensions(om, concat(pd[i][j * num_fragments][0], pi[i][j][0]), ox,
+                                       {{}}, sug_oy, false);
+                    pyr[i][j][1] =
+                        get_dimensions(om, concat(pd[i][j * num_fragments][1], pi[i][j][1]), ox,
+                                       sizex, sug_oy, false);
                     if (okr != 0) {
                         pyr[i][j][0][power_pos] = 0;
                         pyr[i][j][1][power_pos] = 1;
@@ -2425,7 +2364,7 @@ namespace superbblas {
                                        bsr.c.second[0].allowLayout, bsr.c.second[0].preferredLayout,
                                        co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             }
-            Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
+            Coor<Nx> sug_sizex = reorder_coor(sizex, find_permutation(ox, sug_ox));
             Coor<Ny> sizey0 = sizey;
             if (power > 1) sizey0[power_pos] = 1;
             Coor<Ny> sug_sizey = reorder_coor(sizey0, find_permutation(oy, sug_oy));
@@ -2437,15 +2376,15 @@ namespace superbblas {
             Proc_ranges<Nx> px_ = pxy_.first;
             ForceLocal force_local = (just_local ? doForceLocal : dontForceLocal);
             auto vx_and_req = reorder_tensor_request(
-                px, ox, fromx, sizex, dimx, vx, px_, sug_dimx, sug_ox,
+                px, ox, fromx, sizex, dimx, vx, px_, sug_sizex, sug_ox,
                 get_mock_components_for_domain(bsr), comm, co,
                 power > 1 ? doCopy : avoidCopy /* force copy when power > 1 */, doCacheAlloc,
                 force_local);
 
             // Scale the output vector if beta isn't 0 or 1
             if (std::norm(beta) != 0 && beta != T{1})
-                copy<Ny, Ny, T>(beta, py, {{}}, dimy, dimy, oy, toConst(vy), py, {{}}, dimy, oy, vy,
-                                comm, EWOp::Copy{}, co, force_local);
+                copy<Ny, Ny, T>(beta, py, fromy, sizey, dimy, oy, toConst(vy), py, fromy, dimy, oy,
+                                vy, comm, EWOp::Copy{}, co, force_local);
 
             Request bsr_req = [=] {
                 tracker<Cpu> _t("distributed BSR matvec", Cpu{0});
@@ -2470,7 +2409,7 @@ namespace superbblas {
                         const unsigned int componentIdi = bsr.c.first[i].v.componentId;
                         const unsigned int num_elems = bsr.c.first[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            bsr.c.first[i], oim, odm, sug_dimx,
+                            bsr.c.first[i], oim, odm, sug_sizex,
                             get_range(px_[comm.rank], componentIdd, num_elems), sug_ox,
                             get_range(vx_.first, componentIdd, num_elems),
                             py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.first[i].it);
@@ -2481,7 +2420,7 @@ namespace superbblas {
                         const unsigned int componentIdi = bsr.c.second[i].v.componentId;
                         const unsigned int num_elems = bsr.c.second[i].v.fragmentsd.size();
                         local_bsr_krylov<Nd, Ni, Nx, Ny, T>(
-                            bsr.c.second[i], oim, odm, sug_dimx,
+                            bsr.c.second[i], oim, odm, sug_sizex,
                             get_range(px_[comm.rank], componentIdd, num_elems), sug_ox,
                             get_range(vx_.second, componentIdd, num_elems),
                             py_[comm.rank][componentIdi][1], sug_oy, okr, vy_.second[i].it);
@@ -2501,11 +2440,11 @@ namespace superbblas {
 
                     // Copy the result into x for doing the next power
                     if (p == power - 1) break;
-                    copy<Nx, Nx, T>(T{0}, px_, {{}}, sug_dimx, sug_dimx, sug_ox, toConst(vx_), px_,
-                                    {{}}, sug_dimx, sug_ox, vx_, comm, EWOp::Copy{}, co,
+                    copy<Nx, Nx, T>(T{0}, px_, {{}}, sug_sizex, sug_sizex, sug_ox, toConst(vx_),
+                                    px_, {{}}, sug_sizex, sug_ox, vx_, comm, EWOp::Copy{}, co,
                                     force_local);
                     copy<Ny, Nx, T>(T{1}, py_, {{}}, sug_sizey, sug_sizey, sug_oy_trans,
-                                    toConst(vy_), px_, {{}}, sug_dimx, sug_ox, vx_, comm,
+                                    toConst(vy_), px_, {{}}, sug_sizex, sug_ox, vx_, comm,
                                     EWOp::Copy{}, co, force_local);
                 }
             };

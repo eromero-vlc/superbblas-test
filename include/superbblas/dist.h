@@ -2840,14 +2840,19 @@ namespace superbblas {
             check_components(p1, comm);
 
             // Try to incorporate pieces of the origin tensor p into the new tensor
+            Coor<N> perm0 = find_permutation(o1, o0);
             Coor<N> perm1 = find_permutation(o0, o1);
+            Coor<N> size = reorder_coor(dim1, perm0, 1);
+            if (!all_less_or_equal(size, dim)) throw std::runtime_error("wtf");
             Proc_ranges<N> pr;
             if (force_copy == avoidCopyAtAnyCost) {
                 pr = Proc_ranges<N>(p.size());
                 for (unsigned int rank = 0; rank < p.size(); ++rank) {
-                    auto p_rank_translated = translate_range(p[rank], from, dim, {{}}, dim1, perm1);
                     for (unsigned int i = 0; i < p[rank].size(); ++i) {
-                        auto inter = intersection({p_rank_translated[i]}, p1[rank], dim1);
+                        auto inter0 = intersection({p[rank][i]}, from, size, dim);
+                        if (inter0.size() != 1 || inter0[0][1] != p[rank][i][1]) continue;
+                        auto inter = intersection(
+                            translate_range(inter0, from, dim, {{}}, dim1, perm1), p1[rank], dim1);
                         bool is_superset =
                             (inter.size() == 1 && same_layout(o1, inter[0][1], o0, p[rank][i][1]));
                         if (is_superset) pr[rank].push_back(inter[0]);
@@ -2862,13 +2867,13 @@ namespace superbblas {
             // Deciding the device for each new component
             // NOTE: maximize the overlap with the original devices
             std::vector<unsigned int> device(pr[comm.rank].size());
-            auto p_rank_translated = translate_range(p[comm.rank], from, dim, {{}}, dim1, perm1);
-            for (unsigned int i = 0; i < pr[comm.rank].size(); ++i) {
+            auto pr_rank_translated = translate_range(pr[comm.rank], {{}}, dim1, from, dim, perm0);
+            for (unsigned int i = 0; i < pr_rank_translated.size(); ++i) {
                 std::size_t max_vol = 0;
                 unsigned int max_idx = 0;
-                for (unsigned int j = 0; j < p_rank_translated.size(); ++j) {
+                for (unsigned int j = 0; j < p[comm.rank].size(); ++j) {
                     std::size_t vol =
-                        volume(intersection({p_rank_translated[j]}, {pr[comm.rank][i]}, dim1));
+                        volume(intersection({pr_rank_translated[i]}, {p[comm.rank][j]}, dim));
                     if (vol > max_vol) {
                         max_vol = vol;
                         max_idx = j;
@@ -2879,11 +2884,12 @@ namespace superbblas {
 
             // Compute how much to allocate
             std::vector<std::size_t> allocate_device(getGpuDevicesCount() + 1);
+            auto p_rank_translated = translate_range(p[comm.rank], from, dim, {{}}, dim1, perm1);
             for (unsigned int i = 0; i < pr[comm.rank].size(); ++i) {
                 const Coor<N> &dimi = pr[comm.rank][i][1];
-                bool is_superset =
-                    (force_copy != doCopy && p_rank_translated[device[i]] == pr[comm.rank][i] &&
-                     same_layout(o1, dimi, o0, p[comm.rank][device[i]][1]));
+                bool is_superset = (force_copy != doCopy &&
+                                    p_rank_translated[device[i]][0] == pr[comm.rank][i][0] &&
+                                    same_layout(o1, dimi, o0, p[comm.rank][device[i]][1]));
                 if (!is_superset) {
                     for (unsigned int j = 0; j < v.first.size(); ++j) {
                         if (v.first[j].componentId != device[i]) continue;
