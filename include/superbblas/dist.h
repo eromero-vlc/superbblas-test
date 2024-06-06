@@ -1720,6 +1720,11 @@ namespace superbblas {
                     if (deviceId(it.it.ctx()) >= 0) really_use_mpi_gpu = true;
                 for (const auto &it : v1.first)
                     if (deviceId(it.it.ctx()) >= 0) really_use_mpi_gpu = true;
+		// NOTE: try to not allocate to much auxiliary gpu memory
+                if (really_use_mpi_gpu &&
+                    volume(toSend) * sizeof(T) + volume(toReceive) * sizeof(Q) >=
+                        getMaxGpuCacheSize())
+                    really_use_mpi_gpu = false;
             }
 
             // Use mpi send/receive buffers on cpu memory
