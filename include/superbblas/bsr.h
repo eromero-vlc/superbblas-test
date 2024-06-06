@@ -713,6 +713,8 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T> struct BSR<Nd, Ni, T, Gpu> {
             BSRComponent<Nd, Ni, T, Gpu> v; ///< BSR general information
             vector<IndexType, Gpu> ii, jj;  ///< BSR row and column nonzero indices
+            bool
+                kron_use_crafted_kernel; ///< whether to use a crafted kernel instead of cu/hipsparse
 #    ifdef SUPERBBLAS_USE_CUDA
             std::shared_ptr<cusparseMatDescr_t>
                 descrA_bsr; ///< cuSparse descriptor for BSR matrices
@@ -721,7 +723,6 @@ namespace superbblas {
             enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
-            bool kron_use_crafted_kernel; ///< whether to use a crafted kernel instead of hipsparse
             vector<int, Gpu> kron_perm;   ///< represent the kron matrices with a permutation
             vector<T, Gpu> kron_scalars;  ///< represent the kron matrices with scalars
 #    endif
