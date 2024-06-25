@@ -38,9 +38,9 @@
 
 /// Generate template instantiations for xgemm_alt_alpha1_beta1_perm function with template parameter T
 
-#    define DECL_XGEMM_ALT_ALPHA1_BETA1_PERM_T(...)                                                \
-        EMIT REPLACE1(xgemm_alt_alpha1_beta1_perm,                                                 \
-                      superbblas::detail::xgemm_alt_alpha1_beta1_perm<T>)                          \
+#    define DECL_XGEMM_ALT_ALPHA1_BETA0_PERM_T(...)                                                \
+        EMIT REPLACE1(xgemm_alt_alpha1_beta0_perm,                                                 \
+                      superbblas::detail::xgemm_alt_alpha1_beta0_perm<T>)                          \
             REPLACE(T, SUPERBBLAS_COMPLEX_TYPES) template __VA_ARGS__;
 
 /// Generate template instantiations for xgemm_alt_alpha1_beta1_perm function with template parameter T
@@ -51,7 +51,7 @@
             REPLACE(T, SUPERBBLAS_COMPLEX_TYPES) template __VA_ARGS__;
 #else
 #    define DECL_XGEMM_ALT_ALPHA1_BETA1_T(...) __VA_ARGS__
-#    define DECL_XGEMM_ALT_ALPHA1_BETA1_PERM_T(...) __VA_ARGS__
+#    define DECL_XGEMM_ALT_ALPHA1_BETA0_PERM_T(...) __VA_ARGS__
 #    define DECL_AVAILABLE_BSR_KRON_3x3_PERM_T(...) __VA_ARGS__
 #endif
 
@@ -78,6 +78,169 @@ namespace superbblas {
         };
         template <> struct equivalent_int<double> {
             using type = uint64_t;
+        };
+
+        template <typename B, typename B::value_type... Values>
+        using constant = typename xsimd::batch_constant<typename B::value_type,
+                                                        typename B::arch_type, Values...>;
+
+        /// Implementation for
+        ///  - complex double on SIMD 256 bits (avx)
+        ///  - complex float  on SIMD 128 bits (sse2)
+
+        template <typename T> struct gemm_3x3_in_parts<4, T> {
+            constexpr static bool supported = true;
+
+            using vc4 = typename xsimd::make_sized_batch<T, 4>::type;
+            using vi4 = xsimd::batch<typename equivalent_int<T>::type, typename vc4::arch_type>;
+            using zT = std::complex<T>;
+
+            static constexpr bool the_real = true;
+            static constexpr bool the_imag = false;
+
+            static constexpr Idx get_disp_3x3(Idx i, Idx j, Idx ldr, Idx ldc, bool reality) {
+                return i * 2 * ldr + j * 2 * ldc + (reality ? 0 : 1);
+            }
+
+            static inline vc4 get_A_cols_aux(const T *SB_RESTRICT a, Idx ldr, Idx ldc, Idx d,
+                                             bool reality) {
+                return vc4::gather(a,
+                                   vi4(                                                 //
+                                       get_disp_3x3(0, (d + 0) % 3, ldr, ldc, reality), //
+                                       get_disp_3x3(1, (d + 1) % 3, ldr, ldc, reality), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, reality), //
+                                       get_disp_3x3(2, (d + 2) % 3, ldr, ldc, reality)));
+            }
+
+            static inline std::array<vc4, 6> get_A_cols(const T *SB_RESTRICT a, Idx ldr, Idx ldc) {
+                return {get_A_cols_aux(a, ldr, ldc, 0, the_real), //
+                        get_A_cols_aux(a, ldr, ldc, 0, the_imag), //
+                        get_A_cols_aux(a, ldr, ldc, 1, the_real), //
+                        get_A_cols_aux(a, ldr, ldc, 1, the_imag), //
+                        get_A_cols_aux(a, ldr, ldc, 2, the_real), //
+                        get_A_cols_aux(a, ldr, ldc, 2, the_imag)};
+            }
+
+            template <bool the_real> static inline vi4 get_4_ri(Idx ld) {
+                constexpr Idx r{(the_real ? 0 : 1)};
+                return vi4(ld * 2 * 0 + r, ld * 2 * 1 + r, ld * 2 * 2 + r, ld * 2 * 2 + r);
+            }
+
+            template <bool default_leading_dimensions = false>
+            static inline void
+            gemm_basic_3x3c_alpha1_beta1(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                                         const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
+                                         zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                if (default_leading_dimensions) {
+                    ldar = ldbr = ldcr = 1;
+                    ldac = ldbc = ldcc = 3;
+                }
+                //constexpr Idx M = 3;
+                //constexpr Idx K = 3;
+                const T *SB_RESTRICT a = (const T *)(a_);
+                const T *SB_RESTRICT b = (const T *)(b_);
+                T *SB_RESTRICT c = (T *)(c_);
+
+                // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
+                using vi4_plus_1 = constant<vi4, 1, 2, 0, 0>;
+                auto a012 = get_A_cols(a, ldar, ldac);
+                auto vi4_r_b = get_4_ri<the_real>(ldbr);
+                auto vi4_i_b = get_4_ri<the_imag>(ldbr);
+                auto vi4_r_c = get_4_ri<the_real>(ldcr);
+                auto vi4_i_c = get_4_ri<the_imag>(ldcr);
+                if (default_leading_dimensions) vi4_r_c = vi4_r_b, vi4_i_c = vi4_i_b;
+                for (Idx j = 0; j < N; ++j) {
+                    auto b0r = vc4::gather(b + ldbc * 2 * j, vi4_r_b);
+                    auto b0i = vc4::gather(b + ldbc * 2 * j, vi4_i_b);
+                    auto c1r = vc4::gather(c + ldcc * 2 * j, vi4_r_c);
+                    auto c1i = vc4::gather(c + ldcc * 2 * j, vi4_i_c);
+                    vc4 c0r(T{0}), c0i(T{0});
+                    for (int disp = 0; disp < 3; ++disp) {
+                        if (disp > 0) {
+                            b0r = xsimd::swizzle(b0r, vi4_plus_1());
+                            b0i = xsimd::swizzle(b0i, vi4_plus_1());
+                        }
+                        // c0r += ar * br
+                        c0r = xsimd::fma(a012[disp * 2], b0r, c0r);
+                        // c0i += ar * bi
+                        c0i = xsimd::fma(a012[disp * 2], b0i, c0i);
+                        // c0r -= ai * bi
+                        c0r = xsimd::fnma(a012[disp * 2 + 1], b0i, c0r);
+                        // c0i += ai * br
+                        c0i = xsimd::fma(a012[disp * 2 + 1], b0r, c0i);
+                    }
+                    (c0r + c1r).scatter(c + ldcc * 2 * j, vi4_r_c);
+                    (c0i + c1i).scatter(c + ldcc * 2 * j, vi4_i_c);
+                }
+            }
+
+            static inline void gemm_basic_3x3c_alpha1_beta0_perm(
+                Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+                const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
+                int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
+                zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                //constexpr Idx M = 3;
+                //constexpr Idx K = 3;
+                const T *SB_RESTRICT a = (const T *)(a_);
+                const T *SB_RESTRICT b = (const T *)(b_);
+                T *SB_RESTRICT c = (T *)(c_);
+                bjprod *= 2;
+
+                // c[i,j] = sum_{m=0:Nmats-1} sum_{k=0:2} a_m[i,k] * b_m[k,j/perm_size*perm_size+perm_m[j%perm_size]] * perm_sign_m[j%perm_size]
+                using vi4_plus_1 = constant<vi4, 1, 2, 0, 0>;
+                auto vi4_r_b = get_4_ri<the_real>(ldbr);
+                auto vi4_i_b = get_4_ri<the_imag>(ldbr);
+                auto vi4_r_c = get_4_ri<the_real>(ldcr);
+                auto vi4_i_c = get_4_ri<the_imag>(ldcr);
+                for (Idx j = 0; j < N; j += 2) {
+                    vc4 c0r(T{0}), c0i(T{0});
+                    vc4 c1r(T{0}), c1i(T{0});
+                    for (Idx mat = 0; mat < Nmats; ++mat) {
+                        auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
+                        auto b0p =
+                            b + bj[mat] * bjprod +
+                            ldbc * 2 *
+                                (j / perm_size * perm_size + perm[mat * perm_size + j % perm_size]);
+                        auto b0r = vc4::gather(b0p, vi4_r_b);
+                        b0r = (perm_sign[mat * perm_size + j % perm_size] == 1 ? b0r : -b0r);
+                        auto b0i = vc4::gather(b0p, vi4_i_b);
+                        b0i = (perm_sign[mat * perm_size + j % perm_size] == 1 ? b0i : -b0i);
+
+                        auto b1p = b + bj[mat] * bjprod +
+                                   ldbc * 2 *
+                                       ((j + 1) / perm_size * perm_size +
+                                        perm[mat * perm_size + (j + 1) % perm_size]);
+                        auto b1r = vc4::gather(b1p, vi4_r_b);
+                        b1r = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1r : -b1r);
+                        auto b1i = vc4::gather(b1p, vi4_i_b);
+                        b1i = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1i : -b1i);
+
+                        for (int disp = 0; disp < 3; ++disp) {
+                            if (disp > 0) {
+                                b0r = xsimd::swizzle(b0r, vi4_plus_1());
+                                b0i = xsimd::swizzle(b0i, vi4_plus_1());
+                                b1r = xsimd::swizzle(b1r, vi4_plus_1());
+                                b1i = xsimd::swizzle(b1i, vi4_plus_1());
+                            }
+                            auto ar = a012[disp * 2];
+                            c0r = xsimd::fma(ar, b0r, c0r);
+                            c0i = xsimd::fma(ar, b0i, c0i);
+                            c1r = xsimd::fma(ar, b1r, c1r);
+                            c1i = xsimd::fma(ar, b1i, c1i);
+
+                            auto ai = a012[disp * 2 + 1];
+                            c0r = xsimd::fnma(ai, b0i, c0r);
+                            c0i = xsimd::fma(ai, b0r, c0i);
+                            c1r = xsimd::fnma(ai, b1i, c1r);
+                            c1i = xsimd::fma(ai, b1r, c1i);
+                        }
+                    }
+                    c0r.scatter(c + ldcc * 2 * j, vi4_r_c);
+                    c0i.scatter(c + ldcc * 2 * j, vi4_i_c);
+                    c1r.scatter(c + ldcc * 2 * (j + 1), vi4_r_c);
+                    c1i.scatter(c + ldcc * 2 * (j + 1), vi4_i_c);
+                }
+            }
         };
 
         /// Implementation for
@@ -119,11 +282,10 @@ namespace superbblas {
             }
 
             template <bool the_real> static inline vc8 get_A_col(vc8 va) {
-                return the_real ? xsimd::shuffle(
-                                      va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
-                                : xsimd::shuffle(xsimd::neg(va), va,
-                                                 xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
-                                                                       8 + 5, 8 + 5, 8 + 5>());
+                return the_real ? xsimd::shuffle(va, va, constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
+                                : xsimd::shuffle(
+                                      xsimd::neg(va), va,
+                                      constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>());
             }
 
             static inline vi8 get_8_ri(Idx ld) {
@@ -147,8 +309,8 @@ namespace superbblas {
                 T *SB_RESTRICT c = (T *)(c_);
 
                 // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
-                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                using vi8_flip_ri = constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
                 auto a012 = get_A_cols(a, ldar, ldac);
                 auto vi8_ri_b = get_8_ri(ldbr);
                 auto vi8_ri_c = get_8_ri(ldcr);
@@ -168,7 +330,7 @@ namespace superbblas {
                 }
             }
 
-            static inline void gemm_basic_3x3c_alpha1_beta1_perm(
+            static inline void gemm_basic_3x3c_alpha1_beta0_perm(
                 Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
                 const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
                 int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
@@ -178,11 +340,11 @@ namespace superbblas {
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
-		bjprod *= 2;
+                bjprod *= 2;
 
                 // c[i,j] = sum_{m=0:Nmats-1} sum_{k=0:2} a_m[i,k] * b_m[k,j/perm_size*perm_size+perm_m[j%perm_size]] * perm_sign_m[j%perm_size]
-                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
-                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                using vi8_flip_ri = constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
                 auto vi8_ri_b = get_8_ri(ldbr);
                 auto vi8_ri_c = get_8_ri(ldcr);
                 for (Idx j = 0; j < N; j += 4) {
@@ -286,11 +448,10 @@ namespace superbblas {
             }
 
             template <bool the_real> static inline vc8 get_A_col(vc8 va) {
-                return the_real ? xsimd::shuffle(
-                                      va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
-                                : xsimd::shuffle(xsimd::neg(va), va,
-                                                 xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
-                                                                       8 + 5, 8 + 5, 8 + 5>());
+                return the_real ? xsimd::shuffle(va, va, constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
+                                : xsimd::shuffle(
+                                      xsimd::neg(va), va,
+                                      constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>());
             }
 
             template <bool the_real> static inline vc16 get_A_col_double(vc8 va) {
@@ -351,8 +512,8 @@ namespace superbblas {
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
 
-                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
-                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                using vi8_flip_ri = constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
                 auto a012 = get_A_cols(a, ldar, ldac);
                 if (N % 2 != 0) {
                     auto vi8_ri_b = get_8_ri(ldbr);
@@ -371,11 +532,11 @@ namespace superbblas {
                     (c0 + c1).scatter(c, vi8_ri_c);
                 }
                 using vi16_flip_ri =
-                    xsimd::batch_constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
-                                          8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
+                    constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
+                             8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
                 using vi16_flip_and_plus_1 =
-                    xsimd::batch_constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
-                                          8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
+                    constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
+                             8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
                 auto vi16_ri_b = get_16_ri(ldbr, ldbc);
                 auto vi16_ri_c = get_16_ri(ldcr, ldcc);
                 if (default_leading_dimensions) vi16_ri_c = vi16_ri_b;
@@ -394,7 +555,7 @@ namespace superbblas {
                 }
             }
 
-            static inline void gemm_basic_3x3c_alpha1_beta1_perm(
+            static inline void gemm_basic_3x3c_alpha1_beta0_perm(
                 Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
                 const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
                 int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
@@ -404,7 +565,7 @@ namespace superbblas {
                 const T *SB_RESTRICT a = (const T *)(a_);
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
-		bjprod *= 2;
+                bjprod *= 2;
 
                 // TEMP!!!
                 //ldar = ldbr = ldcr = 1;
@@ -413,11 +574,11 @@ namespace superbblas {
 
                 auto vi8_ri_b = get_8_ri(ldbr);
                 using vi16_flip_ri =
-                    xsimd::batch_constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
-                                          8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
+                    constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
+                             8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
                 using vi16_flip_and_plus_1 =
-                    xsimd::batch_constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
-                                          8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
+                    constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
+                             8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
                 auto vi16_ri_c = get_16_ri(ldcr, ldcc);
                 for (Idx j = 0; j < N; j += 16) {
                     vc16 c0(T{0});
@@ -682,7 +843,7 @@ namespace superbblas {
                 }
             }
 
-            static inline void gemm_basic_3x3c_alpha1_beta1_perm(
+            static inline void gemm_basic_3x3c_alpha1_beta0_perm(
                 Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac, const zT *SB_RESTRICT b_,
                 Idx ldbr, Idx ldbc, int perm_size, int *SB_RESTRICT perm,
                 int *SB_RESTRICT perm_sign, zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
@@ -874,7 +1035,7 @@ namespace superbblas {
             }
 
             static inline void
-            gemm_basic_3x3c_alpha1_beta1_perm(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
+            gemm_basic_3x3c_alpha1_beta0_perm(Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
                                               const zT *SB_RESTRICT b_, Idx ldbr, Idx ldbc,
                                               int perm_size, int *SB_RESTRICT perm,
                                               int *SB_RESTRICT perm_sign,
@@ -1037,7 +1198,7 @@ namespace superbblas {
         };
 #    endif // SUPERBBLAS_USE_XSIMD
 
-        template <typename T, bool supported = (get_native_size<T>::size >= 8)>
+        template <typename T, bool supported = (get_native_size<T>::size >= 4)>
         struct gemm_basic_3x3c_alpha1_beta1_wrapper;
 
 #    ifdef SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
@@ -1105,12 +1266,12 @@ namespace superbblas {
                                          int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
                                          int ldcr, int ldcc) {
                 (void)k;
-		if (m != 3 || k != 3) abort();
+                if (m != 3 || k != 3) abort();
                 if (m == 0 || n == 0) return;
 
                 constexpr std::size_t native_size = get_native_size<T>::size;
                 gemm_3x3_in_parts<native_size, typename T::value_type>::
-                    gemm_basic_3x3c_alpha1_beta1_perm(nmats, n, a, ldar, ldac, b, bj, bjprod, ldbr,
+                    gemm_basic_3x3c_alpha1_beta0_perm(nmats, n, a, ldar, ldac, b, bj, bjprod, ldbr,
                                                       ldbc, perm_size, perm, perm_sign, c, ldcr,
                                                       ldcc);
             }
@@ -1132,6 +1293,19 @@ namespace superbblas {
 #endif // SUPERBBLAS_LIB
 
     namespace detail {
+        /// Perform the matrix multiplication C += A * B with shortcuts for some matrix sizes
+        /// \param transa: whether A is 'n': non-transposed, 't': transposed, 'c': conjugated transposed
+        /// \param transb: whether B is 'n': non-transposed, 't': transposed, 'c': conjugated transposed
+        /// \param m: rows of C
+        /// \param n: columns of C
+        /// \param k: columns of A and rows of B
+        /// \param a: pointer to the first element of A
+        /// \param lda: number of elements to skip a column in A
+        /// \param b: pointer to the first element of B
+        /// \param ldb: number of elements to skip a column in B
+        /// \param c: pointer to the first element of C
+        /// \param ldc: number of elements to skip a column in C
+
         template <typename T>
         DECL_XGEMM_ALT_ALPHA1_BETA1_T(void xgemm_alt_alpha1_beta1(char transa, char transb, int m,
                                                                   int n, int k, const T *a, int lda,
@@ -1142,8 +1316,45 @@ namespace superbblas {
                 transa, transb, m, n, k, a, lda, b, ldb, c, ldc);
         })
 
+        /// Perform the matrix multiplication C = \sum_i A_i * B_i * P_i * S_i with shortcuts for some matrix sizes,
+        /// where P_i is a periodic permutation matrix, and S_i is a periodic diagonal matrix with 1 or -1 elements.
+        /// For example: for nmat=2, n=8, perm_size=4, perm={0,1,2,3, 3,2,1,0}, perm_sign={1,-1,1,-1, 1,1,1,1}, then
+        /// P_0 = [1 0 0 0        ]  S_0=diag(1,-1,1,-1, 1,-1,1,-1)
+        ///       [0 1 0 0        ]
+        ///       [0 0 1 0        ]
+        ///       [0 0 0 1        ]
+        ///       [        1 0 0 0]
+        ///       [        0 1 0 0]
+        ///       [        0 0 1 0]
+        ///       [        0 0 0 1]
+        /// P_1 = [0 0 0 1        ]  S_1=diag(1,1,1,1,  1,1,1,1)
+        ///       [0 0 1 0        ]
+        ///       [0 1 0 0        ]
+        ///       [1 0 0 0        ]
+        ///       [        0 0 0 1]
+        ///       [        0 0 1 0]
+        ///       [        0 1 0 0]
+        ///       [        1 0 0 0]
+        ///
+        /// \param nmats: number of matrix products, sum_{i=0}^{i=nmats-1} A_i * B_i * P_i * S_i
+        /// \param m: rows of C
+        /// \param n: columns of C
+        /// \param k: columns of all A_i and rows of all B_i
+        /// \param a: pointer to the first element of A_0; all A_i are consecutive in memory
+        /// \param ldar: number of elements to skip a row in A_i
+        /// \param ldac: number of elements to skip a column in A_i
+        /// \param b: pointer base to all B_i matrices, B_i starts at b[bj[i]*bjprod]
+        /// \param ldbr: number of elements to skip a row in B_i
+        /// \param ldbc: number of elements to skip a column in B_i
+        /// \param perm_size: period of the permutation and the scalar matrix
+        /// \param perm: pointer to the first column index for representing P_0
+        /// \param perm_sign: pointer to the first value of S_0
+        /// \param c: pointer to the first element of C
+        /// \param ldcr: number of elements to skip a row in C
+        /// \param ldcc: number of elements to skip a column in C
+
         template <typename T>
-        DECL_XGEMM_ALT_ALPHA1_BETA1_PERM_T(void xgemm_alt_alpha1_beta1_perm(
+        DECL_XGEMM_ALT_ALPHA1_BETA0_PERM_T(void xgemm_alt_alpha1_beta0_perm(
             int nmats, int m, int n, int k, const T *a, int ldar, int ldac, const T *b, int *bj,
             int bjprod, int ldbr, int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
             int ldcr, int ldcc, Cpu))
@@ -1153,9 +1364,11 @@ namespace superbblas {
                 perm_sign, c, ldcr, ldcc);
         })
 
+        /// Return whether a crafted kernel is available
+        /// \tparam T: matrix type
+
         template <typename T>
         DECL_AVAILABLE_BSR_KRON_3x3_PERM_T(bool available_bsr_kron_3x3_perm()) IMPL({
-            static_assert(superbblas::detail_xp::get_native_size<T>::size >= 8, "caca");
             return superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1_wrapper<T>::available();
         })
     }

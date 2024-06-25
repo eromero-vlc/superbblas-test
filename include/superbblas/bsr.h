@@ -535,7 +535,7 @@ namespace superbblas {
             }
 
             SpMMAllowedLayout allowLayout;
-            MatrixLayout preferredLayout = RowMajor;
+            MatrixLayout preferredLayout;
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 allowLayout = (v.kron_it.size() > 0) ? SameLayoutForXAndY : AnyLayoutForXAndY;
@@ -707,10 +707,8 @@ namespace superbblas {
                             auto kron_perm_data = kron_perm.data();
                             auto kron_sign_scalars_data = kron_sign_scalars.data();
                             IndexType j = ii[i], j1 = ii[i + 1], jn = j1 - j;
-                            //if (jj[j] == -1) continue;
                             // Contract with the Kronecker blocking: (ki,n,bd) x (bi,bd)[rows,mu] -> (ki,n,bi) ; note (fast,slow)
-                            //if (j+1<j1) for (IndexType k=0; k<ncols*kd; k++) __builtin_prefetch(x + jj[j+1] * ncols + k*bd);
-                            xgemm_alt_alpha1_beta1_perm(
+                            xgemm_alt_alpha1_beta0_perm(
                                 jn, bi, ki * ncols, bi, nonzeros + j * bi * bd, !tb ? 1 : bi,
                                 !tb ? bi : 1, x, jj.data() + j, ncols /*x + jj[j] * ncols*/, 1, bi,
                                 ki, kron_perm_data, kron_sign_scalars_data, y + i * bi * ki * ncols,
