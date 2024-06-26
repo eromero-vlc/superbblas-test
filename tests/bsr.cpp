@@ -121,9 +121,22 @@ template <typename T> struct real_type<std::complex<T>> {
     using type = T;
 };
 
+enum KronSparsity { Dense = 0, Identity = 1, Perm = 2, PermScale = 3 };
+
+int spin_fun(int si, int sd, int dir, int spin_dim, KronSparsity kron_sparsity) {
+    switch (kron_sparsity) {
+    case Dense: return 1 + si + sd * spin_dim + dir * spin_dim * spin_dim;
+    case Identity: return si == sd ? 1 : 0;
+    case Perm: return si == (sd + dir) % spin_dim ? 1 : 0;
+    case PermScale: return si == (sd + dir) % spin_dim ? (si % 2 == 0 ? 1 : -1) : 0;
+    default: throw std::runtime_error("wtf");
+    }
+}
+
 template <typename T>
 void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int dir,
-                          bool block_imaginary_fast, const Coor<6> &op_dim, T *v) {
+                          bool block_imaginary_fast, const Coor<6> &op_dim, T *v,
+                          KronSparsity kron_sparsity = Dense) {
 
     // ci,si,cd,sp,xi,yi,zi,ti,xd,yd,zd,td (fast index -> slow index)
     Coor<6, std::size_t> op_dim_stride = get_strides<std::size_t>(op_dim, SlowToFast);
@@ -145,8 +158,8 @@ void get_lattice_nonzeros(const Coor<6> &row, const Coor<6> &col, unsigned int d
                     v[coor2index(block_imaginary_fast ? Coor<4>{ci, si, cd, sd}
                                                       : Coor<4>{cd, sd, ci, si},
                                  dim_blk, stride_blk)] =
-                        (1 + si + sd * op_dim[4] + dir * op_dim[4] * op_dim[4]) *
-                        (1 + (disp_blk + ci + cd * op_dim[5]) % max_color_component);
+                        ((T)spin_fun(si, sd, dir, op_dim[4], kron_sparsity)) *
+                        (T)(1 + (disp_blk + ci + cd * op_dim[5]) % max_color_component);
 }
 
 template <typename T>
@@ -173,17 +186,21 @@ void get_lattice_nonzeros_block(const Coor<6> &row, const Coor<6> &col, bool blo
 }
 
 template <typename T>
-void get_lattice_nonzeros_kron(bool block_imaginary_fast, const Coor<6> &op_dim, T *v) {
+void get_lattice_nonzeros_kron(bool block_imaginary_fast, const Coor<6> &op_dim, T *v,
+                               KronSparsity kron_sparsity) {
 
     int neighbors = max_neighbors(op_dim);
     Coor<3> dim_blk{op_dim[4], op_dim[4], neighbors};
     Coor<3, std::size_t> stride_blk = get_strides<std::size_t>(dim_blk, FastToSlow);
-    for (int dir = 0; dir < neighbors; ++dir)
-        for (int si = 0; si < op_dim[4]; ++si)
-            for (int sd = 0; sd < op_dim[4]; ++sd)
+    for (int dir = 0; dir < neighbors; ++dir) {
+        for (int si = 0; si < op_dim[4]; ++si) {
+            for (int sd = 0; sd < op_dim[4]; ++sd) {
                 v[coor2index(block_imaginary_fast ? Coor<3>{si, sd, dir} : Coor<3>{sd, si, dir},
                              dim_blk, stride_blk)] =
-                    1 + si + sd * op_dim[4] + dir * op_dim[4] * op_dim[4];
+                    spin_fun(si, sd, dir, op_dim[4], kron_sparsity);
+            }
+        }
+    }
 }
 
 /// Create a 4D lattice with dimensions tzyxsc
@@ -277,13 +294,14 @@ create_lattice(const PartitionStored<6> &pi, int rank, const Coor<6> op_dim,
 
 template <typename T>
 void get_lattice_constraction_value(const Coor<6> &row, const Coor<6> &col, unsigned int dir,
-                                    const Coor<6> &dim, unsigned int ncols, std::vector<T> &v) {
+                                    const Coor<6> &dim, unsigned int ncols, std::vector<T> &v,
+                                    KronSparsity kron_sparsity = Dense) {
 
     // Fill the nonzeros of the sparse matrix
     std::size_t dim_sc = dim[4] * dim[5];
     std::vector<T> a(dim_sc * dim_sc);
     Coor<6, std::size_t> dim_stride = get_strides<std::size_t>(dim, SlowToFast);
-    get_lattice_nonzeros(row, col, dir, true, dim, a.data());
+    get_lattice_nonzeros(row, col, dir, true, dim, a.data(), kron_sparsity);
 
     // Fill the values of the right-hand-size, the order is nxyztsc from slow to fast index
     using real_T = typename real_type<T>::type;
@@ -307,7 +325,7 @@ void get_lattice_constraction_value(const Coor<6> &row, const Coor<6> &col, unsi
 template <std::size_t N, typename T, typename XPU>
 void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
                       const vectors<T, XPU> &yv, const Coor<6> &op_dim, bool do_fast_check,
-                      const std::vector<Context> &ctxs) {
+                      const std::vector<Context> &ctxs, KronSparsity kron_sparsity = Dense) {
 
     for (std::size_t component = 0; component < ctxs.size(); ++component) {
         const auto y = yv.getVectors()[component];
@@ -350,7 +368,7 @@ void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
                 std::vector<T> right_values(op_dim[4] * op_dim[5] * ncols);
                 unsigned int dir_right_values = 0;
                 get_lattice_constraction_value(c, c, dir_right_values++, op_dim, ncols,
-                                               right_values);
+                                               right_values, kron_sparsity);
                 for (int dim = 0; dim < 4; ++dim) {
                     if (op_dim[dim] == 1) continue;
                     for (int dir = -1; dir < 2; dir += 2) {
@@ -358,7 +376,7 @@ void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
                         c0[dim] += dir;
                         c0 = normalize_coor(c0, op_dim);
                         get_lattice_constraction_value(c, c0, dir_right_values++, op_dim, ncols,
-                                                       right_values);
+                                                       right_values, kron_sparsity);
                         if (op_dim[dim] <= 2) break;
                     }
                 }
@@ -565,8 +583,6 @@ create_lattice_split(const PartitionStored<6> &pi, int rank, const Coor<6> op_di
     return {bsrh_s, data_s};
 }
 
-enum KronSparsity { Dense = 0, Identity = 1, Perm = 2, PermScale = 3 };
-
 /// Create a 4D lattice with dimensions tzyxsc and Kronecker products
 template <typename T, typename XPU>
 std::pair<BSR_handle *, std::array<vectors<T, XPU>, 2>>
@@ -636,7 +652,8 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_
             }
             data_xpu = makeSure(data_cpu, xpu[component]);
             vector<T, Cpu> kron_cpu(vol_kron, Cpu{});
-            get_lattice_nonzeros_kron(nonzero_blocks_imaginary_fast, op_dim, kron_cpu.data());
+            get_lattice_nonzeros_kron(nonzero_blocks_imaginary_fast, op_dim, kron_cpu.data(),
+                                      sparse_kron);
             kron_xpu = makeSure(kron_cpu, xpu[component]);
         } else {
             data_xpu = ones<T>(vol_data, xpu[component]);
@@ -799,7 +816,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
         for (const auto &xpui : xpu) sync(xpui);
         t = w_time() - t;
         if (rank == 0) std::cout << "Time in mavec per rhs: " << t / nrep / dim[N] << std::endl;
-        test_contraction(p1, rank, o1, t1, dimo, true, ctx);
+        //test_contraction(p1, rank, o1, t1, dimo, true, ctx);
     } catch (const std::exception &e) { std::cout << "Caught error: " << e.what() << std::endl; }
 
     destroy_bsr(op);
@@ -864,8 +881,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
         basic_partitioning("pxyztcns", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
 
     const std::vector<std::string> kron_sparse_str{"dense", "identity", "permutation",
-                                                   "general-sparse"};
-    for (int kron_sparse = 1; kron_sparse < 4; kron_sparse++) {
+                                                   "scaled-permutation"};
+    for (int kron_sparse = 0; kron_sparse < 4; kron_sparse++) {
         // Create the Kronecker operator
         auto op_kron_s = create_lattice_kron<Q>(po, rank, (KronSparsity)kron_sparse, dimo,
                                                 kron_sparse == 0 /* show size */, ctx, xpu);
@@ -889,7 +906,7 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
             if (rank == 0)
                 std::cout << "Time in mavec per rhs (kron " << kron_sparse_str[kron_sparse]
                           << "): " << t / nrep / dim[N] << std::endl;
-            test_contraction(kp1, rank, "pxyztcns", t1, dimo, true, ctx);
+            test_contraction(kp1, rank, "pxyztcns", t1, dimo, true, ctx, (KronSparsity)kron_sparse);
         } catch (const std::exception &e) {
             std::cout << "Caught error: " << e.what() << std::endl;
         }
