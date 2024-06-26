@@ -42,9 +42,10 @@ template <typename T, typename XPU> vector<T, XPU> zeros(std::size_t size, XPU x
 }
 
 // Return a vector of all ones
-template <typename T, typename XPU> vector<T, XPU> ones(std::size_t size, XPU xpu) {
+template <typename T, typename XPU>
+vector<T, XPU> ones(std::size_t size, XPU xpu, const T val = T{1}) {
     vector<T, Cpu> r(size, Cpu{});
-    for (std::size_t i = 0; i < size; ++i) r[i] = 1.0;
+    for (std::size_t i = 0; i < size; ++i) r[i] = val;
     return makeSure(r, xpu);
 }
 
@@ -75,7 +76,7 @@ vector<T, XPU> random_sparse(std::size_t n, std::size_t k, const T &scale, XPU x
     zero_n(r.data(), r.size(), r.ctx());
     for (std::size_t i = 0; i < k; ++i)
         for (std::size_t j = 0; j < n; ++j)
-            r[i * n * n + j * n + n - 1 - j] = scale * (n % 2 ? T{1} : T{-1});
+            r[i * n * n + j * n + n - 1 - j] = scale * (j == 0 ? T{1} : T{-1});
     return makeSure(r, xpu);
 }
 
@@ -335,9 +336,13 @@ void test_contraction(const PartitionStored<N> &pi, int rank, const char *oy_,
             if (do_fast_check) {
                 vector<T, Cpu> y_cpu = makeSure(y, Cpu{});
                 T right_value = (T)(max_neighbors(op_dim) * op_dim[4] * op_dim[5]);
-                for (std::size_t i = 0; i < y_cpu.size(); ++i)
-                    if (std::norm(y_cpu[i] - right_value) > 1e-2)
+                for (std::size_t i = 0; i < y_cpu.size(); ++i) {
+                    if ((kron_sparsity != PermScale && std::norm(y_cpu[i] - right_value) > 1e-2) ||
+                        (kron_sparsity == PermScale &&
+                         std::norm(std::abs(y_cpu[i]) - right_value) > 1e-2)) {
                         throw std::runtime_error("check error");
+                    }
+                }
             }
         } else {
             // Reorder y
@@ -656,16 +661,15 @@ create_lattice_kron(const PartitionStored<6> &pi, int rank, KronSparsity sparse_
                                       sparse_kron);
             kron_xpu = makeSure(kron_cpu, xpu[component]);
         } else {
-            data_xpu = ones<T>(vol_data, xpu[component]);
+            data_xpu = ones<T>(vol_data, xpu[component], (T)op_dim[4]);
             kron_xpu =
                 sparse_kron == Dense
-                    ? ones<T>(vol_kron, xpu[component])
+                    ? ones<T>(vol_kron, xpu[component], (T)(1.0 / op_dim[4]))
                     : (sparse_kron == Identity
-                           ? eyes<T>(op_dim[4], neighbors, (T)op_dim[4], xpu[component])
+                           ? eyes<T>(op_dim[4], neighbors, (T)1, xpu[component])
                            : (sparse_kron == Perm
-                                  ? anti_eyes<T>(op_dim[4], neighbors, (T)op_dim[4], xpu[component])
-                                  : random_sparse<T>(op_dim[4], neighbors, (T)op_dim[4],
-                                                     xpu[component])));
+                                  ? anti_eyes<T>(op_dim[4], neighbors, (T)1, xpu[component])
+                                  : random_sparse<T>(op_dim[4], neighbors, (T)1, xpu[component])));
         }
 
         ii_xpus.push_back(makeSure(ii, xpu[component]));
