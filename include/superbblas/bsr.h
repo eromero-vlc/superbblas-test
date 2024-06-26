@@ -586,6 +586,8 @@ namespace superbblas {
                         kron = CSRs<IndexType, T>(v.kron_it, volume(v.kroni), volume(v.krond),
                                                   num_nnz_per_row,
                                                   v.blockImFast ? ColumnMajor : RowMajor);
+                } else {
+                    kron_use_crafted_kernel = false;
                 }
 
                 preferredLayout = kron_use_crafted_kernel ? AltKronRowMajor : RowMajor;
@@ -715,7 +717,6 @@ namespace superbblas {
                                 1, bi, Cpu{});
                         }
                     } else if (lx == RowMajor) {
-                        abort();
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
