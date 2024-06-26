@@ -192,9 +192,11 @@ namespace superbblas {
                 auto vi4_i_b = get_4_ri<the_imag>(ldbr);
                 auto vi4_r_c = get_4_ri<the_real>(ldcr);
                 auto vi4_i_c = get_4_ri<the_imag>(ldcr);
-                for (Idx j = 0; j < N; j += 2) {
+                for (Idx j = 0; j < N; j += 4) {
                     vc4 c0r(T{0}), c0i(T{0});
                     vc4 c1r(T{0}), c1i(T{0});
+                    vc4 c2r(T{0}), c2i(T{0});
+                    vc4 c3r(T{0}), c3i(T{0});
                     for (Idx mat = 0; mat < Nmats; ++mat) {
                         auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
                         auto b0p =
@@ -215,30 +217,64 @@ namespace superbblas {
                         auto b1i = vc4::gather(b1p, vi4_i_b);
                         b1i = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1i : -b1i);
 
+                        auto b2p = b + bj[mat] * bjprod +
+                                   ldbc * 2 *
+                                       ((j + 2) / perm_size * perm_size +
+                                        perm[mat * perm_size + (j + 2) % perm_size]);
+                        auto b2r = vc4::gather(b2p, vi4_r_b);
+                        b2r = (perm_sign[mat * perm_size + (j + 2) % perm_size] == 1 ? b2r : -b2r);
+                        auto b2i = vc4::gather(b2p, vi4_i_b);
+                        b2i = (perm_sign[mat * perm_size + (j + 2) % perm_size] == 1 ? b2i : -b2i);
+
+                        auto b3p = b + bj[mat] * bjprod +
+                                   ldbc * 2 *
+                                       ((j + 3) / perm_size * perm_size +
+                                        perm[mat * perm_size + (j + 3) % perm_size]);
+                        auto b3r = vc4::gather(b3p, vi4_r_b);
+                        b3r = (perm_sign[mat * perm_size + (j + 3) % perm_size] == 1 ? b3r : -b3r);
+                        auto b3i = vc4::gather(b3p, vi4_i_b);
+                        b3i = (perm_sign[mat * perm_size + (j + 3) % perm_size] == 1 ? b3i : -b3i);
+
                         for (int disp = 0; disp < 3; ++disp) {
                             if (disp > 0) {
                                 b0r = xsimd::swizzle(b0r, vi4_plus_1());
                                 b0i = xsimd::swizzle(b0i, vi4_plus_1());
                                 b1r = xsimd::swizzle(b1r, vi4_plus_1());
                                 b1i = xsimd::swizzle(b1i, vi4_plus_1());
+                                b2r = xsimd::swizzle(b2r, vi4_plus_1());
+                                b2i = xsimd::swizzle(b2i, vi4_plus_1());
+                                b3r = xsimd::swizzle(b3r, vi4_plus_1());
+                                b3i = xsimd::swizzle(b3i, vi4_plus_1());
                             }
                             auto ar = a012[disp * 2];
                             c0r = xsimd::fma(ar, b0r, c0r);
                             c0i = xsimd::fma(ar, b0i, c0i);
                             c1r = xsimd::fma(ar, b1r, c1r);
                             c1i = xsimd::fma(ar, b1i, c1i);
+                            c2r = xsimd::fma(ar, b2r, c2r);
+                            c2i = xsimd::fma(ar, b2i, c2i);
+                            c3r = xsimd::fma(ar, b3r, c3r);
+                            c3i = xsimd::fma(ar, b3i, c3i);
 
                             auto ai = a012[disp * 2 + 1];
                             c0r = xsimd::fnma(ai, b0i, c0r);
                             c0i = xsimd::fma(ai, b0r, c0i);
                             c1r = xsimd::fnma(ai, b1i, c1r);
                             c1i = xsimd::fma(ai, b1r, c1i);
+                            c2r = xsimd::fnma(ai, b2i, c2r);
+                            c2i = xsimd::fma(ai, b2r, c2i);
+                            c3r = xsimd::fnma(ai, b3i, c3r);
+                            c3i = xsimd::fma(ai, b3r, c3i);
                         }
                     }
                     c0r.scatter(c + ldcc * 2 * j, vi4_r_c);
                     c0i.scatter(c + ldcc * 2 * j, vi4_i_c);
                     c1r.scatter(c + ldcc * 2 * (j + 1), vi4_r_c);
                     c1i.scatter(c + ldcc * 2 * (j + 1), vi4_i_c);
+                    c2r.scatter(c + ldcc * 2 * (j + 2), vi4_r_c);
+                    c2i.scatter(c + ldcc * 2 * (j + 2), vi4_i_c);
+                    c3r.scatter(c + ldcc * 2 * (j + 3), vi4_r_c);
+                    c3i.scatter(c + ldcc * 2 * (j + 3), vi4_i_c);
                 }
             }
         };
