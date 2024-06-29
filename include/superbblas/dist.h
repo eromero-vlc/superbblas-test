@@ -2743,7 +2743,43 @@ namespace superbblas {
             return fsr;
         }
 
+        // Remove self-intersections
+        /// \param p: partitioning
+        /// \param dim: dimensions
+
+        template <std::size_t Nd>
+        Proc_ranges<Nd> remove_repetitions(const Proc_ranges<Nd> &p, const Coor<Nd> &dim,
+                                           bool check_only_locally = false) {
+            Proc_ranges<Nd> r(p.size());
+            for (unsigned int i = 0; i < p.size(); ++i) {
+                for (unsigned int i0 = 0; i0 < p[i].size(); ++i0) {
+                    From_size<Nd> fs(1, p[i][i0]);
+                    for (unsigned int j = check_only_locally ? i : 0; j <= i; ++j) {
+                        for (unsigned int j0 = 0, j1 = (j < i ? p[j].size() : i0); j0 < j1; ++j0) {
+                            From_size<Nd> fsr;
+                            for (unsigned int fsi = 0; fsi < fs.size(); ++fsi) {
+                                if (volume(intersection(fs[fsi][0], fs[fsi][1], p[j][j0][0],
+                                                        p[j][j0][1], dim)) == 0) {
+                                    fsr.push_back(fs[fsi]);
+                                } else {
+                                    // make hole
+                                    auto new_fs = make_hole(fs[fsi][0], fs[fsi][1], p[j][j0][0],
+                                                            p[j][j0][1], dim);
+                                    for (const auto &fsi_ : new_fs) fsr.push_back(fsi_);
+                                }
+                            }
+                            fs = fsr;
+                        }
+                    }
+                    for (const auto &fsi : fs) r[i].push_back(fsi);
+                }
+            }
+            return r;
+        }
+
         enum ZeroInit { dontZeroInit, doZeroInit };
+
+        enum ForceCopy { avoidCopy, avoidCopyAtAnyCost, doCopy };
 
         /// Return a new components based on a partition taking the contexts from given components
         /// \param p: partitioning
@@ -2789,32 +2825,55 @@ namespace superbblas {
         /// \param v: tensor components
         /// \param p1: new partitioning
         /// \param comm: communicator
+        /// \param force_copy: whether to NOT avoid copy if the partition is the same
         /// \param cacheAlloc: whether to use cache the allocation
         /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
-        Components_tmpl<N, T, XPU0, XPU1>
-        like_this_components(const Proc_ranges<N> &p, const Order<N> &o0, const Coor<N> &from,
-                             const Coor<N> &dim, const Components_tmpl<N, T, XPU0, XPU1> &v,
-                             const Proc_ranges<N> &p1, const Order<N> &o1, Comm comm,
-                             CacheAlloc cacheAlloc = dontCacheAlloc,
-                             ZeroInit zero_init = dontZeroInit) {
+        std::tuple<Proc_ranges<N>, Components_tmpl<N, T, XPU0, XPU1>> like_this_components(
+            const Proc_ranges<N> &p, const Order<N> &o0, const Coor<N> &from, const Coor<N> &dim,
+            const Components_tmpl<N, T, XPU0, XPU1> &v, const Proc_ranges<N> &p1,
+            const Order<N> &o1, const Coor<N> &dim1, Comm comm, ForceCopy force_copy = avoidCopy,
+            CacheAlloc cacheAlloc = dontCacheAlloc, ZeroInit zero_init = dontZeroInit) {
 
             check_components(p, v, comm);
             check_components(p1, comm);
 
+            // Try to incorporate pieces of the origin tensor p into the new tensor
+            Coor<N> perm0 = find_permutation(o1, o0);
+            Coor<N> perm1 = find_permutation(o0, o1);
+            Coor<N> size = reorder_coor(dim1, perm0, 1);
+            if (!all_less_or_equal(size, dim)) throw std::runtime_error("wtf");
+            Proc_ranges<N> pr;
+            if (force_copy == avoidCopyAtAnyCost) {
+                pr = Proc_ranges<N>(p.size());
+                for (unsigned int rank = 0; rank < p.size(); ++rank) {
+                    for (unsigned int i = 0; i < p[rank].size(); ++i) {
+                        auto inter0 = intersection({p[rank][i]}, from, size, dim);
+                        if (inter0.size() != 1 || inter0[0][1] != p[rank][i][1]) continue;
+                        auto inter = intersection(
+                            translate_range(inter0, from, dim, {{}}, dim1, perm1), p1[rank], dim1);
+                        bool is_superset =
+                            (inter.size() == 1 && same_layout(o1, inter[0][1], o0, p[rank][i][1]));
+                        if (is_superset) pr[rank].push_back(inter[0]);
+                    }
+                    pr[rank].insert(pr[rank].end(), p1[rank].begin(), p1[rank].end());
+                }
+                pr = remove_repetitions(pr, dim1, true /* check only locally */);
+            } else {
+                pr = p1;
+            }
+
             // Deciding the device for each new component
             // NOTE: maximize the overlap with the original devices
-            Coor<N> perm1 = find_permutation(o1, o0);
-            std::vector<unsigned int> device(p1[comm.rank].size());
-            for (unsigned int i = 0; i < p1[comm.rank].size(); ++i) {
+            std::vector<unsigned int> device(pr[comm.rank].size());
+            auto pr_rank_translated = translate_range(pr[comm.rank], {{}}, dim1, from, dim, perm0);
+            for (unsigned int i = 0; i < pr_rank_translated.size(); ++i) {
                 std::size_t max_vol = 0;
                 unsigned int max_idx = 0;
                 for (unsigned int j = 0; j < p[comm.rank].size(); ++j) {
-                    std::size_t vol = volume(
-                        intersection(normalize_coor(p[comm.rank][j][0] + from, dim),
-                                     p[comm.rank][j][1], reorder_coor(p1[comm.rank][i][0], perm1),
-                                     reorder_coor(p1[comm.rank][i][1], perm1), dim));
+                    std::size_t vol =
+                        volume(intersection({pr_rank_translated[i]}, {p[comm.rank][j]}, dim));
                     if (vol > max_vol) {
                         max_vol = vol;
                         max_idx = j;
@@ -2823,23 +2882,193 @@ namespace superbblas {
                 device[i] = max_idx;
             }
 
+            // Compute how much to allocate
+            std::vector<std::size_t> allocate_device(getGpuDevicesCount() + 1);
+            auto p_rank_translated = translate_range(p[comm.rank], from, dim, {{}}, dim1, perm1);
+            for (unsigned int i = 0; i < pr[comm.rank].size(); ++i) {
+                const Coor<N> &dimi = pr[comm.rank][i][1];
+                bool is_superset = (force_copy != doCopy &&
+                                    p_rank_translated[device[i]][0] == pr[comm.rank][i][0] &&
+                                    same_layout(o1, dimi, o0, p[comm.rank][device[i]][1]));
+                if (!is_superset) {
+                    for (unsigned int j = 0; j < v.first.size(); ++j) {
+                        if (v.first[j].componentId != device[i]) continue;
+                        allocate_device[1 + deviceId(v.first[j].it.ctx())] += volume(dimi);
+                    }
+                    for (unsigned int j = 0; j < v.second.size(); ++j) {
+                        if (v.second[j].componentId != device[i]) continue;
+                        allocate_device[1 + deviceId(v.second[j].it.ctx())] += volume(dimi);
+                    }
+                }
+            }
+
             // Allocate the tensor
-            Components_tmpl<N, T, XPU0, XPU1> v1;
-            for (unsigned int i = 0; i < p1[comm.rank].size(); ++i) {
+            std::vector<vector<T, XPU0>> allocs0(getGpuDevicesCount() + 1);
+            std::vector<vector<T, XPU1>> allocs1(getGpuDevicesCount() + 1);
+            Components_tmpl<N, T, XPU0, XPU1> vr;
+            for (unsigned int i = 0; i < pr[comm.rank].size(); ++i) {
+                const Coor<N> &dimi = pr[comm.rank][i][1];
+                bool is_superset =
+                    (force_copy != doCopy && p_rank_translated[device[i]] == pr[comm.rank][i] &&
+                     same_layout(o1, dimi, o0, p[comm.rank][device[i]][1]));
                 for (unsigned int j = 0; j < v.first.size(); ++j) {
                     if (v.first[j].componentId != device[i]) continue;
-                    const Coor<N> &dimi = p1[comm.rank][i][1];
-                    vector<T, XPU0> v1i(volume(dimi), v.first[j].it.ctx(), cacheAlloc);
-                    if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
-                    v1.first.push_back(Component<N, T, XPU0>{v1i, dimi, i, Mask<XPU0>{}});
+                    vector<T, XPU0> vri;
+                    if (is_superset) {
+                        vri = v.first[j].it;
+                    } else {
+                        int dev_plus_1 = 1 + deviceId(v.first[j].it.ctx());
+                        if (allocs0.at(dev_plus_1).size() == 0) {
+                            auto newv = allocs0.at(dev_plus_1) = vector<T, XPU0>(
+                                allocate_device.at(dev_plus_1), v.first[j].it.ctx(), cacheAlloc);
+                            if (zero_init == doZeroInit)
+                                zero_n(newv.data(), newv.size(), newv.ctx());
+                        }
+                        vri = allocs0.at(dev_plus_1);
+                        allocs0.at(dev_plus_1) = allocs0.at(dev_plus_1).displace(volume(dimi));
+                    }
+                    vr.first.push_back(Component<N, T, XPU0>{vri, dimi, i, Mask<XPU0>{}});
                 }
                 for (unsigned int j = 0; j < v.second.size(); ++j) {
                     if (v.second[j].componentId != device[i]) continue;
-                    const Coor<N> &dimi = p1[comm.rank][i][1];
-                    vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
-                    if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
-                    v1.second.push_back(Component<N, T, XPU1>{v1i, dimi, i, Mask<XPU1>{}});
+                    vector<T, XPU1> vri;
+                    if (is_superset) {
+                        vri = v.second[j].it;
+                    } else {
+                        int dev_plus_1 = 1 + deviceId(v.second[j].it.ctx());
+                        if (allocs1.at(dev_plus_1).size() == 0) {
+                            auto newv = allocs1.at(dev_plus_1) = vector<T, XPU0>(
+                                allocate_device.at(dev_plus_1), v.second[j].it.ctx(), cacheAlloc);
+                            if (zero_init == doZeroInit)
+                                zero_n(newv.data(), newv.size(), newv.ctx());
+                        }
+                        vri = allocs1.at(dev_plus_1);
+                        allocs1.at(dev_plus_1) = allocs1.at(dev_plus_1).displace(volume(dimi));
+                    }
+                    vr.second.push_back(Component<N, T, XPU1>{vri, dimi, i, Mask<XPU1>{}});
                 }
+            }
+
+            return {pr, vr};
+        }
+
+        /// Return a new components based on a partition selecting the context from the component
+        /// with more overlap over the given components
+        /// \param p: partitioning
+        /// \param from: first element to consider
+        /// \param dim: dimensions of the tensor
+        /// \param v: tensor components
+        /// \param p1: new partitioning
+        /// \param comm: communicator
+        /// \param force_copy: whether to NOT avoid copy if the partition is the same
+        /// \param cacheAlloc: whether to use cache the allocation
+        /// \param zero_init: whether to zeroed the new allocation
+
+        template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1,
+                  std::size_t N1, typename Q>
+        Components_tmpl<N, T, XPU0, XPU1>
+        like_this_components(const Proc_ranges<N> &p, const Order<N> &o0, const Coor<N> &from,
+                             const Coor<N> &dim, const Components_tmpl<N, T, XPU0, XPU1> &v,
+                             const Proc_ranges<N> &p1, const Order<N> &o1, const Coor<N> &dim1,
+                             const Components_tmpl<N1, Q, XPU0, XPU1> &v1_sample, Comm comm,
+                             ForceCopy force_copy = avoidCopy,
+                             CacheAlloc cacheAlloc = dontCacheAlloc,
+                             ZeroInit zero_init = dontZeroInit) {
+
+            check_components(p, v, comm);
+            check_components(p1, v1_sample, comm);
+
+            // Compute how much to allocate
+            Coor<N> perm1 = find_permutation(o0, o1);
+            auto p_rank_translated = translate_range(p[comm.rank], from, dim, {{}}, dim1, perm1);
+            std::vector<std::size_t> allocate_device(getGpuDevicesCount() + 1);
+            std::vector<int> allocated_component(p1[comm.rank].size());
+            Components_tmpl<N, T, XPU0, XPU1> v1;
+            XPU0 xpu0;
+            XPU1 xpu1;
+            for (unsigned int i = 0; i < p1[comm.rank].size(); ++i) {
+                const Coor<N> &dimi = p1[comm.rank][i][1];
+                int device = -1;
+                for (unsigned int j = 0; j < v1_sample.first.size(); ++j) {
+                    if (v1_sample.first[j].componentId != i) continue;
+                    xpu0 = v1_sample.first[j].it.ctx();
+                    device = deviceId(xpu0);
+                    break;
+                }
+                for (unsigned int j = 0; j < v1_sample.second.size(); ++j) {
+                    if (v1_sample.second[j].componentId != i) continue;
+                    xpu1 = v1_sample.second[j].it.ctx();
+                    device = deviceId(xpu1);
+                    break;
+                }
+                bool is_superset = false;
+                if (force_copy != doCopy) {
+                    for (unsigned int j = 0; j < v.first.size(); ++j) {
+                        auto p_rank_j = p_rank_translated[v.first[j].componentId];
+                        if (deviceId(v.first[j].it.ctx()) == device &&
+                            p_rank_j == p1[comm.rank][i] &&
+                            same_layout(o1, dimi, o0, p_rank_j[1])) {
+                            is_superset = true;
+                            v1.first.push_back(Component<N, T, XPU0>{
+                                v.first[j].it.withNewContext(xpu0), dimi, i, Mask<XPU0>{}});
+                            causalConnectTo(v.first[j].it.ctx(), xpu0);
+                            break;
+                        }
+                    }
+                    for (unsigned int j = 0; j < v.second.size(); ++j) {
+                        auto p_rank_j = p_rank_translated[v.second[j].componentId];
+                        if (deviceId(v.second[j].it.ctx()) == device &&
+                            p_rank_j == p1[comm.rank][i] &&
+                            same_layout(o1, dimi, o0, p_rank_j[1])) {
+                            is_superset = true;
+                            v1.second.push_back(Component<N, T, XPU1>{
+                                v.second[j].it.withNewContext(xpu1), dimi, i, Mask<XPU1>{}});
+                            causalConnectTo(v.second[j].it.ctx(), xpu1);
+                            break;
+                        }
+                    }
+                }
+                if (is_superset) {
+                    allocated_component[i] = 1;
+                } else {
+                    allocate_device[1 + device] += volume(dimi);
+                }
+            }
+
+            // Allocate the tensor
+            std::vector<vector<T, XPU0>> allocs0(getGpuDevicesCount() + 1);
+            std::vector<vector<T, XPU1>> allocs1(getGpuDevicesCount() + 1);
+            for (unsigned int j = 0; j < v1_sample.first.size(); ++j) {
+                unsigned int i = v1_sample.first[j].componentId;
+                if (allocated_component[i]) continue;
+                int dev_plus_1 = 1 + deviceId(v1_sample.first[j].it.ctx());
+                if (allocs0.at(dev_plus_1).size() == 0) {
+                    auto it = allocs0.at(dev_plus_1) = vector<T, XPU0>(
+                        allocate_device.at(dev_plus_1), v1_sample.first[j].it.ctx(), cacheAlloc);
+                    if (zero_init == doZeroInit) zero_n(it.data(), it.size(), it.ctx());
+                }
+                auto v1i = allocs0.at(dev_plus_1);
+                const Coor<N> &dimi = p1[comm.rank][i][1];
+                std::size_t vol = volume(dimi);
+                allocs0.at(dev_plus_1) = v1i.displace(vol);
+                v1.first.push_back(
+                    Component<N, T, XPU0>{v1i.subrange(0, vol), dimi, i, Mask<XPU0>{}});
+            }
+            for (unsigned int j = 0; j < v1_sample.second.size(); ++j) {
+                unsigned int i = v1_sample.second[j].componentId;
+                if (allocated_component[i]) continue;
+                int dev_plus_1 = 1 + deviceId(v1_sample.second[j].it.ctx());
+                if (allocs1.at(dev_plus_1).size() == 0) {
+                    auto it = allocs1.at(dev_plus_1) = vector<T, XPU0>(
+                        allocate_device.at(dev_plus_1), v1_sample.second[j].it.ctx(), cacheAlloc);
+                    if (zero_init == doZeroInit) zero_n(it.data(), it.size(), it.ctx());
+                }
+                auto v1i = allocs1.at(dev_plus_1);
+                const Coor<N> &dimi = p1[comm.rank][i][1];
+                std::size_t vol = volume(dimi);
+                allocs1.at(dev_plus_1) = v1i.displace(vol);
+                v1.second.push_back(
+                    Component<N, T, XPU1>{v1i.subrange(0, vol), dimi, i, Mask<XPU1>{}});
             }
 
             return v1;
@@ -2863,16 +3092,17 @@ namespace superbblas {
             const Coor<N> &size0, const Coor<N> &dim0, const Components_tmpl<N, T, XPU0, XPU1> &v0,
             const Proc_ranges<N> &p1, const Coor<N> &dim1, const Order<N> &o1,
             const Components_tmpl<N1, Q, XPU0, XPU1> &v1_sample, Comm comm, CoorOrder co,
-            bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+            ForceCopy force_copy = avoidCopy, CacheAlloc cacheAlloc = dontCacheAlloc,
             ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1 &&
+            if (force_copy != doCopy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1 &&
                 check_components_compatibility(v0, v1_sample))
                 return {v0, Request{}};
 
             // Allocate the tensor
-            auto v1 = like_this_components(p1, v1_sample, comm, cacheAlloc, zero_init);
+            auto v1 = like_this_components(p0, o0, from0, dim0, v0, p1, o1, dim1, v1_sample, comm,
+                                           force_copy, cacheAlloc, zero_init);
 
             // Copy the content of v0 into v1
             return {v1, copy_request_normalized<N, N, T>(T{1}, p0, from0, size0, dim0, o0,
@@ -2899,7 +3129,7 @@ namespace superbblas {
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1,
                        const Components_tmpl<N1, Q, XPU0, XPU1> &v1_sample, Comm comm, CoorOrder co,
-                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+                       ForceCopy force_copy = avoidCopy, CacheAlloc cacheAlloc = dontCacheAlloc,
                        ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
             const auto t =
@@ -2922,24 +3152,29 @@ namespace superbblas {
         /// \param zero_init: whether to zeroed the new allocation
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
-        std::pair<Components_tmpl<N, T, XPU0, XPU1>, Request> reorder_tensor_request(
-            const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
-            const Coor<N> &size0, const Coor<N> &dim0, const Components_tmpl<N, T, XPU0, XPU1> &v0,
-            const Proc_ranges<N> &p1, const Coor<N> &dim1, const Order<N> &o1, Comm comm,
-            CoorOrder co, bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
-            ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
+        std::tuple<Proc_ranges<N>, Components_tmpl<N, T, XPU0, XPU1>, Request>
+        reorder_tensor_request(const Proc_ranges<N> &p0, const Order<N> &o0, const Coor<N> &from0,
+                               const Coor<N> &size0, const Coor<N> &dim0,
+                               const Components_tmpl<N, T, XPU0, XPU1> &v0,
+                               const Proc_ranges<N> &p1, const Coor<N> &dim1, const Order<N> &o1,
+                               Comm comm, CoorOrder co, ForceCopy force_copy = avoidCopy,
+                               CacheAlloc cacheAlloc = dontCacheAlloc,
+                               ForceLocal force_local = dontForceLocal,
+                               ZeroInit zero_init = dontZeroInit) {
 
             // If the two orderings and partitions are equal, return the tensor
-            if (!force_copy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1) return {v0, Request()};
+            if (force_copy != doCopy && from0 == Coor<N>{{}} && o0 == o1 && p0 == p1)
+                return {p0, v0, Request()};
 
             // Allocate the tensor
-            auto v1 =
-                like_this_components(p0, o0, from0, dim0, v0, p1, o1, comm, cacheAlloc, zero_init);
+            auto pr_vr = like_this_components(p0, o0, from0, dim0, v0, p1, o1, dim1, comm,
+                                              force_copy, cacheAlloc, zero_init);
 
             // Copy the content of v0 into v1
-            return {v1, copy_request_normalized<N, N, T>(T{1}, p0, from0, size0, dim0, o0,
-                                                         toConst(v0), p1, {{}}, dim1, o1, v1, comm,
-                                                         EWOp::Copy{}, co, force_local)};
+            return {std::get<0>(pr_vr), std::get<1>(pr_vr),
+                    copy_request_normalized<N, N, T>(
+                        T{1}, p0, from0, size0, dim0, o0, toConst(v0), std::get<0>(pr_vr), {{}},
+                        dim1, o1, std::get<1>(pr_vr), comm, EWOp::Copy{}, co, force_local)};
         }
 
         /// Return a tensor with a given partitioning and ordering
@@ -2960,14 +3195,15 @@ namespace superbblas {
                        const Coor<N> &size0, const Coor<N> &dim0,
                        const Components_tmpl<N, T, XPU0, XPU1> &v0, const Proc_ranges<N> &p1,
                        const Coor<N> &dim1, const Order<N> &o1, Comm comm, CoorOrder co,
-                       bool force_copy = false, CacheAlloc cacheAlloc = dontCacheAlloc,
+                       ForceCopy force_copy = avoidCopy, CacheAlloc cacheAlloc = dontCacheAlloc,
                        ForceLocal force_local = dontForceLocal, ZeroInit zero_init = dontZeroInit) {
 
+            if (force_copy == avoidCopyAtAnyCost) throw std::runtime_error("wtf");
             const auto t =
                 reorder_tensor_request(p0, o0, from0, size0, dim0, v0, p1, dim1, o1, comm, co,
                                        force_copy, cacheAlloc, force_local, zero_init);
-            wait(t.second);
-            return t.first;
+            wait(std::get<2>(t));
+            return std::get<1>(t);
         }
 
         /// Check that the given components are compatible
@@ -2992,39 +3228,6 @@ namespace superbblas {
             if (unmatch_dev) return false;
 
             return true;
-        }
-
-        // Remove self-intersections
-        /// \param p: partitioning
-        /// \param dim: dimensions
-
-        template <std::size_t Nd>
-        Proc_ranges<Nd> remove_repetitions(const Proc_ranges<Nd> &p, const Coor<Nd> &dim) {
-            Proc_ranges<Nd> r(p.size());
-            for (unsigned int i = 0; i < p.size(); ++i) {
-                for (unsigned int i0 = 0; i0 < p[i].size(); ++i0) {
-                    From_size<Nd> fs(1, p[i][i0]);
-                    for (unsigned int j = 0; j <= i; ++j) {
-                        for (unsigned int j0 = 0, j1 = (j < i ? p[j].size() : i0); j0 < j1; ++j0) {
-                            From_size<Nd> fsr;
-                            for (unsigned int fsi = 0; fsi < fs.size(); ++fsi) {
-                                if (volume(intersection(fs[fsi][0], fs[fsi][1], p[j][j0][0],
-                                                        p[j][j0][1], dim)) == 0) {
-                                    fsr.push_back(fs[fsi]);
-                                } else {
-                                    // make hole
-                                    auto new_fs = make_hole(fs[fsi][0], fs[fsi][1], p[j][j0][0],
-                                                            p[j][j0][1], dim);
-                                    for (const auto &fsi_ : new_fs) fsr.push_back(fsi_);
-                                }
-                            }
-                            fs = fsr;
-                        }
-                    }
-                    for (const auto &fsi : fs) r[i].push_back(fsi);
-                }
-            }
-            return r;
         }
 
         /// Return partitions for the input tensors that are compatible for contraction
@@ -3153,10 +3356,10 @@ namespace superbblas {
             const auto &p1_ = std::get<1>(p01);
             Components_tmpl<Nd, T, XPU0, XPU1> v0_ =
                 reorder_tensor(p0, o0, from0, size0, dim0, v0, p0_, sug_size0, sug_o0, comm, co,
-                               false /* don't force copy */, doCacheAlloc);
+                               avoidCopy, doCacheAlloc);
             Components_tmpl<Nd, T, XPU0, XPU1> v1_ =
                 reorder_tensor(p1, o1, from1, size1, dim1, v1, p1_, sug_size1, sug_o1, v0_, comm,
-                               co, false /* don't force copy */, doCacheAlloc);
+                               co, avoidCopy, doCacheAlloc);
 
             // Generate the partitioning and the storage for the output tensor
             const auto &pr_ = std::get<2>(p01);

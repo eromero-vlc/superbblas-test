@@ -176,13 +176,14 @@ namespace superbblas {
 
             static inline void gemm_basic_3x3c_alpha1_beta0_perm(
                 Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
-                int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
-                zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                const zT *SB_RESTRICT b0_, const zT *SB_RESTRICT b1_, int bj01, int *SB_RESTRICT bj,
+                Idx bjprod, Idx ldbr, Idx ldbc, int perm_size, int *SB_RESTRICT perm,
+                int *SB_RESTRICT perm_sign, zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a = (const T *)(a_);
-                const T *SB_RESTRICT b = (const T *)(b_);
+                const T *SB_RESTRICT b_0 = (const T *)(b0_);
+                const T *SB_RESTRICT b_1 = (const T *)(b1_);
                 T *SB_RESTRICT c = (T *)(c_);
                 bjprod *= 2;
 
@@ -199,37 +200,35 @@ namespace superbblas {
                     vc4 c3r(T{0}), c3i(T{0});
                     for (Idx mat = 0; mat < Nmats; ++mat) {
                         auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
-                        auto b0p =
-                            b + bj[mat] * bjprod +
-                            ldbc * 2 *
-                                (j / perm_size * perm_size + perm[mat * perm_size + j % perm_size]);
+                        auto baseb = (bj[mat] < bj01 ? b_0 : b_1) +
+                                     (bj[mat] - (bj[mat] < bj01 ? 0 : bj01)) * bjprod;
+                        auto b0p = baseb + ldbc * 2 *
+                                               (j / perm_size * perm_size +
+                                                perm[mat * perm_size + j % perm_size]);
                         auto b0r = vc4::gather(b0p, vi4_r_b);
                         b0r = (perm_sign[mat * perm_size + j % perm_size] == 1 ? b0r : -b0r);
                         auto b0i = vc4::gather(b0p, vi4_i_b);
                         b0i = (perm_sign[mat * perm_size + j % perm_size] == 1 ? b0i : -b0i);
 
-                        auto b1p = b + bj[mat] * bjprod +
-                                   ldbc * 2 *
-                                       ((j + 1) / perm_size * perm_size +
-                                        perm[mat * perm_size + (j + 1) % perm_size]);
+                        auto b1p = baseb + ldbc * 2 *
+                                               ((j + 1) / perm_size * perm_size +
+                                                perm[mat * perm_size + (j + 1) % perm_size]);
                         auto b1r = vc4::gather(b1p, vi4_r_b);
                         b1r = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1r : -b1r);
                         auto b1i = vc4::gather(b1p, vi4_i_b);
                         b1i = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1i : -b1i);
 
-                        auto b2p = b + bj[mat] * bjprod +
-                                   ldbc * 2 *
-                                       ((j + 2) / perm_size * perm_size +
-                                        perm[mat * perm_size + (j + 2) % perm_size]);
+                        auto b2p = baseb + ldbc * 2 *
+                                               ((j + 2) / perm_size * perm_size +
+                                                perm[mat * perm_size + (j + 2) % perm_size]);
                         auto b2r = vc4::gather(b2p, vi4_r_b);
                         b2r = (perm_sign[mat * perm_size + (j + 2) % perm_size] == 1 ? b2r : -b2r);
                         auto b2i = vc4::gather(b2p, vi4_i_b);
                         b2i = (perm_sign[mat * perm_size + (j + 2) % perm_size] == 1 ? b2i : -b2i);
 
-                        auto b3p = b + bj[mat] * bjprod +
-                                   ldbc * 2 *
-                                       ((j + 3) / perm_size * perm_size +
-                                        perm[mat * perm_size + (j + 3) % perm_size]);
+                        auto b3p = baseb + ldbc * 2 *
+                                               ((j + 3) / perm_size * perm_size +
+                                                perm[mat * perm_size + (j + 3) % perm_size]);
                         auto b3r = vc4::gather(b3p, vi4_r_b);
                         b3r = (perm_sign[mat * perm_size + (j + 3) % perm_size] == 1 ? b3r : -b3r);
                         auto b3i = vc4::gather(b3p, vi4_i_b);
@@ -368,13 +367,14 @@ namespace superbblas {
 
             static inline void gemm_basic_3x3c_alpha1_beta0_perm(
                 Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
-                int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
-                zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                const zT *SB_RESTRICT b0_, const zT *SB_RESTRICT b1_, int bj01, int *SB_RESTRICT bj,
+                Idx bjprod, Idx ldbr, Idx ldbc, int perm_size, int *SB_RESTRICT perm,
+                int *SB_RESTRICT perm_sign, zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a = (const T *)(a_);
-                const T *SB_RESTRICT b = (const T *)(b_);
+                const T *SB_RESTRICT b_0 = (const T *)(b0_);
+                const T *SB_RESTRICT b_1 = (const T *)(b1_);
                 T *SB_RESTRICT c = (T *)(c_);
                 bjprod *= 2;
 
@@ -390,29 +390,30 @@ namespace superbblas {
                     vc8 c3(T{0});
                     for (Idx mat = 0; mat < Nmats; ++mat) {
                         auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
-                        auto b0 = vc8::gather(b + bj[mat] * bjprod +
-                                                  ldbc * 2 *
-                                                      (j / perm_size * perm_size +
-                                                       perm[mat * perm_size + j % perm_size]),
+                        auto baseb = (bj[mat] < bj01 ? b_0 : b_1) +
+                                     (bj[mat] - (bj[mat] < bj01 ? 0 : bj01)) * bjprod;
+                        auto b0 = vc8::gather(baseb + ldbc * 2 *
+                                                          (j / perm_size * perm_size +
+                                                           perm[mat * perm_size + j % perm_size]),
                                               vi8_ri_b);
                         b0 = (perm_sign[mat * perm_size + j % perm_size] == 1 ? b0 : -b0);
-                        auto b1 = vc8::gather(b + bj[mat] * bjprod +
-                                                  ldbc * 2 *
-                                                      ((j + 1) / perm_size * perm_size +
-                                                       perm[mat * perm_size + (j + 1) % perm_size]),
-                                              vi8_ri_b);
+                        auto b1 =
+                            vc8::gather(baseb + ldbc * 2 *
+                                                    ((j + 1) / perm_size * perm_size +
+                                                     perm[mat * perm_size + (j + 1) % perm_size]),
+                                        vi8_ri_b);
                         b1 = (perm_sign[mat * perm_size + (j + 1) % perm_size] == 1 ? b1 : -b1);
-                        auto b2 = vc8::gather(b + bj[mat] * bjprod +
-                                                  ldbc * 2 *
-                                                      ((j + 2) / perm_size * perm_size +
-                                                       perm[mat * perm_size + (j + 2) % perm_size]),
-                                              vi8_ri_b);
+                        auto b2 =
+                            vc8::gather(baseb + ldbc * 2 *
+                                                    ((j + 2) / perm_size * perm_size +
+                                                     perm[mat * perm_size + (j + 2) % perm_size]),
+                                        vi8_ri_b);
                         b2 = (perm_sign[mat * perm_size + (j + 2) % perm_size] == 1 ? b2 : -b2);
-                        auto b3 = vc8::gather(b + bj[mat] * bjprod +
-                                                  ldbc * 2 *
-                                                      ((j + 3) / perm_size * perm_size +
-                                                       perm[mat * perm_size + (j + 3) % perm_size]),
-                                              vi8_ri_b);
+                        auto b3 =
+                            vc8::gather(baseb + ldbc * 2 *
+                                                    ((j + 3) / perm_size * perm_size +
+                                                     perm[mat * perm_size + (j + 3) % perm_size]),
+                                        vi8_ri_b);
                         b3 = (perm_sign[mat * perm_size + (j + 3) % perm_size] == 1 ? b3 : -b3);
                         for (int disp = 0; disp < 3; ++disp) {
                             if (disp > 0) b0 = xsimd::swizzle(b0, vi8_flip_and_plus_1());
@@ -593,13 +594,14 @@ namespace superbblas {
 
             static inline void gemm_basic_3x3c_alpha1_beta0_perm(
                 Idx Nmats, Idx N, const zT *SB_RESTRICT a_, Idx ldar, Idx ldac,
-                const zT *SB_RESTRICT b_, int *SB_RESTRICT bj, Idx bjprod, Idx ldbr, Idx ldbc,
-                int perm_size, int *SB_RESTRICT perm, int *SB_RESTRICT perm_sign,
-                zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
+                const zT *SB_RESTRICT b0_, const zT *SB_RESTRICT b1_, int bj01, int *SB_RESTRICT bj,
+                Idx bjprod, Idx ldbr, Idx ldbc, int perm_size, int *SB_RESTRICT perm,
+                int *SB_RESTRICT perm_sign, zT *SB_RESTRICT c_, Idx ldcr, Idx ldcc) {
                 //constexpr Idx M = 3;
                 //constexpr Idx K = 3;
                 const T *SB_RESTRICT a = (const T *)(a_);
-                const T *SB_RESTRICT b = (const T *)(b_);
+                const T *SB_RESTRICT b_0 = (const T *)(b0_);
+                const T *SB_RESTRICT b_1 = (const T *)(b1_);
                 T *SB_RESTRICT c = (T *)(c_);
                 bjprod *= 2;
 
@@ -627,93 +629,79 @@ namespace superbblas {
                     vc16 c14(T{0});
                     for (Idx mat = 0; mat < Nmats; ++mat) {
                         auto a012 = get_A_cols(a + 2 * 3 * 3 * mat, ldar, ldac);
+                        auto baseb = (bj[mat] < bj01 ? b_0 : b_1) +
+                                     (bj[mat] - (bj[mat] < bj01 ? 0 : bj01)) * bjprod;
                         auto b0 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    (j / perm_size * perm_size +
-                                     perm[mat * perm_size + j % perm_size]),
+                            baseb + ldbc * 2 *
+                                        (j / perm_size * perm_size +
+                                         perm[mat * perm_size + j % perm_size]),
                             perm_sign[mat * perm_size + j % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 1) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 1) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 1) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 1) % perm_size]),
                             perm_sign[mat * perm_size + (j + 1) % perm_size], vi8_ri_b);
                         auto b2 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 2) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 2) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 2) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 2) % perm_size]),
                             perm_sign[mat * perm_size + (j + 2) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 3) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 3) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 3) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 3) % perm_size]),
                             perm_sign[mat * perm_size + (j + 3) % perm_size], vi8_ri_b);
                         auto b4 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 4) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 4) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 4) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 4) % perm_size]),
                             perm_sign[mat * perm_size + (j + 4) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 5) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 5) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 5) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 5) % perm_size]),
                             perm_sign[mat * perm_size + (j + 5) % perm_size], vi8_ri_b);
                         auto b6 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 6) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 6) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 6) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 6) % perm_size]),
                             perm_sign[mat * perm_size + (j + 6) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 7) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 7) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 7) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 7) % perm_size]),
                             perm_sign[mat * perm_size + (j + 7) % perm_size], vi8_ri_b);
                         auto b8 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 8) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 8) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 8) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 8) % perm_size]),
                             perm_sign[mat * perm_size + (j + 8) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 9) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 9) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 9) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 9) % perm_size]),
                             perm_sign[mat * perm_size + (j + 9) % perm_size], vi8_ri_b);
                         auto b10 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 10) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 10) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 10) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 10) % perm_size]),
                             perm_sign[mat * perm_size + (j + 10) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 11) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 11) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 11) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 11) % perm_size]),
                             perm_sign[mat * perm_size + (j + 11) % perm_size], vi8_ri_b);
                         auto b12 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 12) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 12) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 12) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 12) % perm_size]),
                             perm_sign[mat * perm_size + (j + 12) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 13) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 13) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 13) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 13) % perm_size]),
                             perm_sign[mat * perm_size + (j + 13) % perm_size], vi8_ri_b);
                         auto b14 = get_B_col_double(
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 14) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 14) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 14) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 14) % perm_size]),
                             perm_sign[mat * perm_size + (j + 14) % perm_size],
-                            b + bj[mat] * bjprod +
-                                ldbc * 2 *
-                                    ((j + 15) / perm_size * perm_size +
-                                     perm[mat * perm_size + (j + 15) % perm_size]),
+                            baseb + ldbc * 2 *
+                                        ((j + 15) / perm_size * perm_size +
+                                         perm[mat * perm_size + (j + 15) % perm_size]),
                             perm_sign[mat * perm_size + (j + 15) % perm_size], vi8_ri_b);
 
                         for (int disp = 0; disp < 3; ++disp) {
@@ -1298,18 +1286,18 @@ namespace superbblas {
             }
 
             static inline void func_perm(int nmats, int m, int n, int k, const T *a, int ldar,
-                                         int ldac, const T *b, int *bj, int bjprod, int ldbr,
-                                         int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
-                                         int ldcr, int ldcc) {
+                                         int ldac, const T *b0, const T *b1, int bj01, int *bj,
+                                         int bjprod, int ldbr, int ldbc, int perm_size, int *perm,
+                                         int *perm_sign, T *c, int ldcr, int ldcc) {
                 (void)k;
                 if (m != 3 || k != 3) abort();
                 if (m == 0 || n == 0) return;
 
                 constexpr std::size_t native_size = get_native_size<T>::size;
                 gemm_3x3_in_parts<native_size, typename T::value_type>::
-                    gemm_basic_3x3c_alpha1_beta0_perm(nmats, n, a, ldar, ldac, b, bj, bjprod, ldbr,
-                                                      ldbc, perm_size, perm, perm_sign, c, ldcr,
-                                                      ldcc);
+                    gemm_basic_3x3c_alpha1_beta0_perm(nmats, n, a, ldar, ldac, b0, b1, bj01, bj,
+                                                      bjprod, ldbr, ldbc, perm_size, perm,
+                                                      perm_sign, c, ldcr, ldcc);
             }
         };
 #    endif // SUPERBBLAS_USE_SHORTCUTS_FOR_GEMM_3x3
@@ -1320,8 +1308,9 @@ namespace superbblas {
                                     int lda, const T *b, int ldb, T *c, int ldc) {
                 xgemm(transa, transb, m, n, k, T{1}, a, lda, b, ldb, T{1}, c, ldc, detail::Cpu{});
             }
-            static inline void func_perm(int, int, int, int, const T *, int, int, const T *, int *,
-                                         int, int, int, int, int *, int *, T *, int, int) {
+            static inline void func_perm(int, int, int, int, const T *, int, int, const T *,
+                                         const T *, int, int *, int, int, int, int, int *, int *,
+                                         T *, int, int) {
                 abort();
             }
         };
@@ -1379,7 +1368,11 @@ namespace superbblas {
         /// \param a: pointer to the first element of A_0; all A_i are consecutive in memory
         /// \param ldar: number of elements to skip a row in A_i
         /// \param ldac: number of elements to skip a column in A_i
-        /// \param b: pointer base to all B_i matrices, B_i starts at b[bj[i]*bjprod]
+        /// \param b0: pointer base to all B_i matrices, B_i starts at b0[bj[i]*bjprod]
+        ///            if bj[i] < bj01
+        /// \param b1: pointer base to all B_i matrices, B_i starts at b1[bj[i]*bjprod]
+        ///            if bj[i] >= bj01
+        /// \param bj01: discriminator to use b0 or b1 depending on bj[i]
         /// \param ldbr: number of elements to skip a row in B_i
         /// \param ldbc: number of elements to skip a column in B_i
         /// \param perm_size: period of the permutation and the scalar matrix
@@ -1391,13 +1384,13 @@ namespace superbblas {
 
         template <typename T>
         DECL_XGEMM_ALT_ALPHA1_BETA0_PERM_T(void xgemm_alt_alpha1_beta0_perm(
-            int nmats, int m, int n, int k, const T *a, int ldar, int ldac, const T *b, int *bj,
-            int bjprod, int ldbr, int ldbc, int perm_size, int *perm, int *perm_sign, T *c,
-            int ldcr, int ldcc, Cpu))
+            int nmats, int m, int n, int k, const T *a, int ldar, int ldac, const T *b0,
+            const T *b1, int bj01, int *bj, int bjprod, int ldbr, int ldbc, int perm_size,
+            int *perm, int *perm_sign, T *c, int ldcr, int ldcc, Cpu))
         IMPL({
             superbblas::detail_xp::gemm_basic_3x3c_alpha1_beta1_wrapper<T>::func_perm(
-                nmats, m, n, k, a, ldar, ldac, b, bj, bjprod, ldbr, ldbc, perm_size, perm,
-                perm_sign, c, ldcr, ldcc);
+                nmats, m, n, k, a, ldar, ldac, b0, b1, bj01, bj, bjprod, ldbr, ldbc, perm_size,
+                perm, perm_sign, c, ldcr, ldcc);
         })
 
         /// Return whether a crafted kernel is available

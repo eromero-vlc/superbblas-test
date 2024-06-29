@@ -561,8 +561,9 @@ namespace superbblas {
 
             // Generate the working partition
             Proc_ranges<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);
-            Components_tmpl<N, T, XPU0, XPU1> vw = reorder_tensor(
-                p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co, force_copy, doCacheAlloc);
+            Components_tmpl<N, T, XPU0, XPU1> vw =
+                reorder_tensor(p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co,
+                               force_copy ? doCopy : avoidCopy, doCacheAlloc);
 
             return {pw, dimw, ow, vw, n};
         }
@@ -770,7 +771,7 @@ namespace superbblas {
             const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw =
                 reorder_tensor(px, ox, {{}}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
-                               true /* Force copy */, doCacheAlloc);
+                               doCopy, doCacheAlloc);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, pxw, dimxw, oxw, oyw);
             Proc_ranges<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;
@@ -915,7 +916,7 @@ namespace superbblas {
             const Coor<Nx> &dimxw = tx_.second;
             Components_tmpl<Nx, T, XPU0, XPU1> vxw =
                 reorder_tensor(px, ox, {{}}, dimx, dimx, toNonConst(vx), pxw, dimxw, oxw, comm, co,
-                               true /* Force copy */, doCacheAlloc);
+                               doCopy, doCacheAlloc);
             auto ty_ = get_output_partition(pcw, dimcw, ocw, pxw, dimxw, oxw, oyw);
             Proc_ranges<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;

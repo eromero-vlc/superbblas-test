@@ -49,7 +49,7 @@ namespace superbblas {
 
 #    ifndef SUPERBBLAS_USE_CBLAS
 
-// clang-format off
+        // clang-format off
 #define XCOPY     FORTRAN_FUNCTION(ARITH(hcopy , kcopy , scopy , ccopy , dcopy , zcopy , , ))
 #define XSWAP     FORTRAN_FUNCTION(ARITH(hswap , kswap , sswap , cswap , dswap , zswap , , ))
 #define XGEMM     FORTRAN_FUNCTION(ARITH(hgemm , kgemm , sgemm , cgemm , dgemm , zgemm , , ))
@@ -103,7 +103,7 @@ namespace superbblas {
 
 #        define CBLAS_FUNCTION(X) CONCAT(cblas_, X)
 
-// clang-format off
+        // clang-format off
 #define XCOPY     CBLAS_FUNCTION(ARITH(hcopy , kcopy , scopy , ccopy , dcopy , zcopy , , ))
 #define XSWAP     CBLAS_FUNCTION(ARITH(hswap , kswap , sswap , cswap , dswap , zswap , , ))
 #define XGEMM     CBLAS_FUNCTION(ARITH(hgemm , kgemm , sgemm , cgemm , dgemm , zgemm , , ))
@@ -164,7 +164,7 @@ namespace superbblas {
 
 #    endif //  SUPERBBLAS_USE_CBLAS
 
-// clang-format off
+        // clang-format off
 #define XPOTRF    FORTRAN_FUNCTION(ARITH(hpotrf, kpotrf, spotrf, cpotrf, dpotrf, zpotrf, , ))
 #define XGETRF    FORTRAN_FUNCTION(ARITH(hgetrf, kgetrf, sgetrf, cgetrf, dgetrf, zgetrf, , ))
 #define XGETRI    FORTRAN_FUNCTION(ARITH(hgetri, kgetri, sgetri, cgetri, dgetri, zgetri, , ))
@@ -495,7 +495,7 @@ namespace superbblas {
 
 #        define MKL_SP_FUNCTION(X) CONCAT(mkl_sparse_, X)
 
-// clang-format off
+        // clang-format off
 #define XSPCREATEBSR    MKL_SP_FUNCTION(ARITH( , , s_create_bsr , c_create_bsr , d_create_bsr , z_create_bsr , , ))
 #define XSPMM           MKL_SP_FUNCTION(ARITH( , , s_mm , c_mm , d_mm , z_mm , , ))
         // clang-format on

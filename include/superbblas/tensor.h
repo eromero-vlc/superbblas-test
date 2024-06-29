@@ -146,6 +146,13 @@ namespace superbblas {
         }
 
         template <typename T, std::size_t N>
+        std::array<T, N> operator*(const std::array<T, N> &a, const std::array<T, N> &b) {
+            std::array<T, N> r;
+            for (std::size_t i = 0; i < N; i++) r[i] = a[i] * b[i];
+            return r;
+        }
+
+        template <typename T, std::size_t N>
         std::array<T, N> operator/(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
             for (std::size_t i = 0; i < N; i++) r[i] = a[i] / b[i];
@@ -504,6 +511,40 @@ namespace superbblas {
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
             return all_less_or_equal(size1, dim1);
+        }
+
+        /// Check that two dimensions and orderings refer to the same tensor layout
+        /// \param o0: dimension labels for the origin tensor
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        bool same_layout(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                         const Coor<Nd1> dim1) {
+
+            // Zero volume shortcut
+            if (volume(dim0) == 0 && volume(dim1) == 0) return true;
+
+            // Different volume shortcut
+            if (volume(dim0) != volume(dim1)) return false;
+
+            // Check that the nonsingular dimensions have the same order
+            for (std::size_t i = 0, i0 = 0, i1 = 0; i < std::max(Nd0, Nd1); ++i) {
+                while (i0 < Nd0 && dim0[i0] == 1) ++i0;
+                while (i1 < Nd1 && dim1[i1] == 1) ++i1;
+                if (i0 < Nd0 && i1 < Nd1) {
+                    if (o0[i0] != o1[i1] || dim0[i0] != dim1[i1]) return false;
+                    i0++;
+                    i1++;
+                } else if (i0 == Nd0 && i1 == Nd1) {
+                    break;
+                } else {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         //
