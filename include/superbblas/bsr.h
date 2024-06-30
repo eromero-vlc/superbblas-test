@@ -562,6 +562,16 @@ namespace superbblas {
             ~BSR() {}
         };
 #else
+        /// Return the scalar type of a real or complex type
+        /// \tparam T: one of float, double, std::complex<T>
+        /// \return scalar_type<T>::type has the new type
+
+        template <typename T> struct scalar_type {
+            using type = T;
+        };
+        template <typename T> struct scalar_type<std::complex<T>> {
+            using type = T;
+        };
 
         template <std::size_t Nd, std::size_t Ni, typename T> struct BSR<Nd, Ni, T, Cpu> {
             BSRComponent<Nd, Ni, T, Cpu> v; ///< BSR general information
@@ -582,6 +592,8 @@ namespace superbblas {
 
             BSR(const BSRComponent<Nd, Ni, T, Cpu> &v) : v(v) {
                 allowLayout = RowMajorForXandY;
+                kron_use_crafted_kernel = false;
+                preferredLayout = RowMajor;
                 if (volume(v.dimi) == 0 || volume(v.dimd) == 0) return;
                 auto bsr = get_bsr_indices(v); // column indices aren't blocked
                 ii = bsr.i;
@@ -592,8 +604,10 @@ namespace superbblas {
                     std::size_t ki = volume(v.kroni);
                     std::size_t kd = volume(v.krond);
                     std::size_t block_size = volume(v.blocki);
+                    const auto eps =
+                        std::numeric_limits<typename scalar_type<T>::type>::epsilon() * 10;
                     // Check that the kronecker block is 4 and the block is 3
-                    if (ki != kd || block_size != volume(v.blockd) || block_size != 3 ||
+                    if (ki != kd || ki != 4 || block_size != volume(v.blockd) || block_size != 3 ||
                         !available_bsr_kron_3x3_perm<T>())
                         kron_use_crafted_kernel = false;
                     // Check that the kronecker blocks can be represented with a permutation
@@ -606,17 +620,19 @@ namespace superbblas {
                     int ldc = (v.blockImFast ? ki : 1);
                     for (std::size_t blk = 0; blk < num_blocks; blk++) {
                         for (std::size_t i = 0; i < ki; i++) {
-                            bool is_perm = true, is_first_nnz = true;
+                            bool is_perm = false, is_first_nnz = true;
                             for (std::size_t j = 0; j < kd; j++) {
                                 T val = v.kron_it[ki * kd * blk + i * ldr + j * ldc];
                                 if (std::norm(val) > 0) {
-                                    if (is_first_nnz) {
+                                    if (is_first_nnz && std::min(std::abs(val - T{1}),
+                                                                 std::abs(val - T{-1})) < eps) {
                                         is_perm = true;
                                         is_first_nnz = false;
                                         if (val != T{1} && val != T{-1})
                                             kron_use_crafted_kernel = false;
                                         kron_perm[kd * blk + i] = j;
-                                        kron_sign_scalars[kd * blk + i] = (val == T{1} ? 1 : -1);
+                                        kron_sign_scalars[kd * blk + i] =
+                                            (std::real(val) > 0 ? 1 : -1);
                                     } else {
                                         is_perm = false;
                                     }
