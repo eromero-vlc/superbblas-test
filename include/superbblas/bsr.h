@@ -723,8 +723,8 @@ namespace superbblas {
             enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
-            vector<int, Gpu> kron_perm;   ///< represent the kron matrices with a permutation
-            vector<T, Gpu> kron_scalars;  ///< represent the kron matrices with scalars
+            vector<int, Gpu> kron_perm;  ///< represent the kron matrices with a permutation
+            vector<T, Gpu> kron_scalars; ///< represent the kron matrices with scalars
 #    endif
             unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
             vector<T, Cpu> kron_cpu;        ///< Host version of v.kron
@@ -2123,7 +2123,7 @@ namespace superbblas {
                             vx.ctx());
 
             // Quick exit
-            if (volume(dimx) == 0 && volume(dimy) == 0) return;
+            if (volume(dimy) == 0) return;
 
             // Check inputs and get the common dimensions
             bool transSp;
