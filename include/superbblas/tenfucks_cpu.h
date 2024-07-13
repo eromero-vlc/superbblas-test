@@ -64,6 +64,10 @@ namespace superbblas {
             using type = uint64_t;
         };
 
+        template <typename B, typename B::value_type... Values>
+        using constant = typename xsimd::batch_constant<typename B::value_type,
+                                                        typename B::arch_type, Values...>;
+
         /// Implementation for
         ///  - complex double on SIMD 512 bits (avx512)
         ///  - complex float  on SIMD 256 bits (avx)
@@ -103,11 +107,10 @@ namespace superbblas {
             }
 
             template <bool the_real> static inline vc8 get_A_col(vc8 va) {
-                return the_real ? xsimd::shuffle(
-                                      va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
-                                : xsimd::shuffle(xsimd::neg(va), va,
-                                                 xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
-                                                                       8 + 5, 8 + 5, 8 + 5>());
+                return the_real ? xsimd::shuffle(va, va, constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
+                                : xsimd::shuffle(
+                                      xsimd::neg(va), va,
+                                      constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>());
             }
 
             static inline vi8 get_8_ri(Idx ld) {
@@ -131,8 +134,8 @@ namespace superbblas {
                 T *SB_RESTRICT c = (T *)(c_);
 
                 // d[i,j] = beta * c[i,j] + sum_0^k a[i,k] * b[k,j]
-                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
-                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                using vi8_flip_ri = constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
                 auto a012 = get_A_cols(a, ldar, ldac);
                 auto vi8_ri_b = get_8_ri(ldbr);
                 auto vi8_ri_c = get_8_ri(ldcr);
@@ -193,11 +196,10 @@ namespace superbblas {
             }
 
             template <bool the_real> static inline vc8 get_A_col(vc8 va) {
-                return the_real ? xsimd::shuffle(
-                                      va, va, xsimd::batch_constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
-                                : xsimd::shuffle(xsimd::neg(va), va,
-                                                 xsimd::batch_constant<vi8, 1, 8 + 1, 3, 8 + 3, 5,
-                                                                       8 + 5, 8 + 5, 8 + 5>());
+                return the_real ? xsimd::shuffle(va, va, constant<vi8, 0, 0, 2, 2, 4, 4, 4, 4>())
+                                : xsimd::shuffle(
+                                      xsimd::neg(va), va,
+                                      constant<vi8, 1, 8 + 1, 3, 8 + 3, 5, 8 + 5, 8 + 5, 8 + 5>());
             }
 
             template <bool the_real> static inline vc16 get_A_col_double(vc8 va) {
@@ -247,8 +249,8 @@ namespace superbblas {
                 const T *SB_RESTRICT b = (const T *)(b_);
                 T *SB_RESTRICT c = (T *)(c_);
 
-                using vi8_flip_ri = xsimd::batch_constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
-                using vi8_flip_and_plus_1 = xsimd::batch_constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
+                using vi8_flip_ri = constant<vi8, 1, 0, 3, 2, 5, 4, 4, 4>;
+                using vi8_flip_and_plus_1 = constant<vi8, 3, 2, 5, 4, 1, 0, 0, 0>;
                 auto a012 = get_A_cols(a, ldar, ldac);
                 if (N % 2 != 0) {
                     auto vi8_ri_b = get_8_ri(ldbr);
@@ -267,11 +269,11 @@ namespace superbblas {
                     (c0 + c1).scatter(c, vi8_ri_c);
                 }
                 using vi16_flip_ri =
-                    xsimd::batch_constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
-                                          8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
+                    constant<vi16, 1, 0, 3, 2, 5, 4, 4, 4, //
+                             8 + 1, 8 + 0, 8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 4, 8 + 4>;
                 using vi16_flip_and_plus_1 =
-                    xsimd::batch_constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
-                                          8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
+                    constant<vi16, 3, 2, 5, 4, 1, 0, 0, 0, //
+                             8 + 3, 8 + 2, 8 + 5, 8 + 4, 8 + 1, 8 + 0, 8 + 0, 8 + 0>;
                 auto vi16_ri_b = get_16_ri(ldbr, ldbc);
                 auto vi16_ri_c = get_16_ri(ldcr, ldcc);
                 if (default_leading_dimensions) vi16_ri_c = vi16_ri_b;
