@@ -1700,6 +1700,7 @@ namespace superbblas {
         /// \param dimy: dimension of the resulting tensor in consecutive ranges
         /// \param oy: dimension labels for the output tensor
         /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
+        /// \param ncols_permissive: whether to check the number of columns
         /// \param xylayout: possible layouts for x and y
         /// \param preferred_layout: preferred layout for x and y
         /// \param co: coordinate linearization order
@@ -1731,7 +1732,7 @@ namespace superbblas {
                                     const Coor<Nd> &blockd, const Coor<Ni> &kroni,
                                     const Coor<Nd> &krond, bool is_kron, const Coor<Nx> &dimx,
                                     const Order<Nx> &ox, const Coor<Ny> &dimy, const Order<Ny> &oy,
-                                    char okr, SpMMAllowedLayout xylayout,
+                                    char okr, bool ncols_permissive, SpMMAllowedLayout xylayout,
                                     MatrixLayout preferred_layout, CoorOrder co, bool &transSp,
                                     MatrixLayout &lx, MatrixLayout &ly, std::size_t &volC,
                                     Order<Nx> &sug_ox, Order<Ny> &sug_oy, Order<Ny> &sug_oy_trans) {
@@ -1740,11 +1741,12 @@ namespace superbblas {
                 Order<Nx> sug_ox0;
                 Order<Ny> sug_oy0;
                 Order<Ny> sug_oy_trans0;
-                local_bsr_krylov_check(
-                    reverse(dimi), reverse(dimd), reverse(oi), reverse(od), reverse(blocki),
-                    reverse(blockd), reverse(kroni), reverse(krond), is_kron, reverse(dimx),
-                    reverse(ox), reverse(dimy), reverse(oy), okr, xylayout, preferred_layout,
-                    SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0, sug_oy_trans0);
+                local_bsr_krylov_check(reverse(dimi), reverse(dimd), reverse(oi), reverse(od),
+                                       reverse(blocki), reverse(blockd), reverse(kroni),
+                                       reverse(krond), is_kron, reverse(dimx), reverse(ox),
+                                       reverse(dimy), reverse(oy), okr, ncols_permissive, xylayout,
+                                       preferred_layout, SlowToFast, transSp, lx, ly, volC, sug_ox0,
+                                       sug_oy0, sug_oy_trans0);
                 sug_ox = reverse(sug_ox0);
                 sug_oy = reverse(sug_oy0);
                 sug_oy_trans = reverse(sug_oy_trans0);
@@ -1773,7 +1775,7 @@ namespace superbblas {
                 throw std::runtime_error("bsr_krylov: dimensions of the dense input tensor "
                                          "doesn't match the sparse tensor");
             for (unsigned int i = 0; i < Ny; ++i) {
-                if (ox[i] == okr) continue;
+                if (oy[i] == okr) continue;
                 auto sd = std::find(od.begin(), od.end(), oy[i]);
                 if (sd != od.end()) {
                     failMatch |= (dimd[sd - od.begin()] != dimy[i]);
@@ -1786,6 +1788,8 @@ namespace superbblas {
                 }
                 auto sx = std::find(ox.begin(), ox.end(), oy[i]);
                 if (sx != ox.end()) {
+                    if (ncols_permissive && (dimx[sx - ox.begin()] == 0 || dimy[i] == 0))
+                        continue; // don't check rhs
                     failMatch |= (dimx[sx - ox.begin()] != dimy[i]);
                     continue;
                 }
@@ -2125,6 +2129,12 @@ namespace superbblas {
             // Quick exit
             if (volume(dimy) == 0) return;
 
+            // Shortcut when x is empty
+            if (volume(dimx) == 0) {
+                zero_n(vy.data(), vy.size(), vy.ctx());
+                return;
+            }
+
             // Check inputs and get the common dimensions
             bool transSp;
             MatrixLayout lx, ly;
@@ -2136,8 +2146,8 @@ namespace superbblas {
                 (volume(bsr.v.krond) > 1 || volume(bsr.v.kroni) > 1 || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
                                    bsr.v.kroni, bsr.v.krond, is_kron, dimx, ox, dimy, oy, okr,
-                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
-                                   volC, sug_ox, sug_oy, sug_oy_trans);
+                                   true /* permissive */, bsr.allowLayout, bsr.preferredLayout,
+                                   bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -2312,8 +2322,9 @@ namespace superbblas {
                      bsr.c.first[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
                                        bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
-                                       bsr.c.first[0].allowLayout, bsr.c.first[0].preferredLayout,
-                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                       false /* not permissive */, bsr.c.first[0].allowLayout,
+                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
             } else if (bsr.c.second.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
@@ -2323,8 +2334,9 @@ namespace superbblas {
                      bsr.c.second[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
                                        bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
-                                       bsr.c.second[0].allowLayout, bsr.c.second[0].preferredLayout,
-                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                       false /* not permissive */, bsr.c.second[0].allowLayout,
+                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
             }
             Coor<Nx> sug_dimx = reorder_coor(dimx, find_permutation(ox, sug_ox));
             Coor<Ny> sizey0 = sizey;
