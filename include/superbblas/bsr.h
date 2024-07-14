@@ -2129,12 +2129,6 @@ namespace superbblas {
             // Quick exit
             if (volume(dimy) == 0) return;
 
-            // Shortcut when x is empty
-            if (volume(dimx) == 0) {
-                zero_n(vy.data(), vy.size(), vy.ctx());
-                return;
-            }
-
             // Check inputs and get the common dimensions
             bool transSp;
             MatrixLayout lx, ly;
