@@ -897,14 +897,14 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, int max_power, uns
     const Coor<Nd + 1> kdim0 = {1,      dim[X], dim[Y], dim[Z],
                                 dim[T], dim[N], dim[S], dim[C]}; // pxyztnsc
     PartitionStored<Nd + 1> kp0 =
-        basic_partitioning("pxyztcns", kdim0, procs0, "xyzt", nprocs, ctx.size());
-    t0 = create_tensor_data<Q>(kp0, rank, "pxyztcns", dimo, dim[N], xpu);
+        basic_partitioning("pxyztnsc", kdim0, procs0, "xyzt", nprocs, ctx.size());
+    t0 = create_tensor_data<Q>(kp0, rank, "pxyztnsc", dimo, dim[N], xpu);
     Coor<Nd + 1> kdim1 =
         Coor<Nd + 1>{max_power, dim[X], dim[Y], dim[Z], dim[T], dim[N], dim[S], dim[C]}; // pxyztnsc
     const Coor<Nd + 1> kprocs1 =
         Coor<Nd + 1>{1, procs[X], procs[Y], procs[Z], procs[T], 1, 1, 1}; // pxyztcns
     PartitionStored<Nd + 1> kp1 =
-        basic_partitioning("pxyztcns", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
+        basic_partitioning("pxyztnsc", kdim1, kprocs1, "xyzt", nprocs, ctx.size());
 
     const std::vector<std::string> kron_sparse_str{"dense", "identity", "permutation",
                                                    "scaled-permutation"};

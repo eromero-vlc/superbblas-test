@@ -819,6 +819,8 @@ namespace superbblas {
         template <std::size_t Nd, std::size_t Ni, typename T> struct BSR<Nd, Ni, T, Gpu> {
             BSRComponent<Nd, Ni, T, Gpu> v; ///< BSR general information
             vector<IndexType, Gpu> ii, jj;  ///< BSR row and column nonzero indices
+            bool
+                kron_use_crafted_kernel; ///< whether to use a crafted kernel instead of cu/hipsparse
 #    ifdef SUPERBBLAS_USE_CUDA
             std::shared_ptr<cusparseMatDescr_t>
                 descrA_bsr; ///< cuSparse descriptor for BSR matrices
@@ -827,9 +829,8 @@ namespace superbblas {
             enum SparseFormat{FORMAT_BSR, FORMAT_CSR, FORMAT_ELL} spFormat; ///< the sparse format
 #    else
             std::shared_ptr<hipsparseMatDescr_t> descrA_bsr; ///< hipSparse descriptor
-            bool kron_use_crafted_kernel; ///< whether to use a crafted kernel instead of hipsparse
-            vector<int, Gpu> kron_perm;   ///< represent the kron matrices with a permutation
-            vector<T, Gpu> kron_scalars;  ///< represent the kron matrices with scalars
+            vector<int, Gpu> kron_perm;  ///< represent the kron matrices with a permutation
+            vector<T, Gpu> kron_scalars; ///< represent the kron matrices with scalars
 #    endif
             unsigned int num_nnz_per_row;   ///< Number of nnz per row (for Kronecker BSR)
             vector<T, Cpu> kron_cpu;        ///< Host version of v.kron
@@ -1728,7 +1729,7 @@ namespace superbblas {
                            (return_jj_blocked == ReturnJJBlockedWithKron ? volume(v.krond) : 1));
             std::vector<IndexType> domain_prefix(v.fragmentsd.size());
             for (unsigned int i = 1; i < v.fragmentsd.size(); ++i)
-                domain_prefix[i] = domain_prefix[i - 1] + volume(v.fragmentsd[i][1]) / bd;
+                domain_prefix[i] = domain_prefix[i - 1] + volume(v.fragmentsd[i - 1][1]) / bd;
             Coor<Nd> blockd = v.blockd * v.krond;
             bool there_are_minus_ones_in_columns = false;
 #ifdef _OPENMP
@@ -1860,6 +1861,7 @@ namespace superbblas {
         /// \param dimy: dimension of the resulting tensor in consecutive ranges
         /// \param oy: dimension labels for the output tensor
         /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
+        /// \param ncols_permissive: whether to check the number of columns
         /// \param xylayout: possible layouts for x and y
         /// \param preferred_layout: preferred layout for x and y
         /// \param co: coordinate linearization order
@@ -1891,7 +1893,7 @@ namespace superbblas {
                                     const Coor<Nd> &blockd, const Coor<Ni> &kroni,
                                     const Coor<Nd> &krond, bool is_kron, const Coor<Nx> &dimx,
                                     const Order<Nx> &ox, const Coor<Ny> &dimy, const Order<Ny> &oy,
-                                    char okr, SpMMAllowedLayout xylayout,
+                                    char okr, bool ncols_permissive, SpMMAllowedLayout xylayout,
                                     MatrixLayout preferred_layout, CoorOrder co, bool &transSp,
                                     MatrixLayout &lx, MatrixLayout &ly, std::size_t &volC,
                                     Order<Nx> &sug_ox, Order<Ny> &sug_oy, Order<Ny> &sug_oy_trans) {
@@ -1900,11 +1902,12 @@ namespace superbblas {
                 Order<Nx> sug_ox0;
                 Order<Ny> sug_oy0;
                 Order<Ny> sug_oy_trans0;
-                local_bsr_krylov_check(
-                    reverse(dimi), reverse(dimd), reverse(oi), reverse(od), reverse(blocki),
-                    reverse(blockd), reverse(kroni), reverse(krond), is_kron, reverse(dimx),
-                    reverse(ox), reverse(dimy), reverse(oy), okr, xylayout, preferred_layout,
-                    SlowToFast, transSp, lx, ly, volC, sug_ox0, sug_oy0, sug_oy_trans0);
+                local_bsr_krylov_check(reverse(dimi), reverse(dimd), reverse(oi), reverse(od),
+                                       reverse(blocki), reverse(blockd), reverse(kroni),
+                                       reverse(krond), is_kron, reverse(dimx), reverse(ox),
+                                       reverse(dimy), reverse(oy), okr, ncols_permissive, xylayout,
+                                       preferred_layout, SlowToFast, transSp, lx, ly, volC, sug_ox0,
+                                       sug_oy0, sug_oy_trans0);
                 sug_ox = reverse(sug_ox0);
                 sug_oy = reverse(sug_oy0);
                 sug_oy_trans = reverse(sug_oy_trans0);
@@ -1933,7 +1936,7 @@ namespace superbblas {
                 throw std::runtime_error("bsr_krylov: dimensions of the dense input tensor "
                                          "doesn't match the sparse tensor");
             for (unsigned int i = 0; i < Ny; ++i) {
-                if (ox[i] == okr) continue;
+                if (oy[i] == okr) continue;
                 auto sd = std::find(od.begin(), od.end(), oy[i]);
                 if (sd != od.end()) {
                     failMatch |= (dimd[sd - od.begin()] != dimy[i]);
@@ -1946,6 +1949,8 @@ namespace superbblas {
                 }
                 auto sx = std::find(ox.begin(), ox.end(), oy[i]);
                 if (sx != ox.end()) {
+                    if (ncols_permissive && (dimx[sx - ox.begin()] == 0 || dimy[i] == 0))
+                        continue; // don't check rhs
                     failMatch |= (dimx[sx - ox.begin()] != dimy[i]);
                     continue;
                 }
@@ -2225,8 +2230,27 @@ namespace superbblas {
                                 std::string(")"),
                             vy.ctx());
 
+            if (volume(bsr.v.dimd) * volume(bsr.v.blockd) *
+                        (bsr.v.kron_it.size() > 0 ? volume(bsr.v.krond) : 1) ==
+                    0 &&
+                volume(fragmentsd) != 0) {
+                throw std::runtime_error("wtf");
+            }
+
+            if (volume(bsr.v.dimi) * volume(bsr.v.blocki) *
+                        (bsr.v.kron_it.size() > 0 ? volume(bsr.v.kroni) : 1) ==
+                    0 &&
+                vy.size() != 0) {
+                throw std::runtime_error("wtf");
+            }
+
             // Quick exit
-            if (volume(fragmentsd) == 0 && volume(dimy) == 0) return;
+            if (volume(dimy) == 0) return;
+
+            if (volume(fragmentsd) == 0) {
+                zero_n(vy.data(), vy.size(), vy.ctx());
+                return;
+            }
 
             // Check that the domain fragments are the same ones expected
             if (fragmentsd.size() != bsr.v.fragmentsd.size())
@@ -2250,8 +2274,8 @@ namespace superbblas {
                 (volume(bsr.v.krond) > 1 || volume(bsr.v.kroni) > 1 || bsr.v.kron_it.size() > 0);
             local_bsr_krylov_check(bsr.v.dimi, bsr.v.dimd, oim, odm, bsr.v.blocki, bsr.v.blockd,
                                    bsr.v.kroni, bsr.v.krond, is_kron, sizex, ox, dimy, oy, okr,
-                                   bsr.allowLayout, bsr.preferredLayout, bsr.v.co, transSp, lx, ly,
-                                   volC, sug_ox, sug_oy, sug_oy_trans);
+                                   true /* permissive */, bsr.allowLayout, bsr.preferredLayout,
+                                   bsr.v.co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
             if (sug_ox != ox || sug_oy != oy)
                 throw std::runtime_error(
                     "Unsupported layout for the input and output dense tensors");
@@ -2455,8 +2479,9 @@ namespace superbblas {
                      bsr.c.first[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
                                        bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
-                                       bsr.c.first[0].allowLayout, bsr.c.first[0].preferredLayout,
-                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                       false /* not permissive */, bsr.c.first[0].allowLayout,
+                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
             } else if (bsr.c.second.size() > 0) {
                 bool transSp;
                 MatrixLayout lx, ly;
@@ -2466,8 +2491,9 @@ namespace superbblas {
                      bsr.c.second[0].v.kron_it.size() > 0);
                 local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
                                        bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
-                                       bsr.c.second[0].allowLayout, bsr.c.second[0].preferredLayout,
-                                       co, transSp, lx, ly, volC, sug_ox, sug_oy, sug_oy_trans);
+                                       false /* not permissive */, bsr.c.second[0].allowLayout,
+                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
             }
             Coor<Nx> sug_sizex = reorder_coor(sizex, find_permutation(ox, sug_ox));
             Coor<Ny> sizey0 = sizey;
