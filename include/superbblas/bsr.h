@@ -784,8 +784,8 @@ namespace superbblas {
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
-                        {
-                            std::vector<T> aux(ki * ncols * bd);
+                    {
+                        std::vector<T> aux(ki * ncols * bd);
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
@@ -1728,7 +1728,7 @@ namespace superbblas {
                            (return_jj_blocked == ReturnJJBlockedWithKron ? volume(v.krond) : 1));
             std::vector<IndexType> domain_prefix(v.fragmentsd.size());
             for (unsigned int i = 1; i < v.fragmentsd.size(); ++i)
-                domain_prefix[i] = domain_prefix[i - 1] + volume(v.fragmentsd[i][1]) / bd;
+                domain_prefix[i] = domain_prefix[i - 1] + volume(v.fragmentsd[i - 1][1]) / bd;
             Coor<Nd> blockd = v.blockd * v.krond;
             bool there_are_minus_ones_in_columns = false;
 #ifdef _OPENMP
