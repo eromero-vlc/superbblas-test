@@ -784,8 +784,8 @@ namespace superbblas {
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
-                    {
-                        std::vector<T> aux(ki * ncols * bd);
+                        {
+                            std::vector<T> aux(ki * ncols * bd);
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif
@@ -862,8 +862,8 @@ namespace superbblas {
                     std::size_t kd = volume(v.krond);
                     std::size_t block_size = volume(v.blocki);
                     // Check that the kronecker block is 4 and the block is 3
-                    if (ki != kd || ki != 4 || block_size != volume(v.blockd) || block_size != 3 ||
-                        !available_bsr_kron_3x3_4x4perm<T>(v.it.ctx()))
+                    if (ki != kd || ki != 4 || block_size != volume(v.blockd) ||
+                        !available_bsr_kron_nxn_4x4perm<T>(v.it.ctx()))
                         kron_use_crafted_kernel = false;
                     // Check that the kronecker blocks can be represented with a permutation
                     auto kron_cpu = makeSure(v.kron_it, Cpu{});
@@ -1271,11 +1271,11 @@ namespace superbblas {
                 if (kron_use_crafted_kernel) {
                     assert(lx == RowMajor && ly == RowMajor);
                     assert(ldx >= kd * ncols && ldy >= kd * ncols);
-                    bsr_kron_3x3_4x4perm(v.it.data(), v.blockImFast ? 1 : block_size,
-                                         v.blockImFast ? block_size : 1, jj.data(), block_rows,
-                                         num_nnz_per_row, kron_scalars.data(), kron_perm.data(), x,
-                                         kd * block_size * ncols, y, ki * block_size * ncols, ncols,
-                                         ii.ctx());
+                    bsr_kron_nxn_4x4perm(v.it.data(), v.blockImFast ? 1 : block_size,
+                                         v.blockImFast ? block_size : 1, block_size, jj.data(),
+                                         block_rows, num_nnz_per_row, kron_scalars.data(),
+                                         kron_perm.data(), x, kd * block_size * ncols, y,
+                                         ki * block_size * ncols, ncols, ii.ctx());
                     causalConnectTo(ii.ctx(), vy_.ctx());
                     return;
                 }
