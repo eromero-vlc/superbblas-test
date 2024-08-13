@@ -169,6 +169,7 @@ namespace superbblas {
 #define XGETRF    FORTRAN_FUNCTION(ARITH(hgetrf, kgetrf, sgetrf, cgetrf, dgetrf, zgetrf, , ))
 #define XGETRI    FORTRAN_FUNCTION(ARITH(hgetri, kgetri, sgetri, cgetri, dgetri, zgetri, , ))
 #define XGETRS    FORTRAN_FUNCTION(ARITH(hgetrs, kgetrs, sgetrs, cgetrs, dgetrs, zgetrs, , ))
+#define XGESVD    FORTRAN_FUNCTION(ARITH(hgesvd, kgesvd, sgesvd, cgesvd, dgesvd, zgesvd, , ))
         // clang-format on
 
 #    ifndef SUPERBBLAS_USE_MKL
@@ -179,6 +180,13 @@ namespace superbblas {
         void XGETRS(BLASSTRING trans, BLASINT *n, BLASINT *m, SCALAR *a, BLASINT *lda,
                     BLASINT *ipivot, SCALAR *b, BLASINT *ldb, BLASINT *info);
         void XGETRI(BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *piv, SCALAR *work, BLASINT *lwork,
+                    BLASINT *info);
+        void XGESVD(BLASSTRING jobu, BLASSTRING jobvt, BLASINT *m, BLASINT *n, SCALAR *a,
+                    BLASINT *lda, REAL *s, SCALAR *u, BLASINT *ldu, SCALAR *vt, BLASINT *ldvt,
+                    SCALAR *work, BLASINT *ldwork,
+#        ifdef __SUPERBBLAS_USE_COMPLEX
+                    REAL *rwork,
+#        endif
                     BLASINT *info);
         }
 #    endif // SUPERBBLAS_USE_MKL
@@ -353,6 +361,25 @@ namespace superbblas {
             return info;
         }
 
+        inline int xgesvd(char jobu, char jobvt, BLASINT m, BLASINT n, SCALAR *a, BLASINT lda,
+                          REAL *s, SCALAR *u, BLASINT ldu, SCALAR *vt, BLASINT ldvt, SCALAR *work,
+                          BLASINT ldwork, SCALAR *rwork, Cpu) {
+#    ifndef __SUPERBBLAS_USE_COMPLEX
+            (void)rwork;
+#    endif
+            /* Zero dimension matrix may cause problems */
+            if (n == 0 || m == 0) return 0;
+
+            BLASINT info = 0;
+            XGESVD(&jobu, &jobvt, &m, &n, (LAPACK_SCALAR *)a, &lda, s, (LAPACK_SCALAR *)u, &ldu,
+                   (LAPACK_SCALAR *)vt, &ldvt, (LAPACK_SCALAR *)work, &ldwork,
+#    ifdef __SUPERBBLAS_USE_COMPLEX
+                   (REAL *)rwork,
+#    endif
+                   &info);
+            return info;
+        }
+
 #    undef XCOPY
 #    undef XSWAP
 #    undef XGEMM
@@ -368,6 +395,7 @@ namespace superbblas {
 #    undef XGETRF
 #    undef XGETRI
 #    undef XGETRS
+#    undef XGESVD
 
         //
         // Batched GEMM

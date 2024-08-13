@@ -219,6 +219,57 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, Context ctx, XPU xpu) {
 
     if (rank == 0) reportTimings(std::cout);
     if (rank == 0) reportCacheUsage(std::cout);
+
+    {
+        /// Compute the svd of t0, (s,cSC,xyzt)
+        vector<Q, XPU> t0 = laplacian<Q>(dim[S] * dim[C], vol0, xpu);
+
+        const Coor<Nd - 1> dimx = {dim[X], dim[Y], dim[Z], dim[T], dim[S], dim[S]}; // xyztsi
+        const Coor<Nd - 1> procsx = {procs[X], procs[Y], procs[Z], procs[T], 1, 1}; // xyztsi
+        PartitionStored<Nd - 1> px = basic_partitioning(dimx, procsx);
+        vector<Q, XPU> tx(detail::volume(px[rank][1]), xpu);
+
+        const Coor<Nd - 2> dims = {dim[X], dim[Y], dim[Z], dim[T], dim[S]};      // xyzti
+        const Coor<Nd - 2> procss = {procs[X], procs[Y], procs[Z], procs[T], 1}; // xyzti
+        PartitionStored<Nd - 2> ps = basic_partitioning(dims, procss);
+        vector<typename detail::the_real<Q>::type, XPU> ts(detail::volume(ps[rank][1]), xpu);
+
+        const Coor<Nd + 1> dimy = {dim[X], dim[Y], dim[Z], dim[T],
+                                   dim[C], dim[S], dim[C], dim[S]}; // xyztcSCi
+        const Coor<Nd + 1> procsy = {procs[X], procs[Y], procs[Z], procs[T],
+                                     1,        1,        1,        1}; // xyztcSCi
+        PartitionStored<Nd + 1> py = basic_partitioning(dimy, procsy);
+        vector<Q, XPU> ty(detail::volume(py[rank][1]), xpu);
+
+        resetTimings();
+        try {
+            double t = w_time();
+            for (unsigned int rep = 0; rep < nrep; ++rep) {
+                Q *ptra = t0.data();
+                Q *ptrx = tx.data();
+                typename superbblas::detail::the_real<Q>::type *ptrs = ts.data();
+                Q *ptry = ty.data();
+                svd<Nd + 1, Nd - 1, Nd - 2, Nd + 1, Q>(
+                    Q{1},                                                          //
+                    p0.data(), dim0, 1, "xyztscSC", (const Q **)&ptra, "s", "cSC", &ctx, //
+                    px.data(), dimx, 1, "xyztsi", &ptrx, &ctx,                     //
+                    ps.data(), dims, 1, "xyzti", &ptrs, &ctx,                      //
+                    py.data(), dimy, 1, "xyztcSCi", &ptry, &ctx,                   //
+#ifdef SUPERBBLAS_USE_MPI
+                    MPI_COMM_WORLD,
+#endif
+                    SlowToFast);
+            }
+            sync(xpu);
+            t = w_time() - t;
+            if (rank == 0) std::cout << "Time in svd " << t / nrep << std::endl;
+        } catch (const std::exception &e) {
+            std::cout << "Caught error: " << e.what() << std::endl;
+        }
+    }
+
+    if (rank == 0) reportTimings(std::cout);
+    if (rank == 0) reportCacheUsage(std::cout);
 }
 
 int main(int argc, char **argv) {

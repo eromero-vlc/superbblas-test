@@ -7,6 +7,10 @@ namespace superbblas {
 
     namespace detail {
 
+        template <typename T> struct the_real { using type = T; };
+
+        template <typename T> struct the_real<std::complex<T>> { using type = T; };
+
         /// Return an order concatenating the three given strings (or in reverse order if `co` is SlowToFast
         /// \param a,b,c: string to concatenate
         /// \return: the ordering
@@ -24,6 +28,15 @@ namespace superbblas {
             } else {
                 return concat<N>(c, b, a, FastToSlow);
             }
+        }
+
+        template <typename T0, typename T1>
+        std::string concat(const T0 &t0, const T1 &t1, char t2) {
+            std::string r(t0.size() + t1.size() + 1, char(0));
+            std::copy(t0.begin(), t0.end(), r.begin());
+            std::copy(t1.begin(), t1.end(), r.begin() + t0.size());
+            r.at(t0.size() + t1.size()) = t2;
+            return r;
         }
 
         inline void throw_or_exit(const std::string &err_msg, bool terminate = false) {
@@ -451,6 +464,72 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_GPU
 
+        template <typename T>
+        void local_svd(std::size_t k, std::size_t m, std::size_t n, const vector<T, Cpu> &a,
+                       const vector<typename the_real<T>::type, Cpu> &s, const vector<T, Cpu> &u,
+                       const vector<T, Cpu>& vt) {
+
+            tracker<Cpu> _t("local svd (Cpu)", a.ctx());
+
+            // Zero dimension matrix may cause problems
+            if (m == 0 || n == 0 || k == 0) return;
+
+#ifdef _OPENMP
+            int num_threads = omp_get_max_threads();
+#else
+            int num_threads = 1;
+#endif
+
+            // Call to know the optimal workspace
+            T *ap = a.data();
+            typename the_real<T>::type *sp = s.data();
+            T *up = u.data();
+            T *vtp = vt.data();
+            T work0 = 0;
+            T dummyr = 0;
+            auto mv = std::min(m, n);
+            checkLapack(
+                xgesvd('S', 'S', m, n, ap, m, sp, up, m, vtp, mv, &work0, 1, &dummyr, Cpu{}));
+            std::size_t lwork = std::real(work0);
+
+            std::vector<T> work(num_threads * lwork);
+#ifndef __SUPERBBLAS_USE_COMPLEX
+            auto lrwork = 0;
+#else
+            auto lrwork = 3 * n;
+#endif
+            std::vector<T> rwork(num_threads * lrwork);
+            std::vector<int> info(num_threads);
+
+#ifdef _OPENMP
+#    pragma omp parallel
+#endif
+            {
+#ifdef _OPENMP
+                int id = omp_get_thread_num();
+#else
+                int id = 0;
+#endif
+                T *iwork = work.data() + lwork * id;
+                T *irwork = rwork.data() + lrwork * id;
+#ifdef _OPENMP
+#    pragma omp for schedule(static)
+#endif
+                for (std::size_t i = 0; i < k; ++i) {
+                    if (info[id] == 0)
+                        info[id] =
+                            xgesvd('S', 'S', m, n, ap + m * n * i, m, sp + mv * i, up + m * mv * i,
+                                   m, vtp + mv * n * i, mv, iwork, lwork, irwork, Cpu{});
+#ifdef __SUPERBBLAS_USE_COMPLEX
+                    if (info[id] == 0)
+                        for (std::size_t j = 0; j < mv * n; ++j)
+                            vtp[mv * n * i + j] = std::conj(vtp[mv * n * i + j]);
+#endif
+                }
+            }
+            for (int i : info) checkLapack(i);
+        }
+
         /// Get the output partition
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
         /// \param o0: dimension labels for the first operator
@@ -518,10 +597,11 @@ namespace superbblas {
 
         template <std::size_t N, typename T, typename Comm, typename XPU0, typename XPU1>
         std::tuple<Proc_ranges<N>, Coor<N>, Order<N>, Components_tmpl<N, T, XPU0, XPU1>,
-                   std::size_t>
+                   std::size_t, std::size_t>
         prepare_for_cholesky(const Proc_ranges<N> &p, const Coor<N> &dim, const Order<N> &o,
                              const Components_tmpl<N, T, XPU0, XPU1> &v, const char *orows,
-                             const char *ocols, Comm comm, CoorOrder co, bool force_copy = false) {
+                             const char *ocols, Comm comm, CoorOrder co, bool force_copy = false,
+                             bool check_square = true) {
 
             // Check the orderings
 
@@ -557,14 +637,15 @@ namespace superbblas {
             std::size_t m =
                 (co == FastToSlow ? volume<N>(dimw.begin() + nrows, dimw.begin() + nrows + ncols)
                                   : volume<N>(dimw.begin() + nk + ncols, dimw.end()));
-            if (m != n) std::runtime_error("cholesky: the matrices to factorize should be square");
+            if (check_square && m != n)
+                std::runtime_error("cholesky: the matrices to factorize should be square");
 
             // Generate the working partition
             Proc_ranges<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);
             Components_tmpl<N, T, XPU0, XPU1> vw = reorder_tensor(
                 p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co, force_copy, doCacheAlloc);
 
-            return {pw, dimw, ow, vw, n};
+            return {pw, dimw, ow, vw, n, m};
         }
 
         /// Get the output partition
@@ -1002,6 +1083,176 @@ namespace superbblas {
                 barrier(comm);
             }
         }
+
+	/// Return whether the two strings have the same labels
+	//// \param x: one of the strings
+	//// \param y: the other string
+
+        template <typename T, typename Q> bool is_a_permutation(const T &x, const Q &y) {
+            return x.size() == y.size() && std::is_permutation(x.begin(), x.end(), y.begin());
+        }
+
+        template <std::size_t Na, std::size_t Nx, std::size_t Ns, std::size_t Ny, typename T,
+                  typename Comm, typename XPU0, typename XPU1>
+        void svd(T alpha, const Proc_ranges<Na> &pa, const Coor<Na> dima, const Order<Na> &oa,
+                 const Components_tmpl<Na, T, XPU0, XPU1> &va, const char *orows, const char *ocols,
+                 const Proc_ranges<Nx> &px, const Coor<Nx> &dimx, const Order<Nx> &ox,
+                 const Components_tmpl<Nx, T, XPU0, XPU1> &vx, const Proc_ranges<Ns> &ps,
+                 const Coor<Ns> &dims, const Order<Ns> &os,
+                 const Components_tmpl<Ns, typename the_real<T>::type, XPU0, XPU1> &vs,
+                 const Proc_ranges<Ny> &py, const Coor<Ny> &dimy, const Order<Ny> &oy,
+                 const Components_tmpl<Ny, T, XPU0, XPU1> &vy, Comm comm, CoorOrder co) {
+
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : va.first) sync(i.it.ctx());
+                for (const auto &i : va.second) sync(i.it.ctx());
+                for (const auto &i : vx.first) sync(i.it.ctx());
+                for (const auto &i : vx.second) sync(i.it.ctx());
+                for (const auto &i : vs.first) sync(i.it.ctx());
+                for (const auto &i : vs.second) sync(i.it.ctx());
+                for (const auto &i : vy.first) sync(i.it.ctx());
+                for (const auto &i : vy.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+
+            tracker<Cpu> _t("distributed svd", Cpu{});
+
+            // Check the compatibility of the tensors
+            if (!check_dimensions(oa, dima, ox, dimx, os, dims) ||
+                !check_dimensions(oa, dima, oy, dimy, oy, dimy))
+                throw std::runtime_error("some dimension does not match");
+
+            // Check that v0 and v1 have the same components and on the same device
+            if (!check_components_compatibility(va, vx) ||
+                !check_components_compatibility(va, vy) || !check_components_compatibility(va, vs))
+                throw std::runtime_error(
+                    "svd: the given tensors don't have the same number of components "
+                    "or they don't follow the same order on the devices");
+
+            // Get the batch labels
+            const std::string orows_(orows), ocols_(ocols);
+            std::string t_labels;
+            for (char c : oa) {
+                if (std::find(ocols_.begin(), ocols_.end(), c) == ocols_.end() &&
+                    std::find(orows_.begin(), orows_.end(), c) == orows_.end()) {
+                    t_labels.push_back(c);
+                }
+            }
+
+            // Get the singular value index label
+            char n_label = 0;
+            bool first_found = true;
+            for (char c : ox) {
+                if (std::find(oa.begin(), oa.end(), c) == oa.end()) {
+                    if (!first_found)
+                        throw std::runtime_error(
+                            "svd: invalid labels for the singular value index");
+                    n_label = c;
+                    first_found = false;
+                }
+            }
+            if (first_found)
+                throw std::runtime_error("svd: invalid labels for the singular value index");
+
+            // Check that all labels of x are made of t_labels, orows and n
+            if (!is_a_permutation(ox, concat(t_labels, orows_, n_label)))
+                throw std::runtime_error("svd: invalid labels for tensor x");
+
+            // Check that all labels of s are made of t_labels and n
+            if (!is_a_permutation(os, concat(t_labels, std::string(), n_label)))
+                throw std::runtime_error("svd: invalid labels for tensor s");
+
+            // Check that all labels of y are made of t_labels, ocols and n
+            if (!is_a_permutation(oy, concat(t_labels, ocols_, n_label)))
+                throw std::runtime_error("svd: invalid labels for tensor y");
+
+            // Reorder the tensor so can be processed by cholesky
+            auto t =
+                prepare_for_cholesky(pa, dima, oa, toNonConst(va), orows, ocols, comm, co,
+                                     true /* Force copy */, false /* don't check being square */);
+
+            Proc_ranges<Na> &paw = std::get<0>(t);
+            Coor<Na> &dimaw = std::get<1>(t);
+            Order<Na> &oaw = std::get<2>(t);
+            Components_tmpl<Na, T, XPU0, XPU1> &vaw = std::get<3>(t);
+            std::size_t rm = std::get<4>(t); // number of rows
+            std::size_t rn = std::get<5>(t); // number of columns
+
+            // Check that the singular values have the right dimensions
+            if ((std::size_t)dims[std::find(os.begin(), os.end(), n_label) - os.begin()] ==
+                std::min(rm, rn))
+                throw std::runtime_error(
+                    "svd: the given singular values tensor does not have the proper dimensions");
+
+            // Apply alpha
+            if (alpha != T{1}) {
+                copy<Na, Na, T>(alpha, paw, {{}}, dimaw, dimaw, oaw, toConst(vaw), paw, {{}}, dimaw,
+                                oaw, vaw, comm, EWOp::Copy{}, co);
+            }
+
+            // Compute the ordering for tensors x, s and y: (rows,n,t), (n,t), (n,rows,t)
+            std::string on{n_label};
+            Order<Nx> oxw = concat<Nx>(orows_, on, t_labels, co);
+            Order<Ns> osw = concat<Ns>(std::string(), on, t_labels, co);
+            Order<Ny> oyw = concat<Ny>(orows_, on, t_labels, co);
+
+            // Generate the working tensors
+
+            auto tx_ = get_output_partition(paw, dimaw, oaw, px, dimx, ox, oxw,
+                                            false /* do not report inconsistencies */);
+            Proc_ranges<Nx> &pxw = tx_.first;
+            const Coor<Nx> &dimxw = tx_.second;
+            auto vwx = like_this_components(pxw, vaw, comm, doCacheAlloc);
+
+            using Tr = typename the_real<T>::type;
+            auto ts_ = get_output_partition(paw, dimaw, oaw, pxw, dimxw, oxw, osw);
+            Proc_ranges<Ns> &psw = ts_.first;
+            const Coor<Ns> &dimsw = ts_.second;
+            auto vws = like_this_components_with_type<Tr>(psw, vaw, comm, doCacheAlloc);
+
+            auto ty_ = get_output_partition(paw, dimaw, oaw, pxw, dimxw, oxw, oyw);
+            Proc_ranges<Ny> &pyw = ty_.first;
+            const Coor<Ny> &dimyw = ty_.second;
+            auto vwy = like_this_components(pyw, vaw, comm, doCacheAlloc);
+
+            // Do the svd of the local pieces
+
+            for (unsigned int i = 0; i < vaw.first.size(); ++i) {
+                const unsigned int componentId = vaw.first[i].componentId;
+                std::size_t ki = volume(paw[comm.rank][componentId][1]) / rm / rn;
+                if (ki == 0) continue;
+                local_svd(ki, rm, rn, vaw.first[i].it, vws.first[i].it, vwx.first[i].it,
+                          vwy.first[i].it);
+            }
+            for (unsigned int i = 0; i < vaw.second.size(); ++i) {
+                const unsigned int componentId = vaw.second[i].componentId;
+                std::size_t ki = volume(paw[comm.rank][componentId][1]) / rm / rn;
+                if (ki == 0) continue;
+                local_svd(ki, rm, rn, vaw.first[i].it, vws.first[i].it, vwx.first[i].it,
+                          vwy.first[i].it);
+            }
+
+            // Copy the working tensors into the given tensors
+            copy<Ns, Ns, Tr>(Tr{1}, psw, {{}}, dimsw, dimsw, osw, toConst(vws), ps, {{}}, dims, os,
+                             vs, comm, EWOp::Copy{}, co);
+            copy<Nx, Nx, T>(T{1}, pxw, {{}}, dimxw, dimxw, oxw, toConst(vwx), px, {{}}, dimx, ox,
+                            vx, comm, EWOp::Copy{}, co);
+            copy<Ny, Ny, T>(T{1}, pyw, {{}}, dimyw, dimyw, oyw, toConst(vwy), py, {{}}, dimy, oy,
+                            vy, comm, EWOp::Copy{}, co);
+
+            _t.stop();
+            if (getDebugLevel() >= 1) {
+                for (const auto &i : vx.first) sync(i.it.ctx());
+                for (const auto &i : vx.second) sync(i.it.ctx());
+                for (const auto &i : vs.first) sync(i.it.ctx());
+                for (const auto &i : vs.second) sync(i.it.ctx());
+                for (const auto &i : vy.first) sync(i.it.ctx());
+                for (const auto &i : vy.second) sync(i.it.ctx());
+                for (const auto &i : vy.first) sync(i.it.ctx());
+                for (const auto &i : vy.second) sync(i.it.ctx());
+                barrier(comm);
+            }
+        }
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -1144,6 +1395,60 @@ namespace superbblas {
             detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
             comm, co);
     }
+
+    /// Compute several singular value decompositions (SVD)
+    /// \param alpha: factor on the contraction
+    /// \param pa: partitioning of the origin tensor in consecutive ranges
+    /// \param ncomponentsa: number of consecutive components in each MPI rank
+    /// \param oa: dimension labels for the origin tensor
+    /// \param va: data for the origin tensor
+    /// \param orows: labels on the rows
+    /// \param ocols: labels on the columns
+    /// \param ctxa: context for each data pointer in va
+    /// \param px: partitioning of the output left singular vectors in consecutive ranges
+    /// \param ncomponentsx: number of consecutive components in each MPI rank
+    /// \param ox: dimension labels for the output left singular vectors
+    /// \param vx: data for the output left singular vectors
+    /// \param ps: partitioning of the output singular values in consecutive ranges
+    /// \param ncomponentss: number of consecutive components in each MPI rank
+    /// \param os: dimension labels for the output singular values
+    /// \param vs: data for the output singular values
+    /// \param py: partitioning of the output right singular vectors in consecutive ranges
+    /// \param ncomponentsy: number of consecutive components in each MPI rank
+    /// \param oy: dimension labels for the output right singular vectors
+    /// \param vy: data for the output right singular vectors
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
+
+    template <std::size_t Na, std::size_t Nx, std::size_t Ns, std::size_t Ny, typename T>
+    void svd(T alpha, const PartitionItem<Na> *pa, const Coor<Na> &dima, int ncomponentsa,
+             const char *oa, const T **va, const char *orows, const char *ocols,
+             const Context *ctxa, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
+             int ncomponentsx, const char *ox, T **vx, const Context *ctxx,
+             const PartitionItem<Ns> *ps, const Coor<Ns> &dims, int ncomponentss, const char *os,
+             typename detail::the_real<T>::type **vs, const Context *ctxs, const PartitionItem<Ny> *py, const Coor<Ny> &dimy,
+             int ncomponentsy, const char *oy, T **vy, const Context *ctxy, MPI_Comm mpicomm,
+             CoorOrder co, Session session = 0) {
+
+        Order<Na> oa_ = detail::toArray<Nc>(oa, "oa");
+        Order<Nx> ox_ = detail::toArray<Nx>(ox, "ox");
+        Order<Ns> os_ = detail::toArray<Ns>(os, "os");
+        Order<Ny> oy_ = detail::toArray<Ny>(oy, "oy");
+
+        detail::MpiComm comm = detail::get_comm(mpicomm);
+
+        detail::svd<Na, Nx, Ns, Ny>(
+            alpha, detail::get_from_size(pa, ncomponentsa * comm.nprocs, session), dima, oa_,
+            detail::get_components<Na>((T **)va, nullptr, ctxa, ncomponentsa, pa, comm, session),
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
+            detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
+            detail::get_from_size(ps, ncomponentss * comm.nprocs, session), dims, os_,
+            detail::get_components<Ns>((typename detail::the_real<T>::type **)vs, nullptr, ctxs, ncomponentss, ps,
+                                       comm, session),
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
+            detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
+            co);
+    }
 #endif // SUPERBBLAS_USE_MPI
 
     /// Compute the Cholesky factorization of several matrices
@@ -1284,6 +1589,59 @@ namespace superbblas {
             detail::get_from_size(p, ncomponents * comm.nprocs, comm), dim, o_,
             detail::get_components<N>(v, nullptr, ctx, ncomponents, p, comm, session), orows, ocols,
             comm, co);
+    }
+
+    /// Compute several singular value decompositions (SVD)
+    /// \param alpha: factor on the contraction
+    /// \param pa: partitioning of the origin tensor in consecutive ranges
+    /// \param ncomponentsa: number of consecutive components in each MPI rank
+    /// \param oa: dimension labels for the origin tensor
+    /// \param va: data for the origin tensor
+    /// \param orows: labels on the rows
+    /// \param ocols: labels on the columns
+    /// \param ctxa: context for each data pointer in va
+    /// \param px: partitioning of the output left singular vectors in consecutive ranges
+    /// \param ncomponentsx: number of consecutive components in each MPI rank
+    /// \param ox: dimension labels for the output left singular vectors
+    /// \param vx: data for the output left singular vectors
+    /// \param ps: partitioning of the output singular values in consecutive ranges
+    /// \param ncomponentss: number of consecutive components in each MPI rank
+    /// \param os: dimension labels for the output singular values
+    /// \param vs: data for the output singular values
+    /// \param py: partitioning of the output right singular vectors in consecutive ranges
+    /// \param ncomponentsy: number of consecutive components in each MPI rank
+    /// \param oy: dimension labels for the output right singular vectors
+    /// \param vy: data for the output right singular vectors
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param session: concurrent calls should have different session
+
+    template <std::size_t Na, std::size_t Nx, std::size_t Ns, std::size_t Ny, typename T>
+    void svd(T alpha, const PartitionItem<Na> *pa, const Coor<Na> &dima, int ncomponentsa,
+             const char *oa, const T **va, const char *orows, const char *ocols,
+             const Context *ctxa, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
+             int ncomponentsx, const char *ox, T **vx, const Context *ctxx,
+             const PartitionItem<Ns> *ps, const Coor<Ns> &dims, int ncomponentss, const char *os,
+             typename detail::the_real<T>::type **vs, const Context *ctxs, const PartitionItem<Ny> *py,
+             const Coor<Ny> &dimy, int ncomponentsy, const char *oy, T **vy, const Context *ctxy,
+             CoorOrder co, Session session = 0) {
+
+        Order<Na> oa_ = detail::toArray<Na>(oa, "oa");
+        Order<Nx> ox_ = detail::toArray<Nx>(ox, "ox");
+        Order<Ns> os_ = detail::toArray<Ns>(os, "os");
+        Order<Ny> oy_ = detail::toArray<Ny>(oy, "oy");
+
+        detail::SelfComm comm = detail::get_comm();
+
+        detail::svd<Na, Nx, Ns, Ny>(
+            alpha, detail::get_from_size(pa, ncomponentsa * comm.nprocs, comm), dima, oa_,
+            detail::get_components<Na>((T **)va, nullptr, ctxa, ncomponentsa, pa, comm, session),
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, comm), dimx, ox_,
+            detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
+            detail::get_from_size(ps, ncomponentss * comm.nprocs, comm), dims, os_,
+            detail::get_components<Ns>((typename detail::the_real<T>::type **)vs, nullptr, ctxs, ncomponentss, ps, comm, session),
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, comm), dimy, oy_,
+            detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
+            co);
     }
 }
 

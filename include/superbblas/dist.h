@@ -2752,33 +2752,42 @@ namespace superbblas {
         /// \param cacheAlloc: whether to use cache the allocation
         /// \param zero_init: whether to zeroed the new allocation
 
-        template <std::size_t N, std::size_t Nv, typename T, typename Comm, typename XPU0,
-                  typename XPU1>
-        Components_tmpl<N, T, XPU0, XPU1>
-        like_this_components(const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v,
+        template <typename Q, std::size_t N, std::size_t Nv, typename T, typename Comm,
+                  typename XPU0, typename XPU1>
+        Components_tmpl<N, Q, XPU0, XPU1>
+        like_this_components_with_type(const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v,
                              Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc,
                              ZeroInit zero_init = dontZeroInit) {
 
             check_components(p, v, comm);
 
             // Allocate the tensor
-            Components_tmpl<N, T, XPU0, XPU1> v1;
+            Components_tmpl<N, Q, XPU0, XPU1> v1;
             for (unsigned int i = 0; i < v.first.size(); ++i) {
                 const Coor<N> &dimi = p[comm.rank][v.first[i].componentId][1];
-                vector<T, XPU0> v1i(volume(dimi), v.first[i].it.ctx(), cacheAlloc);
+                vector<Q, XPU0> v1i(volume(dimi), v.first[i].it.ctx(), cacheAlloc);
                 if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                 v1.first.push_back(
-                    Component<N, T, XPU0>{v1i, dimi, v.first[i].componentId, Mask<XPU0>{}});
+                    Component<N, Q, XPU0>{v1i, dimi, v.first[i].componentId, Mask<XPU0>{}});
             }
             for (unsigned int i = 0; i < v.second.size(); ++i) {
                 const Coor<N> &dimi = p[comm.rank][v.second[i].componentId][1];
-                vector<T, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
+                vector<Q, XPU1> v1i(volume(dimi), v.second[i].it.ctx(), cacheAlloc);
                 if (zero_init == doZeroInit) zero_n(v1i.data(), v1i.size(), v1i.ctx());
                 v1.second.push_back(
-                    Component<N, T, XPU1>{v1i, dimi, v.second[i].componentId, Mask<XPU1>{}});
+                    Component<N, Q, XPU1>{v1i, dimi, v.second[i].componentId, Mask<XPU1>{}});
             }
 
             return v1;
+        }
+
+        template <std::size_t N, std::size_t Nv, typename T, typename Comm, typename XPU0,
+                  typename XPU1>
+        Components_tmpl<N, T, XPU0, XPU1>
+        like_this_components(const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v,
+                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc,
+                             ZeroInit zero_init = dontZeroInit) {
+            return like_this_components_with_type<T>(p, v, comm, cacheAlloc, zero_init);
         }
 
         /// Return a new components based on a partition selecting the context from the component
