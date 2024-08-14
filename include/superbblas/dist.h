@@ -2754,10 +2754,9 @@ namespace superbblas {
 
         template <typename Q, std::size_t N, std::size_t Nv, typename T, typename Comm,
                   typename XPU0, typename XPU1>
-        Components_tmpl<N, Q, XPU0, XPU1>
-        like_this_components_with_type(const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v,
-                             Comm comm, CacheAlloc cacheAlloc = dontCacheAlloc,
-                             ZeroInit zero_init = dontZeroInit) {
+        Components_tmpl<N, Q, XPU0, XPU1> like_this_components_with_type(
+            const Proc_ranges<N> &p, const Components_tmpl<Nv, T, XPU0, XPU1> &v, Comm comm,
+            CacheAlloc cacheAlloc = dontCacheAlloc, ZeroInit zero_init = dontZeroInit) {
 
             check_components(p, v, comm);
 

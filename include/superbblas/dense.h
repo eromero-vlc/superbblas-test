@@ -7,9 +7,13 @@ namespace superbblas {
 
     namespace detail {
 
-        template <typename T> struct the_real { using type = T; };
+        template <typename T> struct the_real {
+            using type = T;
+        };
 
-        template <typename T> struct the_real<std::complex<T>> { using type = T; };
+        template <typename T> struct the_real<std::complex<T>> {
+            using type = T;
+        };
 
         /// Return an order concatenating the three given strings (or in reverse order if `co` is SlowToFast
         /// \param a,b,c: string to concatenate
@@ -464,10 +468,18 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_GPU
 
+        template <typename T> struct conj {
+            static T fun(const T &x) { return x; }
+        };
+
+        template <typename T> struct conj<std::complex<T>> {
+            static std::complex<T> fun(const std::complex<T> &x) { return std::conj(x); }
+        };
+
         template <typename T>
         void local_svd(std::size_t k, std::size_t m, std::size_t n, const vector<T, Cpu> &a,
                        const vector<typename the_real<T>::type, Cpu> &s, const vector<T, Cpu> &u,
-                       const vector<T, Cpu>& vt) {
+                       const vector<T, Cpu> &vt) {
 
             tracker<Cpu> _t("local svd (Cpu)", a.ctx());
 
@@ -489,15 +501,11 @@ namespace superbblas {
             T dummyr = 0;
             auto mv = std::min(m, n);
             checkLapack(
-                xgesvd('S', 'S', m, n, ap, m, sp, up, m, vtp, mv, &work0, 1, &dummyr, Cpu{}));
+                xgesvd('S', 'S', m, n, ap, m, sp, up, m, vtp, mv, &work0, -1, &dummyr, Cpu{}));
             std::size_t lwork = std::real(work0);
 
             std::vector<T> work(num_threads * lwork);
-#ifndef __SUPERBBLAS_USE_COMPLEX
-            auto lrwork = 0;
-#else
-            auto lrwork = 3 * n;
-#endif
+            auto lrwork = is_complex<T>::value ? 3 * n : 0;
             std::vector<T> rwork(num_threads * lrwork);
             std::vector<int> info(num_threads);
 
@@ -520,11 +528,9 @@ namespace superbblas {
                         info[id] =
                             xgesvd('S', 'S', m, n, ap + m * n * i, m, sp + mv * i, up + m * mv * i,
                                    m, vtp + mv * n * i, mv, iwork, lwork, irwork, Cpu{});
-#ifdef __SUPERBBLAS_USE_COMPLEX
-                    if (info[id] == 0)
+                    if (is_complex<T>::value && info[id] == 0)
                         for (std::size_t j = 0; j < mv * n; ++j)
-                            vtp[mv * n * i + j] = std::conj(vtp[mv * n * i + j]);
-#endif
+                            vtp[mv * n * i + j] = conj<T>::fun(vtp[mv * n * i + j]);
                 }
             }
             for (int i : info) checkLapack(i);
@@ -631,12 +637,12 @@ namespace superbblas {
             // Check that number of rows and columns is the same
             Coor<N> perm0 = find_permutation<N, N>(o, ow);
             Coor<N> dimw = reorder_coor<N, N>(dim, perm0, 1);
+            std::size_t m = (co == FastToSlow ? volume<N>(dimw.begin(), dimw.begin() + nrows)
+                                              : volume<N>(dimw.begin() + nk + ncols,
+                                                          dimw.begin() + nk + ncols + nrows));
             std::size_t n =
-                (co == FastToSlow ? volume<N>(dimw.begin(), dimw.begin() + nrows)
-                                  : volume<N>(dimw.begin() + nk, dimw.begin() + nk + ncols));
-            std::size_t m =
                 (co == FastToSlow ? volume<N>(dimw.begin() + nrows, dimw.begin() + nrows + ncols)
-                                  : volume<N>(dimw.begin() + nk + ncols, dimw.end()));
+                                  : volume<N>(dimw.begin() + nk, dimw.begin() + nk + ncols));
             if (check_square && m != n)
                 std::runtime_error("cholesky: the matrices to factorize should be square");
 
@@ -645,7 +651,7 @@ namespace superbblas {
             Components_tmpl<N, T, XPU0, XPU1> vw = reorder_tensor(
                 p, o, {{}}, dim, dim, v, pw, dimw, ow, comm, co, force_copy, doCacheAlloc);
 
-            return {pw, dimw, ow, vw, n, m};
+            return {pw, dimw, ow, vw, m, n};
         }
 
         /// Get the output partition
@@ -1084,9 +1090,9 @@ namespace superbblas {
             }
         }
 
-	/// Return whether the two strings have the same labels
-	//// \param x: one of the strings
-	//// \param y: the other string
+        /// Return whether the two strings have the same labels
+        //// \param x: one of the strings
+        //// \param y: the other string
 
         template <typename T, typename Q> bool is_a_permutation(const T &x, const Q &y) {
             return x.size() == y.size() && std::is_permutation(x.begin(), x.end(), y.begin());
@@ -1179,7 +1185,7 @@ namespace superbblas {
             std::size_t rn = std::get<5>(t); // number of columns
 
             // Check that the singular values have the right dimensions
-            if ((std::size_t)dims[std::find(os.begin(), os.end(), n_label) - os.begin()] ==
+            if ((std::size_t)dims[std::find(os.begin(), os.end(), n_label) - os.begin()] !=
                 std::min(rm, rn))
                 throw std::runtime_error(
                     "svd: the given singular values tensor does not have the proper dimensions");
@@ -1194,7 +1200,7 @@ namespace superbblas {
             std::string on{n_label};
             Order<Nx> oxw = concat<Nx>(orows_, on, t_labels, co);
             Order<Ns> osw = concat<Ns>(std::string(), on, t_labels, co);
-            Order<Ny> oyw = concat<Ny>(orows_, on, t_labels, co);
+            Order<Ny> oyw = concat<Ny>(ocols_, on, t_labels, co);
 
             // Generate the working tensors
 
@@ -1426,11 +1432,11 @@ namespace superbblas {
              const Context *ctxa, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
              int ncomponentsx, const char *ox, T **vx, const Context *ctxx,
              const PartitionItem<Ns> *ps, const Coor<Ns> &dims, int ncomponentss, const char *os,
-             typename detail::the_real<T>::type **vs, const Context *ctxs, const PartitionItem<Ny> *py, const Coor<Ny> &dimy,
-             int ncomponentsy, const char *oy, T **vy, const Context *ctxy, MPI_Comm mpicomm,
-             CoorOrder co, Session session = 0) {
+             typename detail::the_real<T>::type **vs, const Context *ctxs,
+             const PartitionItem<Ny> *py, const Coor<Ny> &dimy, int ncomponentsy, const char *oy,
+             T **vy, const Context *ctxy, MPI_Comm mpicomm, CoorOrder co, Session session = 0) {
 
-        Order<Na> oa_ = detail::toArray<Nc>(oa, "oa");
+        Order<Na> oa_ = detail::toArray<Na>(oa, "oa");
         Order<Nx> ox_ = detail::toArray<Nx>(ox, "ox");
         Order<Ns> os_ = detail::toArray<Ns>(os, "os");
         Order<Ny> oy_ = detail::toArray<Ny>(oy, "oy");
@@ -1438,14 +1444,14 @@ namespace superbblas {
         detail::MpiComm comm = detail::get_comm(mpicomm);
 
         detail::svd<Na, Nx, Ns, Ny>(
-            alpha, detail::get_from_size(pa, ncomponentsa * comm.nprocs, session), dima, oa_,
+            alpha, detail::get_from_size(pa, ncomponentsa * comm.nprocs, comm), dima, oa_,
             detail::get_components<Na>((T **)va, nullptr, ctxa, ncomponentsa, pa, comm, session),
-            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, session), dimx, ox_,
+            orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, comm), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
-            detail::get_from_size(ps, ncomponentss * comm.nprocs, session), dims, os_,
-            detail::get_components<Ns>((typename detail::the_real<T>::type **)vs, nullptr, ctxs, ncomponentss, ps,
-                                       comm, session),
-            detail::get_from_size(py, ncomponentsy * comm.nprocs, session), dimy, oy_,
+            detail::get_from_size(ps, ncomponentss * comm.nprocs, comm), dims, os_,
+            detail::get_components<Ns>((typename detail::the_real<T>::type **)vs, nullptr, ctxs,
+                                       ncomponentss, ps, comm, session),
+            detail::get_from_size(py, ncomponentsy * comm.nprocs, comm), dimy, oy_,
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
     }
@@ -1621,9 +1627,9 @@ namespace superbblas {
              const Context *ctxa, const PartitionItem<Nx> *px, const Coor<Nx> &dimx,
              int ncomponentsx, const char *ox, T **vx, const Context *ctxx,
              const PartitionItem<Ns> *ps, const Coor<Ns> &dims, int ncomponentss, const char *os,
-             typename detail::the_real<T>::type **vs, const Context *ctxs, const PartitionItem<Ny> *py,
-             const Coor<Ny> &dimy, int ncomponentsy, const char *oy, T **vy, const Context *ctxy,
-             CoorOrder co, Session session = 0) {
+             typename detail::the_real<T>::type **vs, const Context *ctxs,
+             const PartitionItem<Ny> *py, const Coor<Ny> &dimy, int ncomponentsy, const char *oy,
+             T **vy, const Context *ctxy, CoorOrder co, Session session = 0) {
 
         Order<Na> oa_ = detail::toArray<Na>(oa, "oa");
         Order<Nx> ox_ = detail::toArray<Nx>(ox, "ox");
@@ -1638,7 +1644,8 @@ namespace superbblas {
             orows, ocols, detail::get_from_size(px, ncomponentsx * comm.nprocs, comm), dimx, ox_,
             detail::get_components<Nx>((T **)vx, nullptr, ctxx, ncomponentsx, px, comm, session),
             detail::get_from_size(ps, ncomponentss * comm.nprocs, comm), dims, os_,
-            detail::get_components<Ns>((typename detail::the_real<T>::type **)vs, nullptr, ctxs, ncomponentss, ps, comm, session),
+            detail::get_components<Ns>((typename detail::the_real<T>::type **)vs, nullptr, ctxs,
+                                       ncomponentss, ps, comm, session),
             detail::get_from_size(py, ncomponentsy * comm.nprocs, comm), dimy, oy_,
             detail::get_components<Ny>(vy, nullptr, ctxy, ncomponentsx, py, comm, session), comm,
             co);
