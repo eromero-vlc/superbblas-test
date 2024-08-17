@@ -642,6 +642,32 @@ namespace superbblas {
                 handle, uplo, n, (CUSPARSE_SCALAR **)Aarray, lda, infoArray, batchSize);
         }
 
+        inline cusolverStatus_t cusolverDnXgesvdaStridedBatched_bufferSize(
+            cusolverDnHandle_t handle, cusolverEigMode_t jobz, int rank, int m, int n, SCALAR *A,
+            int lda, int strideA, REAL *S, int strideS, SCALAR *U, int ldu, int strideU, SCALAR *V,
+            int ldv, int strideV, int *lwork, int batchSize) {
+            return ARITH(, , cusolverDnSgesvdaStridedBatched_bufferSize,
+                         cusolverDnCgesvdaStridedBatched_bufferSize,
+                         cusolverDnDgesvdaStridedBatched_bufferSize,
+                         cusolverDnZgesvdaStridedBatched_bufferSize,
+                         , )(handle, jobz, rank, m, n, (CUSPARSE_SCALAR *)A, lda, strideA, S,
+                             strideS, (CUSPARSE_SCALAR *)U, ldu, strideU, (CUSPARSE_SCALAR *)V, ldv,
+                             strideV, lwork, batchSize);
+        }
+
+        inline cusolverStatus_t
+        cusolverDnXgesvdaStridedBatched(cusolverDnHandle_t handle, cusolverEigMode_t jobz, int rank,
+                                        int m, int n, SCALAR *A, int lda, int strideA, REAL *S,
+                                        int strideS, SCALAR *U, int ldu, int strideU, SCALAR *V,
+                                        int ldv, int strideV, SCALAR *work, int lwork, int *info,
+                                        double *h_RnrmF, int batchSize) {
+            return ARITH(, , cusolverDnSgesvdaStridedBatched, cusolverDnCgesvdaStridedBatched,
+                         cusolverDnDgesvdaStridedBatched, cusolverDnZgesvdaStridedBatched,
+                         , )(handle, jobz, rank, m, n, (CUSPARSE_SCALAR *)A, lda, strideA, S,
+                             strideS, (CUSPARSE_SCALAR *)U, ldu, strideU, (CUSPARSE_SCALAR *)V, ldv,
+                             strideV, (CUSPARSE_SCALAR *)work, lwork, info, h_RnrmF, batchSize);
+        }
+
 #        undef CUSPARSE_SCALAR
 
 #    elif defined(SUPERBBLAS_USE_HIP)
@@ -725,6 +751,21 @@ namespace superbblas {
                                  rocsolver_zpotrf_strided_batched,
                                  , )(getGpuSolverHandle(ctx), uplo, n, (ROCBLAS_SCALAR *)A, lda,
                                      strideA, info, batchSize));
+        }
+
+        inline void rocsolverXgesvdStridedBatched(rocblas_svect left_svect,
+                                                  rocblas_svect right_svect, int m, int n,
+                                                  SCALAR *A, int lda, int strideA, REAL *S,
+                                                  int strideS, SCALAR *U, int ldu, int strideU,
+                                                  SCALAR *Vt, int ldvt, int strideVt, REAL *E,
+                                                  int strideE, rocblas_workmode fast_alg, int *info,
+                                                  int batch_count, const Gpu &ctx) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgesvd_strided_batched,
+                                 rocsolver_cgesvd_strided_batched, rocsolver_dgesvd_strided_batched,
+                                 rocsolver_zgesvd_strided_batched, , )(
+                getGpuSolverHandle(ctx), left_svect, right_svect, m, n, (ROCBLAS_SCALAR *)A, lda,
+                strideA, S, strideS, (ROCBLAS_SCALAR *)U, ldu, strideU, (ROCBLAS_SCALAR *)Vt, ldvt,
+                strideVt, E, strideE, fast_alg, info, batch_count));
         }
 
 #        undef HIPSPARSE_SCALAR

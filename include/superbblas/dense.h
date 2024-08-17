@@ -355,7 +355,9 @@ namespace superbblas {
         template <typename T>
         void local_inversion(std::size_t n, std::size_t k, const vector<T, Cpu> &a) {
 
-            tracker<Cpu> _t("local inv (Cpu)", a.ctx());
+            if (n == 0 || k == 0) return;
+
+            tracker<Cpu> _t("local inv (Cpu)", Cpu{});
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
             _t.flops = (double)n * n * n * (1 + 2. / 3) * k * multiplication_cost<T>::value;
             _t.memops = (double)n * n * 7 * k * sizeof(T);
@@ -408,7 +410,7 @@ namespace superbblas {
             if (n == 0 || k == 0) return;
             if (deviceId(a.ctx()) == CPU_DEVICE_ID)
                 throw std::runtime_error(
-                    "superbblas::detail::local_gesm: unsupported allocation device");
+                    "superbblas::detail::local_inversion: unsupported allocation device");
 
             tracker<Gpu> _t("local gesm (GPU)", a.ctx());
             // Cost approximated as the cost of LU plus multiplying two triangular matrices
@@ -468,23 +470,15 @@ namespace superbblas {
         }
 #endif // SUPERBBLAS_USE_GPU
 
-        template <typename T> struct conj {
-            static T fun(const T &x) { return x; }
-        };
-
-        template <typename T> struct conj<std::complex<T>> {
-            static std::complex<T> fun(const std::complex<T> &x) { return std::conj(x); }
-        };
-
         template <typename T>
-        void local_svd(std::size_t k, std::size_t m, std::size_t n, const vector<T, Cpu> &a,
-                       const vector<typename the_real<T>::type, Cpu> &s, const vector<T, Cpu> &u,
-                       const vector<T, Cpu> &vt) {
-
-            tracker<Cpu> _t("local svd (Cpu)", a.ctx());
+        void local_svd(std::size_t k, std::size_t m, std::size_t n, vector<T, Cpu> &a,
+                       vector<typename the_real<T>::type, Cpu> &s, vector<T, Cpu> &u,
+                       vector<T, Cpu> &vt) {
 
             // Zero dimension matrix may cause problems
             if (m == 0 || n == 0 || k == 0) return;
+
+            tracker<Cpu> _t("local svd (Cpu)", a.ctx());
 
 #ifdef _OPENMP
             int num_threads = omp_get_max_threads();
@@ -528,13 +522,74 @@ namespace superbblas {
                         info[id] =
                             xgesvd('S', 'S', m, n, ap + m * n * i, m, sp + mv * i, up + m * mv * i,
                                    m, vtp + mv * n * i, mv, iwork, lwork, irwork, Cpu{});
-                    if (is_complex<T>::value && info[id] == 0)
-                        for (std::size_t j = 0; j < mv * n; ++j)
-                            vtp[mv * n * i + j] = conj<T>::fun(vtp[mv * n * i + j]);
                 }
             }
             for (int i : info) checkLapack(i);
+
+            // Conjugate vt
+            conj(vt);
         }
+
+#ifdef SUPERBBLAS_USE_GPU
+        template <typename T>
+        void local_svd(std::size_t k, std::size_t m, std::size_t n, vector<T, Gpu> &a,
+                       vector<typename the_real<T>::type, Gpu> &s, vector<T, Gpu> &u,
+                       vector<T, Gpu> &vt) {
+
+            // Zero dimension matrix may cause problems
+            if (m == 0 || n == 0 || k == 0) return;
+
+            tracker<Gpu> _t("local svd (Gpu)", a.ctx());
+
+            if (deviceId(a.ctx()) == CPU_DEVICE_ID)
+                throw std::runtime_error(
+                    "superbblas::detail::local_svd: unsupported allocation device");
+            check_same_device(a.ctx(), u.ctx());
+            check_same_device(a.ctx(), s.ctx());
+            check_same_device(a.ctx(), vt.ctx());
+            causalConnectTo(u.ctx(), a.ctx());
+            causalConnectTo(s.ctx(), a.ctx());
+            causalConnectTo(vt.ctx(), a.ctx());
+
+            vector<int, Gpu> info(k, a.ctx(), doCacheAlloc);
+            auto xpu_host = a.ctx().toCpuPinned();
+            auto rank = std::min(m, n);
+#    ifdef SUPERBBLAS_USE_CUDA
+            int lwork = 0;
+            gpuSolverCheck(cusolverDnXgesvdaStridedBatched_bufferSize(
+                getGpuSolverHandle(a.ctx()), CUSOLVER_EIG_MODE_VECTOR, rank, m, n, a.data(), m,
+                m * n, s.data(), rank, u.data(), m, m * rank, vt.data(), rank, rank * n, &lwork,
+                k));
+            vector<T, Gpu> work(lwork, a.ctx(), doCacheAlloc);
+            gpuSolverCheck(cusolverDnXgesvdaStridedBatched(
+                getGpuSolverHandle(a.ctx()), CUSOLVER_EIG_MODE_VECTOR, rank, m, n, a.data(), m,
+                m * n, s.data(), rank, u.data(), m, m * rank, vt.data(), rank, rank * n,
+                work.data(), work.size(), info.data(), nullptr, k));
+#    else
+            int lwork = 2 * rank;
+            vector<typename the_real<T>::type, Gpu> work(lwork * k, a.ctx(), doCacheAlloc);
+            rocsolverXgesvdStridedBatched(rocblas_svect_singular, rocblas_svect_singular, m, n,
+                                          a.data(), m, m * n, s.data(), rank, u.data(), m, m * rank,
+                                          vt.data(), rank, rank * n, work.data(), lwork,
+                                          rocblas_outofplace, a.ctx());
+#    endif // SUPERBBLAS_USE_CUDA
+            vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+            auto info_cpu_ptr = info_cpu.data();
+            launchHostKernel(
+                [=] {
+                    for (std::size_t i = 0; i < k; ++i)
+                        checkLapack(info_cpu_ptr[i], true /* terminate */);
+                },
+                xpu_host);
+
+            // Conjugate vt
+            conj(vt);
+
+            causalConnectTo(a.ctx(), u.ctx());
+            causalConnectTo(a.ctx(), s.ctx());
+            causalConnectTo(a.ctx(), vt.ctx());
+        }
+#endif // SUPERBBLAS_USE_GPU
 
         /// Get the output partition
         /// \param p0: partitioning of the first origin tensor in consecutive ranges
@@ -1234,8 +1289,8 @@ namespace superbblas {
                 const unsigned int componentId = vaw.second[i].componentId;
                 std::size_t ki = volume(paw[comm.rank][componentId][1]) / rm / rn;
                 if (ki == 0) continue;
-                local_svd(ki, rm, rn, vaw.first[i].it, vws.first[i].it, vwx.first[i].it,
-                          vwy.first[i].it);
+                local_svd(ki, rm, rn, vaw.second[i].it, vws.second[i].it, vwx.second[i].it,
+                          vwy.second[i].it);
             }
 
             // Copy the working tensors into the given tensors
