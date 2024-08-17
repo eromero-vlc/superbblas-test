@@ -571,7 +571,7 @@ namespace superbblas {
             rocsolverXgesvdStridedBatched(rocblas_svect_singular, rocblas_svect_singular, m, n,
                                           a.data(), m, m * n, s.data(), rank, u.data(), m, m * rank,
                                           vt.data(), rank, rank * n, work.data(), lwork,
-                                          rocblas_outofplace, a.ctx());
+                                          rocblas_outofplace, info.data(), k, a.ctx());
 #    endif // SUPERBBLAS_USE_CUDA
             vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
             auto info_cpu_ptr = info_cpu.data();
