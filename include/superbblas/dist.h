@@ -2978,6 +2978,37 @@ namespace superbblas {
             return t.first;
         }
 
+        /// Return the component for a different partitioning
+        /// \param p: partitioning of the input tensor
+        /// \param v: input tensor components
+        /// \param comm: communications
+
+        template <std::size_t Nr, typename T, typename Comm, typename XPU0, typename XPU1,
+                  std::size_t N>
+        Components_tmpl<Nr, T, XPU0, XPU1>
+        reshape(const Proc_ranges<Nr> &p, const Components_tmpl<N, T, XPU0, XPU1> &v, Comm comm) {
+            Components_tmpl<Nr, T, XPU0, XPU1> r;
+            r.first.reserve(v.first.size());
+            r.second.reserve(v.second.size());
+            for (unsigned int i = 0; i < v.first.size(); ++i) {
+                const unsigned int componentId = v.first[i].componentId;
+                if (volume(p[comm.rank][componentId][1]) != volume(v.first[i].dim))
+                    throw std::runtime_error("wtf");
+                r.first.push_back(Component<Nr, T, XPU0>{
+                    v.first[i].it, p[comm.rank][componentId][1], componentId, v.first[i].mask_it});
+            }
+            for (unsigned int i = 0; i < v.second.size(); ++i) {
+                const unsigned int componentId = v.second[i].componentId;
+                if (volume(p[comm.rank][componentId][1]) != volume(v.second[i].dim))
+                    throw std::runtime_error("wtf");
+                r.second.push_back(Component<Nr, T, XPU1>{v.second[i].it,
+                                                          p[comm.rank][componentId][1], componentId,
+                                                          v.second[i].mask_it});
+            }
+
+            return r;
+        }
+
         /// Check that the given components are compatible
         /// \param v0: components to test
         /// \param v1: components to test

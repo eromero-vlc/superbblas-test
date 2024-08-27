@@ -916,6 +916,7 @@ namespace superbblas {
             auto ty_ = get_output_partition(pcw, dimcw, ocw, pxw, dimxw, oxw, oyw);
             Proc_ranges<Ny> &pyw = ty_.first;
             const Coor<Ny> &dimyw = ty_.second;
+            Components_tmpl<Ny, T, XPU0, XPU1> vyw = reshape(pyw, vxw, comm);
 
             // Do the contraction of the local pieces
 
@@ -937,7 +938,7 @@ namespace superbblas {
             }
 
             // Copy the working tensor into the given tensor
-            copy<Ny, Ny, T>(T{1}, pyw, {{}}, dimyw, dimyw, oyw, toConst(vxw), py, {{}}, dimy, oy,
+            copy<Ny, Ny, T>(T{1}, pyw, {{}}, dimyw, dimyw, oyw, toConst(vyw), py, {{}}, dimy, oy,
                             vy, comm, EWOp::Copy{}, co);
 
             _t.stop();
