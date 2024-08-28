@@ -1756,7 +1756,7 @@ namespace superbblas {
             // Find all common labels in od and oi
             for (char c : od)
                 if (std::find(oi.begin(), oi.end(), c) != oi.end())
-                    std::runtime_error(
+                    throw std::runtime_error(
                         "Common label between the domain and image of the sparse matrix");
 
             // Check the dimensions
@@ -1808,8 +1808,9 @@ namespace superbblas {
                     std::find(oy.begin(), oy.end(), c) != oy.end())
                     oT[nT++] = c;
             if (nT > 0)
-                std::runtime_error("Still not supported common dimensions between the sparse input "
-                                   "matrix, the dense input matrix, and the dense output matrix");
+                throw std::runtime_error(
+                    "Still not supported common dimensions between the sparse input "
+                    "matrix, the dense input matrix, and the dense output matrix");
 
             // Split the od into the non-blocked dimensions (Ds) and the blocked ones (ds) and the Kronecker ones (kds)
             Order<Nd> oDs, ods, okds;

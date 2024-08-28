@@ -699,7 +699,7 @@ namespace superbblas {
                 (co == FastToSlow ? volume<N>(dimw.begin() + nrows, dimw.begin() + nrows + ncols)
                                   : volume<N>(dimw.begin() + nk, dimw.begin() + nk + ncols));
             if (check_square && m != n)
-                std::runtime_error("cholesky: the matrices to factorize should be square");
+                throw std::runtime_error("cholesky: the matrices to factorize should be square");
 
             // Generate the working partition
             Proc_ranges<N> pw = get_dense_output_partition(p, dim, o, ow, nrows + ncols, co);

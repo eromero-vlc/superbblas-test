@@ -732,7 +732,7 @@ namespace superbblas {
             const std::size_t h0 = H::hash(t) + (std::size_t)comm.nprocs;
             std::size_t h = h0;
             MPI_check(MPI_Bcast(&h, sizeof(h) / sizeof(int), MPI_INT, 0, comm.comm));
-            if (h0 != h) std::runtime_error("check_consistency failed!");
+            if (h0 != h) throw std::runtime_error("check_consistency failed!");
         }
 
         /// Vectors used in MPI communications
@@ -3291,7 +3291,7 @@ namespace superbblas {
         Proc_ranges<Nd> get_from_size(const PartitionItem<Nd> *p, std::size_t n, const Comm &comm) {
             if (Nd == 0) return {};
             if (n % comm.nprocs != 0)
-                std::runtime_error("partition is incompatible with MPI communicator");
+                throw std::runtime_error("partition is incompatible with MPI communicator");
             Proc_ranges<Nd> r(comm.nprocs);
             unsigned int ncomponents = n / comm.nprocs;
             for (unsigned int i = 0; i < comm.nprocs; ++i) r[i].resize(ncomponents);
@@ -3437,7 +3437,7 @@ namespace superbblas {
         // Check other arguments
         int vol_procs = (int)detail::volume<Nd>(procs);
         if (nprocs >= 0 && vol_procs > nprocs)
-            std::runtime_error(
+            throw std::runtime_error(
                 "The total number of processes from `procs` is greater than `nprocs`");
 
         // Reorder the labels starting with dist_labels
@@ -3519,7 +3519,7 @@ namespace superbblas {
                                                       Coor<Nd> ext_power = {{}}) {
         int vol_procs = (int)detail::volume<Nd>(procs);
         if (nprocs >= 0 && vol_procs > nprocs)
-            std::runtime_error(
+            throw std::runtime_error(
                 "The total number of processes from `procs` is greater than `nprocs`");
         for (std::size_t i = 0; i < Nd; ++i)
             if (ext_power[i] < 0) throw std::runtime_error("Unsupported value for `power`");

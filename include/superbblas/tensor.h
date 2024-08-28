@@ -1596,7 +1596,7 @@ namespace superbblas {
                                         std::max(ldca, std::max(strideca,
                                                                 std::max(ldcb, stridecb))))))))) >=
                 (std::size_t)std::numeric_limits<int>::max()) {
-                std::runtime_error("contraction: too large tensors to contract");
+                throw std::runtime_error("contraction: too large tensors to contract");
             }
             _t.flops = volA * volB * volC * volT * multiplication_cost<T>::value;
             _t.memops = (volA * volB + volA * volC + volB * volC) * volT * sizeof(T);

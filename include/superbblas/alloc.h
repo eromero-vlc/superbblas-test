@@ -147,7 +147,7 @@ namespace superbblas {
 #    endif
                     }
 #endif // SUPERBBLAS_USE_GPU
-                    if (r == nullptr) std::runtime_error("Memory allocation failed!");
+                    if (r == nullptr) throw std::runtime_error("Memory allocation failed!");
                     break;
                 } catch (...) {
                     if (attempt == 0) {
