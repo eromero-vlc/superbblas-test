@@ -589,6 +589,8 @@ namespace superbblas {
 #endif
         }
 
+        inline std::size_t getGpuBlasMemory(const Cpu &) { return 0; }
+
 #ifdef SUPERBBLAS_USE_GPU
         /// Return all gpu blas handles for all devices
 
@@ -617,6 +619,22 @@ namespace superbblas {
             gpuBlasCheck(SUPERBBLAS_GPU_SELECT(XXX, cublasSetStream,
                                                rocblas_set_stream)(*h, getStream(xpu)));
             return *h;
+        }
+
+        /// Return memory allocated by the GPU BLAS library
+        /// \param xpu: context
+
+        inline std::size_t getGpuBlasMemory(const Gpu &xpu) {
+            if (deviceId(xpu) < 0) return 0;
+            auto h = getGpuBlasHandles().at(deviceId(xpu));
+            if (!h) return 0;
+            setDevice(xpu);
+#    if defined(SUPERBBLAS_USE_HIP)
+            std::size_t s = 0;
+            gpuBlasCheck(rocblas_get_device_memory_size(*h, &s));
+            return 0;
+#    endif
+            return 0;
         }
 
         /// Return all gpu sparse handles for all devices
