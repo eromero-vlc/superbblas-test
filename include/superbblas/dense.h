@@ -52,7 +52,7 @@ namespace superbblas {
             }
         }
 
-        inline void checkLapack(int info, bool terminate = false) {
+        inline void checkLapack(int info, const std::string &name, bool terminate = false) {
             if (info == 0) return;
             if (info < 0)
                 throw_or_exit(
@@ -60,7 +60,8 @@ namespace superbblas {
                         std::to_string(-info),
                     terminate);
             if (info > 0)
-                throw_or_exit(std::string("Error in lapack routine: ") + std::to_string(info),
+                throw_or_exit(std::string("Error in lapack routine ") + name + std::string(": ") +
+                                  std::to_string(info),
                               terminate);
         }
 
@@ -96,7 +97,7 @@ namespace superbblas {
                     if (info[id] == 0) info[id] = xpotrf('U', n, p + n * n * i, n, Cpu{});
             }
 
-            for (int i : info) checkLapack(i);
+            for (int i : info) checkLapack(i, "cholesky (cpu)");
         }
 
 #ifdef SUPERBBLAS_USE_GPU
@@ -136,7 +137,7 @@ namespace superbblas {
             launchHostKernel(
                 [=] {
                     for (std::size_t i = 0; i < k; ++i)
-                        checkLapack(info_cpu_ptr[i], true /* terminate */);
+                        checkLapack(info_cpu_ptr[i], "cholesky gpu", true /* terminate */);
                 },
                 xpu_host);
         }
@@ -285,7 +286,7 @@ namespace superbblas {
                             xgetrs(trans, n, m, ap + n * n * i, n, ipiv, xp + n * m * i, n, Cpu{});
                 }
             }
-            for (int i : info) checkLapack(i);
+            for (int i : info) checkLapack(i, "gesm cpu");
 
             delete[] ipivs;
         }
@@ -335,7 +336,7 @@ namespace superbblas {
             launchHostKernel(
                 [=] {
                     for (std::size_t i = 0; i < k; ++i)
-                        checkLapack(info_cpu_ptr[i], true /* terminate */);
+                        checkLapack(info_cpu_ptr[i], "getrf gpu", true /* terminate */);
                 },
                 xpu_host);
 #    ifdef SUPERBBLAS_USE_CUDA
@@ -343,7 +344,7 @@ namespace superbblas {
             gpuBlasCheck(cublasXgetrsBatched(getGpuBlasHandle(a.ctx()), toCublasTrans(trans), n, m,
                                              a_ps_gpu.data(), n, ipivs.data(), x_ps_gpu.data(), n,
                                              &info_getrs, k));
-            checkLapack(info_getrs);
+            checkLapack(info_getrs, "getrs gpu");
 #    else
             rocblasXgetrsStridedBatched(trans, n, m, a.data(), n, n * n, ipivs.data(), n, x.data(),
                                         n, n * m, k, a.ctx());
@@ -374,7 +375,7 @@ namespace superbblas {
             std::vector<int> info(num_threads, 0);
 
             T worksize = 0;
-            checkLapack(xgetri(n, ap, n, ipivs, &worksize, (BLASINT)-1, Cpu{}));
+            checkLapack(xgetri(n, ap, n, ipivs, &worksize, (BLASINT)-1, Cpu{}), "getri cpu");
             BLASINT lwork = std::real(worksize);
             std::vector<T> work(num_threads * lwork);
 
@@ -398,7 +399,7 @@ namespace superbblas {
                         info[id] = xgetri(n, ap + n * n * i, n, ipiv, iwork, lwork, Cpu{});
                 }
             }
-            for (int i : info) checkLapack(i);
+            for (int i : info) checkLapack(i, "getri cpu");
 
             delete[] ipivs;
         }
@@ -442,7 +443,7 @@ namespace superbblas {
                 launchHostKernel(
                     [=] {
                         for (std::size_t i = 0; i < k; ++i)
-                            checkLapack(info_cpu_ptr[i], true /* terminate */);
+                            checkLapack(info_cpu_ptr[i], "getrf gpu", true /* terminate */);
                     },
                     xpu_host);
             }
@@ -463,7 +464,7 @@ namespace superbblas {
                 launchHostKernel(
                     [=] {
                         for (std::size_t i = 0; i < k; ++i)
-                            checkLapack(info_cpu_ptr[i], true /* terminate */);
+                            checkLapack(info_cpu_ptr[i], "getri gpu", true /* terminate */);
                     },
                     xpu_host);
             }
@@ -495,7 +496,8 @@ namespace superbblas {
             T dummyr = 0;
             auto mv = std::min(m, n);
             checkLapack(
-                xgesvd('S', 'S', m, n, ap, m, sp, up, m, vtp, mv, &work0, -1, &dummyr, Cpu{}));
+                xgesvd('S', 'S', m, n, ap, m, sp, up, m, vtp, mv, &work0, -1, &dummyr, Cpu{}),
+                "gesvd cpu");
             std::size_t lwork = std::real(work0);
 
             std::vector<T> work(num_threads * lwork);
@@ -524,7 +526,7 @@ namespace superbblas {
                                    m, vtp + mv * n * i, mv, iwork, lwork, irwork, Cpu{});
                 }
             }
-            for (int i : info) checkLapack(i);
+            for (int i : info) checkLapack(i, "gesvd cpu");
 
             // Conjugate vt
             conj(vt);
@@ -578,7 +580,7 @@ namespace superbblas {
             launchHostKernel(
                 [=] {
                     for (std::size_t i = 0; i < k; ++i)
-                        checkLapack(info_cpu_ptr[i], true /* terminate */);
+                        checkLapack(info_cpu_ptr[i], "gesvd gpu", true /* terminate */);
                 },
                 xpu_host);
 
