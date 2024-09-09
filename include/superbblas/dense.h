@@ -570,6 +570,7 @@ namespace superbblas {
 #    else
             int lwork = 2 * rank;
             vector<typename the_real<T>::type, Gpu> work(lwork * k, a.ctx(), doCacheAlloc);
+            zero_n(work.data(), work.size(), work.ctx());
             rocsolverXgesvdStridedBatched(rocblas_svect_singular, rocblas_svect_singular, m, n,
                                           a.data(), m, m * n, s.data(), rank, u.data(), m, m * rank,
                                           vt.data(), rank, rank * n, work.data(), lwork,
