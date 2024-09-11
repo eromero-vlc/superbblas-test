@@ -576,7 +576,7 @@ namespace superbblas {
                                           a.data(), m, m * n, s.data(), rank, u.data(), m, m * rank,
                                           vt.data(), rank, rank * n, work.data(), lwork,
                                           rocblas_outofplace, info.data(), k, a.ctx());
-            work.release();
+            work.clear();
             auto info_cpu = makeSure(info, Cpu{});
             bool all_ok = true;
             for (std::size_t i = 0; i < k; ++i) all_ok &= (info_cpu[i] == 0);
