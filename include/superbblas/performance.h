@@ -254,6 +254,10 @@ namespace superbblas {
 
         /// Track time between creation and destruction of the object
         template <typename XPU> struct tracker {
+            /// Whether to track time
+            bool track_time;
+            /// Whether to track memory usage
+            bool track_mem;
             /// Whether the tacker has been stopped
             bool stopped;
 #ifdef SUPERBBLAS_USE_NVTX
@@ -281,15 +285,17 @@ namespace superbblas {
 
             /// Start a tracker
             tracker(const std::string &funcName, XPU xpu, bool timeAnyway = false)
-                : stopped(!(timeAnyway || getTrackingTime())),
+                : track_time(timeAnyway || getTrackingTime()),
+                  track_mem(getTrackingMemory()),
+                  stopped(!(track_time || track_mem)),
 #ifdef SUPERBBLAS_USE_NVTX
                   reported(false),
 #endif
                   funcName(funcName),
-                  mem_cpu(getTrackingMemory() ? getCpuMemUsed(xpu.session) : 0),
-                  mem_gpu(getTrackingMemory() ? getGpuMemUsed(xpu.session) : 0),
-                  start(!stopped ? std::chrono::system_clock::now()
-                                 : std::chrono::time_point<std::chrono::system_clock>{}),
+                  mem_cpu(track_mem ? getCpuMemUsed(xpu.session) : 0),
+                  mem_gpu(track_mem ? getGpuMemUsed(xpu.session) : 0),
+                  start(track_time ? std::chrono::system_clock::now()
+                                   : std::chrono::time_point<std::chrono::system_clock>{}),
                   xpu(xpu),
                   elapsedTime(0),
                   flops(0),
@@ -298,7 +304,7 @@ namespace superbblas {
 
                 if (!stopped) {
                     pushCall(funcName, xpu.session);
-                    timingEvent = TimingEvents<XPU>::startRecordingEvent(xpu);
+                    if (track_time) timingEvent = TimingEvents<XPU>::startRecordingEvent(xpu);
                 }
 #ifdef SUPERBBLAS_USE_NVTX
                 // Register this scope of time starting
@@ -321,45 +327,51 @@ namespace superbblas {
                 if (stopped) return;
                 stopped = true;
 
-                // Record gpu ending event
-                TimingEvents<XPU>::endRecordingEvent(timingEvent, xpu);
+                if (track_time) {
+                    // Record gpu ending event
+                    TimingEvents<XPU>::endRecordingEvent(timingEvent, xpu);
 
-                // Enforce a synchronization
-                if (getTrackingTimeSync()) sync(xpu);
+                    // Enforce a synchronization
+                    if (getTrackingTimeSync()) sync(xpu);
 
-                // Count elapsed time since the creation of the object
-                elapsedTime =
-                    std::chrono::duration<double>(std::chrono::system_clock::now() - start).count();
+                    // Count elapsed time since the creation of the object
+                    elapsedTime =
+                        std::chrono::duration<double>(std::chrono::system_clock::now() - start)
+                            .count();
+                }
 
                 // Pop out this call and get a string representing the current call stack
                 auto funcNameWithStackAndParent = popCall(xpu.session);
                 const std::string &funcNameWithStack = funcNameWithStackAndParent[0];
                 const std::string &parent = funcNameWithStackAndParent[1];
 
-                // Record the time
-                auto &timing = getTimings(xpu.session)[funcNameWithStack];
-                timing.cpu_time += elapsedTime;
-                timing.flops += flops;
-                timing.memops += memops;
-                timing.arity += arity;
-                timing.calls++;
-                if (!timing.is_parent_set) {
-                    timing.parent = parent;
-                    timing.is_parent_set = true;
-                }
-                TimingEvents<XPU>::updateGpuTimingEvents(timing, timingEvent);
+                if (track_time) {
+                    // Record the time
+                    auto &timing = getTimings(xpu.session)[funcNameWithStack];
+                    timing.cpu_time += elapsedTime;
+                    timing.flops += flops;
+                    timing.memops += memops;
+                    timing.arity += arity;
+                    timing.calls++;
+                    if (!timing.is_parent_set) {
+                        timing.parent = parent;
+                        timing.is_parent_set = true;
+                    }
+                    TimingEvents<XPU>::updateGpuTimingEvents(timing, timingEvent);
 
-                // Add flops and memops to parent call
-                if (parent.size() > 0) {
-                    auto &parent_timing = getTimings(xpu.session)[parent];
-                    parent_timing.flops += flops;
-                    parent_timing.memops += memops;
+                    // Add flops and memops to parent call
+                    if (parent.size() > 0) {
+                        auto &parent_timing = getTimings(xpu.session)[parent];
+                        parent_timing.flops += flops;
+                        parent_timing.memops += memops;
+                    }
                 }
 
                 // Record memory not released
-                if (getTrackingMemory())
+                if (track_mem) {
                     getCacheUsage(xpu.session)[funcNameWithStack] +=
                         getCpuMemUsed(xpu.session) - mem_cpu + getGpuMemUsed(xpu.session) - mem_gpu;
+                }
             }
 
             /// Stop the tracker and return timing
