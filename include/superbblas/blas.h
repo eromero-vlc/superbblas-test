@@ -718,6 +718,8 @@ namespace superbblas {
                                                   cT, !ta ? lda : 1, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                    else if (alpha != T{1})
+                        xscal(batch_size, alpha, c, 1, xpu);
                 } else {
                     gpuBlasCheck(cublasGemmEx(getGpuBlasHandle(xpu), toCublasTrans(transa),
                                               toCublasTrans(transb), m, n, k, &alpha, a, cT, lda, b,
@@ -744,6 +746,8 @@ namespace superbblas {
                                                      a, cT, !ta ? lda : 1, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                    else if (alpha != T{1})
+                        xscal(batch_size, alpha, c, 1, xpu);
                 } else if (n == 1 && !cb) {
                     int mA = !ta ? m : k;
                     int nA = !ta ? k : m;
@@ -786,6 +790,8 @@ namespace superbblas {
                             !ta ? lda : 1, stridea, batch_size, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                    else if (alpha != T{1})
+                        xscal(batch_size, alpha, c, 1, xpu);
                 } else if (n == 1 && !cb) {
                     int mA = !ta ? m : k;
                     int nA = !ta ? k : m;

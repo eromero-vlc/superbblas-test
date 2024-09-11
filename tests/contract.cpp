@@ -60,15 +60,17 @@ const char sT = 'A', sA = sT + 8, sB = sA + 8, sC = sB + 8;
 enum distribution { OnMaster, OnEveryone, OnEveryoneReplicated };
 
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T, typename XPU>
-void test_contraction(Operator<N0, T> op0, Operator<N1, T> op1, Operator<N2, T> op2, bool conj0,
-                      bool conj1, char dist_dir, const std::vector<Context> &ctx,
-                      const std::vector<XPU> &xpu) {
+void test_contraction(const T &alpha, Operator<N0, T> op0, Operator<N1, T> op1, const T &beta,
+                      Operator<N2, T> op2, bool conj0, bool conj1, char dist_dir,
+                      const std::vector<Context> &ctx, const std::vector<XPU> &xpu,
+                      unsigned int dist_index) {
     std::array<distribution, 3> d{OnMaster, OnEveryone, OnEveryoneReplicated};
-    for (unsigned int i = 0; i < d.size(); ++i)
-        test_contraction(op0, d[i], op1, d[i], op2, d[i], conj0, conj1, dist_dir, ctx, xpu);
-    for (unsigned int i = 0; i < d.size(); ++i)
-        for (unsigned int j = i + 1; j < d.size(); ++j)
-            test_contraction(op0, d[i], op1, d[j], op2, d[i], conj0, conj1, dist_dir, ctx, xpu);
+    std::array<std::array<distribution, 2>, 6> dd;
+    for (unsigned int i = 0, k = 0; i < d.size(); ++i)
+        for (unsigned int j = i; j < d.size(); ++j)
+            dd[k++] = std::array<distribution, 2>{d[i], d[j]};
+    test_contraction(alpha, op0, dd[dist_index][0], op1, dd[dist_index][1], beta, op2,
+                     dd[dist_index][0], conj0, conj1, dist_dir, ctx, xpu);
 }
 
 template <std::size_t N> Coor<N> random_from() {
@@ -101,12 +103,17 @@ private:
 /// Allocate tensor
 template <typename T, std::size_t N, typename XPU>
 vectors<T, XPU> create_tensor_data(const PartitionStored<N> &p, int rank,
-                                   const std::vector<XPU> &xpu) {
+                                   const std::vector<XPU> &xpu, bool init_to_ones = false) {
 
     std::vector<superbblas::detail::vector<T, XPU>> r;
     for (unsigned int component = 0; component < xpu.size(); ++component) {
         std::size_t vol = superbblas::detail::volume(p[rank * xpu.size() + component][1]);
-        r.push_back(superbblas::detail::vector<T, XPU>(vol, xpu[component]));
+        superbblas::detail::vector<T, XPU> v(vol, xpu[component]);
+        r.push_back(v);
+        if (init_to_ones) {
+            std::vector<T> v_cpu(vol, T{1});
+            detail::copy_n(v_cpu.data(), detail::Cpu{}, vol, v.data(), v.ctx());
+        }
     }
     return vectors<T, XPU>(r);
 }
@@ -135,9 +142,10 @@ PartitionStored<N> make_partinioning(const Order<N + 1> &o, const Coor<N> &dim, 
 }
 
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T, typename XPU>
-void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1, distribution d1,
-                      Operator<N2, T> op2, distribution d2, bool conj0, bool conj1, char dist_dir,
-                      const std::vector<Context> &ctx, const std::vector<XPU> &xpu) {
+void test_contraction(const T &alpha, Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
+                      distribution d1, const T &beta, Operator<N2, T> op2, distribution d2,
+                      bool conj0, bool conj1, char dist_dir, const std::vector<Context> &ctx,
+                      const std::vector<XPU> &xpu) {
 
     int nprocs, rank;
 #ifdef SUPERBBLAS_USE_MPI
@@ -200,13 +208,13 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
          SlowToFast, Copy);
 
     PartitionStored<N2> p2 = make_partinioning(o2, dim2, nprocs, ctx.size(), d2, dist_dir);
-    auto v2 = create_tensor_data<T>(p2, rank, xpu);
+    auto v2 = create_tensor_data<T>(p2, rank, xpu, true /* init to ones */);
 
     // Contract the distributed matrices
 
-    contraction(T{1}, p0.data(), from0, size0, dim0, ctx.size(), o0.data(), conj0, v0.const_data(),
+    contraction(alpha, p0.data(), from0, size0, dim0, ctx.size(), o0.data(), conj0, v0.const_data(),
                 ctx.data(), p1.data(), from1, size1, dim1, ctx.size(), o1.data(), conj1,
-                v1.const_data(), ctx.data(), T{0}, p2.data(), from2, size2, dim2, ctx.size(),
+                v1.const_data(), ctx.data(), beta, p2.data(), from2, size2, dim2, ctx.size(),
                 o2.data(), v2.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                 MPI_COMM_WORLD,
@@ -231,12 +239,12 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
     if (rank == 0) {
         double diff_fn = 0, fn = 0; // Frob-norm of the difference and the correct tensor
         for (std::size_t i = 0; i < v2_.size(); ++i)
-            diff_fn += std::norm(v2_[i] - vr[i]), fn += std::norm(v2_[i]);
+            diff_fn += std::norm(beta * T{1} + alpha * v2_[i] - vr[i]), fn += std::norm(v2_[i]);
         diff_fn = std::sqrt(diff_fn);
         fn = std::sqrt(fn);
         if (diff_fn > fn * 1e-4) is_correct = 0;
         progress++;
-        if (progress > 770000) {
+        if (progress > 128333) {
             std::cout << std::string(1, '0' + progress_mark);
             std::cout.flush();
             progress = 0;
@@ -248,9 +256,9 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 #endif
     if (!is_correct) {
         // NOTE: Put a breakpoint here to debug the cases producing wrong answers!
-        contraction(T{1}, p0.data(), from0, size0, dim0, ctx.size(), o0.data(), conj0,
+        contraction(alpha, p0.data(), from0, size0, dim0, ctx.size(), o0.data(), conj0,
                     v0.const_data(), ctx.data(), p1.data(), from1, size1, dim1, ctx.size(),
-                    o1.data(), conj1, v1.const_data(), ctx.data(), T{0}, p2.data(), from2, size2,
+                    o1.data(), conj1, v1.const_data(), ctx.data(), beta, p2.data(), from2, size2,
                     dim2, ctx.size(), o2.data(), v2.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                     MPI_COMM_WORLD,
@@ -266,8 +274,9 @@ void test_contraction(Operator<N0, T> op0, distribution d0, Operator<N1, T> op1,
 }
 
 template <std::size_t N0, std::size_t N1, std::size_t N2, typename T, typename XPU>
-void test_contraction(Operator<N0, T> p0, Operator<N1, T> p1, Operator<N2, T> p2,
-                      const std::vector<Context> &ctx, const std::vector<XPU> &xpu) {
+void test_contraction(const T &alpha, Operator<N0, T> p0, Operator<N1, T> p1, const T &beta,
+                      Operator<N2, T> p2, const std::vector<Context> &ctx,
+                      const std::vector<XPU> &xpu, unsigned int dist_index) {
     // Compute correct result of the contraction of p0 and p1
     const Coor<N0> dim0 = std::get<0>(p0);
     const Coor<N1> dim1 = std::get<0>(p1);
@@ -315,63 +324,70 @@ void test_contraction(Operator<N0, T> p0, Operator<N1, T> p1, Operator<N2, T> p2
     for (char c : labels) {
         // Test first operator no conj and second operator no conj
         std::get<2>(p2) = r0;
-        test_contraction(p0, p1, p2, false, false, c, ctx, xpu);
+        test_contraction(alpha, p0, p1, beta, p2, false, false, c, ctx, xpu, dist_index);
         // Test first operator conj and second operator no conj
         std::get<2>(p2) = r1;
-        test_contraction(p0, p1, p2, true, false, c, ctx, xpu);
+        test_contraction(alpha, p0, p1, beta, p2, true, false, c, ctx, xpu, dist_index);
         // Test first operator no conj and second operator conj
         std::get<2>(p2) = r2;
-        test_contraction(p0, p1, p2, false, true, c, ctx, xpu);
+        test_contraction(alpha, p0, p1, beta, p2, false, true, c, ctx, xpu, dist_index);
         // Test first operator conj and second operator conj
         std::get<2>(p2) = r3;
-        test_contraction(p0, p1, p2, true, true, c, ctx, xpu);
+        test_contraction(alpha, p0, p1, beta, p2, true, true, c, ctx, xpu, dist_index);
     }
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T, typename XPU>
-void test_third_operator(Operator<NT + NA + NB, T> p0, Operator<NT + NA + NC, T> p1,
+void test_third_operator(const T &alpha, Operator<NT + NA + NB, T> p0, Operator<NT + NA + NC, T> p1,
                          const std::map<char, int> &dims, const std::vector<Context> &ctx,
-                         const std::vector<XPU> &xpu) {
-    test_contraction(p0, p1, generate_tensor<NT, NB, NC, T>(sT, sB, sC, dims), ctx, xpu);
-    test_contraction(p0, p1, generate_tensor<NT, NC, NB, T>(sT, sC, sB, dims), ctx, xpu);
-    test_contraction(p0, p1, generate_tensor<NB, NC, NT, T>(sB, sC, sT, dims), ctx, xpu);
-    test_contraction(p0, p1, generate_tensor<NB, NT, NC, T>(sB, sT, sC, dims), ctx, xpu);
-    test_contraction(p0, p1, generate_tensor<NC, NB, NT, T>(sC, sB, sT, dims), ctx, xpu);
-    test_contraction(p0, p1, generate_tensor<NC, NT, NB, T>(sC, sT, sB, dims), ctx, xpu);
+                         const std::vector<XPU> &xpu, unsigned int dist_index) {
+    test_contraction(alpha, p0, p1, T{0}, generate_tensor<NT, NB, NC, T>(sT, sB, sC, dims), ctx,
+                     xpu, dist_index);
+    test_contraction(alpha, p0, p1, T{0}, generate_tensor<NT, NC, NB, T>(sT, sC, sB, dims), ctx,
+                     xpu, dist_index);
+    test_contraction(alpha, p0, p1, T{1}, generate_tensor<NB, NC, NT, T>(sB, sC, sT, dims), ctx,
+                     xpu, dist_index);
+    test_contraction(alpha, p0, p1, T{1}, generate_tensor<NB, NT, NC, T>(sB, sT, sC, dims), ctx,
+                     xpu, dist_index);
+    test_contraction(alpha, p0, p1, T{-1}, generate_tensor<NC, NB, NT, T>(sC, sB, sT, dims), ctx,
+                     xpu, dist_index);
+    test_contraction(alpha, p0, p1, T{-1}, generate_tensor<NC, NT, NB, T>(sC, sT, sB, dims), ctx,
+                     xpu, dist_index);
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T, typename XPU>
 void test_second_operator(Operator<NT + NA + NB, T> p0, const std::map<char, int> &dims,
-                          const std::vector<Context> &ctx, const std::vector<XPU> &xpu) {
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NT, NA, NC, T>(sT, sA, sC, dims),
-                                           dims, ctx, xpu);
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NT, NC, NA, T>(sT, sC, sA, dims),
-                                           dims, ctx, xpu);
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NA, NC, NT, T>(sA, sC, sT, dims),
-                                           dims, ctx, xpu);
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NA, NT, NC, T>(sA, sT, sC, dims),
-                                           dims, ctx, xpu);
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NC, NA, NT, T>(sC, sA, sT, dims),
-                                           dims, ctx, xpu);
-    test_third_operator<NT, NA, NB, NC, T>(p0, generate_tensor<NC, NT, NA, T>(sC, sT, sA, dims),
-                                           dims, ctx, xpu);
+                          const std::vector<Context> &ctx, const std::vector<XPU> &xpu,
+                          unsigned int dist_index) {
+    test_third_operator<NT, NA, NB, NC, T>(
+        T{0}, p0, generate_tensor<NT, NA, NC, T>(sT, sA, sC, dims), dims, ctx, xpu, dist_index);
+    test_third_operator<NT, NA, NB, NC, T>(
+        T{0}, p0, generate_tensor<NT, NC, NA, T>(sT, sC, sA, dims), dims, ctx, xpu, dist_index);
+    test_third_operator<NT, NA, NB, NC, T>(
+        T{1}, p0, generate_tensor<NA, NC, NT, T>(sA, sC, sT, dims), dims, ctx, xpu, dist_index);
+    test_third_operator<NT, NA, NB, NC, T>(
+        T{1}, p0, generate_tensor<NA, NT, NC, T>(sA, sT, sC, dims), dims, ctx, xpu, dist_index);
+    test_third_operator<NT, NA, NB, NC, T>(
+        T{-1}, p0, generate_tensor<NC, NA, NT, T>(sC, sA, sT, dims), dims, ctx, xpu, dist_index);
+    test_third_operator<NT, NA, NB, NC, T>(
+        T{-1}, p0, generate_tensor<NC, NT, NA, T>(sC, sT, sA, dims), dims, ctx, xpu, dist_index);
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T, typename XPU>
 void test_first_operator(const std::map<char, int> &dims, const std::vector<Context> &ctx,
                          const std::vector<XPU> &xpu) {
     test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NT, NA, NB, T>(sT, sA, sB, dims), dims,
-                                            ctx, xpu);
+                                            ctx, xpu, 0);
     test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NT, NB, NA, T>(sT, sB, sA, dims), dims,
-                                            ctx, xpu);
+                                            ctx, xpu, 1);
     test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NA, NB, NT, T>(sA, sB, sT, dims), dims,
-                                            ctx, xpu);
+                                            ctx, xpu, 2);
     test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NA, NT, NB, T>(sA, sT, sB, dims), dims,
-                                            ctx, xpu);
+                                            ctx, xpu, 3);
     test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NB, NA, NT, T>(sB, sA, sT, dims), dims,
-                                            ctx, xpu);
+                                            ctx, xpu, 4);
     test_second_operator<NT, NA, NB, NC, T>(generate_tensor<NB, NT, NA, T>(sB, sT, sA, dims), dims,
-                                            ctx, xpu);
+                                            ctx, xpu, 5);
 }
 
 template <std::size_t NT, std::size_t NA, std::size_t NB, std::size_t NC, typename T, typename XPU,
