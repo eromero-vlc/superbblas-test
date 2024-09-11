@@ -556,6 +556,7 @@ namespace superbblas {
             vector<int, Gpu> info(k, a.ctx(), doCacheAlloc);
             auto xpu_host = a.ctx().toCpuPinned();
             auto rank = std::min(m, n);
+            bool info_checked = false;
 #    ifdef SUPERBBLAS_USE_CUDA
             int lwork = 0;
             gpuSolverCheck(cusolverDnXgesvdaStridedBatched_bufferSize(
@@ -575,15 +576,29 @@ namespace superbblas {
                                           a.data(), m, m * n, s.data(), rank, u.data(), m, m * rank,
                                           vt.data(), rank, rank * n, work.data(), lwork,
                                           rocblas_outofplace, info.data(), k, a.ctx());
+            work.release();
+            auto info_cpu = makeSure(info, Cpu{});
+            bool all_ok = true;
+            for (std::size_t i = 0; i < k; ++i) all_ok &= (info_cpu[i] == 0);
+            if (all_ok) {
+                info_checked = true;
+            } else {
+                rocsolverXgesvdStridedBatched(rocblas_svect_singular, rocblas_svect_singular, m, n,
+                                              a.data(), m, m * n, s.data(), rank, u.data(), m,
+                                              m * rank, vt.data(), rank, rank * n, work.data(),
+                                              lwork, rocblas_inplace, info.data(), k, a.ctx());
+            }
 #    endif // SUPERBBLAS_USE_CUDA
-            vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
-            auto info_cpu_ptr = info_cpu.data();
-            launchHostKernel(
-                [=] {
-                    for (std::size_t i = 0; i < k; ++i)
-                        checkLapack(info_cpu_ptr[i], "gesvd gpu", true /* terminate */);
-                },
-                xpu_host);
+            if (!info_checked) {
+                vector<int, Gpu> info_cpu = makeSure(info, xpu_host, doCacheAlloc);
+                auto info_cpu_ptr = info_cpu.data();
+                launchHostKernel(
+                    [=] {
+                        for (std::size_t i = 0; i < k; ++i)
+                            checkLapack(info_cpu_ptr[i], "gesvd gpu", true /* terminate */);
+                    },
+                    xpu_host);
+            }
 
             // Conjugate vt
             conj(vt);
