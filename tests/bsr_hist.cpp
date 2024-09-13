@@ -123,8 +123,12 @@ std::pair<BSR_handle *, vector<T, XPU>> create_lattice(const PartitionStored<6> 
     IndexType *iiptr = ii_xpu.data();
     Coor<6> *jjptr = jj_xpu.data();
     T *dataptr = data_xpu.data();
-    create_bsr<6, 6, T>(pi.data(), op_dim, pd.data(), op_dim, 1, block, block, false, &iiptr,
-                        &jjptr, (const T **)&dataptr, &ctx,
+    create_bsr<6, 6, T>(pi.data(), op_dim,
+#if SUPERBBLAS_VERSION >= 3
+                        1,
+#endif
+                        pd.data(), op_dim, 1, block, block, false, &iiptr, &jjptr,
+                        (const T **)&dataptr, &ctx,
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif

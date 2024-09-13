@@ -67,9 +67,9 @@ template <typename SCALAR> void test() {
             const int bjprod = n;
             std::vector<int> perm({0, 1, 2, 3, 3, 2, 1, 0});
             std::vector<int> perm_sign({1, -1, 1, 1, -1, 1, -1, 1});
-            xgemm_alt_alpha1_beta0_perm(2, 3, 4 * n, 3, a.data(), 1, 3, b.data(), bj.data(), bjprod,
-                                        1, 3, 4, perm.data(), perm_sign.data(), c.data(), 1, 3,
-                                        Cpu{});
+            xgemm_alt_alpha1_beta0_perm(2, 3, 4 * n, 3, a.data(), 1, 3, b.data(),
+                                        (const SCALAR *)nullptr, 24, bj.data(), bjprod, 1, 3, 4,
+                                        perm.data(), perm_sign.data(), c.data(), 1, 3, Cpu{});
 
             std::vector<SCALAR> c0(3 * 4 * n);
             for (int m = 0; m < 2; ++m)
@@ -91,9 +91,9 @@ template <typename SCALAR> void test() {
             const int bjprod = n;
             std::vector<int> perm({0, 1, 2, 3, 3, 2, 1, 0});
             std::vector<int> perm_sign({1, -1, 1, 1, -1, 1, -1, 1});
-            xgemm_alt_alpha1_beta0_perm(2, 3, 4 * n, 3, a.data(), 3, 1, b.data(), bj.data(), bjprod,
-                                        1, 3, 4, perm.data(), perm_sign.data(), c.data(), 1, 3,
-                                        Cpu{});
+            xgemm_alt_alpha1_beta0_perm(2, 3, 4 * n, 3, a.data(), 3, 1, b.data(),
+                                        (const SCALAR *)nullptr, 24, bj.data(), bjprod, 1, 3, 4,
+                                        perm.data(), perm_sign.data(), c.data(), 1, 3, Cpu{});
 
             std::vector<SCALAR> c0(3 * 4 * n);
             for (int m = 0; m < 2; ++m)

@@ -784,8 +784,8 @@ namespace superbblas {
 #    ifdef _OPENMP
 #        pragma omp parallel
 #    endif
-                    {
-                        std::vector<T> aux(ki * ncols * bd);
+                        {
+                            std::vector<T> aux(ki * ncols * bd);
 #    ifdef _OPENMP
 #        pragma omp for schedule(static)
 #    endif

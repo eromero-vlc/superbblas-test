@@ -1373,6 +1373,7 @@ namespace superbblas {
         /// \param b1: pointer base to all B_i matrices, B_i starts at b1[bj[i]*bjprod]
         ///            if bj[i] >= bj01
         /// \param bj01: discriminator to use b0 or b1 depending on bj[i]
+        /// \param bjprod: product on b0[i] or b1[i]
         /// \param ldbr: number of elements to skip a row in B_i
         /// \param ldbc: number of elements to skip a column in B_i
         /// \param perm_size: period of the permutation and the scalar matrix
