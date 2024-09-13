@@ -147,7 +147,7 @@ namespace superbblas {
 #    endif
                     }
 #endif // SUPERBBLAS_USE_GPU
-                    if (r == nullptr) std::runtime_error("Memory allocation failed!");
+                    if (r == nullptr) throw std::runtime_error("Memory allocation failed!");
                     break;
                 } catch (...) {
                     if (attempt == 0) {
@@ -157,9 +157,18 @@ namespace superbblas {
                             std::cerr << "superbblas::detail::allocate: error allocating "
                                       << sizeof(T) * n << " bytes";
                             if (getTrackingMemory()) {
+                                std::size_t gpu_free = 0, gpu_total = 0, gpu_extra = 0;
+#ifdef SUPERBBLAS_USE_GPU
+                                gpuCheck(SUPERBBLAS_GPU_SYMBOL(MemGetInfo)(&gpu_free, &gpu_total));
+                                gpu_extra = getGpuBlasMemory(xpu);
+#endif
                                 std::cerr << "; superbblas mem usage: cpu "
                                           << getCpuMemUsed(0) / 1024 / 1024 << " MiB  gpu "
-                                          << getGpuMemUsed(0) / 1024 / 1024 << " MiB";
+                                          << getGpuMemUsed(0) / 1024 / 1024 << " MiB, plus "
+                                          << gpu_extra / 1024 / 1024
+                                          << " MiB used by gpu blas lib; there is "
+                                          << gpu_free / 1024 / 1024 << " MiB free out of "
+                                          << gpu_total / 1024 / 1024;
                             }
                             std::cerr << std::endl;
                         }

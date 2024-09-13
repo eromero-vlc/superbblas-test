@@ -458,7 +458,8 @@ namespace superbblas {
             const char *filename_core = filename + 4;
 
             // Not supported writing mode
-            if (mode != OnlyRead) std::runtime_error("unsupported write operations for anarchofs");
+            if (mode != OnlyRead)
+                throw std::runtime_error("unsupported write operations for anarchofs");
 
             // Open the file with anarchofs
             auto f = anarchofs::client::open(filename_core);
@@ -515,7 +516,7 @@ namespace superbblas {
             if (f.f_afs != nullptr) {
                 if (anarchofs::client::read(f.f_afs, (char *)v, n * sizeof(T)) !=
                     (std::int64_t)(n * sizeof(T)))
-                    std::runtime_error("read: error reading from anarchofs");
+                    throw std::runtime_error("read: error reading from anarchofs");
             } else {
                 read(f.f_local, v, n);
             }

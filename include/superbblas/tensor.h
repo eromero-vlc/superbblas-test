@@ -1462,17 +1462,20 @@ namespace superbblas {
                 norm_o1 = order_from_pos(sT1, 't', sA1, 'a', sC1, 'c');
             }
 
-            // If oT, oB, or oC aren't found as either oT+oC+oB or oC+oT+oB, then reorder the labels appropriately
+            // If oT, oB, or oC aren't found as either oT+oC+oB, oC+oT+oB, oT+oB+oC or oB+oT+oC,
+            // then reorder the labels appropriately
             if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
-                (nT > 0 && nB > 0 && sBr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
+                (nT > 0 && sBr < sTr && sCr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
                 std::copy_n(oT.begin(), nT, sug_or.begin());
                 std::copy_n(oC.begin(), nC, sug_or.begin() + nT);
                 std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
                 std::copy_n(o_r.begin() + nT + nC + nB, o_r.size() - nT - nC - nB,
                             sug_or.begin() + nT + nC + nB);
+                swap_operands = false;
                 norm_or = Order<3>{{'t', 'c', 'b'}};
             } else {
                 sug_or = o_r;
+                swap_operands = (nB > 0 && nC > 0 && sBr < sCr);
                 norm_or = order_from_pos(sTr, 't', sBr, 'b', sCr, 'c');
             }
         }
@@ -1637,7 +1640,7 @@ namespace superbblas {
                                         std::max(ldca, std::max(strideca,
                                                                 std::max(ldcb, stridecb))))))))) >=
                 (std::size_t)std::numeric_limits<int>::max()) {
-                std::runtime_error("contraction: too large tensors to contract");
+                throw std::runtime_error("contraction: too large tensors to contract");
             }
             _t.flops = volA * volB * volC * volT * multiplication_cost<T>::value;
             _t.memops = (volA * volB + volA * volC + volB * volC) * volT * sizeof(T);

@@ -169,6 +169,7 @@ namespace superbblas {
 #define XGETRF    FORTRAN_FUNCTION(ARITH(hgetrf, kgetrf, sgetrf, cgetrf, dgetrf, zgetrf, , ))
 #define XGETRI    FORTRAN_FUNCTION(ARITH(hgetri, kgetri, sgetri, cgetri, dgetri, zgetri, , ))
 #define XGETRS    FORTRAN_FUNCTION(ARITH(hgetrs, kgetrs, sgetrs, cgetrs, dgetrs, zgetrs, , ))
+#define XGESVD    FORTRAN_FUNCTION(ARITH(hgesvd, kgesvd, sgesvd, cgesvd, dgesvd, zgesvd, , ))
         // clang-format on
 
 #    ifndef SUPERBBLAS_USE_MKL
@@ -179,6 +180,13 @@ namespace superbblas {
         void XGETRS(BLASSTRING trans, BLASINT *n, BLASINT *m, SCALAR *a, BLASINT *lda,
                     BLASINT *ipivot, SCALAR *b, BLASINT *ldb, BLASINT *info);
         void XGETRI(BLASINT *n, SCALAR *a, BLASINT *lda, BLASINT *piv, SCALAR *work, BLASINT *lwork,
+                    BLASINT *info);
+        void XGESVD(BLASSTRING jobu, BLASSTRING jobvt, BLASINT *m, BLASINT *n, SCALAR *a,
+                    BLASINT *lda, REAL *s, SCALAR *u, BLASINT *ldu, SCALAR *vt, BLASINT *ldvt,
+                    SCALAR *work, BLASINT *ldwork,
+#        ifdef __SUPERBBLAS_USE_COMPLEX
+                    REAL *rwork,
+#        endif
                     BLASINT *info);
         }
 #    endif // SUPERBBLAS_USE_MKL
@@ -353,6 +361,25 @@ namespace superbblas {
             return info;
         }
 
+        inline int xgesvd(char jobu, char jobvt, BLASINT m, BLASINT n, SCALAR *a, BLASINT lda,
+                          REAL *s, SCALAR *u, BLASINT ldu, SCALAR *vt, BLASINT ldvt, SCALAR *work,
+                          BLASINT ldwork, SCALAR *rwork, Cpu) {
+#    ifndef __SUPERBBLAS_USE_COMPLEX
+            (void)rwork;
+#    endif
+            /* Zero dimension matrix may cause problems */
+            if (n == 0 || m == 0) return 0;
+
+            BLASINT info = 0;
+            XGESVD(&jobu, &jobvt, &m, &n, (LAPACK_SCALAR *)a, &lda, s, (LAPACK_SCALAR *)u, &ldu,
+                   (LAPACK_SCALAR *)vt, &ldvt, (LAPACK_SCALAR *)work, &ldwork,
+#    ifdef __SUPERBBLAS_USE_COMPLEX
+                   (REAL *)rwork,
+#    endif
+                   &info);
+            return info;
+        }
+
 #    undef XCOPY
 #    undef XSWAP
 #    undef XGEMM
@@ -368,6 +395,7 @@ namespace superbblas {
 #    undef XGETRF
 #    undef XGETRI
 #    undef XGETRS
+#    undef XGESVD
 
         //
         // Batched GEMM
@@ -614,6 +642,32 @@ namespace superbblas {
                 handle, uplo, n, (CUSPARSE_SCALAR **)Aarray, lda, infoArray, batchSize);
         }
 
+        inline cusolverStatus_t cusolverDnXgesvdaStridedBatched_bufferSize(
+            cusolverDnHandle_t handle, cusolverEigMode_t jobz, int rank, int m, int n, SCALAR *A,
+            int lda, int strideA, REAL *S, int strideS, SCALAR *U, int ldu, int strideU, SCALAR *V,
+            int ldv, int strideV, int *lwork, int batchSize) {
+            return ARITH(, , cusolverDnSgesvdaStridedBatched_bufferSize,
+                         cusolverDnCgesvdaStridedBatched_bufferSize,
+                         cusolverDnDgesvdaStridedBatched_bufferSize,
+                         cusolverDnZgesvdaStridedBatched_bufferSize,
+                         , )(handle, jobz, rank, m, n, (CUSPARSE_SCALAR *)A, lda, strideA, S,
+                             strideS, (CUSPARSE_SCALAR *)U, ldu, strideU, (CUSPARSE_SCALAR *)V, ldv,
+                             strideV, lwork, batchSize);
+        }
+
+        inline cusolverStatus_t
+        cusolverDnXgesvdaStridedBatched(cusolverDnHandle_t handle, cusolverEigMode_t jobz, int rank,
+                                        int m, int n, SCALAR *A, int lda, int strideA, REAL *S,
+                                        int strideS, SCALAR *U, int ldu, int strideU, SCALAR *V,
+                                        int ldv, int strideV, SCALAR *work, int lwork, int *info,
+                                        double *h_RnrmF, int batchSize) {
+            return ARITH(, , cusolverDnSgesvdaStridedBatched, cusolverDnCgesvdaStridedBatched,
+                         cusolverDnDgesvdaStridedBatched, cusolverDnZgesvdaStridedBatched,
+                         , )(handle, jobz, rank, m, n, (CUSPARSE_SCALAR *)A, lda, strideA, S,
+                             strideS, (CUSPARSE_SCALAR *)U, ldu, strideU, (CUSPARSE_SCALAR *)V, ldv,
+                             strideV, (CUSPARSE_SCALAR *)work, lwork, info, h_RnrmF, batchSize);
+        }
+
 #        undef CUSPARSE_SCALAR
 
 #    elif defined(SUPERBBLAS_USE_HIP)
@@ -697,6 +751,21 @@ namespace superbblas {
                                  rocsolver_zpotrf_strided_batched,
                                  , )(getGpuSolverHandle(ctx), uplo, n, (ROCBLAS_SCALAR *)A, lda,
                                      strideA, info, batchSize));
+        }
+
+        inline void rocsolverXgesvdStridedBatched(rocblas_svect left_svect,
+                                                  rocblas_svect right_svect, int m, int n,
+                                                  SCALAR *A, int lda, int strideA, REAL *S,
+                                                  int strideS, SCALAR *U, int ldu, int strideU,
+                                                  SCALAR *Vt, int ldvt, int strideVt, REAL *E,
+                                                  int strideE, rocblas_workmode fast_alg, int *info,
+                                                  int batch_count, const Gpu &ctx) {
+            gpuSolverCheck(ARITH(, , rocsolver_sgesvd_strided_batched,
+                                 rocsolver_cgesvd_strided_batched, rocsolver_dgesvd_strided_batched,
+                                 rocsolver_zgesvd_strided_batched, , )(
+                getGpuSolverHandle(ctx), left_svect, right_svect, m, n, (ROCBLAS_SCALAR *)A, lda,
+                strideA, S, strideS, (ROCBLAS_SCALAR *)U, ldu, strideU, (ROCBLAS_SCALAR *)Vt, ldvt,
+                strideVt, E, strideE, fast_alg, info, batch_count));
         }
 
 #        undef HIPSPARSE_SCALAR

@@ -88,9 +88,16 @@ EMIT_define(SUPERBBLAS_USE_CBLAS)
         EMIT REPLACE1(select, superbblas::detail::select<IndexType, T>) REPLACE_IndexType REPLACE( \
             T, superbblas::IndexType, std::size_t, SUPERBBLAS_REAL_TYPES) template __VA_ARGS__;
 
+/// Generate template instantiations for conj functions with template parameter T
+
+#    define DECL_CONJ_T(...)                                                                       \
+        EMIT REPLACE1(conj, superbblas::detail::conj<T>)                                           \
+            REPLACE(T, SUPERBBLAS_COMPLEX_TYPES) template __VA_ARGS__;
+
 #else
 #    define DECL_SUM_T(...) __VA_ARGS__
 #    define DECL_SELECT_T(...) __VA_ARGS__
+#    define DECL_CONJ_T(...) __VA_ARGS__
 #endif
 
 namespace superbblas {
@@ -757,6 +764,8 @@ namespace superbblas {
                                                   cT, !ta ? lda : 1, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                    else if (alpha != T{1})
+                        xscal(batch_size, alpha, c, 1, xpu);
                 } else {
                     gpuBlasCheck(cublasGemmEx(getGpuBlasHandle(xpu), toCublasTrans(transa),
                                               toCublasTrans(transb), m, n, k, &alpha, a, cT, lda, b,
@@ -783,6 +792,8 @@ namespace superbblas {
                                                      a, cT, !ta ? lda : 1, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                    else if (alpha != T{1})
+                        xscal(batch_size, alpha, c, 1, xpu);
                 } else if (n == 1 && !cb) {
                     int mA = !ta ? m : k;
                     int nA = !ta ? k : m;
@@ -825,6 +836,8 @@ namespace superbblas {
                             !ta ? lda : 1, stridea, batch_size, r, cT, cT));
                     if (std::norm(beta) != 0)
                         copy_n(alpha, r, xpu, batch_size, c, xpu, EWOp::Add{});
+                    else if (alpha != T{1})
+                        xscal(batch_size, alpha, c, 1, xpu);
                 } else if (n == 1 && !cb) {
                     int mA = !ta ? m : k;
                     int nA = !ta ? k : m;
@@ -953,6 +966,48 @@ namespace superbblas {
             r.resize(itr_end - itr);
             causalConnectTo(v.ctx(), w.ctx());
             return r;
+        })
+#endif // SUPERBBLAS_USE_GPU
+
+        /// Conjugate the elements of a vector
+        /// \param v: vector to modify
+
+        template <typename T, typename Xpu,
+                  typename std::enable_if<!is_complex<T>::value, bool>::type = true>
+        void conj(vector<T, Xpu> &) {}
+
+        /// Conjugate the elements of a vector
+        /// \param v: vector to modify
+
+        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = false>
+        void conj(vector<T, Cpu> &v) {
+            auto *p = v.data();
+            std::size_t n = v.size();
+#ifdef _OPENMP
+#    pragma omp parallel for schedule(static)
+#endif
+            for (std::size_t i = 0; i < n; ++i) p[i] = std::conj(p[i]);
+        }
+
+#ifdef SUPERBBLAS_USE_GPU
+
+#    ifdef SUPERBBLAS_USE_THRUST
+        // Return whether the element isn't zero
+        template <typename T> struct thrust_conj : public thrust::unary_function<T, T> {
+            __host__ __device__ T operator()(const T &i) const { return thrust::conj(i); }
+        };
+#    endif
+
+        /// Conjugate the elements of a vector
+        /// \param v: vector to modify
+
+        template <typename T, typename std::enable_if<is_complex<T>::value, bool>::type = false>
+        DECL_CONJ_T(void conj(vector<T, Gpu> &v))
+        IMPL({
+            setDevice(v.ctx());
+            auto itv = encapsulate_pointer(v.begin());
+            thrust::transform(thrust_par_on(v.ctx()), itv, itv + v.size(), itv,
+                              thrust_conj<typename cuda_complex<T>::type>{});
         })
 #endif // SUPERBBLAS_USE_GPU
 
