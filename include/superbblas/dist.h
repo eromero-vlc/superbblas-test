@@ -1125,6 +1125,28 @@ namespace superbblas {
             return false;
         }
 
+        /// Return whether some ranges to receive overlaps
+        /// \param p: partition
+        /// \param dim: dimensions of the destination tensor
+
+        template <std::size_t Nd>
+        bool does_proc_ranges_self_intersect(const Proc_ranges<Nd> &p, const Coor<Nd> &dim) {
+
+            for (unsigned int pi = 0; pi < p.size(); ++pi) {
+                for (unsigned int fsi = 0; fsi < p[pi].size(); ++fsi) {
+                    for (unsigned int pj = pi; pj < p.size(); ++pj) {
+                        for (unsigned int fsj = pi == pj ? fsi + 1 : 0; fsj < p[pj].size(); ++fsj) {
+                            if (volume(intersection(p[pi][fsi][0], p[pi][fsi][1], //
+                                                    p[pj][fsj][0], p[pj][fsj][1], dim)) > 0)
+                                return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
         /// Return a copy of the given tensor with an allocation stream suitable to be stored
         /// in cache
         /// \param v: vector to store
@@ -3180,10 +3202,6 @@ namespace superbblas {
             Coor<Nd> sug_size1 = reorder_coor(size1, find_permutation(o1, sug_o1));
             Coor<Nd> sug_sizer = reorder_coor(sizer, find_permutation(o_r, sug_or));
 
-            // Scale the output tensor by beta
-            copy<Nd, Nd, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr, o_r,
-                            vr, comm, EWOp::Copy{}, co);
-
             // Change the partition of the input tensors so that the local portions to contract
             // are local
             auto p01 = get_partitions_for_contraction(p0, from0, size0, dim0, o0, sug_o0, p1, from1,
@@ -3197,10 +3215,21 @@ namespace superbblas {
                 reorder_tensor(p1, o1, from1, size1, dim1, v1, p1_, sug_size1, sug_o1, v0_, comm,
                                co, false /* don't force copy */, doCacheAlloc);
 
-            // Generate the partitioning and the storage for the output tensor
+            // Try to avoid the extra allocation
             const auto &pr_ = std::get<2>(p01);
+            bool avoid_r_alloc =
+                (std::norm(beta) == 0 && fromr == Coor<Nd>{{}} && dimr == sizer && sug_or == o_r &&
+                 pr == pr_ && !does_proc_ranges_self_intersect(pr, dimr));
+
+            // Scale the output tensor by beta
+            if (!avoid_r_alloc) {
+                copy<Nd, Nd, T>(beta, pr, fromr, sizer, dimr, o_r, toConst(vr), pr, fromr, dimr,
+                                o_r, vr, comm, EWOp::Copy{}, co);
+            }
+
+            // Generate the partitioning and the storage for the output tensor
             Components_tmpl<Nd, T, XPU0, XPU1> vr_ =
-                like_this_components(pr_, v0_, comm, doCacheAlloc);
+                avoid_r_alloc ? vr : like_this_components(pr_, v0_, comm, doCacheAlloc);
 
             for (unsigned int i = 0; i < v0_.first.size(); ++i) {
                 const unsigned int componentId = v0_.first[i].componentId;
@@ -3208,7 +3237,8 @@ namespace superbblas {
                     alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
                     vector<const T, XPU0>(v0_.first[i].it), Nd0, sug_o1,
                     p1_[comm.rank][componentId][1], conj1, vector<const T, XPU0>(v1_.first[i].it),
-                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.first[i].it, Ndo, co);
+                    Nd1, avoid_r_alloc ? beta : T{0}, sug_or, pr_[comm.rank][componentId][1],
+                    vr_.first[i].it, Ndo, co);
             }
             for (unsigned int i = 0; i < v0_.second.size(); ++i) {
                 const unsigned int componentId = v0_.second[i].componentId;
@@ -3216,13 +3246,17 @@ namespace superbblas {
                     alpha, sug_o0, p0_[comm.rank][componentId][1], conj0,
                     vector<const T, XPU1>(v0_.second[i].it), Nd0, sug_o1,
                     p1_[comm.rank][componentId][1], conj1, vector<const T, XPU1>(v1_.second[i].it),
-                    Nd1, T{0.0}, sug_or, pr_[comm.rank][componentId][1], vr_.second[i].it, Ndo, co);
+                    Nd1, avoid_r_alloc ? beta : T{0}, sug_or, pr_[comm.rank][componentId][1],
+                    vr_.second[i].it, Ndo, co);
             }
 
-            // Scale the output tensor by beta and reduce all the subtensors to the final tensor
-            Request req = copy_request_normalized<Nd, Nd, T>(1, pr_, {{}}, sug_sizer, sug_sizer,
-                                                             sug_or, toConst(vr_), pr, fromr, dimr,
-                                                             o_r, vr, comm, EWOp::Add{}, co);
+            // Reduce all the subtensors to the final tensor
+            Request req;
+            if (!avoid_r_alloc) {
+                req = copy_request_normalized<Nd, Nd, T>(1, pr_, {{}}, sug_sizer, sug_sizer, sug_or,
+                                                         toConst(vr_), pr, fromr, dimr, o_r, vr,
+                                                         comm, EWOp::Add{}, co);
+            }
 
             _t.stop();
             if (getDebugLevel() >= 1) {
