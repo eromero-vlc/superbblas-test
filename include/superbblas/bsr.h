@@ -2422,6 +2422,70 @@ namespace superbblas {
 
             return r;
         }
+
+        /// Return optimal label orderings for input/output tensors in RSB operator - tensor multiplication
+        /// \param bsr: BSR tensor components
+        /// \param oim: dimension labels for the RSB operator image space
+        /// \param odm: dimension labels for the RSB operator domain space
+        /// \param ox: dimension labels for the right operator
+        /// \param sizex: dimensions for the right tensor
+        /// \param py: partitioning of the resulting tensor in consecutive ranges
+        /// \param oy: dimension labels for the output tensor
+        /// \param sizey: dimensions for the output tensor
+        /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
+        /// \param co: coordinate linearization order
+        /// \param sug_ox: (out) suggested dimension labels for the right tensor
+        /// \param sug_oy: (out) suggested dimension labels for the output tensor
+
+        template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T,
+                  typename XPU0, typename XPU1>
+        void suggested_orders_for_bsr_krylov(const BSRComponents_tmpl<Nd, Ni, T, XPU0, XPU1> bsr,
+                                             const Order<Ni> oim, const Order<Nd> odm,
+                                             const Order<Nx> &ox, const Coor<Nx> &sizex,
+                                             const Order<Ny> oy, const Coor<Ny> sizey, char okr,
+                                             CoorOrder co, Order<Nx> &sug_ox, Order<Ny> &sug_oy) {
+
+            // Check that co is that same as BSR
+            if (co != bsr.co)
+                throw std::runtime_error("Unsupported to use a different coordinate ordering that "
+                                         "one used to create the matrix");
+
+            /// Get power and bring pieces of BSR operator to do powers without extra communications
+            if (okr != 0) {
+                auto it_oy = std::find(oy.begin(), oy.end(), okr);
+                if (it_oy == oy.end())
+                    throw std::runtime_error("The dimension label `okr` wasn't found on `oy`");
+            }
+
+            // Generate the partitioning and the storage for the dense matrix input and output tensor
+            if (bsr.c.first.size() > 0) {
+                bool transSp;
+                MatrixLayout lx, ly;
+                std::size_t volC;
+                Order<Ny> sug_oy_trans;
+                bool is_kron =
+                    (volume(bsr.c.first[0].v.krond) > 1 || volume(bsr.c.first[0].v.kroni) > 1 ||
+                     bsr.c.first[0].v.kron_it.size() > 0);
+                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
+                                       bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
+                                       false /* not permissive */, bsr.c.first[0].allowLayout,
+                                       bsr.c.first[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
+            } else if (bsr.c.second.size() > 0) {
+                bool transSp;
+                MatrixLayout lx, ly;
+                std::size_t volC;
+                Order<Ny> sug_oy_trans;
+                bool is_kron =
+                    (volume(bsr.c.second[0].v.krond) > 1 || volume(bsr.c.second[0].v.kroni) > 1 ||
+                     bsr.c.second[0].v.kron_it.size() > 0);
+                local_bsr_krylov_check(bsr.dimi, bsr.dimd, oim, odm, bsr.blocki, bsr.blockd,
+                                       bsr.kroni, bsr.krond, is_kron, sizex, ox, sizey, oy, okr,
+                                       false /* not permissive */, bsr.c.second[0].allowLayout,
+                                       bsr.c.second[0].preferredLayout, co, transSp, lx, ly, volC,
+                                       sug_ox, sug_oy, sug_oy_trans);
+            }
+        }
     }
 
 #ifdef SUPERBBLAS_USE_MPI
@@ -2538,6 +2602,46 @@ namespace superbblas {
             *request = r;
         else
             wait(r);
+    }
+
+    /// Return optimal label orderings for input/output tensors in RSB operator - tensor multiplication
+    /// \param bsrh: BSR handle
+    /// \param ncomponents: number of components in the BSR handle
+    /// \param ctx: context for each data pointer in the BSR handle
+    /// \param oim: dimension labels for the RSB operator image space
+    /// \param odm: dimension labels for the RSB operator domain space
+    /// \param ox: dimension labels for the input tensor
+    /// \param sizex: dimensions for the input tensor
+    /// \param oy: dimension labels for the output tensor
+    /// \param sizey: dimensions for the output tensor
+    /// \param okr: dimension label for the RSB operator powers (or zero for a single power)
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param sug_ox: (out) suggested dimension labels for the input tensor
+    /// \param sug_oy: (out) suggested dimension labels for the output tensor
+
+    template <std::size_t Nd, std::size_t Ni, std::size_t Nx, std::size_t Ny, typename T>
+    void suggested_orders_for_bsr_krylov(BSR_handle *bsrh, int ncomponents, const Context *ctx,
+                                         const char *oim, const char *odm, const char *ox,
+                                         const Coor<Nx> &sizex, const char *oy,
+                                         const Coor<Ny> &sizey, char okr, MPI_Comm mpicomm,
+                                         CoorOrder co, char *sug_ox, char *sug_oy) {
+
+        Order<Ni> oim_ = detail::toArray<Ni>(oim, "oim");
+        Order<Nd> odm_ = detail::toArray<Nd>(odm, "odm");
+        Order<Nx> ox_ = detail::toArray<Nx>(ox, "ox");
+        Order<Ny> oy_ = detail::toArray<Ny>(oy, "oy");
+
+        detail::MpiComm comm = detail::get_comm(mpicomm);
+
+        detail::BSRComponents<Nd, Ni, T> *bsr =
+            detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
+
+	Order<Nx> sug_ox_;
+	Order<Ny> sug_oy_;
+        detail::suggested_orders_for_bsr_krylov<Nd, Ni, Nx, Ny, T>(
+            *bsr, oim_, odm_, ox_, sizex, oy_, sizey, okr, co, sug_ox_, sug_oy_);
+	if (sug_ox) std::copy_n(sug_ox_.data(), Nx, sug_ox);
+	if (sug_oy) std::copy_n(sug_oy_.data(), Ny, sug_oy);
     }
 
     /// Return the preferred layout for the input and output tensor in `bsr_krylov`

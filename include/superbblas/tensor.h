@@ -146,6 +146,13 @@ namespace superbblas {
         }
 
         template <typename T, std::size_t N>
+        std::array<T, N> operator*(const std::array<T, N> &a, const std::array<T, N> &b) {
+            std::array<T, N> r;
+            for (std::size_t i = 0; i < N; i++) r[i] = a[i] * b[i];
+            return r;
+        }
+
+        template <typename T, std::size_t N>
         std::array<T, N> operator/(const std::array<T, N> &a, const std::array<T, N> &b) {
             std::array<T, N> r;
             for (std::size_t i = 0; i < N; i++) r[i] = a[i] / b[i];
@@ -173,7 +180,7 @@ namespace superbblas {
             return r;
         }
 
-        template <typename T, std::size_t N> std::array<T, N> reverse(const std::array<T, N> v) {
+        template <typename T, std::size_t N> std::array<T, N> reverse(const std::array<T, N> &v) {
             std::array<T, N> r = v;
             std::reverse(r.begin(), r.end());
             return r;
@@ -184,6 +191,12 @@ namespace superbblas {
             if (n > N) throw std::runtime_error("reverse: invalid value of `n`");
             std::array<T, N> r = v;
             std::reverse(r.begin(), r.begin() + n);
+            return r;
+        }
+
+        inline std::string reverse(const std::string &v) {
+            std::string r = v;
+            std::reverse(r.begin(), r.end());
             return r;
         }
 
@@ -504,6 +517,40 @@ namespace superbblas {
             Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
             Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1);
             return all_less_or_equal(size1, dim1);
+        }
+
+        /// Check that two dimensions and orderings refer to the same tensor layout
+        /// \param o0: dimension labels for the origin tensor
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o1: dimension labels for the destination tensor
+        /// \param dim1: dimension size for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1>
+        bool same_layout(const Order<Nd0> &o0, const Coor<Nd0> &dim0, const Order<Nd1> &o1,
+                         const Coor<Nd1> dim1) {
+
+            // Zero volume shortcut
+            if (volume(dim0) == 0 && volume(dim1) == 0) return true;
+
+            // Different volume shortcut
+            if (volume(dim0) != volume(dim1)) return false;
+
+            // Check that the nonsingular dimensions have the same order
+            for (std::size_t i = 0, i0 = 0, i1 = 0; i < std::max(Nd0, Nd1); ++i) {
+                while (i0 < Nd0 && dim0[i0] == 1) ++i0;
+                while (i1 < Nd1 && dim1[i1] == 1) ++i1;
+                if (i0 < Nd0 && i1 < Nd1) {
+                    if (o0[i0] != o1[i1] || dim0[i0] != dim1[i1]) return false;
+                    i0++;
+                    i1++;
+                } else if (i0 == Nd0 && i1 == Nd1) {
+                    break;
+                } else {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         //
@@ -1441,6 +1488,146 @@ namespace superbblas {
 
         /// Recommended orderings for contracting two tensors
         /// \param o0: dimension labels for the first operator
+        /// \param conj0: whether element-wise conjugate the first operator
+        /// \param o1: dimension labels for the second operator
+        /// \param conj1: whether element-wise conjugate the second operator
+        /// \param o_r: dimension labels for the output operator
+        /// \param sug_o0: (out) suggested dimension labels for the first operator
+        /// \param sug_o1: (out) suggested dimension labels for the second operator
+        /// \param sug_or: (out) suggested dimension labels for the output operator
+        /// \param swap_operands: (out) suggest to swap the first and the second operator
+        /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+
+        inline void suggested_orders_for_contraction_simple(const std::string &o0, bool conj0,
+                                                            const std::string &o1, bool conj1,
+                                                            const std::string &o_r, CoorOrder co, //
+                                                            std::string &sug_o0,
+                                                            std::string &sug_o1,
+                                                            std::string &sug_or) {
+
+            // The rest of the code is for SlowToFast; so reverse if that is the case
+            if (co == FastToSlow) {
+                suggested_orders_for_contraction_simple(reverse(o0), conj0, reverse(o1), conj1,
+                                                        reverse(o_r), SlowToFast, sug_o0, sug_o1,
+                                                        sug_or);
+                std::reverse(sug_o0.begin(), sug_o0.end());
+                std::reverse(sug_o1.begin(), sug_o1.end());
+                std::reverse(sug_or.begin(), sug_or.end());
+                return;
+            }
+
+            const std::size_t Nd0 = o0.size();
+            const std::size_t Nd1 = o1.size();
+            const std::size_t Ndo = o_r.size();
+            const std::size_t Nd = std::max(std::max(Nd0, Nd1), Ndo);
+
+            // Find all common labels in o0, o1, and o_r
+            std::string oT;
+            oT.reserve(Nd);
+            for (char c : o0) {
+                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
+                    std::find(o_r.begin(), o_r.end(), c) != o_r.end()) {
+                    oT.push_back(c);
+                }
+            }
+            unsigned int nT = oT.size();
+
+            // Find all common labels in o0 and o1 but not in oT
+            std::string oA;
+            oA.reserve(Nd);
+            for (char c : o0) {
+                if (std::find(o1.begin(), o1.end(), c) != o1.end() &&
+                    std::find(oT.begin(), oT.end(), c) == oT.end()) {
+                    oA.push_back(c);
+                }
+            }
+            unsigned int nA = oA.size();
+
+            // Find all common labels in o0 and o_r but not in oT
+            std::string oB;
+            oB.reserve(Nd);
+            for (char c : o0) {
+                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
+                    std::find(oT.begin(), oT.end(), c) == oT.end()) {
+                    oB.push_back(c);
+                }
+            }
+            unsigned int nB = oB.size();
+
+            // Find all common labels in o1 and o_r but not in oT
+            std::string oC;
+            oC.reserve(Nd);
+            for (char c : o1) {
+                if (std::find(o_r.begin(), o_r.end(), c) != o_r.end() &&
+                    std::find(oT.begin(), oT.end(), c) == oT.end()) {
+                    oC.push_back(c);
+                }
+            }
+            unsigned int nC = oC.size();
+
+            // Check that o0 is made of the pieces T, A and B
+            if (Nd0 != nT + nA + nB) throw std::runtime_error("o0 has unmatched dimensions");
+            // Check that o1 is made of the pieces T, C and A
+            if (Nd1 != nT + nA + nC) throw std::runtime_error("o1 has unmatched directions");
+            // Check that o_r is made of the pieces T, C and B
+            if (Ndo != nT + nB + nC) throw std::runtime_error("o_r has unmatched dimensions");
+
+            // If oT, oA, or oB aren't found as either oT+oA+oB or oA+oT+oB or oT+oB+oA or oB+oT+oA for !conj,
+            // and oT+oB+oA or oB+oT+oA for conj, then reorder the labels appropriately
+            auto sTr = std::search(o_r.begin(), o_r.end(), oT.begin(), oT.end());
+            auto sBr = std::search(o_r.begin(), o_r.end(), oB.begin(), oB.end());
+            auto sCr = std::search(o_r.begin(), o_r.end(), oC.begin(), oC.end());
+            auto sT0 = std::search(o0.begin(), o0.end(), oT.begin(), oT.end());
+            auto sA0 = std::search(o0.begin(), o0.end(), oA.begin(), oA.end());
+            auto sB0 = std::search(o0.begin(), o0.end(), oB.begin(), oB.end());
+            if (sT0 == o0.end() || sA0 == o0.end() || sB0 == o0.end() ||
+                (!conj0 && nT > 0 && nA > 0 && nB > 0 && sA0 < sT0 && sB0 < sT0) ||
+                (conj0 && nA > 0 && ((nT > 0 && sA0 < sT0) || (nB > 0 && sA0 < sB0)))) {
+                sug_o0.resize(Nd0);
+                std::copy_n(oT.begin(), nT, sug_o0.begin());
+                std::copy_n(oA.begin(), nA, sug_o0.begin() + nT + (!conj0 ? 0 : nB));
+                std::copy_n(oB.begin(), nB, sug_o0.begin() + nT + (!conj0 ? nA : 0));
+                std::copy_n(o0.begin() + nT + nA + nB, o0.size() - nT - nA - nB,
+                            sug_o0.begin() + nT + nA + nB);
+            } else {
+                sug_o0 = o0;
+            }
+
+            // If oT, oA, or oC aren't found as either oT+oC+oA or oC+oT+oA or oT+oA+oC or oA+oT+oC for !conj,
+            // and oT+oA+oC or oA+oT+oC for conj, then reorder the labels appropriately
+            auto sT1 = std::search(o1.begin(), o1.end(), oT.begin(), oT.end());
+            auto sA1 = std::search(o1.begin(), o1.end(), oA.begin(), oA.end());
+            auto sC1 = std::search(o1.begin(), o1.end(), oC.begin(), oC.end());
+            if (sT1 == o1.end() || sA1 == o1.end() || sC1 == o1.end() ||
+                (!conj1 && nT > 0 && nA > 0 && nC > 0 && sA1 < sT1 && sC1 < sT1) ||
+                (conj1 && nC > 0 && ((nT > 0 && sC1 < sT1) || (nC > 0 && sC1 < sA1)))) {
+                sug_o1.resize(Nd0);
+                std::copy_n(oT.begin(), nT, sug_o1.begin());
+                std::copy_n(oC.begin(), nC, sug_o1.begin() + nT + (!conj1 ? 0 : nA));
+                std::copy_n(oA.begin(), nA, sug_o1.begin() + nT + (!conj1 ? nC : 0));
+                std::copy_n(o1.begin() + nT + nC + nA, o1.size() - nT - nC - nA,
+                            sug_o1.begin() + nT + nC + nA);
+            } else {
+                sug_o1 = o1;
+            }
+
+            // If oT, oB, or oC aren't found as either oT+oC+oB, oC+oT+oB, oT+oB+oC or oB+oT+oC,
+            // then reorder the labels appropriately
+            if (sTr == o_r.end() || sBr == o_r.end() || sCr == o_r.end() ||
+                (nT > 0 && sBr < sTr && sCr < sTr) || (nB > 0 && nC > 0 && sBr < sCr)) {
+                sug_or.resize(Ndo);
+                std::copy_n(oT.begin(), nT, sug_or.begin());
+                std::copy_n(oC.begin(), nC, sug_or.begin() + nT);
+                std::copy_n(oB.begin(), nB, sug_or.begin() + nT + nC);
+                std::copy_n(o_r.begin() + nT + nC + nB, o_r.size() - nT - nC - nB,
+                            sug_or.begin() + nT + nC + nB);
+            } else {
+                sug_or = o_r;
+            }
+        }
+
+        /// Recommended orderings for contracting two tensors
+        /// \param o0: dimension labels for the first operator
         /// \param dim0: dimension size for the first operator
         /// \param conj0: whether element-wise conjugate the first operator
         /// \param o1: dimension labels for the second operator
@@ -1681,6 +1868,34 @@ namespace superbblas {
                 break;
             }
         }
+    }
+
+    /// Recommended orderings for contracting two tensors
+    /// \param o0: dimension labels for the first operator
+    /// \param n0: number of dimensions for the first operator
+    /// \param conj0: whether element-wise conjugate the first operator
+    /// \param o1: dimension labels for the second operator
+    /// \param n1: number of dimensions for the second operator
+    /// \param conj1: whether element-wise conjugate the second operator
+    /// \param o_r: dimension labels for the output operator
+    /// \param nr: number of dimensions for the output operator
+    /// \param co: coordinate linearization order; either `FastToSlow` for natural order or `SlowToFast` for lexicographic order
+    /// \param sug_o0: (out) suggested dimension labels for the first operator
+    /// \param sug_o1: (out) suggested dimension labels for the second operator
+    /// \param sug_or: (out) suggested dimension labels for the output operator
+
+    inline void suggested_orders_for_contraction(const char *o0, unsigned int n0, bool conj0,
+                                                 const char *o1, unsigned int n1, bool conj1,
+                                                 const char *o_r, unsigned int nr, CoorOrder co, //
+                                                 char *sug_o0, char *sug_o1, char *sug_or) {
+
+        std::string sug_o0_s, sug_o1_s, sug_or_s;
+        detail::suggested_orders_for_contraction_simple(
+            std::string(o0, n0), conj0, std::string(o1, n1), conj1, std::string(o_r, nr), co,
+            sug_o0_s, sug_o1_s, sug_or_s);
+        if (sug_o0) std::copy(sug_o0_s.begin(), sug_o0_s.end(), sug_o0);
+        if (sug_o1) std::copy(sug_o1_s.begin(), sug_o1_s.end(), sug_o1);
+        if (sug_or) std::copy(sug_or_s.begin(), sug_or_s.end(), sug_or);
     }
 }
 #endif // __SUPERBBLAS_TENSOR__
