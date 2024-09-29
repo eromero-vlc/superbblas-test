@@ -151,11 +151,15 @@ namespace superbblas {
                     break;
                 } catch (...) {
                     if (attempt == 0) {
+                        sync(xpu);
+                        sync(getAllocStream(xpu));
+                        syncLegacyStream(xpu);
                         clearInternalCaches(xpu);
                     } else {
                         if (getLogLevel() > 0) {
                             std::cerr << "superbblas::detail::allocate: error allocating "
-                                      << sizeof(T) * n << " bytes";
+                                      << sizeof(T) * n << " bytes on device " << deviceId(xpu)
+                                      << (external_use ? " for external use" : "");
                             if (getTrackingMemory()) {
                                 std::size_t gpu_free = 0, gpu_total = 0, gpu_extra = 0;
 #ifdef SUPERBBLAS_USE_GPU
@@ -280,6 +284,9 @@ namespace superbblas {
 
             using T_no_const = typename std::remove_const<T>::type;
             if (alignment == 0) alignment = default_alignment<T_no_const>::alignment;
+            /// NOTE: it is unclear, but some GPU-aware MPI libraries do not like pointers to
+            ///       buffers that are not the first element of an allocation
+            if (deviceId(xpu) >= 0 && external_use) alignment = 0;
             T *ptr = allocate<T_no_const>(n + (alignment + sizeof(T) - 1) / sizeof(T), xpu,
                                           external_use);
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
@@ -341,6 +348,9 @@ namespace superbblas {
 
             // Get alignment and the worst case size to adjust for alignment
             if (alignment == 0) alignment = default_alignment<T>::alignment;
+            /// NOTE: it is unclear, but some GPU-aware MPI libraries do not like pointers to
+            ///       buffers that are not the first element of an allocation
+            if (deviceId(xpu) >= 0 && external_use) alignment = 0;
             std::size_t size = (n + (alignment + sizeof(T) - 1) / sizeof(T)) * sizeof(T);
 
             // Look for the smallest free allocation that can hold the requested size.

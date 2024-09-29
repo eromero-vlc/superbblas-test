@@ -1125,28 +1125,6 @@ namespace superbblas {
             return false;
         }
 
-        /// Return whether some ranges to receive overlaps
-        /// \param p: partition
-        /// \param dim: dimensions of the destination tensor
-
-        template <std::size_t Nd>
-        bool does_proc_ranges_self_intersect(const Proc_ranges<Nd> &p, const Coor<Nd> &dim) {
-
-            for (unsigned int pi = 0; pi < p.size(); ++pi) {
-                for (unsigned int fsi = 0; fsi < p[pi].size(); ++fsi) {
-                    for (unsigned int pj = pi; pj < p.size(); ++pj) {
-                        for (unsigned int fsj = pi == pj ? fsi + 1 : 0; fsj < p[pj].size(); ++fsj) {
-                            if (volume(intersection(p[pi][fsi][0], p[pi][fsi][1], //
-                                                    p[pj][fsj][0], p[pj][fsj][1], dim)) > 0)
-                                return true;
-                        }
-                    }
-                }
-            }
-
-            return false;
-        }
-
         /// Return a copy of the given tensor with an allocation stream suitable to be stored
         /// in cache
         /// \param v: vector to store
@@ -1490,10 +1468,6 @@ namespace superbblas {
                    v1ToReceive.buf.size() * sizeof(Q));
             assert(v0ToSend.counts[comm.rank] == 0);
             assert(v1ToReceive.counts[comm.rank] == 0);
-            assert(align(dtype_size, v0ToSend.buf.size() * sizeof(T), v0ToSend.buf.data(),
-                         v0ToSend.buf.size() * sizeof(T)) == v0ToSend.buf.data());
-            assert(align(dtype_size, v1ToReceive.buf.size() * sizeof(Q), v1ToReceive.buf.data(),
-                         v1ToReceive.buf.size() * sizeof(Q)) == v1ToReceive.buf.data());
             if (getDebugLevel() > 0) {
                 // Check that all processes agree in the amount of data to send/receive
                 std::vector<int> send_counts(comm.rank == 0 ? comm.nprocs * comm.nprocs : 0);
@@ -1739,30 +1713,33 @@ namespace superbblas {
             if (use_mpi_gpu) {
                 // Check if there are gpu components
                 for (const auto &it : v0.first)
-                    if (deviceId(it.it.ctx()) >= 0) really_use_mpi_gpu = true;
+                    if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) really_use_mpi_gpu = true;
                 for (const auto &it : v1.first)
-                    if (deviceId(it.it.ctx()) >= 0) really_use_mpi_gpu = true;
+                    if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) really_use_mpi_gpu = true;
             }
 
             // Use mpi send/receive buffers on cpu memory
             if (!really_use_mpi_gpu) {
 #ifdef SUPERBBLAS_USE_GPU
-                // Make the sender/receiver buffers on host pinned memory to improve the transfer rates copying
-                // data from/to the gpus
-                if (v0.first.size() > 0) {
-                    Gpu gpu0 = v0.first.front().it.ctx().toCpuPinned();
-                    if (v1.first.size() > 0) {
-                        return send_receive_choose_size(o0, toSend, v0, gpu0, o1, toReceive, v1,
+                if (volume(toSend) * sizeof(T) + volume(toReceive) * sizeof(Q) <=
+                    getMaxGpuCacheSize()) {
+                    // Make the sender/receiver buffers on host pinned memory to improve the transfer rates copying
+                    // data from/to the gpus
+                    if (v0.first.size() > 0 && v0.first.front().it.size() > 0) {
+                        Gpu gpu0 = v0.first.front().it.ctx().toCpuPinned();
+                        if (v1.first.size() > 0 && v1.first.front().it.size() > 0) {
+                            return send_receive_choose_size(o0, toSend, v0, gpu0, o1, toReceive, v1,
+                                                            v1.first.front().it.ctx().toCpuPinned(),
+                                                            comm, EWOp{}, co, alpha);
+                        } else {
+                            return send_receive_choose_size(o0, toSend, v0, gpu0, o1, toReceive, v1,
+                                                            Cpu{}, comm, EWOp{}, co, alpha);
+                        }
+                    } else if (v1.first.size() > 0 && v1.first.front().it.size() > 0) {
+                        return send_receive_choose_size(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
                                                         v1.first.front().it.ctx().toCpuPinned(),
                                                         comm, EWOp{}, co, alpha);
-                    } else {
-                        return send_receive_choose_size(o0, toSend, v0, gpu0, o1, toReceive, v1,
-                                                        Cpu{}, comm, EWOp{}, co, alpha);
                     }
-                } else if (v1.first.size() > 0) {
-                    return send_receive_choose_size(o0, toSend, v0, Cpu{}, o1, toReceive, v1,
-                                                    v1.first.front().it.ctx().toCpuPinned(), comm,
-                                                    EWOp{}, co, alpha);
                 }
 #endif // SUPERBBLAS_USE_GPU
                 return send_receive_choose_size(o0, toSend, v0, Cpu{}, o1, toReceive, v1, Cpu{},
@@ -1774,7 +1751,7 @@ namespace superbblas {
             XPU0 gpu;
             bool found_it = false;
             for (const auto &it : v0.first) {
-                if (deviceId(it.it.ctx()) >= 0) {
+                if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) {
                     gpu = it.it.ctx();
                     found_it = true;
                     break;
@@ -1782,14 +1759,14 @@ namespace superbblas {
             }
             if (!found_it) {
                 for (const auto &it : v1.first) {
-                    if (deviceId(it.it.ctx()) >= 0) {
+                    if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) {
                         gpu = it.it.ctx();
                         found_it = true;
                         break;
                     }
                 }
             }
-            assert(found_it);
+            if (!found_it) throw std::runtime_error("wtf");
             return send_receive_choose_size(o0, toSend, v0, gpu, o1, toReceive, v1, gpu, comm,
                                             EWOp{}, co, alpha);
         }
@@ -3085,6 +3062,7 @@ namespace superbblas {
                     for (const auto &fsi : fs) r[i].push_back(fsi);
                 }
             }
+
             return r;
         }
 
@@ -3115,6 +3093,27 @@ namespace superbblas {
                                                    size0, dim0, o0, sug_o0, dim2, o2, o_r);
                 return {std::get<1>(p10), std::get<0>(p10), std::get<2>(p10)};
             }
+
+            using Key = std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, //
+                                   Proc_ranges<Nd1>, Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, //
+                                   Coor<Nd2>, PairPerms<Nd2, Ndo>>;
+            using Value = std::tuple<Proc_ranges<Nd0>, Proc_ranges<Nd1>, Proc_ranges<Ndo>>;
+            struct cache_tag {};
+            auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(Cpu{});
+            Key key{p0,
+                    from0,
+                    size0,
+                    dim0,
+                    find_permutation(o0, sug_o0), //
+                    p1,
+                    from1,
+                    size1,
+                    dim1,
+                    find_permutation(o1, sug_o1), //
+                    dim2,
+                    get_perms(o2, o_r)};
+            auto it = cache.find(key);
+            if (it != cache.end()) { return it->second.value; }
 
             // Reorder the first tensor if needed
             Proc_ranges<Nd0> p0_ = remove_repetitions(p0, dim0);
@@ -3147,7 +3146,31 @@ namespace superbblas {
             }
 
             // Return
-            return {p0r, p1r, pr};
+            auto r = std::make_tuple(p0r, p1r, pr);
+            cache.insert(key, r, 0);
+            return r;
+        }
+
+        /// Return whether some ranges to receive overlaps
+        /// \param p: partition
+        /// \param dim: dimensions of the destination tensor
+
+        template <std::size_t Nd>
+        bool does_proc_ranges_self_intersect(const Proc_ranges<Nd> &p, const Coor<Nd> &dim) {
+
+            for (unsigned int pi = 0; pi < p.size(); ++pi) {
+                for (unsigned int fsi = 0; fsi < p[pi].size(); ++fsi) {
+                    for (unsigned int pj = pi; pj < p.size(); ++pj) {
+                        for (unsigned int fsj = pi == pj ? fsi + 1 : 0; fsj < p[pj].size(); ++fsj) {
+                            if (volume(intersection(p[pi][fsi][0], p[pi][fsi][1], //
+                                                    p[pj][fsj][0], p[pj][fsj][1], dim)) > 0)
+                                return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
         }
 
         template <std::size_t Nd, typename T, typename Comm, typename XPU0, typename XPU1>

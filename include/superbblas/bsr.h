@@ -2636,12 +2636,12 @@ namespace superbblas {
         detail::BSRComponents<Nd, Ni, T> *bsr =
             detail::get_bsr_components_from_handle<Nd, Ni, T>(bsrh, ctx, ncomponents, comm, co);
 
-	Order<Nx> sug_ox_;
-	Order<Ny> sug_oy_;
+        Order<Nx> sug_ox_;
+        Order<Ny> sug_oy_;
         detail::suggested_orders_for_bsr_krylov<Nd, Ni, Nx, Ny, T>(
             *bsr, oim_, odm_, ox_, sizex, oy_, sizey, okr, co, sug_ox_, sug_oy_);
-	if (sug_ox) std::copy_n(sug_ox_.data(), Nx, sug_ox);
-	if (sug_oy) std::copy_n(sug_oy_.data(), Ny, sug_oy);
+        if (sug_ox) std::copy_n(sug_ox_.data(), Nx, sug_ox);
+        if (sug_oy) std::copy_n(sug_oy_.data(), Ny, sug_oy);
     }
 
     /// Return the preferred layout for the input and output tensor in `bsr_krylov`
