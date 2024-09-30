@@ -3088,7 +3088,7 @@ namespace superbblas {
 
             // Normalize the first tensor as the larger of the two in volume
             if (volume(size0) < volume(size1)) {
-                auto p10 =
+                const auto &p10 =
                     get_partitions_for_contraction(p1, from1, size1, dim1, o1, sug_o1, p0, from0,
                                                    size0, dim0, o0, sug_o0, dim2, o2, o_r);
                 return {std::get<1>(p10), std::get<0>(p10), std::get<2>(p10)};
@@ -3096,7 +3096,8 @@ namespace superbblas {
 
             using Key = std::tuple<Proc_ranges<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, Coor<Nd0>, //
                                    Proc_ranges<Nd1>, Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, Coor<Nd1>, //
-                                   Coor<Nd2>, PairPerms<Nd2, Ndo>>;
+                                   Coor<Nd2>, PairPerms<Nd2, Ndo>, PairPerms<Nd0, Nd1>,
+                                   PairPerms<Nd1, Nd2>, PairPerms<Nd0, Nd2>>;
             using Value = std::tuple<Proc_ranges<Nd0>, Proc_ranges<Nd1>, Proc_ranges<Ndo>>;
             struct cache_tag {};
             auto cache = getCache<Key, Value, TupleHash<Key>, cache_tag>(Cpu{});
@@ -3111,7 +3112,10 @@ namespace superbblas {
                     dim1,
                     find_permutation(o1, sug_o1), //
                     dim2,
-                    get_perms(o2, o_r)};
+                    get_perms(o2, o_r), //
+                    get_perms(o0, o1),
+                    get_perms(o1, o2),
+                    get_perms(o0, o2)};
             auto it = cache.find(key);
             if (it != cache.end()) { return it->second.value; }
 
@@ -3227,8 +3231,9 @@ namespace superbblas {
 
             // Change the partition of the input tensors so that the local portions to contract
             // are local
-            auto p01 = get_partitions_for_contraction(p0, from0, size0, dim0, o0, sug_o0, p1, from1,
-                                                      size1, dim1, o1, sug_o1, dimr, o_r, sug_or);
+            const auto &p01 =
+                get_partitions_for_contraction(p0, from0, size0, dim0, o0, sug_o0, p1, from1, size1,
+                                               dim1, o1, sug_o1, dimr, o_r, sug_or);
             const auto &p0_ = std::get<0>(p01);
             const auto &p1_ = std::get<1>(p01);
             Components_tmpl<Nd, T, XPU0, XPU1> v0_ =
