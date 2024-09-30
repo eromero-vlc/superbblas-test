@@ -1771,6 +1771,32 @@ namespace superbblas {
                                             EWOp{}, co, alpha);
         }
 
+        /// Return a list of ranges after subtracting a list of holes
+        /// \param fs: input ranges
+        /// \param holes: input list of holes to subtract 
+        /// \param dim: space dimension where the ranges are embedded 
+
+        template <std::size_t N>
+        From_size<N> make_hole(const From_size<N> &fs, const From_size<N> &holes,
+                               const Coor<N> &dim) {
+            // Shortcut when N == 0
+            if (N == 0) return {};
+
+            // Compute r0 = (from, size) - p0
+            From_size<N> r = fs;
+            From_size<N> aux;
+            for (const auto fsi : holes) {
+                aux.resize(0);
+                for (const auto &fs_r : r) {
+                    auto left = superbblas::make_hole(fs_r[0], fs_r[1], fsi[0], fsi[1], dim);
+                    aux.insert(aux.end(), left.begin(), left.end());
+                }
+                std::swap(r, aux);
+            }
+
+            return r;
+        }
+
         /// Return a permutation that transform an o0 coordinate into an o1 coordinate
         /// \param o0: dimension labels for the origin tensor
         /// \param dim0: dimension size for the origin tensor
@@ -1783,12 +1809,12 @@ namespace superbblas {
         /// \param nprocs: total number of processes
         /// \param cpu: device context
 
-        template <std::size_t Nd0, std::size_t Nd1>
+        template <std::size_t Nd0, std::size_t Nd1, typename Comm, typename EWOP>
         Range_proc_range_ranges<Nd0>
-        get_indices_to_send(From_size<Nd0> ranges, const Order<Nd0> &o0, const Coor<Nd0> &from0,
+        get_indices_to_send(Proc_ranges<Nd0> p0, const Order<Nd0> &o0, const Coor<Nd0> &from0,
                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                             const Proc_ranges<Nd1> &p1, const Order<Nd1> &o1,
-                            const Coor<Nd1> &from1, const Coor<Nd1> &dim1) {
+                            const Coor<Nd1> &from1, const Coor<Nd1> &dim1, const Comm &comm, EWOP) {
 
             tracker<Cpu> _t("comp. tensor overlaps", Cpu{});
 
@@ -1799,11 +1825,11 @@ namespace superbblas {
             Coor<Nd0> perm1 = find_permutation(o1, o0);
             Coor<Nd1> size1 = reorder_coor(size0, perm0, 1); // size in the destination
 
-            Range_proc_range_ranges<Nd0> rr(ranges.size());
-            for (unsigned int irange = 0; irange < ranges.size(); ++irange) {
+            Range_proc_range_ranges<Nd0> rr(p0[comm.rank].size());
+            for (unsigned int irange = 0; irange < p0[comm.rank].size(); ++irange) {
                 // Restrict the local source range to the range from0, size0
-                Coor<Nd0> local_from0 = ranges[irange][0];
-                Coor<Nd0> local_size0 = ranges[irange][1];
+                Coor<Nd0> local_from0 = p0[comm.rank][irange][0];
+                Coor<Nd0> local_size0 = p0[comm.rank][irange][1];
                 From_size<Nd0> rlocal0 = intersection(from0, size0, local_from0, local_size0, dim0,
                                                       FirstIntervalIsDominant);
 
@@ -1817,8 +1843,14 @@ namespace superbblas {
                         const Coor<Nd1> &local_size1 = p1[i][j][1];
                         From_size<Nd1> rlocal1 = intersection(
                             from1, size1, local_from1, local_size1, dim1, FirstIntervalIsDominant);
+
                         From_size<Nd0> rfs0 =
                             translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
+
+                        // Remove ranges that can be locally copied
+                        if (std::is_same<EWOP, EWOp::Copy>::value && i != comm.rank)
+                            rfs0 = make_hole(rfs0, p0[i], dim0);
+
                         r[i][j] = shift_ranges(
                             translate_range(
                                 sort_ranges(translate_range(intersection(rfs0, rlocal0, dim0,
@@ -1847,11 +1879,13 @@ namespace superbblas {
         /// \param nprocs: total number of processes
         /// \param cpu: device context
 
-        template <std::size_t Nd0, std::size_t Nd1>
-        Range_proc_range_ranges<Nd1> get_indices_to_receive(
-            const Proc_ranges<Nd0> &p0, const Order<Nd0> &o0, const Coor<Nd0> &from0,
-            const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const From_size<Nd1> &ranges,
-            const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1) {
+        template <std::size_t Nd0, std::size_t Nd1, typename Comm, typename EWOP>
+        Range_proc_range_ranges<Nd1>
+        get_indices_to_receive(const Proc_ranges<Nd0> &p0, const Order<Nd0> &o0,
+                               const Coor<Nd0> &from0, const Coor<Nd0> &size0,
+                               const Coor<Nd0> &dim0, const Proc_ranges<Nd1> &p1,
+                               const Order<Nd1> &o1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                               const Comm &comm, EWOP) {
 
             tracker<Cpu> _t("comp. tensor overlaps", Cpu{});
 
@@ -1861,11 +1895,11 @@ namespace superbblas {
             Coor<Nd1> perm0 = find_permutation(o0, o1);
             Coor<Nd1> size1 = reorder_coor(size0, perm0, 1); // size in the destination
 
-            Range_proc_range_ranges<Nd1> rr(ranges.size());
-            for (unsigned int irange = 0; irange < ranges.size(); ++irange) {
+            Range_proc_range_ranges<Nd1> rr(p1[comm.rank].size());
+            for (unsigned int irange = 0; irange < p1[comm.rank].size(); ++irange) {
                 // Restrict the local range in v1 to the range from1, size1
-                Coor<Nd1> local_from1 = ranges[irange][0];
-                Coor<Nd1> local_size1 = ranges[irange][1];
+                Coor<Nd1> local_from1 = p1[comm.rank][irange][0];
+                Coor<Nd1> local_size1 = p1[comm.rank][irange][1];
                 From_size<Nd1> rlocal1 = intersection(from1, size1, local_from1, local_size1, dim1,
                                                       FirstIntervalIsDominant);
 
@@ -1883,6 +1917,11 @@ namespace superbblas {
                         const Coor<Nd0> &local_size0 = p0[i][j][1];
                         From_size<Nd0> rlocal0 = intersection(
                             from0, size0, local_from0, local_size0, dim0, FirstIntervalIsDominant);
+
+                        // Remove ranges that can be locally copied
+                        if (std::is_same<EWOP, EWOp::Copy>::value && i != comm.rank)
+                            rlocal0 = make_hole(rlocal0, p0[comm.rank], dim0);
+
                         r[i][j] = shift_ranges(
                             sort_ranges(translate_range(intersection(rfs0, rlocal0, dim0,
                                                                      FirstIntervalIsDominant),
@@ -2151,15 +2190,13 @@ namespace superbblas {
         /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
         /// \param dim1: dimension size for the destination tensor
         /// \param o1: dimension labels for the destination tensor
-        /// \param consider_local_copy: whether to exclude the local copies from the origin to the destination
-        ///        tensor in each process from all the transfers to do
 
-        template <std::size_t Nd0, std::size_t Nd1>
+        template <std::size_t Nd0, std::size_t Nd1, typename EWOP>
         bool may_need_communications(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
                                      const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
                                      const Order<Nd0> &o0, const Proc_ranges<Nd1> &p1,
                                      const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
-                                     const Order<Nd1> &o1, bool consider_local_copy) {
+                                     const Order<Nd1> &o1, EWOP) {
 
             assert(p0.size() == p1.size());
             tracker<Cpu> _t("avoid communications", Cpu{});
@@ -2168,7 +2205,7 @@ namespace superbblas {
             Proc_ranges<Nd1> p1_(p1.size());
             for (unsigned int irank = 0; irank < p1.size(); ++irank)
                 p1_[irank] = intersection(p1[irank], from1, size1, dim1);
-            if (!consider_local_copy) {
+            if (std::is_same<EWOP, EWOp::Add>::value) {
                 for (unsigned int irank = 0; irank < p0.size(); ++irank) {
                     auto fs01 = translate_range(intersection(p0[irank], from0, size0, dim0), from0,
                                                 dim0, from1, dim1, perm0);
@@ -2317,19 +2354,18 @@ namespace superbblas {
 
                 // Generate the list of subranges to send and receive
                 if (it == cache.end()) {
-                    toSend = get_indices_to_send(p0[comm.rank], o0, from0, size0, dim0, p1, o1,
-                                                 from1, dim1);
-                    toReceive = get_indices_to_receive(p0, o0, from0, size0, dim0, p1[comm.rank],
-                                                       o1, from1, dim1);
+                    toSend = get_indices_to_send(p0, o0, from0, size0, dim0, p1, o1, from1, dim1,
+                                                 comm, EWOP{});
+                    toReceive = get_indices_to_receive(p0, o0, from0, size0, dim0, p1, o1, from1,
+                                                       dim1, comm, EWOP{});
 
                     // Check whether communications can be avoided
                     // NOTE: when doing copy, avoid doing copy if the destination pieces can be get from
                     //       the local origin
                     need_comms =
-                        (comm.nprocs <= 1
-                             ? false
-                             : may_need_communications(p0, from0, size0, dim0, o0, p1, from1, dim1,
-                                                       o1, std::is_same<EWOP, EWOp::Copy>::value));
+                        (comm.nprocs <= 1 ? false
+                                          : may_need_communications(p0, from0, size0, dim0, o0, p1,
+                                                                    from1, dim1, o1, EWOP{}));
 
                     // Check whether the destination tensor should be zero out because the origin
                     // tensor hasn't full support and some elements aren't going to be _touched_ on the
@@ -3051,8 +3087,8 @@ namespace superbblas {
                                     fsr.push_back(fs[fsi]);
                                 } else {
                                     // make hole
-                                    auto new_fs = make_hole(fs[fsi][0], fs[fsi][1], p[j][j0][0],
-                                                            p[j][j0][1], dim);
+                                    auto new_fs = superbblas::make_hole(
+                                        fs[fsi][0], fs[fsi][1], p[j][j0][0], p[j][j0][1], dim);
                                     for (const auto &fsi_ : new_fs) fsr.push_back(fsi_);
                                 }
                             }
