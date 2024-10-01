@@ -1773,8 +1773,8 @@ namespace superbblas {
 
         /// Return a list of ranges after subtracting a list of holes
         /// \param fs: input ranges
-        /// \param holes: input list of holes to subtract 
-        /// \param dim: space dimension where the ranges are embedded 
+        /// \param holes: input list of holes to subtract
+        /// \param dim: space dimension where the ranges are embedded
 
         template <std::size_t N>
         From_size<N> make_hole(const From_size<N> &fs, const From_size<N> &holes,
@@ -1907,6 +1907,11 @@ namespace superbblas {
                 Coor<Nd0> perm1 = find_permutation(o1, o0);
                 From_size<Nd0> rfs0 = translate_range(rlocal1, from1, dim1, from0, dim0, perm1);
 
+                // Remove ranges that can be locally copied
+                const From_size<Nd0> &rfs0_with_holes =
+                    (std::is_same<EWOP, EWOp::Copy>::value ? make_hole(rfs0, p0[comm.rank], dim0)
+                                                           : rfs0);
+
                 // Compute the indices
                 Coor<Nd1, std::size_t> stride1 = get_strides<std::size_t>(dim1, FastToSlow);
                 std::vector<Proc_ranges<Nd1>> r(p0.size());
@@ -1919,11 +1924,13 @@ namespace superbblas {
                             from0, size0, local_from0, local_size0, dim0, FirstIntervalIsDominant);
 
                         // Remove ranges that can be locally copied
-                        if (std::is_same<EWOP, EWOp::Copy>::value && i != comm.rank)
-                            rlocal0 = make_hole(rlocal0, p0[comm.rank], dim0);
+                        const From_size<Nd0> &this_rfs0 =
+                            (std::is_same<EWOP, EWOp::Copy>::value && i != comm.rank
+                                 ? rfs0_with_holes
+                                 : rfs0);
 
                         r[i][j] = shift_ranges(
-                            sort_ranges(translate_range(intersection(rfs0, rlocal0, dim0,
+                            sort_ranges(translate_range(intersection(this_rfs0, rlocal0, dim0,
                                                                      FirstIntervalIsDominant),
                                                         from0, dim0, from1, dim1, perm0),
                                         dim1, stride1),
