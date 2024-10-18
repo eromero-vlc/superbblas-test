@@ -116,6 +116,16 @@ namespace superbblas {
 
     namespace detail {
 
+        /// the_real<T>::type returns the real type of a real or complex type
+
+        template <typename T> struct the_real {
+            using type = T;
+        };
+
+        template <typename T> struct the_real<std::complex<T>> {
+            using type = T;
+        };
+
 #ifdef SUPERBBLAS_USE_GPU
         /// Wait until everything finishes in the given stream
         /// \param xpu: context
@@ -356,6 +366,22 @@ namespace superbblas {
             /// \param new_xpu: new context
             vector withNewContext(const XPU &new_xpu) const {
                 return vector{n, ptr_aligned, ptr, new_xpu};
+            }
+
+            /// Return an alias of the vector with another context
+            /// \param new_xpu: new context
+            vector displace(std::size_t elems) const {
+                if (elems > n)
+                    throw std::runtime_error("detail::vector::displace: invalid argument");
+                return vector{n - elems, ptr_aligned + elems, ptr, xpu};
+            }
+
+            /// Return an alias of the vector with another context
+            /// \param new_xpu: new context
+            vector subrange(std::size_t first_elem, std::size_t elems) const {
+                if (first_elem + elems > n)
+                    throw std::runtime_error("detail::vector::subrange: invalid argument");
+                return vector{elems, ptr_aligned + first_elem, ptr, xpu};
             }
 
             std::size_t n;             ///< Number of allocated `T` elements

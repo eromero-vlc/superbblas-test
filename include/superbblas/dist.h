@@ -159,6 +159,16 @@ namespace superbblas {
             MPI_check(MPI_Type_commit(&t));
             return t;
         }
+
+        /// Return the MPI_datatype proper for reduction
+        template <typename T> inline MPI_Datatype get_mpi_datatype_for_reduction() {
+            using Treal = typename the_real<T>::type;
+            if (std::is_same<char, Treal>::value) return MPI_CHAR;
+            if (std::is_same<int, Treal>::value) return MPI_INT;
+            if (std::is_same<float, Treal>::value) return MPI_FLOAT;
+            if (std::is_same<double, Treal>::value) return MPI_DOUBLE;
+            throw std::runtime_error("Unsupported datatype for reduction");
+        }
 #endif // SUPERBBLAS_USE_MPI
 
         /// Component of a tensor
@@ -1567,6 +1577,158 @@ namespace superbblas {
                 unpack(v1ToReceive, v1, EWOP{}, Q(alpha));
             };
         }
+
+	/// Create components all together on contiguous memory
+	/// \param ranges: list of ranges to allocate
+        /// \param xpu: context for the buffer
+
+        template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
+        std::tuple<Components_tmpl<Nd, T, XPU0, XPU1>, vector<T, XPU0>>
+        create_components(const From_size<Nd> &ranges, XPU0 xpu) {
+            vector<T, XPU0> v(volume(ranges), xpu, doCacheAllocExternal);
+            zero_n(v.data(), v.size(), v.ctx());
+            std::vector<Component<Nd, T, XPU0>> c;
+            c.reserve(ranges.size());
+            auto vi = v;
+            unsigned int componentId = 0;
+            for (const auto &range : ranges) {
+                const auto voli = volume(range[1]);
+                c.push_back(
+                    Component<Nd, T, XPU0>{vi.subrange(0, voli), range[1], componentId++, {}});
+                vi = vi.displace(voli);
+            }
+            return {{c, {}}, v};
+        }
+
+#    ifdef SUPERBBLAS_USE_GPU
+        template <std::size_t Nd, typename T, typename XPU0, typename XPU1>
+        std::tuple<Components_tmpl<Nd, T, XPU0, XPU1>, vector<T, XPU1>>
+        create_components(const From_size<Nd> &ranges, XPU1 xpu) {
+            vector<T, XPU1> v(volume(ranges), xpu, doCacheAllocExternal);
+            zero_n(v.data(), v.size(), v.ctx());
+            std::vector<Component<Nd, T, XPU1>> c;
+            c.reserve(ranges.size());
+            auto vi = v;
+            unsigned int componentId = 0;
+            for (const auto &range : ranges) {
+                const auto voli = volume(range[1]);
+                c.push_back(
+                    Component<Nd, T, XPU1>{vi.subrange(0, voli), range[1], componentId++, {}});
+                vi = vi.displace(voli);
+            }
+            return {{{}, c}, v};
+        }
+#    endif // SUPERBBLAS_USE_GPU
+
+        template <typename XPUbuff, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename XPU1>
+        Request allreduce(typename elem<T>::type alpha, const From_size<Nd0> &p0,
+                          const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                          const Order<Nd0> &o0, const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                          const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                          const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1,
+                          const From_size<Nd1> &allreduce_ranges, const MpiComm &comm, CoorOrder co,
+                          XPUbuff xpubuff) {
+
+            if (comm.nprocs <= 1) return [] {};
+
+            // Annotate the calls so that the returned lambda can be paired with this call
+            std::size_t call_number = ++getSendReceiveCallNumer();
+
+            struct tag_type {}; // For hashing template arguments
+            if (getDebugLevel() > 0) {
+                check_consistency(std::make_tuple(std::string("allreduce"), call_number, o0, o1, co,
+                                                  alpha, typeid(tag_type).hash_code()),
+                                  comm);
+            }
+
+            tracker<Cpu> _t("packing", Cpu{});
+
+            // Create buffer and zero out
+            auto vb_and_buffer = create_components<Nd1, Q, XPU0, XPU1>(allreduce_ranges, xpubuff);
+            auto vb = std::get<0>(vb_and_buffer);
+            auto buffer = std::get<1>(vb_and_buffer);
+
+            // Add the local pieces into the buffer
+            wait(copy_request(alpha, Proc_ranges<Nd0>(1, p0), from0, size0, dim0, o0, v0,
+                              Proc_ranges<Nd1>(1, allreduce_ranges), from1, dim1, o1, vb,
+                              get_comm(), EWOp::Add{}, co, false));
+
+            // Do the MPI communication
+            MPI_Datatype dtype = get_mpi_datatype_for_reduction<Q>();
+            std::vector<MPI_Request> r;
+            Coor<Nd1> size1 = reorder_coor(size0, find_permutation(o0, o1), 1);
+            sync(buffer.ctx());
+            _t.stop();
+            const int factor = (is_complex<T>::value ? 2 : 1);
+            if (buffer.size() * factor > (std::size_t)std::numeric_limits<int>::max())
+                throw std::runtime_error("allreduce: too many elements to reduce");
+            if (getUseMPINonBlock()) {
+                tracker<Cpu> _t("MPI iallreduce", Cpu{});
+                r.resize(1);
+                MPI_check(MPI_Iallreduce(MPI_IN_PLACE, buffer.data(), buffer.size() * factor, dtype,
+                                         MPI_SUM, comm.comm, &r.front()));
+            } else {
+                tracker<Cpu> _t("MPI allreduce", Cpu{});
+                MPI_check(MPI_Allreduce(MPI_IN_PLACE, buffer.data(), buffer.size() * factor, dtype,
+                                        MPI_SUM, comm.comm));
+                if (deviceId(buffer.ctx()) >= 0) syncLegacyStream(buffer.ctx());
+
+                wait(copy_request(Q{1}, Proc_ranges<Nd1>(1, allreduce_ranges), from1, size1, dim1,
+                                  o1, toConst(vb), Proc_ranges<Nd1>(1, p1), from1, dim1, o1, v1,
+                                  get_comm(), EWOp::Copy{}, co, false));
+                return {};
+            }
+
+            return [=]() mutable {
+                // Make sure that all processes wait for the copy operations in the same order
+                if (getDebugLevel() > 0) {
+                    check_consistency(std::make_tuple(std::string("wait for allreduce"),
+                                                      call_number, typeid(tag_type).hash_code()),
+                                      comm);
+                }
+
+                // Wait for the MPI communication to finish
+                {
+                    tracker<Cpu> _t("MPI wait", Cpu{});
+                    MPI_check(MPI_Waitall((int)r.size(), r.data(), MPI_STATUS_IGNORE));
+                }
+
+                // Copy back to v1
+                wait(copy_request(Q{1}, Proc_ranges<Nd1>(1, allreduce_ranges), from1, size1, dim1,
+                                  o1, toConst(vb), Proc_ranges<Nd1>(1, p1), from1, dim1, o1, v1,
+                                  get_comm(), EWOp::Copy{}, co, false));
+            };
+        }
+
+        template <typename XPUbuff, std::size_t Nd0, std::size_t Nd1, typename T, typename Q,
+                  typename XPU0, typename XPU1>
+        Request allreduce(typename elem<T>::type alpha, const From_size<Nd0> &p0,
+                          const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                          const Order<Nd0> &o0, const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                          const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                          const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1,
+                          const From_size<Nd1> &allreduce_ranges, const SelfComm &comm,
+                          CoorOrder co, XPUbuff xpubuff) {
+            (void)alpha;
+            (void)p0;
+            (void)from0;
+            (void)size0;
+            (void)dim0;
+            (void)o0;
+            (void)v0;
+            (void)p1;
+            (void)from1;
+            (void)dim1;
+            (void)o1;
+            (void)v1;
+            (void)allreduce_ranges;
+            (void)comm;
+            (void)co;
+            (void)xpubuff;
+            if (comm.nprocs <= 1) return [] {};
+            throw std::runtime_error("Unsupported SelfComm with nprocs > 1");
+        }
 #endif // SUPERBBLAS_USE_MPI
 
         inline void barrier(SelfComm) {}
@@ -1769,6 +1931,89 @@ namespace superbblas {
             if (!found_it) throw std::runtime_error("wtf");
             return send_receive_choose_size(o0, toSend, v0, gpu, o1, toReceive, v1, gpu, comm,
                                             EWOp{}, co, alpha);
+        }
+
+        /// Asynchronous sending and receiving; do nothing for `SelfComm` communicator
+        /// \param o0: dimension labels for the origin tensor
+        /// \param toSend: list of tensor ranges to be sent for each component
+        /// \param v0: origin data to send
+        /// \param o1: dimension labels for the destination tensor
+        /// \param toReceive: list of tensor ranges to receive
+        /// \param v1: destination data
+        /// \param comm: communication
+        /// \param co: coordinate linearization order
+        /// \param alpha: factor applied to sending tensors
+
+        template <std::size_t Nd0, std::size_t Nd1, typename T, typename Q, typename XPU0,
+                  typename XPU1, typename Comm>
+        Request allreduce(typename elem<T>::type alpha, const From_size<Nd0> &p0,
+                          const Coor<Nd0> &from0, const Coor<Nd0> &size0, const Coor<Nd0> &dim0,
+                          const Order<Nd0> &o0, const Components_tmpl<Nd0, const T, XPU0, XPU1> &v0,
+                          const From_size<Nd1> &p1, const Coor<Nd1> &from1, const Coor<Nd1> &dim1,
+                          const Order<Nd1> &o1, const Components_tmpl<Nd1, Q, XPU0, XPU1> &v1,
+                          const From_size<Nd1> &allreduce_ranges, const Comm &comm, CoorOrder co) {
+
+            // Whether to allow the use of gpu buffers for the sender/receiver buffers
+            static const bool use_mpi_gpu = [] {
+                if (getUseMPIGpu() == 0) return test_support_for_mpi_gpu();
+                return getUseMPIGpu() > 0;
+            }();
+
+            bool really_use_mpi_gpu = false;
+            if (use_mpi_gpu) {
+                // Check if there are gpu components
+                for (const auto &it : v0.first)
+                    if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) really_use_mpi_gpu = true;
+                for (const auto &it : v1.first)
+                    if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) really_use_mpi_gpu = true;
+            }
+
+            // Use mpi send/receive buffers on cpu memory
+            if (!really_use_mpi_gpu) {
+#ifdef SUPERBBLAS_USE_GPU
+                if (volume(allreduce_ranges) * sizeof(Q) <= getMaxGpuCacheSize()) {
+                    // Make the sender/receiver buffers on host pinned memory to improve the transfer rates copying
+                    // data from/to the gpus
+                    Gpu gpu0;
+                    if (v0.first.size() > 0 && v0.first.front().it.size() > 0) {
+                        gpu0 = v0.first.front().it.ctx().toCpuPinned();
+                    } else if (v1.first.size() > 0 && v1.first.front().it.size() > 0) {
+                        gpu0 = v1.first.front().it.ctx().toCpuPinned();
+                    } else {
+                        return allreduce(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1,
+                                         v1, allreduce_ranges, comm, co, Cpu{});
+                    }
+                    return allreduce(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
+                                     allreduce_ranges, comm, co, gpu0);
+                }
+#endif // SUPERBBLAS_USE_GPU
+                return allreduce(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
+                                 allreduce_ranges, comm, co, Cpu{});
+            }
+
+            // Use mpi send/receive buffers on gpu memory
+            // NOTE: both buffers should be on the same device
+            XPU0 gpu;
+            bool found_it = false;
+            for (const auto &it : v0.first) {
+                if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) {
+                    gpu = it.it.ctx();
+                    found_it = true;
+                    break;
+                }
+            }
+            if (!found_it) {
+                for (const auto &it : v1.first) {
+                    if (deviceId(it.it.ctx()) >= 0 && it.it.size() > 0) {
+                        gpu = it.it.ctx();
+                        found_it = true;
+                        break;
+                    }
+                }
+            }
+            if (!found_it) throw std::runtime_error("wtf");
+            return allreduce(alpha, p0, from0, size0, dim0, o0, v0, p1, from1, dim1, o1, v1,
+                             allreduce_ranges, comm, co, gpu);
         }
 
         /// Return a list of ranges after subtracting a list of holes
@@ -2241,6 +2486,62 @@ namespace superbblas {
             return false;
         }
 
+        /// Check if the operation is suitable to be done by an all-reduce collective communication primitive
+        /// \param p0: partitioning of the origin tensor in consecutive ranges
+        /// \param from0: first coordinate to copy from the origin tensor
+        /// \param size0: number of elements to copy in each dimension
+        /// \param dim0: dimension size for the origin tensor
+        /// \param o0: dimension labels for the origin tensor
+        /// \param p1: partitioning of the destination tensor in consecutive ranges
+        /// \param from1: coordinate in destination tensor where first coordinate from origin tensor is copied
+        /// \param dim1: dimension size for the destination tensor
+        /// \param o1: dimension labels for the destination tensor
+
+        template <std::size_t Nd0, std::size_t Nd1, typename EWOP>
+        std::tuple<bool, From_size<Nd1>>
+        check_for_all_reduce(const Proc_ranges<Nd0> &p0, const Coor<Nd0> &from0,
+                             const Coor<Nd0> &size0, const Coor<Nd0> &dim0, const Order<Nd0> &o0,
+                             const Proc_ranges<Nd1> &p1, const Coor<Nd1> &from1,
+                             const Coor<Nd1> &dim1, const Order<Nd1> &o1, EWOP) {
+
+            assert(p0.size() == p1.size());
+
+            // Shortcut: fail for copying
+            if (!std::is_same<EWOP, EWOp::Add>::value) return {false, {}};
+
+            tracker<Cpu> _t("check for all_reduce", Cpu{});
+            Coor<Nd1> perm0 = find_permutation<Nd0, Nd1>(o0, o1);
+            Coor<Nd1> size1 = reorder_coor<Nd0, Nd1>(size0, perm0, 1); // size in the destination
+            Proc_ranges<Nd1> p1_(p1.size());
+            for (unsigned int irank = 0; irank < p1.size(); ++irank)
+                p1_[irank] = intersection(p1[irank], from1, size1, dim1);
+            From_size<Nd1> r;
+            std::size_t volr = 0;
+            std::size_t num_participating_pairs = 0;
+            for (unsigned int irank = 0; irank < p0.size(); ++irank) {
+                auto fs01 = translate_range(intersection(p0[irank], from0, size0, dim0), from0,
+                                            dim0, from1, dim1, perm0);
+                for (unsigned int jrank = 0; jrank < p0.size(); ++jrank) {
+                    const auto &inter = intersection(p1_[jrank], fs01, dim1);
+                    const auto vol = volume(inter);
+                    if (vol == 0) continue;
+                    if (r.size() == 0) {
+                        r = inter;
+                        volr = vol;
+                    } else {
+                        if (volume(intersection(r, inter, dim1)) != volr) return {false, {}};
+                    }
+                    num_participating_pairs++;
+                }
+            }
+
+            // A tree reduction takes up to 4*p messages for p processes; so don't do reduction if there are
+            // not enough messages
+            if (num_participating_pairs <= 8 * p0.size()) return {false, {}};
+
+            return {true, r};
+        }
+
 #ifdef SUPERBBLAS_USE_GPU
         /// Return the gpu components with a parallel context
         /// \param v: components
@@ -2341,7 +2642,8 @@ namespace superbblas {
 
             Range_proc_range_ranges<Nd0> toSend;
             Range_proc_range_ranges<Nd1> toReceive;
-            bool need_comms, zeroout_v1;
+            From_size<Nd1> allreduce_ranges;
+            bool need_comms = false, zeroout_v1 = false, do_allreduce = false;
 
             if (std::norm(alpha) != 0) {
                 // Find precomputed pieces on cache
@@ -2351,7 +2653,9 @@ namespace superbblas {
                 struct Value {
                     Range_proc_range_ranges<Nd0> toSend;
                     Range_proc_range_ranges<Nd1> toReceive;
+                    From_size<Nd1> allreduce_ranges;
                     bool need_comms;
+                    bool do_allreduce;
                     bool zeroout_v1;
                 };
                 struct cache_tag {};
@@ -2361,11 +2665,6 @@ namespace superbblas {
 
                 // Generate the list of subranges to send and receive
                 if (it == cache.end()) {
-                    toSend = get_indices_to_send(p0, o0, from0, size0, dim0, p1, o1, from1, dim1,
-                                                 comm, EWOP{});
-                    toReceive = get_indices_to_receive(p0, o0, from0, size0, dim0, p1, o1, from1,
-                                                       dim1, comm, EWOP{});
-
                     // Check whether communications can be avoided
                     // NOTE: when doing copy, avoid doing copy if the destination pieces can be get from
                     //       the local origin
@@ -2374,23 +2673,48 @@ namespace superbblas {
                                           : may_need_communications(p0, from0, size0, dim0, o0, p1,
                                                                     from1, dim1, o1, EWOP{}));
 
-                    // Check whether the destination tensor should be zero out because the origin
-                    // tensor hasn't full support and some elements aren't going to be _touched_ on the
-                    // destination tensor
-                    zeroout_v1 =
-                        (std::is_same<EWOP, EWOp::Copy>::value &&
-                         !has_full_support(p0, from0, size0, dim0, o0, p1, from1, dim1, o1));
+                    /// Check whether a global reduction is efficient
+                    if (need_comms) {
+                        auto do_allReduce_and_ranges = check_for_all_reduce(
+                            p0, from0, size0, dim0, o0, p1, from1, dim1, o1, EWOP{});
+                        do_allreduce = std::get<0>(do_allReduce_and_ranges);
+                        allreduce_ranges = std::get<1>(do_allReduce_and_ranges);
+                    } else {
+                        do_allreduce = false;
+                    }
+
+                    if (do_allreduce) {
+                        zeroout_v1 = true;
+                    } else {
+                        toSend = get_indices_to_send(p0, o0, from0, size0, dim0, p1, o1, from1,
+                                                     dim1, comm, EWOP{});
+                        toReceive = get_indices_to_receive(p0, o0, from0, size0, dim0, p1, o1,
+                                                           from1, dim1, comm, EWOP{});
+
+                        // Check whether the destination tensor should be zero out because the origin
+                        // tensor hasn't full support and some elements aren't going to be _touched_ on the
+                        // destination tensor
+                        zeroout_v1 =
+                            (std::is_same<EWOP, EWOp::Copy>::value &&
+                             !has_full_support(p0, from0, size0, dim0, o0, p1, from1, dim1, o1));
+                    }
 
                     // Save the results
-                    cache.insert(key, {toSend, toReceive, need_comms, zeroout_v1}, 0);
+                    cache.insert(
+                        key,
+                        {toSend, toReceive, allreduce_ranges, need_comms, do_allreduce, zeroout_v1},
+                        0);
                 } else {
                     toSend = it->second.value.toSend;
                     toReceive = it->second.value.toReceive;
+                    allreduce_ranges = it->second.value.allreduce_ranges;
                     need_comms = it->second.value.need_comms;
+                    do_allreduce = it->second.value.do_allreduce;
                     zeroout_v1 = it->second.value.zeroout_v1;
                 }
             } else {
                 need_comms = false;
+                do_allreduce = false;
                 zeroout_v1 = std::is_same<EWOP, EWOp::Copy>::value;
             }
 
@@ -2424,11 +2748,22 @@ namespace superbblas {
             }
             if (std::norm(alpha) == 0) return Request{};
 
-            // Do the sending and receiving
             Request mpi_req;
+#ifdef SUPERBBLAS_USE_MPI
+            // Shortcut: do allreduce
+            if (do_allreduce) {
+                return allreduce(alpha, p0.at(comm.rank), from0, size0, dim0, o0, v0,
+                                 p1.at(comm.rank), from1, dim1, o1, v1, allreduce_ranges, comm, co);
+            }
+
+            // Do the sending and receiving
             if (need_comms)
                 mpi_req = send_receive<Nd0, Nd1>(o0, toSend, v0, o1, toReceive, v1, comm, ewop, co,
                                                  alpha);
+#else
+            if (comm.nprocs > 1)
+                throw std::runtime_error("superbblas wan not compile with MPI support");
+#endif // SUPERBBLAS_USE_MPI
 
             // Do the local copies
             for (const Component<Nd0, const T, XPU0> &c0 : v0.first) {

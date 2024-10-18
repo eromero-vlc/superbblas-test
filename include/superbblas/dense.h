@@ -7,14 +7,6 @@ namespace superbblas {
 
     namespace detail {
 
-        template <typename T> struct the_real {
-            using type = T;
-        };
-
-        template <typename T> struct the_real<std::complex<T>> {
-            using type = T;
-        };
-
         /// Return an order concatenating the three given strings (or in reverse order if `co` is SlowToFast
         /// \param a,b,c: string to concatenate
         /// \return: the ordering
