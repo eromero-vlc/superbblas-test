@@ -734,12 +734,18 @@ namespace superbblas {
         /// Other auxiliary functions
         ///
 
-        template <typename T> void change_endianness(T *v, std::size_t n) {
+        template <typename T,
+                  typename std::enable_if<std::is_arithmetic<T>::value, bool>::type = true>
+        void change_endianness(T *v, std::size_t n) {
             for (std::size_t i = 0; i < n; ++i) {
                 char *c = (char *)&v[i];
                 for (std::size_t j = 0; j < sizeof(T) / 2; ++j)
                     std::swap(c[j], c[sizeof(T) - 1 - j]);
             }
+        }
+
+        template <typename T> void change_endianness(std::complex<T> *v, std::size_t n) {
+            change_endianness((T *)v, n * 2u);
         }
 
         struct Storage_context_abstract {
