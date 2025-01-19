@@ -40,53 +40,99 @@ template <std::size_t N> Order<N + 1> get_order_from_str(const char *s) {
     return r;
 }
 
+template <std::size_t N>
+std::array<Coor<N>, 2> extend(std::array<Coor<N>, 2> fs, const Coor<N> &power, const Coor<N> &dim) {
+    for (unsigned int i = 0; i < N; ++i) {
+        fs[1][i] = std::min(dim[i], fs[1][i] + power[i] * 2);
+        if (fs[1][i] < dim[i])
+            fs[0][i] -= power[i];
+        else
+            fs[0][i] = 0;
+    }
+    fs[0] = normalize_coor(fs[0], dim);
+    return fs;
+}
+
+/// Extend the support for all regions, one element in each direction
+template <std::size_t N>
+PartitionStored<N> extend(const PartitionStored<N> &p, const Coor<N> &power, const Coor<N> &dim) {
+    PartitionStored<N> r = p;
+    for (auto &i : r) i = extend(i, power, dim);
+    return r;
+}
+
 template <std::size_t N, typename T, typename XPU> struct tensor {
-    Coor<N> dim;          ///< global dimensions
-    PartitionStored<N> p; ///< partition
-    vector<T, XPU> v;     ///< data
-    int rank;             ///< rank of the current process
-    Order<N + 1> order;   ///< labels
+    Coor<N> dim;                   ///< global dimensions
+    PartitionStored<N> p;          ///< partition
+    std::vector<vector<T, XPU>> v; ///< data
+    std::vector<T *> ptr;          ///< data pointers
+    int rank;                      ///< rank of the current process
+    Order<N + 1> order;            ///< labels
 
     /// Constructor with a partition
-    tensor(const Coor<N> &dim, const PartitionStored<N> &p, int rank, XPU xpu,
+    tensor(const Coor<N> &dim, const PartitionStored<N> &p, int rank, const std::vector<XPU> &xpus,
            const Order<N + 1> &order = {})
-        : dim(dim), p(p), v(vector<T, XPU>(volume(p[rank][1]), xpu)), rank(rank), order(order) {}
+        : dim(dim), p(p), rank(rank), order(order) {
+        if (p.size() % xpus.size() != 0) throw std::runtime_error("Invalid number of components");
+        if (std::size_t(rank) >= p.size() / xpus.size())
+            throw std::runtime_error("Invalid rank value");
+        for (unsigned int i = 0; i < xpus.size(); ++i) {
+            v.push_back(vector<T, XPU>(volume(p.at(xpus.size() * rank + i).at(1)), xpus.at(i)));
+        }
+    }
 
     /// Constructor for a distributed tensor
-    tensor(const Coor<N> &dim, const Coor<N> &procs, int nprocs, int rank, XPU xpu,
-           const Order<N + 1> &order = {})
-        : tensor(dim, basic_partitioning(dim, procs, nprocs), rank, xpu, order) {}
+    tensor(const Coor<N> &dim, const Coor<N> &procs, int nprocs, int rank,
+           const std::vector<XPU> &xpus, const Order<N + 1> &order = {})
+        : tensor(dim, basic_partitioning(order.data(), dim, procs, "xyzt", nprocs, xpus.size()),
+                 rank, xpus, order) {}
 
     /// Constructor for a distributed tensor with power
     tensor(const Coor<N> &dim, const Coor<N> &procs, const Coor<N> &power, int nprocs, int rank,
-           XPU xpu, const Order<N + 1> &order = {})
-        : tensor(dim, basic_partitioning(dim, procs, nprocs, false, power), rank, xpu, order) {}
+           const std::vector<XPU> &xpus, const Order<N + 1> &order = {})
+        : tensor(dim,
+                 extend(basic_partitioning(order.data(), dim, procs, "xyzt", nprocs, xpus.size()),
+                        power, dim),
+                 rank, xpus, order) {}
 
-    tensor(const Coor<N> &dim, int nprocs, int rank, XPU xpu, const Order<N + 1> &order = {})
-        : tensor(dim, dist_tensor_on_root(dim, nprocs), rank, xpu, order) {}
+    tensor(const Coor<N> &dim, int nprocs, int rank, const std::vector<XPU> &xpus,
+           const Order<N + 1> &order = {})
+        : tensor(dim, dist_tensor_on_root(dim, nprocs * xpus.size()), rank, xpus, order) {}
 
-    /// Contructor giving labels and a new order
-    tensor(const Labels<N> &l, const Coor<Nd> &d, int nprocs, int rank, XPU xpu,
-           const char *order_str)
-        : tensor(get_dim(l, d), nprocs, rank, xpu, order(get_order_from_str<N>(order_str))) {}
+    /// Constructor giving labels and a new order
+    tensor(const Labels<N> &l, const Coor<Nd> &d, int nprocs, int rank,
+           const std::vector<XPU> &xpus, const char *order_str)
+        : tensor(get_dim(l, d), nprocs, rank, xpus, order(get_order_from_str<N>(order_str))) {}
 
-    /// Contructor giving labels
-    tensor(const Labels<N> &l, const Coor<Nd> &d, int nprocs, int rank, XPU xpu)
-        : tensor(get_dim(l, d), nprocs, rank, xpu, get_order(l)) {}
+    /// Constructor giving labels
+    tensor(const Labels<N> &l, const Coor<Nd> &d, int nprocs, int rank,
+           const std::vector<XPU> &xpus)
+        : tensor(get_dim(l, d), nprocs, rank, xpus, get_order(l)) {}
 
     /// Constructor giving labels and procs
     tensor(const Labels<N> &l, const Coor<Nd> &d, const Coor<Nd> &procs, int nprocs, int rank,
-           XPU xpu)
-        : tensor(get_dim(l, d), get_dim(l, procs), nprocs, rank, xpu, get_order(l)) {}
+           const std::vector<XPU> &xpus)
+        : tensor(get_dim(l, d), get_dim(l, procs), nprocs, rank, xpus, get_order(l)) {}
 
     /// Constructor giving labels and procs and power
     tensor(const Labels<N> &l, const Coor<Nd> &d, const Coor<Nd> &procs, const Coor<Nd> &power,
-           int nprocs, int rank, XPU xpu)
-        : tensor(get_dim(l, d), get_dim(l, procs), get_dim(l, power), nprocs, rank, xpu,
+           int nprocs, int rank, const std::vector<XPU> &xpus)
+        : tensor(get_dim(l, d), get_dim(l, procs), get_dim(l, power), nprocs, rank, xpus,
                  get_order(l)) {}
 
-    /// Constructor for a tensor with support only on the root process
-    void release() { v.clear(); }
+    /// Destructor for a tensor with support only on the root process
+    void release() {
+        v.clear();
+        ptr.clear();
+    }
+
+    /// Return an array of pointers
+    T **data() {
+        if (ptr.size() != v.size()) {
+            for (const auto &it : v) ptr.push_back(it.data());
+        }
+        return ptr.data();
+    }
 };
 
 // Dummy initialization of a tensor
@@ -97,7 +143,7 @@ template <typename T, typename XPU> void dummyFill(vector<T, XPU> &t) {
 }
 
 template <std::size_t N, typename T, typename XPU> void dummyFill(tensor<N, T, XPU> &t) {
-    dummyFill(t.v);
+    for (auto &v : t.v) dummyFill(v);
 }
 
 void test_distribution() {
@@ -132,11 +178,11 @@ void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &hol
 
     for (const auto &it : r) {
         // Make sure that the resulting range has fully support on (from, size)
-        if (volume(intersection(it[0], it[1], from, size, dim)) != volume(it[1]))
+        if (volume(intersection<false>(it[0], it[1], from, size, dim)) != volume(it[1]))
             throw std::runtime_error("Unexpected result in `subtract_range`");
 
         // Make sure that the resulting range has no support on (hole_from, hole_size)
-        if (volume(intersection(it[0], it[1], hole_from, hole_size, dim)) != 0)
+        if (volume(intersection<false>(it[0], it[1], hole_from, hole_size, dim)) != 0)
             throw std::runtime_error("Unexpected result in `subtract_range`");
     }
 
@@ -144,12 +190,12 @@ void test_make_hole(const Coor<N> &from, const Coor<N> &size, const Coor<N> &hol
     for (std::size_t i = 0; i < r.size() - 1; ++i) {
         From_size<N> ri(r.size() - i - 1);
         std::copy(r.begin() + i + 1, r.end(), ri.begin());
-        if (volume(intersection(ri, r[i][0], r[i][1], dim)) != 0)
+        if (volume(intersection<false>(ri, r[i][0], r[i][1], dim)) != 0)
             throw std::runtime_error("Unexpected result in `subtract_range`");
     }
 
     // Check the resulting ranges together with the hole covers the region (from, size)
-    if (volume(r) + volume(intersection(from, size, hole_from, hole_size, dim)) != volume(size))
+    if (volume(r) + volume(intersection<false>(from, size, hole_from, hole_size, dim)) != volume(size))
         throw std::runtime_error("Unexpected result in `subtract_range`");
 }
 
@@ -193,9 +239,19 @@ void test_gemm(std::size_t m, std::size_t n, std::size_t k, std::size_t batch_si
     test_gemm(m, n, k, batch_size, a.data(), b.data(), c.data(), 'c', 't', rank, xpu, nreps);
 }
 
+template <typename XPU> void sync(const std::vector<XPU> &xpus) {
+    int numDevices = getGpuDevicesCount() + 1;
+    std::vector<bool> already_sync(numDevices, false);
+    for (const auto xpu : xpus) {
+        if (already_sync.at(deviceId(xpu) + 1)) continue;
+        sync(xpu);
+        already_sync.at(deviceId(xpu) + 1) = true;
+    }
+}
+
 template <typename XPU>
-void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU xpu,
-          unsigned int nrep) {
+void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, const std::vector<Context> &ctx,
+          const std::vector<XPU> &xpu, unsigned int nrep) {
 
     using Scalar = std::complex<float>;
     using ScalarD = std::complex<double>;
@@ -205,10 +261,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
     // Copy tensor t0 into tensor 1 (for reference)
     double tref = 0.0;
     {
-        tensor<Nd - 1, Scalar, XPU> t0({X, Y, Z, T, S, C}, dim, procs, nprocs, rank, xpu);
+        tensor<Nd - 1, Scalar, XPU> t0({X, Y, Z, T, S, C}, dim, procs, nprocs, rank,
+                                       std::vector<XPU>(1, xpu.at(0)));
         dummyFill(t0);
 
-        const bool is_cpu = deviceId(xpu) == CPU_DEVICE_ID;
+        const bool is_cpu = deviceId(xpu.at(0)) == CPU_DEVICE_ID;
         if (rank == 0) std::cout << ">>> " << (is_cpu ? "CPU" : "GPU") << " tests:" << std::endl;
 
         std::size_t local_vol0 = volume(t0.p[rank][1]);
@@ -217,15 +274,16 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                       << " ( " << local_vol0 * 1.0 * sizeof(Scalar) / 1024 / 1024 << " MiB)"
                       << std::endl;
 
-        sync(xpu);
-        vector<Scalar, XPU> aux(local_vol0 * dim[N], xpu);
+        sync(xpu.at(0));
+        vector<Scalar, XPU> aux(local_vol0 * dim[N], xpu.at(0));
         double t = w_time();
         for (unsigned int rep = 0; rep < nrep; ++rep) {
             for (int n = 0; n < dim[N]; ++n) {
-                copy_n(t0.v.data(), t0.v.ctx(), local_vol0, aux.data() + local_vol0 * n, aux.ctx());
+                copy_n(t0.v.at(0).data(), t0.v.at(0).ctx(), local_vol0, aux.data() + local_vol0 * n,
+                       aux.ctx());
             }
         }
-        sync(xpu);
+        sync(xpu.at(0));
         t = w_time() - t;
         if (rank == 0)
             std::cout << "Time in dummy copying from xyzts to tnsxyzc " << t / nrep << " ( "
@@ -249,10 +307,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
             for (int n = 0; n < dim[N]; ++n) {
                 const Coor<Nd - 1> from0 = {{}};
                 const Coor<Nd> from1 = {0, n};
-                Scalar *ptr0 = t0.v.data(), *ptr1 = t1.v.data();
-                copy(1.0, t0.p.data(), 1, t0.order.data(), from0, t0.dim, t0.dim,
-                     (const Scalar **)&ptr0, nullptr, &ctx, t1.p.data(), 1, t1.order.data(), from1,
-                     t1.dim, &ptr1, nullptr, &ctx,
+                copy(1.0, t0.p.data(), ctx.size(), t0.order.data(), from0, t0.dim, t0.dim,
+                     (const Scalar **)t0.data(), nullptr, ctx.data(), t1.p.data(), ctx.size(),
+                     t1.order.data(), from1, t1.dim, t1.data(), nullptr, ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
@@ -263,7 +320,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
         if (rank == 0)
             std::cout << "Time in copying/permuting from xyztsc to tnsxyzc " << t / nrep
                       << " (overhead " << t / nrep / tref << " )" << std::endl;
+        if (rank == 0) reportTimings(std::cout);
+        if (rank == 0) reportCacheUsage(std::cout);
     }
+
+	return; /// temp!
 
     // Copy tensor t0 into each of the c components of tensor 1 in double
     {
@@ -280,11 +341,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
             for (int n = 0; n < dim[N]; ++n) {
                 const Coor<Nd - 1> from0 = {{}};
                 const Coor<Nd> from1 = {0, n};
-                Scalar *ptr0 = t0.v.data();
-                ScalarD *ptr1 = t1.v.data();
-                copy(1.0, t0.p.data(), 1, t0.order.data(), from0, t0.dim, t0.dim,
-                     (const Scalar **)&ptr0, nullptr, &ctx, t1.p.data(), 1, t1.order.data(), from1,
-                     t1.dim, &ptr1, nullptr, &ctx,
+                copy(1.0, t0.p.data(), ctx.size(), t0.order.data(), from0, t0.dim, t0.dim,
+                     (const Scalar **)t0.data(), nullptr, ctx.data(), t1.p.data(), ctx.size(),
+                     t1.order.data(), from1, t1.dim, t1.data(), nullptr, ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                      MPI_COMM_WORLD,
 #endif
@@ -314,10 +373,9 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
             const Coor<Nd> from0 = {{}};
             Coor<Nd> from1 = {{}};
             from1[4] = 1; // Displace one on the z-direction
-            Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data();
-            copy(1.0, t1.p.data(), 1, t1.order.data(), from0, t1.dim, t1.dim,
-                 (const Scalar **)&ptr0, nullptr, &ctx, t2.p.data(), 1, t2.order.data(), from1,
-                 t2.dim, &ptr1, nullptr, &ctx,
+            copy(1.0, t1.p.data(), ctx.size(), t1.order.data(), from0, t1.dim, t1.dim,
+                 (const Scalar **)t1.data(), nullptr, ctx.data(), t2.p.data(), ctx.size(),
+                 t2.order.data(), from1, t2.dim, t2.data(), nullptr, ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                  MPI_COMM_WORLD,
 #endif
@@ -329,11 +387,8 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
     }
 
     {
-        tensor<Nd, Scalar, XPU> t1(Labels<Nd>{T, S, X, Y, Z, C, N}, dim, procs, nprocs, rank, xpu);
-        tensor<Nd, Scalar, XPU> t2(Labels<Nd>{T, S, X, Y, Z, C, N}, dim, procs, nprocs, rank, xpu);
-        tensor<5, Scalar, XPU> tc({T, N, S, N, S}, dim, nprocs, rank, xpu);
-        dummyFill(t1);
-        dummyFill(t2);
+        tensor<Nd, Scalar, XPU> t1(Labels<Nd>{T, S, X, Y, Z, C, N}, dim, procs, nprocs, rank,
+                                   std::vector<XPU>(1, xpu.at(0)));
 
         auto local_size = t1.p[rank][1];
         int k = local_size[2] * local_size[3] * local_size[4] * dim[S] * dim[C]; // xyzsc
@@ -347,14 +402,14 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
             if (rank == 0)
                 std::cout << "*) [inner product] results for m,n,k,batch_size: " << n << "," << n
                           << "," << k << "," << tt << std::endl;
-            test_gemm<Scalar>(n, n, k, tt, rank, xpu, nrep);
+            test_gemm<Scalar>(n, n, k, tt, rank, xpu.at(0), nrep);
         }
 
         for (int n : n_sizes) {
             if (rank == 0)
                 std::cout << "*) [update] results for m,n,k,batch_size: " << k << "," << n << ","
                           << n << "," << tt << std::endl;
-            test_gemm<Scalar>(k, n, n, tt, rank, xpu, nrep);
+            test_gemm<Scalar>(k, n, n, tt, rank, xpu.at(0), nrep);
         }
     }
 
@@ -374,11 +429,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 sync(xpu);
                 t = w_time();
             }
-            Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
-            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, 1, t1.order.data(), false,
-                        (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, t2.dim, t2.dim, 1,
-                        "tNSxyzc", false, (const Scalar **)&ptr1, &ctx, Scalar{0.0}, tc.p.data(),
-                        {{}}, tc.dim, tc.dim, 1, "tNSns", &ptrc, &ctx,
+            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, ctx.size(), t1.order.data(),
+                        false, (const Scalar **)t1.data(), ctx.data(), t2.p.data(), {{}}, t2.dim,
+                        t2.dim, ctx.size(), "tNSxyzc", false, (const Scalar **)t2.data(),
+                        ctx.data(), Scalar{0.0}, tc.p.data(), {{}}, tc.dim, tc.dim, ctx.size(),
+                        "tNSns", tc.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
@@ -404,11 +459,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 sync(xpu);
                 t = w_time();
             }
-            Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
-            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, 1, t1.order.data(), false,
-                        (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, t2.dim, t2.dim, 1,
-                        "tSxyzcN", false, (const Scalar **)&ptr1, &ctx, Scalar{0.0}, tc.p.data(),
-                        {{}}, tc.dim, tc.dim, 1, "tNSns", &ptrc, &ctx,
+            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, ctx.size(), t1.order.data(),
+                        false, (const Scalar **)t1.data(), ctx.data(), t2.p.data(), {{}}, t2.dim,
+                        t2.dim, ctx.size(), "tSxyzcN", false, (const Scalar **)t2.data(),
+                        ctx.data(), Scalar{0.0}, tc.p.data(), {{}}, tc.dim, tc.dim, ctx.size(),
+                        "tNSns", tc.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
@@ -420,13 +475,15 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
             std::cout << "Time in contracting xyz in row major " << t / nrep << std::endl;
         if (rank == 0) reportTimings(std::cout);
     }
-    // Contraction gpu and cpu
-    if (!std::is_same<Cpu, XPU>::value) {
+
+    // Contraction gpu and cpu and contraction of tensors with different number of components
+    if (!std::is_same<Cpu, XPU>::value || ctx.size() > 1) {
         // Create tensor t1 of Nd dims: several lattice color vectors forming a matrix
         Context ctx_cpu = createCpuContext();
         Cpu cpu = ctx_cpu.toCpu(0);
         tensor<Nd, Scalar, XPU> t1(Labels<Nd>{T, N, S, X, Y, Z, C}, dim, procs, nprocs, rank, xpu);
-        tensor<Nd, Scalar, Cpu> t2(Labels<Nd>{T, N, S, X, Y, Z, C}, dim, procs, nprocs, rank, cpu);
+        tensor<Nd, Scalar, Cpu> t2(Labels<Nd>{T, N, S, X, Y, Z, C}, dim, procs, nprocs, rank,
+                                   std::vector<Cpu>(1, cpu));
         tensor<5, Scalar, XPU> tc({T, N, S, N, S}, dim, nprocs, rank, xpu);
         dummyFill(t1);
         dummyFill(t2);
@@ -438,11 +495,11 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
                 sync(xpu);
                 t = w_time();
             }
-            Scalar *ptr0 = t1.v.data(), *ptr1 = t2.v.data(), *ptrc = tc.v.data();
-            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, 1, t1.order.data(), false,
-                        (const Scalar **)&ptr0, &ctx, t2.p.data(), {{}}, t2.dim, t2.dim, 1,
-                        "tNSxyzc", false, (const Scalar **)&ptr1, &ctx_cpu, Scalar{0.0},
-                        tc.p.data(), {{}}, tc.dim, tc.dim, 1, "tNSns", &ptrc, &ctx,
+            contraction(Scalar{1.0}, t1.p.data(), {{}}, t1.dim, t1.dim, ctx.size(), t1.order.data(),
+                        false, (const Scalar **)t1.data(), ctx.data(), t2.p.data(), {{}}, t2.dim,
+                        t2.dim, 1, "tNSxyzc", false, (const Scalar **)t2.data(), &ctx_cpu,
+                        Scalar{0.0}, tc.p.data(), {{}}, tc.dim, tc.dim, ctx.size(), "tNSns",
+                        tc.data(), ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                         MPI_COMM_WORLD,
 #endif
@@ -469,13 +526,15 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
 
         double t = 0;
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
-            if (rep == 1) t = w_time();
+            if (rep == 1) {
+                sync(xpu);
+                t = w_time();
+            }
             const Coor<Nd> from0 = {{}};
             Coor<Nd> from1 = {{}};
-            Scalar *ptr1 = t1.v.data(), *ptrh = th.v.data();
-            copy(1.0, t1.p.data(), 1, t1.order.data(), from0, t1.dim, t1.dim,
-                 (const Scalar **)&ptr1, nullptr, &ctx, th.p.data(), 1, th.order.data(), from1,
-                 th.dim, &ptrh, nullptr, &ctx,
+            copy(1.0, t1.p.data(), ctx.size(), t1.order.data(), from0, t1.dim, t1.dim,
+                 (const Scalar **)t1.data(), nullptr, ctx.data(), th.p.data(), ctx.size(),
+                 th.order.data(), from1, th.dim, th.data(), nullptr, ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                  MPI_COMM_WORLD,
 #endif
@@ -486,13 +545,15 @@ void test(Coor<Nd> dim, Coor<Nd> procs, int rank, int nprocs, Context ctx, XPU x
         if (rank == 0) std::cout << "Time in copying halos in " << t / nrep << std::endl;
 
         for (unsigned int rep = 0; rep <= nrep; ++rep) {
-            if (rep == 1) t = w_time();
+            if (rep == 1) {
+                sync(xpu);
+                t = w_time();
+            }
             const Coor<Nd> from0 = {{}};
             Coor<Nd> from1 = {{}};
-            Scalar *ptrh = th.v.data(), *ptr1 = t1.v.data();
-            copy(1.0, th.p.data(), 1, th.order.data(), from1, th.dim, th.dim,
-                 (const Scalar **)&ptrh, nullptr, &ctx, t1.p.data(), 1, t1.order.data(), from0,
-                 t1.dim, &ptr1, nullptr, &ctx,
+            copy(1.0, th.p.data(), ctx.size(), th.order.data(), from1, th.dim, th.dim,
+                 (const Scalar **)th.data(), nullptr, ctx.data(), t1.p.data(), ctx.size(),
+                 t1.order.data(), from0, t1.dim, t1.data(), nullptr, ctx.data(),
 #ifdef SUPERBBLAS_USE_MPI
                  MPI_COMM_WORLD,
 #endif
@@ -530,6 +591,7 @@ int main(int argc, char **argv) {
     Coor<Nd> dim = {16, 16, 16, 32, nS, nC, 64}; // xyztscn
     Coor<Nd> procs = {1, 1, 1, 1, 1, 1, 1};
     unsigned int nrep = getDebugLevel() == 0 ? 10 : 1;
+    int ncomponents = 0;
 
     // Get options
     bool procs_was_set = false;
@@ -555,15 +617,26 @@ int main(int argc, char **argv) {
                 return -1;
             }
             procs_was_set = true;
+        } else if (std::strncmp("--components=", argv[i], 13) == 0) {
+            if (sscanf(argv[i] + 13, "%d", &ncomponents) != 1) {
+                std::cerr << "--components= should follow a number, for instance --components=2"
+                          << std::endl;
+                return -1;
+            }
+            if (ncomponents < 0) {
+                std::cerr << "The number of components shouldn't be negative" << std::endl;
+                return -1;
+            }
         } else if (std::strncmp("--reps=", argv[i], 7) == 0) {
             if (sscanf(argv[i] + 7, "%d", &nrep) != 1) {
                 std::cerr << "--reps= should follow one number" << std::endl;
                 return -1;
             }
         } else if (std::strncmp("--help", argv[i], 6) == 0) {
-            std::cout << "Commandline option:\n  " << argv[0]
-                      << " [--dim='x y z t n'] [--procs='x y z t n'] [--reps=r] [--help]"
-                      << std::endl;
+            std::cout
+                << "Commandline option:\n  " << argv[0]
+                << " [--dim='x y z t n'] [--procs='x y z t n'] [--components=c] [--reps=r] [--help]"
+                << std::endl;
             return 0;
         } else {
             std::cerr << "Not sure what is this: `" << argv[i] << "`" << std::endl;
@@ -583,16 +656,24 @@ int main(int argc, char **argv) {
                   << procs[Z] << " " << procs[T] << std::endl;
     }
 
+    // Set the default number of components
+    ncomponents = ncomponents == 0 ? 1 : ncomponents;
+
 #ifdef _OPENMP
     int num_threads = omp_get_max_threads();
 #else
     int num_threads = 1;
 #endif
-    if (rank == 0) std::cout << "Tests with " << num_threads << " threads" << std::endl;
+    if (rank == 0)
+        std::cout << "Tests with " << num_threads << " threads and " << ncomponents << " components"
+                  << std::endl;
 
     {
-        Context ctx = createCpuContext();
-        test(dim, procs, rank, nprocs, ctx, ctx.toCpu(0), nrep);
+        std::vector<Context> ctx;
+        for (int i = 0; i < ncomponents; ++i) ctx.push_back(createCpuContext());
+        std::vector<Cpu> xpus;
+        for (const auto &i : ctx) xpus.push_back(i.toCpu(0));
+        test(dim, procs, rank, nprocs, ctx, xpus, nrep);
         clearCaches();
         checkForMemoryLeaks(std::cout);
     }

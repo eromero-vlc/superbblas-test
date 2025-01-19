@@ -591,7 +591,7 @@ namespace superbblas {
                     // fs = {from, size} - \sum_j grid[i]_j
                     From_size<1> fs(1, {Coor<1>{from[i]}, Coor<1>{size[i]}});
                     for (const auto &j : grid[i])
-                        fs = detail::intersection(
+                        fs = detail::intersection<false>(
                             fs, Coor<1>{normalize_coor(j[0][0] + j[1][0], dim[i])},
                             Coor<1>{dim[i] - j[1][0]}, Coor<1>{dim[i]});
 
